@@ -78,7 +78,8 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
+from typing import ClassVar
 
 __all__ = [
     "BoundedIntRecordV2",
@@ -152,6 +153,9 @@ class EncodingPolicyV2(enum.Enum):
     NOT_APPLICABLE = "not_applicable"
 
 
+_POLICY_TYPES: dict[str, type] = {"exact_str": str, "exact_int": int, "exact_bool": bool}
+
+
 class CollectionSemanticsV2(enum.Enum):
     """What a field's collection MEANS. Selects the normaliser; never decorative."""
 
@@ -177,51 +181,100 @@ class MemberKindV2(enum.Enum):
 class SemanticRecordV2:
     """Abstract base for every record type the semantic domain may hold.
 
-    Concrete subclasses must be registered with `@semantic_record`. The registry
-    is reconciled at import against the subclasses actually reachable, so a new
-    record class is an import failure until it is classified -- the predecessor
-    kept a hand-maintained tuple that no mechanism ever checked.
+    Three things here are structural rather than conventional, each because
+    review reached the domain through the gap it leaves.
+
+    `FIELD_SEMANTICS` declares, per field, the `(collection semantics, member
+    kind)` pairing that governs it, and the base seals every field FROM that
+    declaration. Sealing is therefore not something a record author writes and
+    can forget: a record whose fields are not all declared is refused at
+    registration, and there is no hand-written `__post_init__` to omit. Review
+    registered a record with an unsealed `payload: object` field and walked a
+    `str` subclass and a lone surrogate straight into the universe.
+
+    Registration is keyed by class IDENTITY, never by `__qualname__`. A qualname
+    omits the module, so two slices each defining `AuditRecordV2` silently
+    evicted one another, and a class that merely *claimed* a registered qualname
+    displaced the real type from the enumerated universe while reconciliation
+    reported green.
+
+    `slots=True` is deliberately not used. It installs a public `__setstate__`
+    that rewrites frozen fields in place with `object.__setattr__` -- an
+    unsealing mutator needing no pickle and no bytes -- and it duplicates every
+    class in `__subclasses__()`, which is what forced the name-keyed dedupe the
+    collisions above exploited.
     """
 
-    __slots__ = ()
+    #: field name -> (collection semantics, member kind). Declared, and executed.
+    FIELD_SEMANTICS: ClassVar[Mapping[str, tuple["CollectionSemanticsV2", "MemberKindV2"]]] = {}
+
+    def __post_init__(self) -> None:
+        for name, (semantics, member_kind) in type(self).FIELD_SEMANTICS.items():
+            spec = select_normalizer(semantics, member_kind)
+            object.__setattr__(
+                self, name, normalize(spec.normalizer_id, getattr(self, name), name)
+            )
 
 
-_REGISTERED_RECORD_TYPES: dict[str, type] = {}
+_REGISTERED_RECORD_TYPES: dict[type, None] = {}
+_UNIVERSE_SEALED = False
 
 
 def semantic_record(cls: type) -> type:
-    """Register a concrete record type into the closed universe."""
-    _REGISTERED_RECORD_TYPES[cls.__qualname__] = cls
+    """Admit a TYPE into the closed universe, validating what that requires.
+
+    This is the widest ingress in the module -- it decides which types the
+    domain may hold -- and it previously validated nothing at all, so a class
+    that was not even a `SemanticRecordV2` could be registered and admitted.
+    """
+    if _UNIVERSE_SEALED:
+        raise SemanticIngressError(
+            f"{cls!r}: the record universe is sealed; a type admitted after "
+            f"reconciliation would never be checked against it"
+        )
+    if not isinstance(cls, type) or not issubclass(cls, SemanticRecordV2):
+        raise SemanticIngressError(f"{cls!r} is not a SemanticRecordV2 subclass")
+    if not dataclasses.is_dataclass(cls) or not cls.__dataclass_params__.frozen:
+        raise SemanticIngressError(f"{cls!r} must be a frozen dataclass")
+    declared = set(cls.FIELD_SEMANTICS)
+    actual = {f.name for f in dataclasses.fields(cls)}
+    if declared != actual:
+        raise SemanticIngressError(
+            f"{cls.__qualname__}: field semantics not total: "
+            f"undeclared={sorted(actual - declared)} stale={sorted(declared - actual)}"
+        )
+    for name, (semantics, member_kind) in cls.FIELD_SEMANTICS.items():
+        select_normalizer(semantics, member_kind)  # refuses an undeclared pairing
+    _REGISTERED_RECORD_TYPES[cls] = None
     return cls
 
 
 def concrete_record_types() -> tuple[type, ...]:
-    """Every concrete subclass reachable from the abstract base.
+    """Every concrete subclass reachable from the abstract base, by identity.
 
-    Deduplicated by qualified name: a `slots=True` dataclass appears twice in
-    `__subclasses__()`, once before and once after the class is rebuilt with
-    slots, and counting it twice would make the reconciliation unreadable.
+    `type.__subclasses__` is called unbound so a metaclass cannot intercept it;
+    review hid an entire subtree by overriding it.
     """
-    found: dict[str, type] = {}
+    found: list[type] = []
 
     def walk(base: type) -> None:
-        for child in base.__subclasses__():
-            if child is not SemanticRecordV2:
-                found[child.__qualname__] = child
+        for child in type.__subclasses__(base):
+            found.append(child)
             walk(child)
 
     walk(SemanticRecordV2)
-    return tuple(found[name] for name in sorted(found))
+    return tuple(found)
 
 
 def assert_record_universe_is_reconciled() -> None:
-    """Declared registry == concrete types actually reachable."""
+    """Declared registry == concrete types actually reachable, by identity."""
     declared = set(_REGISTERED_RECORD_TYPES)
-    actual = {record.__qualname__ for record in concrete_record_types()}
+    actual = set(concrete_record_types())
     if declared != actual:
         raise SemanticIngressError(
             f"semantic record universe is not reconciled: "
-            f"unregistered={sorted(actual - declared)} stale={sorted(declared - actual)}"
+            f"unregistered={sorted(c.__qualname__ for c in actual - declared)} "
+            f"stale={sorted(c.__qualname__ for c in declared - actual)}"
         )
 
 
@@ -230,33 +283,63 @@ def assert_record_universe_is_reconciled() -> None:
 # --------------------------------------------------------------------------
 
 
-def _normalize_exact_text(value: object, field: str, spec: NormalizerSpecV2) -> str:
-    if type(value) is not str:
+_EXACT_TYPE_OF_POLICY: dict[ExactTypePolicyV2, type] = {
+    policy: _POLICY_TYPES[policy.value]
+    for policy in ExactTypePolicyV2
+    if policy.value in _POLICY_TYPES
+}
+
+
+def _normalize_exact_scalar(value: object, field: str, spec: NormalizerSpecV2) -> object:
+    """One implementation, driven by the DECLARED policy columns.
+
+    `exact_type_policy` and `encoding_policy` are read here rather than merely
+    recorded. Review found six of nine columns never read at runtime, so a
+    declaration could contradict behaviour and only a hand-copied oracle row
+    would have to change -- the decorative-metadata failure the predecessor was
+    stopped for, reproduced in the policy table while being fixed in dispatch.
+    """
+    expected = _EXACT_TYPE_OF_POLICY[spec.exact_type_policy]
+    if type(value) is not expected:
         raise SemanticIngressError(
-            f"{field}: expected exactly str, got {type(value).__name__}"
+            f"{field}: expected exactly {expected.__name__}, got {type(value).__name__}"
         )
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise SemanticIngressError(
-            f"{field}: is not UTF-8 encodable, so it can carry no identity"
-        ) from exc
+    if spec.encoding_policy is EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED:
+        try:
+            value.encode("utf-8")  # type: ignore[union-attr]
+        except UnicodeEncodeError as exc:
+            raise SemanticIngressError(
+                f"{field}: is not UTF-8 encodable, so it can carry no identity"
+            ) from exc
     return value
 
 
-def _normalize_exact_int(value: object, field: str, spec: NormalizerSpecV2) -> int:
-    if type(value) is not int:
-        raise SemanticIngressError(
-            f"{field}: expected exactly int, got {type(value).__name__}"
-        )
-    return value
+def _normalize_registered_record(
+    value: object, field: str, spec: NormalizerSpecV2
+) -> object:
+    """Exactly a registered record type, RE-SEALED at the boundary.
 
-
-def _normalize_exact_bool(value: object, field: str, spec: NormalizerSpecV2) -> bool:
-    if type(value) is not bool:
+    Type identity alone was not enough. Sealing used to be a construction-time
+    property that frozen-ness was assumed to preserve, and frozen-ness has
+    escape hatches -- review rewrote a sealed record's fields in place and the
+    unsealed record was admitted, because nothing re-checked its contents. So
+    every field is re-normalised here and required to be unchanged. That is
+    depth-agnostic: it holds however the mutation was performed.
+    """
+    if type(value) not in _REGISTERED_RECORD_TYPES:
         raise SemanticIngressError(
-            f"{field}: expected exactly bool, got {type(value).__name__}"
+            f"{field}: expected exactly a registered semantic record, "
+            f"got {type(value).__name__}"
         )
+    for name, (semantics, member_kind) in type(value).FIELD_SEMANTICS.items():
+        member_spec = select_normalizer(semantics, member_kind)
+        current = getattr(value, name)
+        resealed = normalize(member_spec.normalizer_id, current, f"{field}.{name}")
+        if resealed != current or type(resealed) is not type(current):
+            raise SemanticIngressError(
+                f"{field}.{name}: does not re-seal to itself; the record was "
+                f"altered after construction"
+            )
     return value
 
 
@@ -270,6 +353,10 @@ def _normalize_string_set(
     only its keys, so two contracts written to differ shared one identity.
     """
     _refuse_pseudo_iterable(value, field)
+    if not isinstance(value, (Set, Sequence)):
+        raise SemanticIngressError(
+            f"{field}: expected a set or sequence of members, got {type(value).__name__}"
+        )
     return frozenset(
         normalize(spec.member_normalizer_id, member, f"{field} member")
         for member in value  # type: ignore[union-attr]
@@ -291,27 +378,13 @@ def _normalize_ordered_unique_records(
     members = tuple(
         normalize(spec.member_normalizer_id, member, f"{field} member") for member in value
     )
-    if len(set(members)) != len(members):
+    try:
+        distinct = len(set(members))
+    except TypeError as exc:
+        raise SemanticIngressError(f"{field}: members must be hashable") from exc
+    if distinct != len(members):
         raise SemanticIngressError(f"{field}: duplicate members are refused")
     return members
-
-
-def _normalize_registered_record(
-    value: object, field: str, spec: NormalizerSpecV2
-) -> object:
-    """Exactly a registered concrete record type. Not `isinstance`.
-
-    A subclass would be free to override whatever a later slice projects with,
-    which is virtual dispatch at an authority boundary.
-    """
-    if type(value).__qualname__ not in _REGISTERED_RECORD_TYPES:
-        raise SemanticIngressError(
-            f"{field}: expected exactly a registered semantic record, "
-            f"got {type(value).__name__}"
-        )
-    if type(value) is not _REGISTERED_RECORD_TYPES[type(value).__qualname__]:
-        raise SemanticIngressError(f"{field}: record type is not the registered one")
-    return value
 
 
 def _normalize_keyed_relation(
@@ -328,7 +401,16 @@ def _normalize_keyed_relation(
     a `Mapping` cannot be flattened to its keys with its values discarded.
     """
     if isinstance(value, Mapping):
-        pairs: list[tuple[object, object]] = list(value.items())
+        # The mapping branch used to trust `.items()` and unpack it; a
+        # caller-owned Mapping yielding a 3-tuple escaped as a raw ValueError,
+        # so a caller catching SemanticIngressError did not fail closed.
+        pairs = []
+        for item in value.items():
+            if not isinstance(item, Sequence) or len(item) != 2:
+                raise SemanticIngressError(
+                    f"{field}: a pair must be an ordered two-element sequence"
+                )
+            pairs.append((item[0], item[1]))
     elif not isinstance(value, (str, bytes)) and isinstance(value, Sequence):
         pairs = []
         for item in value:
@@ -344,7 +426,7 @@ def _normalize_keyed_relation(
     else:
         raise SemanticIngressError(f"{field}: expected a mapping or a sequence of pairs")
 
-    keys = [normalize("exact_text", key, f"{field} key") for key, _ in pairs]
+    keys = [normalize(spec.key_normalizer_id, key, f"{field} key") for key, _ in pairs]
     if len(set(keys)) != len(keys):
         raise SemanticIngressError(f"{field}: duplicate keys are refused")
     normalized = [
@@ -380,6 +462,10 @@ class NormalizerSpecV2:
     encoding_policy: EncodingPolicyV2
     implementation: Callable[[object, str, "NormalizerSpecV2"], object]
     member_normalizer_id: str | None = None
+    #: Keyed relations seal their KEYS through a declared normaliser too. It was
+    #: hardcoded, so the keyed rows' exact-type and encoding columns described
+    #: only their members and contradicted observed behaviour.
+    key_normalizer_id: str | None = None
 
 
 def _spec(**kwargs) -> NormalizerSpecV2:
@@ -395,21 +481,21 @@ _NORMALIZER_CATALOG: dict[str, NormalizerSpecV2] = {
               duplicate_policy=DuplicatePolicyV2.NOT_APPLICABLE,
               ordering_policy=OrderingPolicyV2.NOT_APPLICABLE,
               encoding_policy=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED,
-              implementation=_normalize_exact_text),
+              implementation=_normalize_exact_scalar),
         _spec(normalizer_id="exact_int", input_shape=InputShapeV2.SCALAR,
               output_semantic_shape=OutputShapeV2.SCALAR,
               exact_type_policy=ExactTypePolicyV2.EXACT_INT,
               duplicate_policy=DuplicatePolicyV2.NOT_APPLICABLE,
               ordering_policy=OrderingPolicyV2.NOT_APPLICABLE,
               encoding_policy=EncodingPolicyV2.NOT_APPLICABLE,
-              implementation=_normalize_exact_int),
+              implementation=_normalize_exact_scalar),
         _spec(normalizer_id="exact_bool", input_shape=InputShapeV2.SCALAR,
               output_semantic_shape=OutputShapeV2.SCALAR,
               exact_type_policy=ExactTypePolicyV2.EXACT_BOOL,
               duplicate_policy=DuplicatePolicyV2.NOT_APPLICABLE,
               ordering_policy=OrderingPolicyV2.NOT_APPLICABLE,
               encoding_policy=EncodingPolicyV2.NOT_APPLICABLE,
-              implementation=_normalize_exact_bool),
+              implementation=_normalize_exact_scalar),
         _spec(normalizer_id="exact_record", input_shape=InputShapeV2.SCALAR,
               output_semantic_shape=OutputShapeV2.SCALAR,
               exact_type_policy=ExactTypePolicyV2.EXACT_REGISTERED_RECORD,
@@ -421,7 +507,10 @@ _NORMALIZER_CATALOG: dict[str, NormalizerSpecV2] = {
               output_semantic_shape=OutputShapeV2.FROZEN_SET,
               exact_type_policy=ExactTypePolicyV2.EXACT_STR,
               duplicate_policy=DuplicatePolicyV2.ABSORB,
-              ordering_policy=OrderingPolicyV2.CANONICAL_SORT,
+              # A frozenset has no order. Declaring CANONICAL_SORT here was
+              # false the moment it was written, and the oracle could not see it
+              # because it compared the declaration to a copy of itself.
+              ordering_policy=OrderingPolicyV2.NOT_APPLICABLE,
               encoding_policy=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED,
               implementation=_normalize_string_set, member_normalizer_id="exact_text"),
         _spec(normalizer_id="ordered_unique_records",
@@ -439,21 +528,26 @@ _NORMALIZER_CATALOG: dict[str, NormalizerSpecV2] = {
               duplicate_policy=DuplicatePolicyV2.REJECT,
               ordering_policy=OrderingPolicyV2.CANONICAL_SORT,
               encoding_policy=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED,
-              implementation=_normalize_keyed_relation, member_normalizer_id="exact_text"),
+              implementation=_normalize_keyed_relation, member_normalizer_id="exact_text",
+              key_normalizer_id="exact_text"),
         _spec(normalizer_id="keyed_set_relation", input_shape=InputShapeV2.MAPPING_OR_PAIRS,
               output_semantic_shape=OutputShapeV2.KEYED_PAIRS,
               exact_type_policy=ExactTypePolicyV2.EXACT_STR,
               duplicate_policy=DuplicatePolicyV2.REJECT,
               ordering_policy=OrderingPolicyV2.CANONICAL_SORT,
               encoding_policy=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED,
-              implementation=_normalize_keyed_relation, member_normalizer_id="string_set"),
+              implementation=_normalize_keyed_relation, member_normalizer_id="string_set",
+              key_normalizer_id="exact_text"),
         _spec(normalizer_id="keyed_record_relation", input_shape=InputShapeV2.MAPPING_OR_PAIRS,
               output_semantic_shape=OutputShapeV2.KEYED_PAIRS,
               exact_type_policy=ExactTypePolicyV2.EXACT_REGISTERED_RECORD,
               duplicate_policy=DuplicatePolicyV2.REJECT,
               ordering_policy=OrderingPolicyV2.CANONICAL_SORT,
-              encoding_policy=EncodingPolicyV2.NOT_APPLICABLE,
-              implementation=_normalize_keyed_relation, member_normalizer_id="exact_record"),
+              # Keys of every keyed relation are text and must be encodable;
+              # declaring NOT_APPLICABLE here contradicted observed behaviour.
+              encoding_policy=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED,
+              implementation=_normalize_keyed_relation, member_normalizer_id="exact_record",
+              key_normalizer_id="exact_text"),
     )
 }
 
@@ -470,9 +564,19 @@ def normalizer_spec(normalizer_id: str) -> NormalizerSpecV2:
 
 
 def normalize(normalizer_id: str | None, value: object, field: str) -> object:
-    """The single channel. Every admission goes through a catalogued normaliser."""
+    """The single channel. Every admission goes through a catalogued normaliser.
+
+    The identifier itself is exact-typed. A `str` subclass owning `__hash__` and
+    `__eq__` could otherwise select a different channel than the one it spells,
+    which is the same defect as letting one own an identity comparison -- at the
+    boundary that chooses which sealing policy runs.
+    """
     if normalizer_id is None:
         raise SemanticIngressError(f"{field}: no normaliser declared")
+    if type(normalizer_id) is not str:
+        raise SemanticIngressError(
+            f"{field}: normaliser id must be exactly str, got {type(normalizer_id).__name__}"
+        )
     spec = normalizer_spec(normalizer_id)
     return spec.implementation(value, field, spec)
 
@@ -527,7 +631,20 @@ class InterpreterRegistryV2:
     """
 
     def __init__(self, interpreters: Mapping[str, Callable[..., object]]) -> None:
-        self._interpreters = dict(interpreters)
+        sealed: dict[str, Callable[..., object]] = {}
+        for key, interpreter in dict(interpreters).items():
+            # The STORAGE side needs the same discipline as the lookup side. A
+            # `str` subclass stored as a key owns the comparison `dispatch`
+            # performs, so review made a value declaring v2 be interpreted by
+            # v1 -- through the constructor, the hazard this class names.
+            sealed_key = normalize("exact_text", key, "algorithm id")
+            if not callable(interpreter):
+                raise SemanticIngressError(
+                    f"{sealed_key!r}: interpreter must be callable, "
+                    f"got {type(interpreter).__name__}"
+                )
+            sealed[sealed_key] = interpreter  # type: ignore[index]
+        self._interpreters = sealed
 
     def algorithm_ids(self) -> frozenset[str]:
         return frozenset(self._interpreters)
@@ -551,33 +668,33 @@ class InterpreterRegistryV2:
 
 
 @semantic_record
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class TextValueRecordV2(SemanticRecordV2):
-    """A named text value, sealed through the catalogued text normaliser."""
+    """A named text value. Sealing is generated from the declaration below."""
+
+    FIELD_SEMANTICS: ClassVar[Mapping[str, tuple[CollectionSemanticsV2, MemberKindV2]]] = {
+        "name": (CollectionSemanticsV2.SCALAR, MemberKindV2.TEXT),
+        "value": (CollectionSemanticsV2.SCALAR, MemberKindV2.TEXT),
+    }
 
     name: str
     value: str
 
-    def __post_init__(self) -> None:
-        for field in ("name", "value"):
-            object.__setattr__(self, field, normalize("exact_text", getattr(self, field), field))
-
 
 @semantic_record
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class BoundedIntRecordV2(SemanticRecordV2):
     """A named integer bound, exercising the int and bool normalisers."""
+
+    FIELD_SEMANTICS: ClassVar[Mapping[str, tuple[CollectionSemanticsV2, MemberKindV2]]] = {
+        "name": (CollectionSemanticsV2.SCALAR, MemberKindV2.TEXT),
+        "minimum": (CollectionSemanticsV2.SCALAR, MemberKindV2.INTEGER),
+        "inclusive": (CollectionSemanticsV2.SCALAR, MemberKindV2.BOOLEAN),
+    }
 
     name: str
     minimum: int
     inclusive: bool
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", normalize("exact_text", self.name, "name"))
-        object.__setattr__(self, "minimum", normalize("exact_int", self.minimum, "minimum"))
-        object.__setattr__(
-            self, "inclusive", normalize("exact_bool", self.inclusive, "inclusive")
-        )
 
 
 # --------------------------------------------------------------------------

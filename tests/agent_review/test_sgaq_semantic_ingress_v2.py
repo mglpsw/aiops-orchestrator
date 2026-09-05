@@ -88,7 +88,8 @@ _EXPECTED_NORMALIZERS: dict[str, dict[str, object]] = {
     "string_set": dict(
         input_shape=InputShapeV2.ITERABLE_OF_SCALAR, output=OutputShapeV2.FROZEN_SET,
         exact=ExactTypePolicyV2.EXACT_STR, duplicates=DuplicatePolicyV2.ABSORB,
-        ordering=OrderingPolicyV2.CANONICAL_SORT,
+        # a frozenset has no order; CANONICAL_SORT here was false when written
+        ordering=OrderingPolicyV2.NOT_APPLICABLE,
         encoding=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED),
     "ordered_unique_records": dict(
         input_shape=InputShapeV2.ITERABLE_OF_RECORD, output=OutputShapeV2.ORDERED_TUPLE,
@@ -111,7 +112,8 @@ _EXPECTED_NORMALIZERS: dict[str, dict[str, object]] = {
         exact=ExactTypePolicyV2.EXACT_REGISTERED_RECORD,
         duplicates=DuplicatePolicyV2.REJECT,
         ordering=OrderingPolicyV2.CANONICAL_SORT,
-        encoding=EncodingPolicyV2.NOT_APPLICABLE),
+        # keys of every keyed relation are text and must be encodable
+        encoding=EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED),
 }
 
 #: A legal value for every normaliser, so the adversarial matrix has a control.
@@ -159,6 +161,22 @@ def test_every_normalizer_accepts_its_own_valid_input(normalizer_id: str) -> Non
 @pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
 def test_every_normalizer_has_a_valid_input_declared(normalizer_id: str) -> None:
     assert normalizer_id in _VALID_INPUT, "a normaliser with no control is not covered"
+
+
+_MEMBER_CONTROL = {
+    "string_set": "a",
+    "ordered_unique_records": TextValueRecordV2(name="a", value="1"),
+    "keyed_text_relation": "v",
+    "keyed_set_relation": ["a"],
+    "keyed_record_relation": TextValueRecordV2(name="n", value="v"),
+}
+_SECOND_MEMBER = {
+    "string_set": "b",
+    "ordered_unique_records": TextValueRecordV2(name="b", value="2"),
+    "keyed_text_relation": "w",
+    "keyed_set_relation": ["b"],
+    "keyed_record_relation": TextValueRecordV2(name="m", value="w"),
+}
 
 
 # --------------------------------------------------------------------------
@@ -230,11 +248,22 @@ def test_a_record_subclass_is_refused_where_the_registered_type_is_declared() ->
 
 
 def test_the_record_universe_is_reconciled_against_reachable_subclasses() -> None:
+    """Asserted as a PROPERTY over the universe, not as a list of names.
+
+    This test previously hand-listed the two expected qualnames, so adding a
+    record class required exactly one edit here and the class then entered the
+    universe unexamined -- a membership list of the kind this slice exists to
+    replace. It now asserts, by identity, that every reachable concrete type is
+    registered and that every registered type declares all of its fields.
+    """
     gc.collect()
     ingress.assert_record_universe_is_reconciled()
-    assert {r.__qualname__ for r in concrete_record_types()} == {
-        "TextValueRecordV2", "BoundedIntRecordV2",
-    }
+    for record in concrete_record_types():
+        assert record in ingress._REGISTERED_RECORD_TYPES, record.__qualname__
+        assert set(record.FIELD_SEMANTICS) == {f.name for f in dataclasses.fields(record)}
+        for semantics, member_kind in record.FIELD_SEMANTICS.values():
+            assert select_normalizer(semantics, member_kind).normalizer_id in normalizer_ids()
+    assert concrete_record_types(), "the universe must not be vacuously satisfied"
 
 
 def test_an_unregistered_concrete_record_makes_the_reconciliation_red() -> None:
@@ -524,3 +553,267 @@ def test_normalize_refuses_an_undeclared_normalizer() -> None:
         normalize(None, "x", "f")
     with pytest.raises(SemanticIngressError, match="no catalogued normaliser"):
         normalize("not_a_normalizer", "x", "f")
+
+
+# --------------------------------------------------------------------------
+# declarations must be BEHAVIOURAL, not compared to a copy of themselves
+#
+# Review mutation-tested the oracle and found that flipping a policy in the
+# catalog AND in the oracle together left the suite green: the check reconciled
+# declaration against declaration. Two declarations were also simply wrong when
+# written. These obligations assert the declared policy against observed
+# behaviour, so a false declaration is RED.
+# --------------------------------------------------------------------------
+
+_SHAPE_WRAPPERS = {
+    InputShapeV2.SCALAR: lambda v: v,
+    InputShapeV2.ITERABLE_OF_SCALAR: lambda v: [v],
+    InputShapeV2.ITERABLE_OF_RECORD: lambda v: (v,),
+    InputShapeV2.MAPPING_OR_PAIRS: lambda v: [("k", v)],
+}
+
+_OUTPUT_TYPES = {
+    OutputShapeV2.SCALAR: None,
+    OutputShapeV2.FROZEN_SET: frozenset,
+    OutputShapeV2.ORDERED_TUPLE: tuple,
+    OutputShapeV2.KEYED_PAIRS: tuple,
+}
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_the_declared_output_shape_is_the_observed_output_shape(normalizer_id: str) -> None:
+    spec = normalizer_spec(normalizer_id)
+    result = normalize(normalizer_id, _VALID_INPUT[normalizer_id], "f")
+    expected = _OUTPUT_TYPES[spec.output_semantic_shape]
+    if expected is not None:
+        assert type(result) is expected, f"{normalizer_id} declares {spec.output_semantic_shape}"
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_the_declared_duplicate_policy_is_the_observed_one(normalizer_id: str) -> None:
+    spec = normalizer_spec(normalizer_id)
+    if spec.duplicate_policy is DuplicatePolicyV2.NOT_APPLICABLE:
+        return
+    member = _MEMBER_CONTROL[normalizer_id]
+    if spec.input_shape is InputShapeV2.MAPPING_OR_PAIRS:
+        repeated, once = [("k", member), ("k", member)], [("k", member)]
+    else:
+        repeated, once = [member, member], [member]
+    if spec.duplicate_policy is DuplicatePolicyV2.ABSORB:
+        assert normalize(normalizer_id, repeated, "f") == normalize(normalizer_id, once, "f")
+    else:
+        with pytest.raises(SemanticIngressError, match="duplicate"):
+            normalize(normalizer_id, repeated, "f")
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_the_declared_ordering_policy_is_the_observed_one(normalizer_id: str) -> None:
+    spec = normalizer_spec(normalizer_id)
+    if spec.ordering_policy is OrderingPolicyV2.NOT_APPLICABLE:
+        return
+    member = _MEMBER_CONTROL[normalizer_id]
+    other = _SECOND_MEMBER[normalizer_id]
+    if spec.input_shape is InputShapeV2.MAPPING_OR_PAIRS:
+        forward = normalize(normalizer_id, [("a", member), ("b", other)], "f")
+        backward = normalize(normalizer_id, [("b", other), ("a", member)], "f")
+    else:
+        forward = normalize(normalizer_id, [member, other], "f")
+        backward = normalize(normalizer_id, [other, member], "f")
+    if spec.ordering_policy is OrderingPolicyV2.CANONICAL_SORT:
+        assert forward == backward, f"{normalizer_id} declares a canonical order it does not impose"
+        assert list(forward) == sorted(forward, key=lambda item: item[0])
+    else:
+        assert forward != backward, f"{normalizer_id} declares caller order is semantic"
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_the_declared_encoding_policy_is_the_observed_one(normalizer_id: str) -> None:
+    """The position the policy governs: the key for a relation, the value otherwise."""
+    spec = normalizer_spec(normalizer_id)
+    wrap = _SHAPE_WRAPPERS[spec.input_shape]
+    surrogate_at_governed_position = (
+        [("\ud800", _MEMBER_CONTROL[normalizer_id])]
+        if spec.input_shape is InputShapeV2.MAPPING_OR_PAIRS
+        else wrap("\ud800")
+    )
+    if spec.encoding_policy is EncodingPolicyV2.UTF8_ENCODABLE_REQUIRED:
+        with pytest.raises(SemanticIngressError):
+            normalize(normalizer_id, surrogate_at_governed_position, "f")
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_the_exact_type_matrix_runs_for_every_normalizer(normalizer_id: str) -> None:
+    """Not only the scalar ones.
+
+    The matrix used to return early unless `input_shape is SCALAR`, so five of
+    nine normalisers received no exact-type attack at all, and a mutant that
+    skipped member normalisation entirely survived a green suite.
+    """
+    spec = normalizer_spec(normalizer_id)
+    member_spec = (
+        normalizer_spec(spec.member_normalizer_id) if spec.member_normalizer_id else spec
+    )
+    wrap = _SHAPE_WRAPPERS[spec.input_shape]
+    for label, hostile in _EXACT_TYPE_ATTACKS[member_spec.exact_type_policy]:
+        payload = (
+            [("k", hostile)]
+            if spec.input_shape is InputShapeV2.MAPPING_OR_PAIRS
+            else wrap(hostile)
+        )
+        with pytest.raises(SemanticIngressError):
+            normalize(normalizer_id, payload, f"f[{label}]")
+
+
+# --------------------------------------------------------------------------
+# the dispatch table, over the FULL product
+# --------------------------------------------------------------------------
+
+_REFUSED = "REFUSED"
+
+#: Hand-written expectation for EVERY (semantics, member kind) cell. The old
+#: test iterated whatever rows happened to exist, so deleting five of nine rows
+#: and mis-pairing two more both left the suite green.
+_EXPECTED_DISPATCH = {
+    ("scalar", "text"): "exact_text",
+    ("scalar", "integer"): "exact_int",
+    ("scalar", "boolean"): "exact_bool",
+    ("scalar", "record"): "exact_record",
+    ("scalar", "text_set"): _REFUSED,
+    ("set", "text"): "string_set",
+    ("set", "integer"): _REFUSED, ("set", "boolean"): _REFUSED,
+    ("set", "text_set"): _REFUSED, ("set", "record"): _REFUSED,
+    ("ordered", "record"): "ordered_unique_records",
+    ("ordered", "text"): _REFUSED, ("ordered", "integer"): _REFUSED,
+    ("ordered", "boolean"): _REFUSED, ("ordered", "text_set"): _REFUSED,
+    ("keyed", "text"): "keyed_text_relation",
+    ("keyed", "text_set"): "keyed_set_relation",
+    ("keyed", "record"): "keyed_record_relation",
+    ("keyed", "integer"): _REFUSED, ("keyed", "boolean"): _REFUSED,
+}
+
+
+@pytest.mark.parametrize(("cell", "expected"), sorted(_EXPECTED_DISPATCH.items()))
+def test_every_dispatch_cell_matches_the_oracle(cell, expected) -> None:
+    semantics = CollectionSemanticsV2(cell[0])
+    member_kind = MemberKindV2(cell[1])
+    if expected is _REFUSED:
+        with pytest.raises(SemanticIngressError, match="no normaliser for"):
+            select_normalizer(semantics, member_kind)
+        return
+    assert select_normalizer(semantics, member_kind).normalizer_id == expected
+
+
+@pytest.mark.parametrize(("cell", "expected"), sorted(_EXPECTED_DISPATCH.items()))
+def test_every_dispatch_cell_selects_a_consistent_normalizer(cell, expected) -> None:
+    """A mis-pairing must be visible, not merely a different id.
+
+    Review mis-paired (SCALAR, BOOLEAN) onto `exact_int` and (KEYED, RECORD)
+    onto `keyed_text_relation`; a field declared boolean then admitted 7 and
+    refused True, with the suite green.
+    """
+    if expected is _REFUSED:
+        return
+    spec = select_normalizer(CollectionSemanticsV2(cell[0]), MemberKindV2(cell[1]))
+    member_spec = (
+        normalizer_spec(spec.member_normalizer_id) if spec.member_normalizer_id else spec
+    )
+    expected_policy = {
+        "text": ExactTypePolicyV2.EXACT_STR,
+        "integer": ExactTypePolicyV2.EXACT_INT,
+        "boolean": ExactTypePolicyV2.EXACT_BOOL,
+        "record": ExactTypePolicyV2.EXACT_REGISTERED_RECORD,
+        "text_set": ExactTypePolicyV2.EXACT_STR,
+    }[cell[1]]
+    assert member_spec.exact_type_policy is expected_policy
+    expected_shape = {
+        "scalar": OutputShapeV2.SCALAR, "set": OutputShapeV2.FROZEN_SET,
+        "ordered": OutputShapeV2.ORDERED_TUPLE, "keyed": OutputShapeV2.KEYED_PAIRS,
+    }[cell[0]]
+    assert spec.output_semantic_shape is expected_shape
+
+
+# --------------------------------------------------------------------------
+# type ingress, class ingress, and post-construction mutation
+# --------------------------------------------------------------------------
+
+
+def test_semantic_record_refuses_a_type_it_cannot_seal() -> None:
+    """`semantic_record` is the widest ingress in the module: it admits TYPES.
+    It previously validated nothing at all."""
+    with pytest.raises(SemanticIngressError, match="not a SemanticRecordV2"):
+        ingress.semantic_record(type("Rogue", (), {}))
+
+    unfrozen = dataclasses.dataclass(
+        type("Unfrozen", (SemanticRecordV2,), {"__annotations__": {"a": str}})
+    )
+    with pytest.raises(SemanticIngressError, match="frozen dataclass"):
+        ingress.semantic_record(unfrozen)
+
+    undeclared = dataclasses.dataclass(frozen=True)(
+        type("Undeclared", (SemanticRecordV2,), {"__annotations__": {"payload": object}})
+    )
+    with pytest.raises(SemanticIngressError, match="field semantics not total"):
+        ingress.semantic_record(undeclared)
+    gc.collect()
+
+
+def test_a_class_claiming_a_registered_qualname_cannot_displace_it() -> None:
+    """The universe is keyed by class IDENTITY. A qualname omits the module, so
+    two slices each defining `AuditRecordV2` silently evicted one another and a
+    ghost class displaced the real type while reconciliation reported green."""
+
+    class Ghost(SemanticRecordV2):
+        pass
+
+    Ghost.__qualname__ = "TextValueRecordV2"
+    try:
+        with pytest.raises(SemanticIngressError, match="unregistered"):
+            ingress.assert_record_universe_is_reconciled()
+    finally:
+        del Ghost
+        gc.collect()
+    ingress.assert_record_universe_is_reconciled()
+
+
+def test_a_record_altered_after_construction_is_refused_at_ingress() -> None:
+    """Sealing was a construction-time property, and frozen-ness has escape
+    hatches. Re-sealing at the boundary holds however the mutation was done."""
+    record = TextValueRecordV2(name="n", value="v")
+    object.__setattr__(record, "name", _TextSubclass("evil"))
+    with pytest.raises(SemanticIngressError, match="expected exactly str"):
+        normalize("exact_record", record, "f")
+
+
+def test_the_registry_seals_its_keys_at_construction_not_only_at_dispatch() -> None:
+    """A str subclass STORED as a key owns the comparison dispatch performs, so
+    a value declaring v2 was interpreted by v1 -- through the constructor."""
+
+    class Sneaky(str):
+        def __hash__(self): return hash("readiness.v2")
+        def __eq__(self, other): return True
+
+    with pytest.raises(SemanticIngressError, match="exactly str"):
+        InterpreterRegistryV2({Sneaky("readiness.v1"): lambda value: value})
+    with pytest.raises(SemanticIngressError, match="must be callable"):
+        InterpreterRegistryV2({"a": "not-a-callable"})
+
+
+def test_the_non_ingress_declaration_cannot_overlap_the_catalog() -> None:
+    """Otherwise a real normaliser could be declared non-ingress and the
+    inventory would pass while the claim was never checked."""
+    catalogued = {spec.implementation.__name__ for spec in ingress._NORMALIZER_CATALOG.values()}
+    assert ingress._NON_INGRESS_CALLABLES.isdisjoint(catalogued)
+
+
+def test_normalize_refuses_a_str_subclass_as_a_normalizer_id() -> None:
+    with pytest.raises(SemanticIngressError, match="exactly str"):
+        normalize(_TextSubclass("exact_text"), "x", "f")
+
+
+@pytest.mark.parametrize("hostile", [5, None, object()])
+def test_only_the_declared_error_type_escapes_the_ingress_layer(hostile) -> None:
+    """A caller catching SemanticIngressError must actually fail closed."""
+    with pytest.raises(SemanticIngressError):
+        normalize("string_set", hostile, "f")
+    with pytest.raises(SemanticIngressError):
+        normalize("keyed_text_relation", [("a", "b", "c")], "f")
