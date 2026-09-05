@@ -62,6 +62,7 @@ from app.agent_review.authoritative_check_policy_v2 import (
 from app.agent_review.authoritative_producer_evidence_v2 import (
     BASE_OWNED_PRODUCER_TRIGGER_V2,
     verify_base_owned_producer_workflow_v2,
+    verify_execution_mode_is_policy_authorized_v2,
     verify_independent_semantic_judge_v2,
     verify_producer_attestation_v2,
     verify_producer_execution_is_first_hand_v2,
@@ -321,12 +322,25 @@ def assemble_authoritative_ci_promotion_v2(
     # about what it did, not about what the pull request's own run did.
     verify_producer_execution_is_first_hand_v2(attestation=attestation)
 
+    # AUTHORIZED BY THE BASE, not merely declared by the producer. `#331`
+    # SGAQ-CI1R. Deliberately AFTER the attestation has been verified and bound
+    # to this run -- authorising an unverified declaration would let the
+    # producer choose which authorization rule it is measured against -- and
+    # deliberately after the first-hand gate, so a republished artifact still
+    # refuses as not-first-hand rather than as unauthorised, whatever the
+    # policy permits. The permitted set is resolved from the POLICY ENTRY, the
+    # only base-owned half of this comparison.
+    verify_execution_mode_is_policy_authorized_v2(
+        attestation=attestation,
+        permitted_execution_modes=entry.effective_permitted_execution_modes,
+    )
+
     # THE LAST GATE, deliberately: every check above this line has now
-    # succeeded, so reaching here means producer identity, base-ownership, and
-    # tree binding are all genuine. None of that answers whether the SUBJECT
-    # controlled the success_signal -- `check_execution_mode` re-ran the
-    # subject's own tests, so it did. Round-7 architectural correction; see
-    # the module docstring in `authoritative_producer_evidence_v2`.
+    # succeeded, so reaching here means producer identity, base-ownership, tree
+    # binding and policy authorization are all genuine. None of them answers
+    # whether the SUBJECT controlled the success_signal, which is `#201-B3`'s
+    # theorem and round 7's correction; see the module docstring in
+    # `authoritative_producer_evidence_v2`.
     verify_independent_semantic_judge_v2(attestation=attestation)
 
     conclusion = resolve_conclusion_v2(observation)

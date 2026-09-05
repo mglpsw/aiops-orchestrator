@@ -128,9 +128,15 @@ same-input-same-output test.
   attempting to falsify a result (`#201-B3` — this slice's contracts make
   the STRUCTURE of such an attack impossible to represent as `trusted`,
   but nothing here yet proves a real subprocess is actually isolated);
-- a producer kind supplying an independent semantic judge, without which
-  `AuthoritativeCIPromotion` stays refused unconditionally by
-  `verify_independent_semantic_judge_v2` (deferred, no target date);
+- an actual producer supplying an independent semantic judge. `#331`
+  SGAQ-CI1R made one REPRESENTABLE and POLICY-GATED — the execution mode
+  `independent_data_only_host_tool` passes
+  `verify_independent_semantic_judge_v2`, but only when the trusted base-owned
+  policy entry lists it in `permitted_execution_modes`, which no shipped
+  policy does. So `AuthoritativeCIPromotion` remains unreachable for every
+  target today, by authorization rather than by absence of vocabulary. What is
+  still missing is a real host-owned data-only judge to declare it, and a
+  target that decides to authorise one (deferred, no target date);
 - AgentEscala's own adoption and closure of `#750` (target-side, tracked
   in that repository, not here).
 

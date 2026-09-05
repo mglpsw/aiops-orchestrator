@@ -168,6 +168,13 @@ EXECUTED_TREE_NOT_OBSERVED_REASON_V2 = "required_check_provenance_executed_tree_
 INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2 = (
     "required_check_provenance_independent_semantic_judge_required"
 )
+# `#331` SGAQ-CI1R. Distinct from the judge reason above, and the distinction is
+# the whole point: "no mode supplies an independent judge" and "this target
+# never authorized this mode" are different diagnoses with different fixes. The
+# first is answered by building a judge; the second by a base-owned policy edit.
+EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2 = (
+    "required_check_provenance_execution_mode_not_policy_authorized"
+)
 
 ALL_PRODUCER_EVIDENCE_REASON_CODES_V2: tuple[str, ...] = (
     PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2,
@@ -181,6 +188,7 @@ ALL_PRODUCER_EVIDENCE_REASON_CODES_V2: tuple[str, ...] = (
     PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2,
     EXECUTED_TREE_NOT_OBSERVED_REASON_V2,
     INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2,
+    EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2,
 )
 
 # The producer's OWN trigger, deliberately a separate vocabulary from
@@ -229,7 +237,44 @@ ExecutedTreeEvidenceKindV2 = Literal["producer_attestation"]
 # guidance is that artifacts from a workflow which processed untrusted code are
 # untrusted data. A base-owned run that merely forwards one has laundered the
 # pull request's output, not verified it.
-CheckExecutionModeV2 = Literal["reexecuted_in_producer_run", "upstream_artifact_republished"]
+CheckExecutionModeV2 = Literal[
+    "reexecuted_in_producer_run",
+    "upstream_artifact_republished",
+    # `#331` SGAQ-CI1R. A host-owned tool that decided the verdict itself, with
+    # the target consumed strictly as DATA -- no target code, plugin, conftest,
+    # hook or verdict-affecting config executed. The first mode whose
+    # success_signal is not authored by the subject.
+    #
+    # It is a DECLARATION and grants nothing on its own. Reaching a promotion
+    # requires, additionally, that the trusted base-owned policy entry lists
+    # this mode in `permitted_execution_modes` -- see
+    # `verify_execution_mode_is_policy_authorized_v2`. A producer saying "I am
+    # independent" is evidence; a base-owned policy saying "I accept
+    # independent" is authorization; promotion needs both.
+    "independent_data_only_host_tool",
+]
+
+#: Modes where the producer obtained the verdict ITSELF rather than forwarding
+#: someone else's. Re-executing the subject's suite and deciding over data are
+#: both first-hand; they differ on WHO AUTHORED the value, which is the separate
+#: axis `verify_independent_semantic_judge_v2` owns.
+FIRST_HAND_EXECUTION_MODES_V2: frozenset[str] = frozenset(
+    {"reexecuted_in_producer_run", "independent_data_only_host_tool"}
+)
+
+#: The only mode whose verdict does not derive from executing or trusting the
+#: subject's own code.
+INDEPENDENT_JUDGE_EXECUTION_MODE_V2 = "independent_data_only_host_tool"
+
+#: The execution-mode universe as it existed BEFORE this slice, and therefore
+#: the effective authorization of every policy written before it. A policy that
+#: omits `permitted_execution_modes` authorizes exactly this set -- so learning
+#: the new vocabulary hands no existing target a promotion path it did not
+#: already have. Owned here, next to the Literal it partitions, so the two
+#: cannot drift apart.
+LEGACY_PERMITTED_EXECUTION_MODES_V2: frozenset[str] = frozenset(
+    {"reexecuted_in_producer_run", "upstream_artifact_republished"}
+)
 
 # How the producer learned which tree it ran. `caller_supplied` means the value
 # was handed in via workflow inputs or client_payload and merely echoed back --
@@ -418,7 +463,7 @@ def verify_producer_execution_is_first_hand_v2(*, attestation: ProducerAttestati
     data across the trust boundary without checking it.
     """
 
-    if attestation.check_execution_mode != "reexecuted_in_producer_run":
+    if attestation.check_execution_mode not in FIRST_HAND_EXECUTION_MODES_V2:
         raise RequiredCheckProvenanceErrorV2(UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2)
 
     if attestation.executed_sha_derivation != "verified_checkout_rev_parse":
@@ -455,29 +500,85 @@ def verify_producer_attestation_v2(
     return attestation
 
 
+def verify_execution_mode_is_policy_authorized_v2(
+    *,
+    attestation: ProducerAttestationV2,
+    permitted_execution_modes: frozenset[str],
+) -> None:
+    """Require the TRUSTED BASE POLICY to have authorized this way of judging.
+
+    `#331` SGAQ-CI1R, and the reason this slice exists rather than shipping the
+    vocabulary alone. `AGENTS.md` requires authorization to be fail-closed. A
+    producer declaring `independent_data_only_host_tool` is making a claim about
+    itself; without this gate that claim would be the ONLY thing standing
+    between categorical refusal and a promotable verdict, and no target could
+    say "I did not ask for an independent-judge producer".
+
+    So the promotion needs two independent facts from two different owners:
+
+        the producer says     HOW it judged        (attestation, evidence)
+        the base policy says  WHICH ways it accepts (policy, authorization)
+
+    `permitted_execution_modes` is resolved by the caller from the policy
+    entry, never from the attestation -- passing the resolved SET rather than
+    the entry keeps this module free of any policy import and makes it
+    structurally impossible for producer-supplied data to select its own
+    authorization.
+
+    A policy written before this slice omits the field, so its effective set is
+    `LEGACY_PERMITTED_EXECUTION_MODES_V2` and the new mode is refused here. No
+    target gains authority by an engine upgrade.
+
+    This is a NECESSARY condition, never a sufficient one. It cannot buy back a
+    property the evidence lacks: authorizing `upstream_artifact_republished`
+    does not make a republished artifact first-hand, because
+    `verify_producer_execution_is_first_hand_v2` has already refused it."""
+
+    if attestation.check_execution_mode not in permitted_execution_modes:
+        raise RequiredCheckProvenanceErrorV2(EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2)
+
+
 def verify_independent_semantic_judge_v2(*, attestation: ProducerAttestationV2) -> None:
     """Refuse promotion when the verdict is authored by the subject.
 
-    This is deliberately unconditional, and deliberately the LAST check in the
-    promotion path -- every producer-identity, base-ownership, and tree-
-    binding check above it still runs and still refuses on its own specific
-    reason code first when it applies. Reaching this function means all of
-    that infrastructure already succeeded; it is refused here anyway, because
-    none of it answers the one question that matters for `#201-B3`'s theorem.
+    Deliberately the LAST check in the promotion path -- every
+    producer-identity, base-ownership, tree-binding and policy-authorization
+    check above it still runs and still refuses on its own specific reason code
+    first when it applies. Reaching this function means all of that
+    infrastructure already succeeded.
 
-    `check_execution_mode` has exactly two values today, and NEITHER supplies
-    a judge independent of the subject's own code:
+    Two of the three `check_execution_mode` values do not supply a judge
+    independent of the subject's own code, and are refused here:
 
     - `reexecuted_in_producer_run` re-ran the pull request's own test suite
       and reported its exit code. The workflow DEFINITION is base-owned; the
-      value being measured is still authored by the subject.
+      value being measured is still authored by the subject. This is round 7's
+      correction: a base-owned CALLER does not launder a subject-controlled
+      CALLEE.
     - `upstream_artifact_republished` is refused earlier, by
       `verify_producer_execution_is_first_hand_v2`, for the same underlying
       reason stated more bluntly: it did not even re-run anything, it merely
       forwarded the subject's own claim.
 
-    A producer_kind representing an actually independent judge -- one whose
-    verdict does not derive from executing or trusting the subject's own code
-    -- does not exist yet. See the module docstring's round-7 correction."""
+    `#331` SGAQ-CI1R adds the third value, and it is the first whose verdict is
+    not authored by the subject:
 
-    raise RequiredCheckProvenanceErrorV2(INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2)
+    - `independent_data_only_host_tool` is a host-owned tool that decided the
+      verdict itself with the target consumed strictly as DATA. No target code,
+      plugin, conftest or hook runs, so `controls(subject, success_signal)`
+      does not hold and `#201-B3`'s theorem does not refuse it.
+
+    PASSING THIS FUNCTION IS ONE PREDICATE, NOT AUTHORITY. It answers only
+    "was this way of judging independent of the subject". It does not ask who
+    the producer was, which tree ran, or whether the target authorized this
+    kind of judge -- those are the gates above, and in the real assembler ALL
+    of them run first. Calling this function on a detached attestation proves
+    the predicate and nothing else.
+
+    The discriminant is the EXECUTION MODE and never the producer identity.
+    This function cannot confuse the two even by accident, because
+    `producer_kind` is not a field of `ProducerAttestationV2` and is therefore
+    not reachable from this signature."""
+
+    if attestation.check_execution_mode != INDEPENDENT_JUDGE_EXECUTION_MODE_V2:
+        raise RequiredCheckProvenanceErrorV2(INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2)

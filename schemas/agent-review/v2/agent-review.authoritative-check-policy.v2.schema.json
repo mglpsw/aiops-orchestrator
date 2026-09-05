@@ -35,6 +35,26 @@
           "title": "Permitted Conclusions",
           "type": "array"
         },
+        "permitted_execution_modes": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "reexecuted_in_producer_run",
+                  "upstream_artifact_republished",
+                  "independent_data_only_host_tool"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Permitted Execution Modes"
+        },
         "producer_kind": {
           "enum": [
             "sha_pinned_reusable_workflow",

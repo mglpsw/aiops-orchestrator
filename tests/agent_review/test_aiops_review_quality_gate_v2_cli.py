@@ -46,9 +46,11 @@ def _hand_built_ci_pair(
     itself uses -- WITHOUT calling that function, bypassed or otherwise.
 
     This is not a bypass and not a shortcut: `assemble_authoritative_ci_
-    promotion_v2` now refuses `AUTHORITATIVE_CI` unconditionally (round-7
-    architectural correction, preserving `#201-B3`'s theorem), so a genuinely
-    PROMOTED pair cannot exist any more, by design. What this function
+    promotion_v2` refuses `AUTHORITATIVE_CI` for every execution mode these
+    fixtures declare (round-7 architectural correction, preserving `#201-B3`'s
+    theorem), so a genuinely PROMOTED pair cannot be built from them. `#331`
+    SGAQ-CI1R adds a mode that CAN promote, but only under a policy that
+    authorises it; the fixtures here deliberately do not. What this function
     produces is the honest test-side equivalent of an ATTACKER's submission:
     a self-consistent claim, built from real per-observation data via
     `select_observation_v2`/`resolve_conclusion_v2`/`compute_observation_
@@ -112,7 +114,12 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, check=False)
 
 
-def _write_target_profile(tmp_path: Path, *, required_checks: list[str] | None = None) -> Path:
+def _write_target_profile(
+    tmp_path: Path,
+    *,
+    required_checks: list[str] | None = None,
+    permitted_execution_modes: list[str] | None = None,
+) -> Path:
     """A minimal, real, on-disk TargetProfileV2 fixture -- loaded through
     the real load_target_profile_v2, never hand-constructed in Python,
     matching #86's own established fixture discipline."""
@@ -157,6 +164,10 @@ limitations: []
 """,
         encoding="utf-8",
     )
+    opt_in = ""
+    if permitted_execution_modes is not None:
+        rendered = "\n".join(f"      - {mode}" for mode in permitted_execution_modes)
+        opt_in = f"    permitted_execution_modes:\n{rendered}\n"
     entries = "\n".join(
         f"""  - check_name: {name}
     workflow_path: .github/workflows/authoritative-checks.yml
@@ -168,7 +179,7 @@ limitations: []
       path: .github/workflows/authoritative-checks.yml
       sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
     producer_workflow_ref: refs/heads/master
-    permitted_conclusions:
+{opt_in}    permitted_conclusions:
       - success
       - failure
     origin_rules:
@@ -227,8 +238,18 @@ def _ready_decision_dict(*, run_id: str, manifest_hash: str) -> dict[str, object
     }
 
 
-def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None) -> dict[str, Path]:
-    target_profile_root = _write_target_profile(tmp_path, required_checks=required_checks)
+def _write_fixtures(
+    tmp_path: Path,
+    *,
+    required_checks: list[str] | None = None,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+    permitted_execution_modes: list[str] | None = None,
+) -> dict[str, Path]:
+    target_profile_root = _write_target_profile(
+        tmp_path,
+        required_checks=required_checks,
+        permitted_execution_modes=permitted_execution_modes,
+    )
     profile = load_target_profile_v2(target_profile_root)
     profile_hash = compute_profile_hash_v2(profile)
 
@@ -253,9 +274,9 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     # A real, parseable snapshot -- but `--checks`/`--checks-provenance` are
     # now built by hand (`_hand_built_ci_pair`), not by calling the real
     # assembler. `assemble_authoritative_ci_promotion_v2` refuses
-    # AUTHORITATIVE_CI unconditionally since the round-7 architectural
-    # correction, so there is no "genuine" promoted pair left to build any
-    # more, by design -- see that function's docstring in
+    # AUTHORITATIVE_CI for every mode these fixtures declare since the round-7
+    # architectural correction, so there is no "genuine" promoted pair to build
+    # from them -- see that function's docstring in
     # `authoritative_producer_evidence_v2`. What these fixtures represent
     # instead is exactly the adversarial case `reassemble_and_verify_
     # required_checks_v2` exists to catch: a self-consistent CLAIM, submitted
@@ -263,7 +284,8 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     # same snapshot via the real assembler and refuses it for real.
     paths["checks_snapshot"] = tmp_path / "snapshot.json"
     paths["checks_snapshot"].write_text(
-        json.dumps(_snapshot_dict(check_names)), encoding="utf-8"
+        json.dumps(_snapshot_dict(check_names, check_execution_mode=check_execution_mode)),
+        encoding="utf-8",
     )
     paths["run_origin"] = tmp_path / "origin.json"
     paths["run_origin"].write_text(
@@ -323,7 +345,12 @@ def _reseal_attestation(fields: dict) -> dict:
     return ProducerAttestationV2(**material, attestation_digest=digest).model_dump(mode="json")
 
 
-def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
+def _gate_attestation(
+    check_name: str,
+    outcome: str = "success",
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+) -> dict:
     from app.agent_review.authoritative_producer_evidence_v2 import (
         ProducerAttestationV2,
         compute_producer_attestation_digest_v2,
@@ -341,7 +368,7 @@ def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "test_outcome": outcome,
-        "check_execution_mode": "reexecuted_in_producer_run",
+        "check_execution_mode": check_execution_mode,
         "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
@@ -352,7 +379,12 @@ def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
     return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
 
 
-def _observation(check_name: str, **overrides: object) -> dict:
+def _observation(
+    check_name: str,
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+    **overrides: object,
+) -> dict:
     record: dict = {
         "repository": "mglpsw/aiops-orchestrator",
         "head_sha": "2" * 40,
@@ -367,7 +399,9 @@ def _observation(check_name: str, **overrides: object) -> dict:
         "workflow_sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
         "referenced_workflows": [],
         "producer_trigger": "workflow_run",
-        "producer_attestation": _gate_attestation(check_name),
+        "producer_attestation": _gate_attestation(
+            check_name, check_execution_mode=check_execution_mode
+        ),
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
@@ -379,7 +413,12 @@ def _observation(check_name: str, **overrides: object) -> dict:
     return record
 
 
-def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
+def _snapshot_dict(
+    check_names: list[str],
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+    **overrides: object,
+) -> dict:
     payload: dict = {
         "schema_id": "agent-review.authoritative-check-snapshot.v2",
         "schema_version": 2,
@@ -390,7 +429,10 @@ def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
             "repository": "mglpsw/aiops-orchestrator",
             "head_sha": "2" * 40,
         },
-        "observations": [_observation(name) for name in check_names],
+        "observations": [
+            _observation(name, check_execution_mode=check_execution_mode)
+            for name in check_names
+        ],
         "tested_merge_sha": "3" * 40,
         "tested_merge_parents": ["1" * 40, "2" * 40],
         "observation_bytes_digest": "f" * 64,
@@ -465,11 +507,19 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 ## `#201-C` addendum: this is no longer the whole story for a NON-empty
 ## submission specifically -- an EMPTY one (no claims at all) now passes the
 ## `#201-C0` boundary vacuously and produces a real, successful
-## `manual_required` artifact via `produce_review_readiness_v2`. `ready` is
-## still unreachable through this live CLI subprocess for the same two
-## reasons above; `manual_required` is reachable, and is exactly what
-## `#201-C` was built to make representable instead of crashing. See
+## `manual_required` artifact via `produce_review_readiness_v2`. See
 ## `test_cli_emits_manual_required_when_a_required_check_has_no_submission`.
+##
+## `#331` SGAQ-CI1R addendum, which REVOKES the blanket claim above that
+## `ready` is unreachable through this CLI. It is unreachable for every
+## execution mode these fixtures declare, and for every policy that does not
+## authorise an independent judge -- which is every shipped policy. It is
+## reachable for a producer declaring `independent_data_only_host_tool` UNDER
+## a policy whose entry lists that mode in `permitted_execution_modes`. Both
+## halves are required and neither alone suffices; that is the whole
+## proposition of SGAQ-CI1R. Pinned end to end by
+## `test_cli_needs_both_the_independent_mode_and_the_policy_opt_in`, so the
+## file's stated invariant and its behaviour cannot silently diverge.
 
 
 def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProcess[str]) -> None:
@@ -1182,6 +1232,70 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
     assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
 
 
+
+
+def test_cli_needs_both_the_independent_mode_and_the_policy_opt_in(tmp_path: Path) -> None:
+    """`#331` SGAQ-CI1R, end to end through the real CLI subprocess.
+
+    The proposition is a CONJUNCTION, so it is proven by all four corners of
+    the truth table rather than by the one positive case:
+
+        mode declared   policy opts in   ->  outcome
+        --------------  ---------------  ------------------------------------
+        no              no               ->  independent_semantic_judge_required
+        no              yes              ->  independent_semantic_judge_required
+        yes             no               ->  execution_mode_not_policy_authorized
+        yes             yes              ->  state: ready
+
+    The two middle rows are the ones that matter. Each is a case where exactly
+    one half is present, and each still refuses -- with the reason code that
+    names the half that is MISSING, not a generic one. A test asserting only
+    the last row would pass just as well against an engine that ignored the
+    policy entirely, which is precisely the defect that stopped PR #339.
+
+    Every fixture here is coherent: the snapshot is built with the declared
+    mode BEFORE the hand-built pair is derived from it, and the policy is real
+    YAML loaded through the real loader, so the gate's independent re-derivation
+    matches rather than being bypassed. No shipped policy opts in; this test is
+    the only place in the repository that does."""
+
+    independent = "independent_data_only_host_tool"
+    legacy = ["reexecuted_in_producer_run", "upstream_artifact_republished"]
+
+    # neither half
+    paths = _write_fixtures(tmp_path / "neither")
+    result = _run(_base_args(paths, tmp_path / "neither" / "out.json"))
+    _assert_reached_the_independent_judge_gate(result)
+
+    # policy opts in, but the producer did not judge independently
+    paths = _write_fixtures(
+        tmp_path / "policy_only", permitted_execution_modes=[*legacy, independent]
+    )
+    result = _run(_base_args(paths, tmp_path / "policy_only" / "out.json"))
+    _assert_reached_the_independent_judge_gate(result)
+
+    # the producer declares independence, but no base policy authorised it
+    paths = _write_fixtures(tmp_path / "mode_only", check_execution_mode=independent)
+    output_path = tmp_path / "mode_only" / "out.json"
+    result = _run(_base_args(paths, output_path))
+    assert result.returncode != 0
+    assert not output_path.exists()
+    assert (
+        "required_check_provenance_execution_mode_not_policy_authorized" in result.stderr
+    ), result.stderr
+
+    # both halves
+    paths = _write_fixtures(
+        tmp_path / "both",
+        check_execution_mode=independent,
+        permitted_execution_modes=[*legacy, independent],
+    )
+    output_path = tmp_path / "both" / "out.json"
+    result = _run(_base_args(paths, output_path))
+    assert result.returncode == 0, result.stderr
+    artifact = json.loads(output_path.read_text(encoding="utf-8"))
+    assert artifact["state"] == "ready", artifact
+    assert artifact["schema_id"] == "agent-review.review-readiness.v2"
 
 
 def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_downgrade(tmp_path: Path) -> None:

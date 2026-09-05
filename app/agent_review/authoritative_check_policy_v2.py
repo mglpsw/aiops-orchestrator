@@ -71,6 +71,8 @@ from app.agent_review.contracts_v2 import (
     TargetProfileV2,
 )
 from app.agent_review.authoritative_producer_evidence_v2 import (
+    LEGACY_PERMITTED_EXECUTION_MODES_V2,
+    CheckExecutionModeV2,
     ProducerKindV2,
     ProducerWorkflowIdentityV2,
 )
@@ -238,12 +240,55 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
     # the default branch -- so unlike a `pull_request` run, the ref is not
     # PR-controlled and comparing it adds real assurance.
     producer_workflow_ref: SafeText
+    # WHICH WAYS OF JUDGING this target authorizes -- `#331` SGAQ-CI1R, the
+    # third axis. `producer_kind` says who owns the producer and
+    # `check_execution_mode` says how the verdict was obtained; neither lets a
+    # target say "I do not accept that kind of judge". Without this field the
+    # authorization boundary fails OPEN, which `AGENTS.md` forbids.
+    #
+    # `None` means the field was omitted, which is what every policy written
+    # before this slice looks like. It is NOT "no restriction": the effective
+    # set is then exactly the pre-CI1R universe, so a new judge class is
+    # authorized nowhere until a base-owned policy edit says so. Opting in is
+    # the only way, and it is a change a pull request cannot make for its own
+    # run -- the policy is read from the trusted base checkout.
+    #
+    # Semantically a SET. Declaration order is not meaning (see
+    # `compute_policy_semantic_digest_v2`) and a repeated member is a malformed
+    # set rather than a set, so both are normalised or refused rather than
+    # silently accepted.
+    permitted_execution_modes: tuple[CheckExecutionModeV2, ...] | None = None
     # Structurally pinned rather than configurable -- see the module docstring.
     permitted_conclusions: tuple[Literal["success"], Literal["failure"]]
     origin_rules: OriginRulesV2
 
+    @property
+    def effective_permitted_execution_modes(self) -> frozenset[str]:
+        """The authorization this entry actually carries.
+
+        One accessor, so no caller has to remember that omitted means legacy.
+        A caller that read the raw field and treated `None` as "unrestricted"
+        would invert the whole property this slice exists to establish."""
+
+        if self.permitted_execution_modes is None:
+            return LEGACY_PERMITTED_EXECUTION_MODES_V2
+        return frozenset(self.permitted_execution_modes)
+
     @model_validator(mode="after")
     def validate_entry(self) -> AuthoritativeCheckEntryV2:
+        # A set with a repeated member is malformed, not a set. Refused rather
+        # than deduplicated: silently accepting it would mean the file an
+        # auditor reads and the authorization this engine applies are two
+        # different things.
+        if self.permitted_execution_modes is not None:
+            if len(self.permitted_execution_modes) != len(set(self.permitted_execution_modes)):
+                raise ValueError("permitted_execution_modes may not repeat a mode")
+            # Same load-time refusal as `origin_rules`: an entry authorising no
+            # execution mode at all can never promote, and a target should learn
+            # that when it writes the policy, not when a review silently never
+            # becomes ready.
+            if not self.permitted_execution_modes:
+                raise ValueError("an entry must permit at least one execution mode")
         # The producer must live in a repository, not in the pull request's own
         # tree by coincidence of path.
         if self.producer_workflow.repository == "":
@@ -324,9 +369,34 @@ def compute_policy_semantic_digest_v2(policy: AuthoritativeCheckPolicyV2) -> str
     and `entry_for()` matches by name regardless of position. Reordering two
     entries changes no validation outcome and no producer binding, so it must
     not move this digest either; the entries are sorted by `check_name`
-    before hashing so position in the source file is not semantic."""
+    before hashing so position in the source file is not semantic.
+
+    `permitted_execution_modes` gets the same treatment for the same reason,
+    and one step further. It is projected to its EFFECTIVE value:
+
+    - sorted, because it is a set and declaration order is not meaning;
+    - omitted from the preimage entirely when it authorises exactly the
+      pre-CI1R universe, because that is what an omitted field already means.
+
+    So a policy that says nothing and a policy that explicitly lists the two
+    legacy modes are the same policy semantically, and both keep the digest
+    they had before `#331` SGAQ-CI1R existed. Measured: without this projection
+    every shipped policy's semantic digest moved (`2839c9c6..` -> `35ee5cd1..`
+    for `agent_escala`) while authorising exactly what it authorised before,
+    churning every snapshot and provenance sidecar that records it for no
+    change in meaning.
+
+    Authorising a genuinely new judge class DOES move the digest, because that
+    is a real change in what the policy permits."""
 
     dumped = policy.model_dump(mode="json")
+    by_name = {entry.check_name: entry for entry in policy.authoritative_checks}
+    for entry in dumped["authoritative_checks"]:
+        effective = by_name[entry["check_name"]].effective_permitted_execution_modes
+        if effective == LEGACY_PERMITTED_EXECUTION_MODES_V2:
+            entry.pop("permitted_execution_modes", None)
+        else:
+            entry["permitted_execution_modes"] = sorted(effective)
     dumped["authoritative_checks"] = sorted(
         dumped["authoritative_checks"], key=lambda entry: entry["check_name"]
     )

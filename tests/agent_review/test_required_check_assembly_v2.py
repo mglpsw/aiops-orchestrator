@@ -225,8 +225,10 @@ def _assemble_ci(snapshot=None, identity: RunIdentityV2 = IDENTITY, origin: RunO
 @contextlib.contextmanager
 def _ci_promotion_bypassing_independent_judge_gate():
     """Round-7 architectural correction: `assemble_authoritative_ci_promotion_v2`
-    now refuses unconditionally at `verify_independent_semantic_judge_v2` --
-    see that function's docstring. The tests using this context manager are
+    refuses at `verify_independent_semantic_judge_v2` for every execution mode
+    these fixtures declare -- see that function's docstring. `#331` SGAQ-CI1R
+    added one mode that passes it, but only when the base-owned policy entry
+    authorises that mode, which the fixture policy here does not. The tests using this context manager are
     NOT about whether CI promotion is authoritative; they use an
     AUTHORITATIVE_CI-sourced `(result, provenance)` pair purely as a FIXTURE
     to exercise unrelated downstream logic that has nothing to do with the

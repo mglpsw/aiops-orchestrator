@@ -16,7 +16,8 @@
     "check_execution_mode": {
       "enum": [
         "reexecuted_in_producer_run",
-        "upstream_artifact_republished"
+        "upstream_artifact_republished",
+        "independent_data_only_host_tool"
       ],
       "title": "Check Execution Mode",
       "type": "string"
