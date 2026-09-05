@@ -627,6 +627,21 @@ def test_the_declared_ordering_policy_is_the_observed_one(normalizer_id: str) ->
 
 
 @pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
+def test_an_unordered_output_cannot_declare_an_ordering(normalizer_id: str) -> None:
+    """A frozenset has no order, so any ordering declaration on one is false.
+
+    The behavioural ordering obligation cannot catch this by comparing two
+    normalisations -- two frozensets built from reordered input are equal
+    whatever the declaration says. The invariant has to be stated directly.
+    """
+    spec = normalizer_spec(normalizer_id)
+    if spec.output_semantic_shape is OutputShapeV2.FROZEN_SET:
+        assert spec.ordering_policy is OrderingPolicyV2.NOT_APPLICABLE, (
+            f"{normalizer_id} returns an unordered value and cannot impose an order"
+        )
+
+
+@pytest.mark.parametrize("normalizer_id", sorted(_EXPECTED_NORMALIZERS))
 def test_the_declared_encoding_policy_is_the_observed_one(normalizer_id: str) -> None:
     """The position the policy governs: the key for a relation, the value otherwise."""
     spec = normalizer_spec(normalizer_id)
