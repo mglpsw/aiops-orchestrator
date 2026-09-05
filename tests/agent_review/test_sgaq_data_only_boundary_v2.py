@@ -323,3 +323,121 @@ def test_the_boundary_never_lets_a_caller_object_cross_inward() -> None:
         assert parameter.annotation in ("bytes", "float", "bytes | None"), (
             f"{name} admits something other than bytes/primitives: {parameter.annotation}"
         )
+
+
+# --------------------------------------------------------------------------
+# per-guard witnesses
+#
+# The mutation controls refused seven rows, and every refusal was an
+# overlapping defence rather than a bad mutation: the constructed environment
+# hid whether `-I` was doing anything, `-I` hid whether the fresh cwd mattered,
+# and an exit-status check hid the framing check. A control satisfied by a
+# neighbouring guard proves nothing about the one it names.
+#
+# These use a HOST-AUTHORED probe worker to observe the child's own startup
+# state. That is host-owned instrumentation, not child self-assertion: the host
+# wrote the probe, and nothing here is used to establish identity (control O
+# still owns that).
+# --------------------------------------------------------------------------
+
+_PROBE = b"""import json as _json, os as _os, sys as _sys
+_p = {
+    "protocol": "sgaq.data-only-boundary.v1",
+    "request_digest": "0" * 64,
+    "request_length": 0,
+    "members": sorted([
+        "isolated=%d" % _sys.flags.isolated,
+        "no_site=%d" % _sys.flags.no_site,
+        "no_bytecode=%d" % _sys.flags.dont_write_bytecode,
+        "cwd=%s" % _os.getcwd(),
+        "env=%s" % ",".join(sorted(_os.environ)),
+        "cwd_on_path=%d" % int(_os.getcwd() in _sys.path or "" in _sys.path),
+    ]),
+}
+_b = _json.dumps(_p, sort_keys=True, separators=(",", ":")).encode()
+_sys.stdout.buffer.write(b"SGAQ1 " + str(len(_b)).encode() + b"\\n" + _b)
+"""
+
+
+def _probe_facts() -> dict[str, str]:
+    observed, output = _run(worker_source=_PROBE)
+    assert output is not None, observed.raw_stderr[:400]
+    return dict(member.split("=", 1) for member in output.members)
+
+
+def test_the_child_actually_starts_isolated_without_site_and_without_bytecode() -> None:
+    """`-I -S -B` asserted directly, because the constructed environment would
+    otherwise satisfy the PYTHONPATH and sitecustomize controls by itself."""
+    facts = _probe_facts()
+    assert facts["isolated"] == "1"
+    assert facts["no_site"] == "1"
+    assert facts["no_bytecode"] == "1"
+
+
+def test_the_callers_working_directory_is_never_on_the_childs_import_path(
+    tmp_path, monkeypatch
+) -> None:
+    """The fresh cwd asserted directly, since `-I` also removes cwd from
+    `sys.path` and would satisfy the shadow-module control alone."""
+    monkeypatch.chdir(tmp_path)
+    facts = _probe_facts()
+    assert facts["cwd"] != str(tmp_path)
+    assert facts["cwd"].startswith("/")
+    assert os.listdir(facts["cwd"]) == [] if os.path.isdir(facts["cwd"]) else True
+
+
+def test_the_child_environment_is_constructed_not_inherited(monkeypatch) -> None:
+    """Exactly the allowlist, nothing else. An inherited-then-overridden
+    environment satisfies the locale control while still leaking every other
+    variable the caller happens to hold."""
+    monkeypatch.setenv("AR_A_VARIABLE_NOBODY_ALLOWLISTED", "leaked")
+    facts = _probe_facts()
+    present = set(facts["env"].split(","))
+    assert "AR_A_VARIABLE_NOBODY_ALLOWLISTED" not in present
+    assert present == {
+        "SGAQ_REQUEST_FD", "PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", "TZ",
+        "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+    }
+
+
+def test_a_frame_whose_declared_length_is_wrong_is_refused() -> None:
+    """The length prefix asserted on its own: a body that parses as JSON but
+    whose declared length disagrees. Otherwise the JSON parse alone satisfies
+    the duplicate-frame control."""
+    liar = WORKER_SOURCE_BYTES.replace(
+        b'str(len(body)).encode("ascii")', b'str(len(body) + 1).encode("ascii")', 1
+    )
+    assert liar != WORKER_SOURCE_BYTES
+    observed, output = _run(worker_source=liar)
+    assert output is None
+    assert not observed.protocol_framing_intact
+
+
+def test_intact_framing_is_required_even_when_the_child_exited_cleanly() -> None:
+    """Framing asserted independently of exit status, which otherwise catches
+    the malformed-frame case first."""
+    observed, output = _run()
+    assert output is not None
+    unframed = HostObservedExecutionV2(
+        spawned=True, exit_status=0, timed_out=False,
+        protocol_framing_intact=False, binding=observed.binding,
+    )
+    with pytest.raises(DataOnlyBoundaryError, match="framing"):
+        accept_semantic_output_v2(unframed, output)
+
+
+@pytest.mark.parametrize("hostile", ["a string", bytearray(b"x"), memoryview(b"x"), None, 7])
+def test_only_exact_bytes_may_cross_the_boundary(hostile) -> None:
+    """Behavioural, not a signature inspection. A `bytes` subclass is refused
+    for the same reason a `str` subclass was refused in the slices before this
+    one: it arrives owning its own comparisons."""
+    with pytest.raises(DataOnlyBoundaryError, match="exactly bytes"):
+        run_data_only_worker_v2(request=hostile)  # type: ignore[arg-type]
+
+
+def test_a_bytes_subclass_is_not_exact_bytes() -> None:
+    class Sneaky(bytes):
+        pass
+
+    with pytest.raises(DataOnlyBoundaryError, match="exactly bytes"):
+        run_data_only_worker_v2(request=Sneaky(b"x"))  # type: ignore[arg-type]
