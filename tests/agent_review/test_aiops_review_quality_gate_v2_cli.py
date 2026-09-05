@@ -227,7 +227,12 @@ def _ready_decision_dict(*, run_id: str, manifest_hash: str) -> dict[str, object
     }
 
 
-def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None) -> dict[str, Path]:
+def _write_fixtures(
+    tmp_path: Path,
+    *,
+    required_checks: list[str] | None = None,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+) -> dict[str, Path]:
     target_profile_root = _write_target_profile(tmp_path, required_checks=required_checks)
     profile = load_target_profile_v2(target_profile_root)
     profile_hash = compute_profile_hash_v2(profile)
@@ -263,7 +268,8 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     # same snapshot via the real assembler and refuses it for real.
     paths["checks_snapshot"] = tmp_path / "snapshot.json"
     paths["checks_snapshot"].write_text(
-        json.dumps(_snapshot_dict(check_names)), encoding="utf-8"
+        json.dumps(_snapshot_dict(check_names, check_execution_mode=check_execution_mode)),
+        encoding="utf-8",
     )
     paths["run_origin"] = tmp_path / "origin.json"
     paths["run_origin"].write_text(
@@ -323,7 +329,12 @@ def _reseal_attestation(fields: dict) -> dict:
     return ProducerAttestationV2(**material, attestation_digest=digest).model_dump(mode="json")
 
 
-def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
+def _gate_attestation(
+    check_name: str,
+    outcome: str = "success",
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+) -> dict:
     from app.agent_review.authoritative_producer_evidence_v2 import (
         ProducerAttestationV2,
         compute_producer_attestation_digest_v2,
@@ -341,7 +352,7 @@ def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "test_outcome": outcome,
-        "check_execution_mode": "reexecuted_in_producer_run",
+        "check_execution_mode": check_execution_mode,
         "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
@@ -352,7 +363,12 @@ def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
     return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
 
 
-def _observation(check_name: str, **overrides: object) -> dict:
+def _observation(
+    check_name: str,
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+    **overrides: object,
+) -> dict:
     record: dict = {
         "repository": "mglpsw/aiops-orchestrator",
         "head_sha": "2" * 40,
@@ -367,7 +383,9 @@ def _observation(check_name: str, **overrides: object) -> dict:
         "workflow_sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
         "referenced_workflows": [],
         "producer_trigger": "workflow_run",
-        "producer_attestation": _gate_attestation(check_name),
+        "producer_attestation": _gate_attestation(
+            check_name, check_execution_mode=check_execution_mode
+        ),
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
@@ -379,7 +397,12 @@ def _observation(check_name: str, **overrides: object) -> dict:
     return record
 
 
-def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
+def _snapshot_dict(
+    check_names: list[str],
+    *,
+    check_execution_mode: str = "reexecuted_in_producer_run",
+    **overrides: object,
+) -> dict:
     payload: dict = {
         "schema_id": "agent-review.authoritative-check-snapshot.v2",
         "schema_version": 2,
@@ -390,7 +413,10 @@ def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
             "repository": "mglpsw/aiops-orchestrator",
             "head_sha": "2" * 40,
         },
-        "observations": [_observation(name) for name in check_names],
+        "observations": [
+            _observation(name, check_execution_mode=check_execution_mode)
+            for name in check_names
+        ],
         "tested_merge_sha": "3" * 40,
         "tested_merge_parents": ["1" * 40, "2" * 40],
         "observation_bytes_digest": "f" * 64,
@@ -465,11 +491,21 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 ## `#201-C` addendum: this is no longer the whole story for a NON-empty
 ## submission specifically -- an EMPTY one (no claims at all) now passes the
 ## `#201-C0` boundary vacuously and produces a real, successful
-## `manual_required` artifact via `produce_review_readiness_v2`. `ready` is
-## still unreachable through this live CLI subprocess for the same two
-## reasons above; `manual_required` is reachable, and is exactly what
-## `#201-C` was built to make representable instead of crashing. See
+## `manual_required` artifact via `produce_review_readiness_v2`. See
 ## `test_cli_emits_manual_required_when_a_required_check_has_no_submission`.
+##
+## `#331` SGAQ-CI1 addendum, and it REVOKES the sentence above that said
+## `ready` is unreachable through this live CLI. That sentence was true while
+## `verify_independent_semantic_judge_v2` refused unconditionally. It no
+## longer does: a producer declaring `check_execution_mode=
+## independent_data_only_host_tool` passes it, `AuthoritativeCIPromotion`
+## returns, and this CLI emits `state: ready`. Every fixture in this file
+## still declares `reexecuted_in_producer_run`, so every assertion below is
+## unchanged and every refusal below is still real -- but the accurate
+## statement is now "unreachable for every mode these fixtures declare", not
+## "unreachable". `test_cli_emits_ready_when_the_producer_declares_the_
+## independent_judge_mode` pins the reachable half, so the file's stated
+## invariant and its behaviour cannot silently diverge again.
 
 
 def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProcess[str]) -> None:
@@ -1182,6 +1218,47 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
     assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
 
 
+
+
+def test_cli_emits_ready_when_the_producer_declares_the_independent_judge_mode(
+    tmp_path: Path,
+) -> None:
+    """`#331` SGAQ-CI1: the counterpart to the refusal test above.
+
+    Same fixtures, same real CLI subprocess, one field different -- the
+    producer declares `independent_data_only_host_tool` instead of
+    `reexecuted_in_producer_run`. The snapshot is built with that mode BEFORE
+    the hand-built pair is derived from it, so the submission is internally
+    coherent and the gate's independent re-derivation matches rather than
+    being bypassed.
+
+    Two things this pins, both of which an adversarial lane had to discover
+    because nothing in the suite said them:
+
+    1. The extension point is REACHABLE end to end, not merely true at the
+       unit level. A gate predicate that no CLI invocation can ever satisfy
+       would be a dead extension.
+    2. The blast radius. A single producer-self-declared string is the whole
+       distance between `required_check_provenance_independent_semantic_judge_
+       required` and `state: ready` with `deterministic=True`. That is sound
+       only because the producer is already proven base-owned by the gates
+       ahead of this one -- and it is why the named successor is an opt-in
+       `permitted_execution_modes` on the authoritative-check POLICY, so a
+       target can refuse an independent-judge producer it did not ask for.
+
+    No shipped workflow, policy or fixture declares the mode. This test is the
+    only place in the repository that does."""
+
+    paths = _write_fixtures(tmp_path, check_execution_mode="independent_data_only_host_tool")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode == 0, result.stderr
+    assert output_path.exists(), result.stderr
+    artifact = json.loads(output_path.read_text(encoding="utf-8"))
+    assert artifact["state"] == "ready", artifact
+    assert artifact["schema_id"] == "agent-review.review-readiness.v2"
 
 
 def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_downgrade(tmp_path: Path) -> None:

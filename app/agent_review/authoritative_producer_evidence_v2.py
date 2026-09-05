@@ -241,6 +241,20 @@ CheckExecutionModeV2 = Literal[
     # The mode is a DECLARATION and grants nothing on its own. It is read by
     # exactly two gates, both of which run after producer identity,
     # base-ownership and executed-tree binding have already succeeded.
+    #
+    # KNOWN GAP, disclosed rather than closed by this slice. Adding this value
+    # makes `AuthoritativeCIPromotion` -- and therefore `state: ready` through
+    # the live gate CLI -- REACHABLE for the first time since the round-7
+    # correction, discriminated by a string the producer declares about
+    # itself. No in-repo workflow, policy or fixture emits it, but that is a
+    # nobody-has-typed-it-yet property, not a structural one: the emitting
+    # workflow is TARGET-owned, and `agent-review.authoritative-check-policy.
+    # v2` has no execution-mode field, so a target cannot express "I do not
+    # accept an independent-judge producer". Closing that needs an optional
+    # `permitted_execution_modes` on the policy contract, defaulting to the
+    # two pre-`#331` values so acceptance is opt-in. That is a policy-contract
+    # change, outside this slice's single proposition, and is the named
+    # successor.
     "independent_data_only_host_tool",
 ]
 
@@ -483,12 +497,22 @@ def verify_producer_attestation_v2(
 def verify_independent_semantic_judge_v2(*, attestation: ProducerAttestationV2) -> None:
     """Refuse promotion when the verdict is authored by the subject.
 
-    This is deliberately unconditional, and deliberately the LAST check in the
-    promotion path -- every producer-identity, base-ownership, and tree-
-    binding check above it still runs and still refuses on its own specific
-    reason code first when it applies. Reaching this function means all of
-    that infrastructure already succeeded; it is refused here anyway, because
-    none of it answers the one question that matters for `#201-B3`'s theorem.
+    This is deliberately the LAST check in the promotion path -- every
+    producer-identity, base-ownership, and tree-binding check above it still
+    runs and still refuses on its own specific reason code first when it
+    applies. Reaching this function means all of that infrastructure already
+    succeeded; it is refused here anyway unless the execution mode is the one
+    below, because none of that infrastructure answers the one question that
+    matters for `#201-B3`'s theorem.
+
+    It was unconditional until `#331` SGAQ-CI1. It is not any more, and the
+    consequence is deliberate and load-bearing: the execution mode is now the
+    SOLE discriminant between categorical refusal and a promotable verdict.
+    That is sound only because the producer reaches this point already proven
+    base-owned -- but it means a compromised or mis-declaring base-owned
+    producer now buys something, where before it bought nothing. No policy
+    field constrains which modes a target will accept; see this module's
+    note on `#331` for the successor that would add one.
 
     `check_execution_mode` had exactly two values before `#331` SGAQ-CI1, and
     NEITHER supplied a judge independent of the subject's own code:

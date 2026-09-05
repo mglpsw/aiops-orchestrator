@@ -46,11 +46,16 @@ keep that distinction visible.
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 
 from app.agent_review.authoritative_producer_evidence_v2 import (
+    FIRST_HAND_EXECUTION_MODES_V2,
+    INDEPENDENT_JUDGE_EXECUTION_MODE_V2,
     INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2,
     UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2,
+    CheckExecutionModeV2,
     ProducerAttestationV2,
     RequiredCheckProvenanceErrorV2,
     compute_producer_attestation_digest_v2,
@@ -58,14 +63,18 @@ from app.agent_review.authoritative_producer_evidence_v2 import (
     verify_producer_execution_is_first_hand_v2,
 )
 
-#: The mode this slice introduces. Named once here so a rename is a single edit
-#: and so no test spells it as an incidental literal.
-INDEPENDENT_MODE = "independent_data_only_host_tool"
+#: The mode this slice introduces. Bound to the module's OWN constant, not to a
+#: copy of the string: a test that spells the literal independently would keep
+#: passing if production were repointed at a different value.
+INDEPENDENT_MODE = INDEPENDENT_JUDGE_EXECUTION_MODE_V2
 
-#: The execution-mode universe as it existed BEFORE this slice. Test A loops
-#: over this exhaustively rather than naming values inline, so a future mode
-#: added without a decision here cannot silently escape the refusal check.
-PRE_CI1_EXECUTION_MODES = ("reexecuted_in_producer_run", "upstream_artifact_republished")
+#: The execution-mode universe as it existed BEFORE this slice, DERIVED from the
+#: live Literal rather than hardcoded. Test A loops over this exhaustively, so a
+#: future mode added without a decision here cannot silently escape the refusal
+#: check -- which a hardcoded tuple would have allowed, since it would simply
+#: not have grown.
+ALL_EXECUTION_MODES = get_args(CheckExecutionModeV2)
+PRE_CI1_EXECUTION_MODES = tuple(m for m in ALL_EXECUTION_MODES if m != INDEPENDENT_MODE)
 
 REPO = "mglpsw/aiops-orchestrator"
 BASE = "1" * 40
@@ -219,25 +228,89 @@ def test_f_the_new_mode_is_confined_to_the_two_gates_that_read_it() -> None:
     """`check_execution_mode` must not become an input to identity, base
     ownership, tree binding or the attestation digest.
 
-    Asserted by reading the module: any function that branches on the mode is
-    one that could weaken a gate above it, so the set is pinned.
+    Asserted by walking the module's AST: any function that branches on the
+    mode is one that could weaken a gate above it, so the set is pinned.
+
+    The first version of this test built the set from `vars(module)` with
+    `not isinstance(function, type)`, which silently excluded EVERY method,
+    because that exclusion drops the whole class object -- `ProducerAttestation
+    V2.validate_digest` among them. An adversarial lane reproduced the
+    consequence: a mutant returning early from `validate_digest` for the new
+    mode, so that a forged digest promotes, left all twelve tests in this file
+    GREEN while claiming in this very docstring to cover the digest.
+
+    The AST walk sees function definitions wherever they are nested. The
+    EXPECTED set is unchanged -- on the clean subject the digest is whole-model
+    (`model_dump(exclude={"attestation_digest"})`) and names no field, so only
+    the two gates mention it. What changed is that a new reader inside a class
+    now makes this test FAIL instead of being invisible to it. The guard below
+    pins that reach, so the mechanism cannot silently regress to method-blind.
     """
+    import ast
     import inspect
 
     import app.agent_review.authoritative_producer_evidence_v2 as evidence
 
+    source = inspect.getsource(evidence)
+    module = ast.parse(source)
+    defined = {
+        node.name
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "validate_digest" in defined, (
+        "the walk must reach methods, or a mode-reader added inside a model class "
+        "would be invisible to this test -- the exact defect this replaced"
+    )
+
     readers = {
-        name
-        for name, function in vars(evidence).items()
-        if callable(function)
-        and getattr(function, "__module__", None) == evidence.__name__
-        and not isinstance(function, type)
-        and "check_execution_mode" in inspect.getsource(function)
+        node.name
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and "check_execution_mode" in (ast.get_source_segment(source, node) or "")
     }
     assert readers == {
         "verify_producer_execution_is_first_hand_v2",
         "verify_independent_semantic_judge_v2",
     }, readers
+
+
+def test_f_the_judge_gate_matches_the_mode_exactly_not_by_containment() -> None:
+    """A near-miss mode must not pass the judge gate.
+
+    An adversarial lane mutated the gate's `!=` to `not in`, turning an
+    equality test into a substring test, and the whole 138-test neighbourhood
+    stayed green. Under that mutant `'independent_data_only_host_too'`,
+    `'host_tool'`, `'t'` and `''` all promote. Nothing in production reaches
+    the gate with an unvalidated attestation today -- pydantic refuses these at
+    construction -- so the exposure is latent, not live; `model_construct`
+    reaches the gate directly, exactly as the digest test below does."""
+
+    honest = _attestation()
+    for near_miss in ("independent_data_only_host_too", "host_tool", "t", ""):
+        attestation = ProducerAttestationV2.model_construct(
+            **{
+                **{key: getattr(honest, key) for key in ProducerAttestationV2.model_fields},
+                "check_execution_mode": near_miss,
+            }
+        )
+        with pytest.raises(RequiredCheckProvenanceErrorV2) as raised:
+            verify_independent_semantic_judge_v2(attestation=attestation)
+        assert str(raised.value) == INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2, near_miss
+
+
+def test_a_the_two_gates_partition_the_mode_universe_with_no_mode_left_over() -> None:
+    """The derived universe is a partition, not a sample.
+
+    `PRE_CI1_EXECUTION_MODES` is computed from the live Literal, so this states
+    the invariant that keeps test A exhaustive: every declared mode is either
+    the one independent mode or a pre-CI1 mode, and the first-hand set is a
+    subset of the universe that contains the independent mode."""
+
+    assert INDEPENDENT_MODE in ALL_EXECUTION_MODES
+    assert set(ALL_EXECUTION_MODES) == {INDEPENDENT_MODE, *PRE_CI1_EXECUTION_MODES}
+    assert FIRST_HAND_EXECUTION_MODES_V2 <= set(ALL_EXECUTION_MODES)
+    assert INDEPENDENT_MODE in FIRST_HAND_EXECUTION_MODES_V2
 
 
 def test_f_the_attestation_digest_still_covers_the_execution_mode() -> None:
