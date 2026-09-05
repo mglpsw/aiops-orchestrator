@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import gc
+from pathlib import Path
 
 import pytest
 
@@ -278,6 +279,44 @@ def test_a_free_standing_normalizer_makes_the_inventory_red() -> None:
     finally:
         del ingress.__dict__["_normalize_something_uncatalogued"]
     ingress._assert_ingress_inventory_is_total()
+
+
+def test_the_inventory_and_universe_checks_are_wired_at_import(tmp_path) -> None:
+    """The checks WORKING and the checks being CALLED are different guards.
+
+    A test that invokes them directly stays green when the module-level calls are
+    deleted, which is how a mechanism becomes decorative. This imports a copy
+    carrying an uncatalogued module-level normaliser, so only a wired check can
+    refuse it.
+    """
+    import importlib.util
+    import sys
+
+    source = Path(ingress.__file__).read_text()
+    injected = source.replace(
+        "_assert_ingress_inventory_is_total()\n",
+        "def _normalize_uncatalogued(value, field, spec):\n    return value\n\n\n"
+        "_assert_ingress_inventory_is_total()\n",
+        1,
+    )
+    assert injected != source
+    module_path = tmp_path / "ingress_uncatalogued.py"
+    module_path.write_text(injected)
+
+    name = "ingress_uncatalogued"
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        with pytest.raises(Exception) as raised:
+            spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
+        gc.collect()
+    # The copy defines its own error class, so the type is asserted by name.
+    assert type(raised.value).__name__ == "SemanticIngressError"
+    assert "unclassified" in str(raised.value)
 
 
 def test_a_catalogued_normalizer_that_is_not_defined_here_is_refused() -> None:
