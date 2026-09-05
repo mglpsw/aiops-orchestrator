@@ -100,10 +100,12 @@ then crash several calls later with an uncaught `pydantic.ValidationError`
 from `ReviewReadinessV2.__init__`, for the adjacent, non-required-check
 case of exactly the "crash instead of a representable state" defect class
 this module exists to eliminate for required checks. Not reachable through
-the real C0 boundary today (no positive authority source exists in
-production -- see the plan's own Class A/B/C split), so this was found and
-fixed at the pure-composition (Class B) layer, prospectively, before `#203`
-makes it reachable. `failed_check_names`/`status` now account for every
+the real C0 boundary for any current target (no positive authority source
+exists in production -- since `#331` SGAQ-CI1R because no shipped policy
+authorizes an independent-judge execution mode, not because the path is
+categorically closed; see the plan's own Class A/B/C split), so this was
+found and fixed at the pure-composition (Class B) layer, prospectively,
+before a target opting in makes it reachable. `failed_check_names`/`status` now account for every
 verified check's conclusion, not only required-named ones.
 
 ## Canonical check order

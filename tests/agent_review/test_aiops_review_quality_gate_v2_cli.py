@@ -61,9 +61,10 @@ def _hand_built_ci_pair(
     `reassemble_and_verify_required_checks_v2` exists to catch: it does not
     trust this claim, it independently re-derives from the snapshot via the
     real `assemble_authoritative_ci_promotion_v2` and requires a byte-for-byte
-    match. Since that re-derivation now always refuses, submitting this pair
-    to the live CLI always produces the SAME outcome a genuine attacker's
-    submission would: refusal, for a real, unpatched, structural reason."""
+    match. Since that re-derivation refuses for every mode these fixtures
+    declare, submitting this pair to the live CLI produces the SAME outcome a
+    genuine attacker's submission would: refusal, for a real, unpatched,
+    structural reason."""
 
     entry = loaded_policy.policy.entry_for(check_name)
     observation = select_observation_v2(
@@ -461,12 +462,17 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 
 ## Round-7 architectural correction, and its effect on this test file
 ## ---------------------------------------------------------------------------
-## `assemble_authoritative_ci_promotion_v2` now refuses every subject-code
-## check unconditionally (`required_check_provenance_independent_semantic_
-## judge_required` -- see `authoritative_producer_evidence_v2`'s docstring).
-## Two independent, verified facts mean `state: ready` for a target with a
-## required check is not reachable through the live gate SUBPROCESS today,
-## for ANY source_kind, in this environment:
+## READ THE `#331` ADDENDUM AT THE END OF THIS BLOCK BEFORE RELYING ON IT.
+## The unreachability stated here was unconditional when it was written and is
+## now conditional; the reasoning is preserved because it is still what makes
+## every fixture in this file refuse.
+##
+## `assemble_authoritative_ci_promotion_v2` refuses every subject-code check
+## (`required_check_provenance_independent_semantic_judge_required` -- see
+## `authoritative_producer_evidence_v2`'s docstring). Two independent, verified
+## facts mean `state: ready` for a target with a required check is not
+## reachable through the live gate SUBPROCESS for a subject-code producer, for
+## ANY source_kind, in this environment:
 ##
 ##   1. `TargetPoliciesV2.required_checks` is `Field(min_length=1)`
 ##      (`contracts_v2.py:931`) -- a FROZEN contract `#201-C0` cannot touch.
@@ -479,12 +485,11 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 ##      round 7 entirely (round 1's fix for the hand-built-pair attack); it
 ##      is not introduced by this correction.
 ##
-## So `AuthoritativeCIPromotion` was the ONLY promotion path ever reachable
-## through this hardened gate, and it is now (correctly) always refused.
-## There is consequently no fixture -- hand-built, bypassed, or otherwise --
-## that can make the live CLI SUBPROCESS emit `state: ready` for a target
-## with a required check, without the subprocess itself accepting evidence it
-## would never accept for real. No such fixture is built here.
+## So `AuthoritativeCIPromotion` is the ONLY promotion path reachable through
+## this hardened gate, and for a subject-code producer it is correctly always
+## refused. No fixture in this file -- hand-built, bypassed, or otherwise --
+## makes the live CLI SUBPROCESS emit `state: ready` by way of evidence the
+## subprocess would not accept for real, and none is built here.
 ##
 ## What IS still real, and still proven end to end below: `--checks`/
 ## `--checks-provenance` are built by `_hand_built_ci_pair`, from the SAME
@@ -1217,9 +1222,15 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
     provenance being internally consistent is not the same fact as semantic
     authority having been established. `AUTHORITATIVE_PYTEST_PROMOTION=
     UNAVAILABLE_BY_DESIGN`: this is the regression test for that state
-    remaining true. If this test ever starts failing because the gate emits
-    `ready` again, that is a signal an independent-judge producer was added --
-    real, welcome progress, but it means THIS test needs to be re-ratified
+    remaining true FOR THESE FIXTURES, which declare `reexecuted_in_producer_
+    run` under a policy that authorizes no independent judge.
+
+    `#331` SGAQ-CI1R made an independent-judge mode representable and
+    policy-gated, so the original form of the sentence below -- "if this ever
+    emits `ready`, an independent-judge producer was added" -- is no longer the
+    only reading. The mode now exists. What keeps THIS test refusing is the two
+    facts above, and if it ever starts failing, the question to ask is which of
+    them stopped holding. It still means THIS test needs to be re-ratified
     deliberately, not patched silently to keep it green."""
 
     paths = _write_fixtures(tmp_path)
@@ -1412,9 +1423,10 @@ def test_cli_refuses_a_write_failure_at_output_instead_of_crashing(tmp_path: Pat
     successfully computed. Uses the same vacuous-submission recipe as
     `test_cli_emits_manual_required_when_a_required_check_has_no_submission`
     to actually reach the write (a `ready`/promoted state is not reachable
-    through this gate at all in this environment -- see this file's own
-    "Round-7 architectural correction" note -- but `manual_required` still
-    writes a real artifact, which is the case this write-guard must cover)."""
+    through this gate for a subject-code producer -- see this file's own
+    "Round-7 architectural correction" note and its `#331` addendum -- but
+    `manual_required` still writes a real artifact, which is the case this
+    write-guard must cover)."""
 
     paths = _write_fixtures(tmp_path)
     paths["checks"].write_text(json.dumps([]), encoding="utf-8")

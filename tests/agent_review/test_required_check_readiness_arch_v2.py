@@ -386,6 +386,13 @@ def test_forbidden_completeness_param_names_matches_its_own_docstring_claim() ->
 # -- assert 7 (§6.5): no fixture creates a production-reachable positive
 # authority path -- temporary_until_203, removed (not relaxed) once a
 # legitimately promotable source exists (plan rev.2.1 §12, class C).
+#
+# `#331` SGAQ-CI1R note: a promotable SHAPE now exists -- an
+# `independent_data_only_host_tool` producer under a policy that authorizes
+# that mode. No shipped policy authorizes one, so no PRODUCTION-reachable
+# positive path exists and this guard still holds as written. The condition
+# for removing it is now "a target has authorized an independent judge", not
+# "the vocabulary was added".
 # -----------------------------------------------------------------------
 
 

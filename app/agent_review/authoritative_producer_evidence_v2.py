@@ -105,23 +105,49 @@ produces it. A base-owned CALLER (the workflow steps: checkout, invoke,
 capture, attest) does not launder a subject-controlled CALLEE (the test suite
 itself) into something independent of the subject.
 
-Consequently: **no `check_execution_mode` defined today supplies a semantic
-judge independent of the subject**, and `AuthoritativeCIPromotion` is refused
-categorically -- see `verify_independent_semantic_judge_v2` -- until a
-producer kind representing an actually independent judge exists. This is a
-REVOCATION of the round-7 acceptance condition ("C0 exits with a working
-base-owned positive pytest path"), not a patch to the model that condition
-produced: new evidence showed the condition itself forced an incoherent
-architecture, so it is withdrawn rather than worked around.
+That was round 7's conclusion, and it stands. It was also a REVOCATION of the
+round-7 acceptance condition ("C0 exits with a working base-owned positive
+pytest path"), not a patch to the model that condition produced: new evidence
+showed the condition itself forced an incoherent architecture, so it was
+withdrawn rather than worked around.
 
-This does NOT unwind the rest of this module. Producer identity, base-
-ownership, and tree binding remain real, tested infrastructure -- they answer
-"is this evidence from where it claims to be", which is a necessary condition
-for authority and a defect C0 still closes (`#217`'s check_name-only bypass).
-What they do not answer, and what nothing in this module answers today, is
-"was the verdict decided by someone other than the subject". A future
-producer kind with an actually independent judge can be added additively,
-without touching anything above this paragraph.
+WHAT `#331` SGAQ-CI1R CHANGED, AND WHAT IT DID NOT
+
+Round 7 concluded that no `check_execution_mode` defined AT THAT TIME supplied
+a judge independent of the subject, and that `AuthoritativeCIPromotion` was
+therefore refused categorically. That is no longer the current state, and this
+paragraph exists because leaving the old one standing would describe a trust
+boundary this module no longer has.
+
+`independent_data_only_host_tool` is a third execution mode whose verdict is
+NOT authored by the subject: a host-owned tool decides it with the target
+consumed strictly as DATA, so `controls(subject, success_signal)` does not
+hold and the theorem above does not refuse it. The refusal is consequently
+CONDITIONAL, not categorical.
+
+The condition has two halves, and both are required:
+
+- the producer must DECLARE the independent mode, which
+  `verify_independent_semantic_judge_v2` checks; and
+- the trusted base-owned policy entry must AUTHORIZE that mode in
+  `permitted_execution_modes`, which
+  `verify_execution_mode_is_policy_authorized_v2` checks.
+
+A declaration alone buys nothing. A policy omitting the field authorizes
+exactly the two pre-CI1R modes, so no target acquired a promotion path by the
+engine learning this vocabulary, and no shipped policy authorizes the new mode
+today. `AuthoritativeCIPromotion` is therefore unreachable for every current
+target -- by AUTHORIZATION, not by absence of vocabulary. That distinction is
+the whole content of SGAQ-CI1R and the reason this module can no longer say
+"categorically".
+
+This did NOT unwind the rest of this module. Producer identity, base-ownership
+and tree binding remain real, tested infrastructure -- they answer "is this
+evidence from where it claims to be", a necessary condition for authority and
+a defect C0 still closes (`#217`'s check_name-only bypass). What they still do
+not answer is "was the verdict decided by someone other than the subject";
+that is the execution-mode axis, and it is answered by the two gates named
+above rather than by anything on the identity axis.
 """
 
 from __future__ import annotations
@@ -162,9 +188,15 @@ PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2 = (
 EXECUTED_TREE_NOT_OBSERVED_REASON_V2 = "required_check_provenance_executed_tree_not_observed"
 # Round-7 architectural correction: base-ownership of the WORKFLOW DEFINITION
 # is not the same axis as `#201-B3`'s theorem about who controls the
-# success_signal. Every `check_execution_mode` defined today re-runs or
-# forwards the SUBJECT's own test outcome, so none of them supplies a judge
-# independent of the subject -- see the module docstring.
+# success_signal. The two PRE-`#331` execution modes each re-run or forward the
+# SUBJECT's own test outcome, so neither supplies a judge independent of the
+# subject, and this reason code is what they receive.
+#
+# `#331` SGAQ-CI1R added a third mode that does supply one. This code therefore
+# means "the declared execution mode is not the independent one", NOT "no such
+# mode exists" -- see the module docstring. It is distinct from
+# EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2 below, which means the mode IS
+# independent but this target never authorized it.
 INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2 = (
     "required_check_provenance_independent_semantic_judge_required"
 )

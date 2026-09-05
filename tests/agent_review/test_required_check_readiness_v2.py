@@ -157,10 +157,11 @@ def test_a_red_non_required_check_never_produces_satisfied() -> None:
     branch requires EVERY entry of `self.checks` to be green, not only the
     required-named ones, so this combination previously crashed
     `ReviewReadinessV2.__init__` with an uncaught `pydantic.ValidationError`
-    several calls later -- not reachable through the real C0 boundary
-    today (no positive authority source exists in production), but a real
-    latent defect at the pure-composition layer this module is exercised
-    at directly. `status` must now be `FAILED`, and "lint" must appear in
+    several calls later -- not reachable through the real C0 boundary for
+    any current target (no positive authority source exists in production;
+    since `#331` SGAQ-CI1R that is an authorization fact, not a categorical
+    one), but a real latent defect at the pure-composition layer this module
+    is exercised at directly. `status` must now be `FAILED`, and "lint" must appear in
     `failed_check_names`, so `_apply_required_check_assessment_v2` never
     lets this combination reach construction unchanged."""
 

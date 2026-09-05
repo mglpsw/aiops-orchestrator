@@ -214,9 +214,11 @@ def test_submission_order_never_changes_the_serialized_artifact_bytes() -> None:
     -> `_assemble_review_readiness_v2`, all real, none patched. Class B is
     the correct layer for this: the property under test is canonical
     SERIALIZATION, which is independent of authority, and the C0 boundary
-    refuses every non-empty submission in production today, so this
-    invariance is not observable end-to-end (see the `#201-C` plan's own
-    Class A/B/C split). No `produce_review_readiness_v2` /
+    refuses every non-empty submission any CURRENT target can produce -- since
+    `#331` SGAQ-CI1R that is because no shipped policy authorizes an
+    independent-judge execution mode, not because the path is categorically
+    closed -- so this invariance is not observable end-to-end (see the
+    `#201-C` plan's own Class A/B/C split). No `produce_review_readiness_v2` /
     `run_synthetic_review_v2` call is made and nothing is monkeypatched,
     so `test_required_check_readiness_arch_v2.py`'s assert-7 guard is
     unaffected."""

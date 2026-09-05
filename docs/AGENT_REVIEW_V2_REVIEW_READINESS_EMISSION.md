@@ -161,14 +161,26 @@ authenticate the origin of a caller-supplied `ReadinessDecisionV2`/
 freely constructible value — the only binding enforced on it is REPLAY
 protection (`decision.run_id`/`manifest_hash` must match
 `evaluated_identity`), never origin. This is inert today because no
-required-check submission can reach `SATISFIED` in production (Path A has
-no caller; Path B is refused unconditionally by
-`verify_independent_semantic_judge_v2`) — a fabricated `READY` decision is
+required-check submission can reach `SATISFIED` for any current target
+(Path A has no caller; Path B needs an independent-judge execution mode that
+the target's own base-owned policy has authorized, and no shipped policy
+authorizes one — see `#331` SGAQ-CI1R) — a fabricated `READY` decision is
 still narrowed to `manual_required` the moment any required check is
-missing or unestablished, which is always, today. If a future slice makes
-positive authority reachable while `decision`/`findings` remain
-subject-influenceable, that is a new trust-boundary defect requiring its
-own decision, not something `#201-C` absorbed silently.
+missing or unestablished, which is always, today.
+
+**The ground of that inertness changed with `#331` SGAQ-CI1R, and it is worth
+being exact about.** Path B used to be refused *unconditionally*: the
+capability did not exist, so no configuration could reach it. It is now
+refused *conditionally*: the capability exists and is gated on an explicit
+opt-in in the trusted base-owned `AuthoritativeCheckPolicy`. The practical
+state is unchanged — nothing opts in — but the assumption doing the work is
+no longer "this path is closed". It is "this path is closed unless a target
+authorizes it", which makes the requirement that the policy be read from a
+TRUSTED BASE checkout load-bearing where it was previously inert. A target
+that opts in has, by that act, made `decision`/`findings` origin
+authentication a live concern rather than a latent one; per the paragraph
+below that is a new trust-boundary decision, not something `#201-C` or
+`#331` absorbed silently.
 
 Tests: `tests/agent_review/test_required_check_readiness_v2.py` (the choke
 point, unit + real-C0), `test_readiness_decision_v2.py` (the precedence
