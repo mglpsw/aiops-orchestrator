@@ -229,7 +229,32 @@ ExecutedTreeEvidenceKindV2 = Literal["producer_attestation"]
 # guidance is that artifacts from a workflow which processed untrusted code are
 # untrusted data. A base-owned run that merely forwards one has laundered the
 # pull request's output, not verified it.
-CheckExecutionModeV2 = Literal["reexecuted_in_producer_run", "upstream_artifact_republished"]
+CheckExecutionModeV2 = Literal[
+    "reexecuted_in_producer_run",
+    "upstream_artifact_republished",
+    # `#331` SGAQ-CI1. A host-owned tool that decided the verdict itself, with
+    # the target consumed strictly as DATA -- no target code, plugin, conftest,
+    # hook or verdict-affecting config executed. This is the producer shape the
+    # round-7 correction below says does not exist yet: the first mode whose
+    # success_signal is not authored by the subject.
+    #
+    # The mode is a DECLARATION and grants nothing on its own. It is read by
+    # exactly two gates, both of which run after producer identity,
+    # base-ownership and executed-tree binding have already succeeded.
+    "independent_data_only_host_tool",
+]
+
+#: Modes where the producer obtained the verdict itself rather than forwarding
+#: someone else's. Re-executing the subject's suite and deciding over data are
+#: both first-hand; they differ on WHO AUTHORED the value, which is the separate
+#: axis `verify_independent_semantic_judge_v2` owns.
+FIRST_HAND_EXECUTION_MODES_V2: frozenset[str] = frozenset(
+    {"reexecuted_in_producer_run", "independent_data_only_host_tool"}
+)
+
+#: The only mode whose verdict does not derive from executing or trusting the
+#: subject's own code.
+INDEPENDENT_JUDGE_EXECUTION_MODE_V2 = "independent_data_only_host_tool"
 
 # How the producer learned which tree it ran. `caller_supplied` means the value
 # was handed in via workflow inputs or client_payload and merely echoed back --
@@ -418,7 +443,7 @@ def verify_producer_execution_is_first_hand_v2(*, attestation: ProducerAttestati
     data across the trust boundary without checking it.
     """
 
-    if attestation.check_execution_mode != "reexecuted_in_producer_run":
+    if attestation.check_execution_mode not in FIRST_HAND_EXECUTION_MODES_V2:
         raise RequiredCheckProvenanceErrorV2(UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2)
 
     if attestation.executed_sha_derivation != "verified_checkout_rev_parse":
@@ -465,8 +490,8 @@ def verify_independent_semantic_judge_v2(*, attestation: ProducerAttestationV2) 
     that infrastructure already succeeded; it is refused here anyway, because
     none of it answers the one question that matters for `#201-B3`'s theorem.
 
-    `check_execution_mode` has exactly two values today, and NEITHER supplies
-    a judge independent of the subject's own code:
+    `check_execution_mode` had exactly two values before `#331` SGAQ-CI1, and
+    NEITHER supplied a judge independent of the subject's own code:
 
     - `reexecuted_in_producer_run` re-ran the pull request's own test suite
       and reported its exit code. The workflow DEFINITION is base-owned; the
@@ -476,8 +501,25 @@ def verify_independent_semantic_judge_v2(*, attestation: ProducerAttestationV2) 
       reason stated more bluntly: it did not even re-run anything, it merely
       forwarded the subject's own claim.
 
-    A producer_kind representing an actually independent judge -- one whose
-    verdict does not derive from executing or trusting the subject's own code
-    -- does not exist yet. See the module docstring's round-7 correction."""
+    `#331` SGAQ-CI1 adds the third value, and it is the first whose verdict is
+    not authored by the subject:
 
-    raise RequiredCheckProvenanceErrorV2(INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2)
+    - `independent_data_only_host_tool` is a host-owned tool that decided the
+      verdict itself with the target consumed strictly as DATA. No target code,
+      plugin, conftest or hook runs, so `controls(subject, success_signal)` does
+      not hold and the theorem does not refuse it.
+
+    The discriminant is the EXECUTION MODE and never the producer identity.
+    Round 7's correction is exactly that base-ownership is a different axis: a
+    base-owned CALLER does not launder a subject-controlled CALLEE. This
+    function cannot confuse them even by accident, because `producer_kind` is
+    not a field of `ProducerAttestationV2` and is therefore not reachable from
+    this signature.
+
+    Reaching this function still means every producer-identity, base-ownership
+    and tree-binding check above it already succeeded. Passing it is one
+    predicate, not a promotion: nothing here authorises a producer, and the
+    declaration alone grants nothing."""
+
+    if attestation.check_execution_mode != INDEPENDENT_JUDGE_EXECUTION_MODE_V2:
+        raise RequiredCheckProvenanceErrorV2(INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2)
