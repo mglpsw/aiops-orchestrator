@@ -52,6 +52,18 @@ FORBIDDEN_COMPLETENESS_PARAM_NAMES = {"required_check_names", "required_checks",
 BOUNDARY_FUNCTION_NAMES = {
     "reassemble_and_verify_required_checks_v2",
     "verify_independent_semantic_judge_v2",
+    # Adversarial review finding, confirmed and fixed (`#331` SGAQ-CI1R): this
+    # set is the guard on authority gates, and adding a new authority gate
+    # without adding it here leaves the new gate monkeypatchable in exactly the
+    # way `#201-C`'s stop conditions forbid. Reproduced: a probe patching
+    # `verify_execution_mode_is_policy_authorized_v2` while calling a
+    # production readiness entry point PASSED, while the byte-identical probe
+    # naming `verify_independent_semantic_judge_v2` failed as intended.
+    #
+    # This is the SECOND time this set was found under-drawn -- see the
+    # round-6 note on FORBIDDEN_COMPLETENESS_PARAM_NAMES above. The set does
+    # not grow by itself; a slice that adds a gate must add it here.
+    "verify_execution_mode_is_policy_authorized_v2",
     "_verify_and_assess_required_checks_v2",
 }
 

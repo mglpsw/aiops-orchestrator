@@ -39,6 +39,7 @@ hand-built model.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import get_args
 
@@ -93,6 +94,17 @@ MASTER_SEMANTIC_DIGESTS = {
 
 LEGACY_MODES = ("reexecuted_in_producer_run", "upstream_artifact_republished")
 INDEPENDENT = "independent_data_only_host_tool"
+
+#: The semantic digest of `_policy_yaml` opting all three modes in. Pinned as a
+#: literal because the legacy digests above exercise only the branch that DROPS
+#: the key, leaving the sorted-projection branch with no pinned expectation at
+#: all. Two review lanes independently showed the consequence: replacing
+#: `sorted(effective)` with `list(effective)` makes the digest process-dependent
+#: (6 distinct values over 40 fresh processes) and reversing the sort changes it
+#: outright, and the whole suite stayed green for both. A same-process
+#: comparison of two frozensets cannot see either, because both sides get the
+#: same iteration order. Verified stable across hash seeds 0/1/42/12345/99999.
+OPTED_IN_SEMANTIC_DIGEST = "7e391125b581bb7583fa948ff40a51b13107894188386f2e913c3ba6fe6b1254"
 
 
 # --------------------------------------------------------------------------
@@ -258,6 +270,57 @@ def test_opting_in_moves_the_semantic_digest(tmp_path: Path) -> None:
     assert legacy.policy_source_semantic_digest != opted_in.policy_source_semantic_digest
 
 
+def test_an_opted_in_policy_has_a_pinned_canonical_semantic_digest(tmp_path: Path) -> None:
+    """The projected branch has a fixed expectation, not just a relative one.
+
+    `sorted(effective)` must produce ONE canonical form. Asserting only that
+    two digests differ, or that two same-process frozensets agree, cannot
+    detect a projection that is unordered or reverse-ordered -- both lanes
+    demonstrated exactly that. A literal can."""
+
+    loaded = _load(tmp_path, permitted=[*LEGACY_MODES, INDEPENDENT])
+    assert loaded.policy_source_semantic_digest == OPTED_IN_SEMANTIC_DIGEST
+
+
+def test_the_projected_digest_is_stable_across_processes(tmp_path: Path) -> None:
+    """Same policy, fresh interpreters, randomized hash seeds -- one digest.
+
+    The digest travels into provenance sidecars and is compared across runs, so
+    a value that depends on this process's set-iteration order would be a real
+    identity defect. `PYTHONHASHSEED` is set explicitly per child rather than
+    inherited, because a parent and child sharing a seed would hide it."""
+
+    import subprocess
+    import sys
+    import textwrap
+
+    aiops = tmp_path / ".aiops"
+    aiops.mkdir(parents=True, exist_ok=True)
+    (aiops / "authoritative-checks.v2.yaml").write_text(
+        _policy_yaml(permitted=[*LEGACY_MODES, INDEPENDENT]), encoding="utf-8"
+    )
+    program = textwrap.dedent(
+        """
+        import sys
+        from app.agent_review.authoritative_check_policy_v2 import (
+            load_authoritative_check_policy_v2,
+        )
+        print(load_authoritative_check_policy_v2(sys.argv[1]).policy_source_semantic_digest)
+        """
+    )
+    seen = set()
+    for seed in ("0", "1", "42", "12345"):
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+        )
+        seen.add(result.stdout.strip())
+    assert seen == {OPTED_IN_SEMANTIC_DIGEST}, seen
+
+
 # --------------------------------------------------------------------------
 # P1-A .. P1-E -- the authorization proposition, end to end
 # --------------------------------------------------------------------------
@@ -321,6 +384,31 @@ def test_p1_e_no_shipped_policy_authorizes_the_new_mode(target: str) -> None:
         assert INDEPENDENT not in entry.effective_permitted_execution_modes
 
 
+def test_a_policy_may_authorize_LESS_than_the_legacy_universe(tmp_path: Path) -> None:
+    """The narrowing half of the field, which nothing else exercised.
+
+    Every other test here opts in ADDITIVELY, so an implementation that OR-ed
+    the legacy set back in, or that consulted the policy only for the
+    independent mode, would satisfy all of them. Two lanes found exactly those
+    two weakenings surviving the entire suite.
+
+    Here a target authorizes ONLY the independent judge. `reexecuted_in_
+    producer_run` must then be refused for that target -- by the authorization
+    gate, naming the authorization, even though it is a mode the engine has
+    always understood and every other policy permits."""
+
+    loaded = _load(tmp_path, permitted=[INDEPENDENT])
+    entry = loaded.policy.entry_for("pytest")
+    assert entry.effective_permitted_execution_modes == frozenset({INDEPENDENT})
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as raised:
+        _assemble(loaded)
+    assert str(raised.value) == EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2
+
+    promoted = _assemble(loaded, observation=_independent_obs())
+    assert promoted.provenance.source_kind is RequiredCheckSourceKindV2.AUTHORITATIVE_CI
+
+
 def test_legacy_mode_under_legacy_policy_still_refuses_at_the_judge_gate(tmp_path: Path) -> None:
     """Master's behaviour, unchanged. `reexecuted_in_producer_run` is
     authorized by the legacy default, so authorization PASSES and the refusal
@@ -356,6 +444,29 @@ def test_the_authorization_gate_reads_the_policy_set_not_the_attestation(tmp_pat
             attestation=parsed, permitted_execution_modes=frozenset(LEGACY_MODES)
         )
     assert str(raised.value) == EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2
+
+
+def test_the_gate_is_fail_closed_on_an_empty_permitted_set() -> None:
+    """The public gate does not depend on a validator it cannot see.
+
+    No policy can reach here with an empty set -- `min_length=1` refuses that
+    at load. So this guard is unreachable through the assembler, and would be
+    a decorative guard if nothing witnessed it. It is not decorative: this
+    function is public, takes a raw `frozenset`, and a future caller resolving
+    the set some other way must not be silently granted everything by an empty
+    one. Asserted directly, because that is the only way to assert it."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import ProducerAttestationV2
+
+    for mode in (INDEPENDENT, *LEGACY_MODES):
+        parsed = ProducerAttestationV2.model_validate(
+            _attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1, check_execution_mode=mode)
+        )
+        with pytest.raises(RequiredCheckProvenanceErrorV2) as raised:
+            verify_execution_mode_is_policy_authorized_v2(
+                attestation=parsed, permitted_execution_modes=frozenset()
+            )
+        assert str(raised.value) == EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2, mode
 
 
 # --------------------------------------------------------------------------
@@ -450,12 +561,40 @@ def test_p2a_caller_supplied_executed_sha_still_refuses_with_opt_in(tmp_path: Pa
     assert str(raised.value) == EXECUTED_TREE_NOT_OBSERVED_REASON_V2
 
 
-def test_p2a_republished_artifact_still_refuses_as_not_first_hand(tmp_path: Path) -> None:
+def test_p2a_republished_artifact_refuses_as_not_first_hand_even_when_permitted(
+    tmp_path: Path,
+) -> None:
     """Even if a target opts the republished mode in, it is still not
     first-hand. Authorization is a NECESSARY condition, never a sufficient one:
     it cannot buy back a property the evidence does not have."""
 
     loaded = _load(tmp_path, permitted=[*LEGACY_MODES, INDEPENDENT])
+    observation = _obs(
+        producer_attestation=_attestation(
+            REPO, 7, BASE, HEAD, MERGE, "900", 1,
+            check_execution_mode="upstream_artifact_republished",
+        )
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as raised:
+        _assemble(loaded, observation=observation)
+    assert str(raised.value) == UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2
+
+
+def test_p2a_first_hand_is_diagnosed_before_authorization(tmp_path: Path) -> None:
+    """The gate ORDER the assembler docstring claims, pinned behaviourally.
+
+    Republished evidence under a policy that does NOT permit republishing is
+    the one input where two gates would both fire, so it is the only input that
+    can tell their order apart. Running the first-hand gate first says "this
+    evidence was forwarded"; running authorization first says "your policy
+    forbids this mode". The first is the truer diagnosis -- the evidence would
+    be unusable under ANY policy -- and it is the one a target can act on.
+
+    Both lanes found the ordering claim unpinned: moving the authorization gate
+    ahead of the first-hand gate passed the entire `tests/agent_review` suite
+    while silently changing this reason code."""
+
+    loaded = _load(tmp_path, permitted=[INDEPENDENT])
     observation = _obs(
         producer_attestation=_attestation(
             REPO, 7, BASE, HEAD, MERGE, "900", 1,
@@ -499,13 +638,28 @@ def test_no_policy_file_in_this_repository_opts_in() -> None:
 
     Every discovered policy is loaded through the REAL loader and asked for its
     EFFECTIVE authorization, so a file that opted in via some representation
-    this test did not anticipate would still be caught."""
+    this test did not anticipate would still be caught.
+
+    SCOPE, STATED HONESTLY. An authoritative-check policy lives in the TARGET
+    repository, not here -- see `authoritative_check_policy_v2`'s module
+    docstring. The only policies this walk can see are the two test fixtures.
+    So this proves "nothing in this repository opts in", which is what section
+    12 of the slice grant asks for, and NOT "no target has opted in", which
+    cannot be answered from this repository at all. Auditing real target
+    policies belongs to `#203`'s target-pack conformance path, and is the named
+    successor for this control rather than something this test can bluff."""
 
     root = Path(__file__).resolve().parents[2]
+    # Filter on the path RELATIVE to the repository root. Filtering the
+    # absolute path dropped every policy whenever the checkout itself lived
+    # under a component named `tmp` (`/tmp/...`, `/var/tmp/...`), which two
+    # lanes hit immediately. The vacuity guard below turned that into a loud
+    # failure rather than a silent pass, which is the only reason it was
+    # merely annoying rather than a false green.
     policies = sorted(
         path
         for path in root.rglob("authoritative-checks*.yaml")
-        if ".git" not in path.parts and "tmp" not in path.parts
+        if ".git" not in path.relative_to(root).parts
     )
     assert policies, "the discovery walk found nothing -- it would pass vacuously"
 

@@ -534,6 +534,15 @@ def verify_execution_mode_is_policy_authorized_v2(
     does not make a republished artifact first-hand, because
     `verify_producer_execution_is_first_hand_v2` has already refused it."""
 
+    # The empty check is not redundant with the loader's refusal of an empty
+    # `permitted_execution_modes`. This function is public and takes a raw
+    # frozenset, so its fail-closed behaviour must not depend on a validator in
+    # a module it does not import. An adversarial lane showed both
+    # `if permitted and mode not in permitted` and a loader-side default change
+    # surviving the whole suite, safe only by that indirect coupling.
+    if not permitted_execution_modes:
+        raise RequiredCheckProvenanceErrorV2(EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2)
+
     if attestation.check_execution_mode not in permitted_execution_modes:
         raise RequiredCheckProvenanceErrorV2(EXECUTION_MODE_NOT_POLICY_AUTHORIZED_REASON_V2)
 

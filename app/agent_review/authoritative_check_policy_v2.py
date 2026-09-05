@@ -257,7 +257,15 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
     # `compute_policy_semantic_digest_v2`) and a repeated member is a malformed
     # set rather than a set, so both are normalised or refused rather than
     # silently accepted.
-    permitted_execution_modes: tuple[CheckExecutionModeV2, ...] | None = None
+    # `min_length=1` rather than a model validator so the refusal also appears
+    # in the exported JSON Schema as `minItems`. An external validator should
+    # reject what this engine rejects; a review lane found the published schema
+    # accepting shapes the loader refuses. `uniqueItems` has no pydantic
+    # equivalent for a tuple, so the duplicate refusal below remains
+    # engine-only -- the divergence is engine-STRICTER, hence fail-closed.
+    permitted_execution_modes: (
+        Annotated[tuple[CheckExecutionModeV2, ...], Field(min_length=1)] | None
+    ) = None
     # Structurally pinned rather than configurable -- see the module docstring.
     permitted_conclusions: tuple[Literal["success"], Literal["failure"]]
     origin_rules: OriginRulesV2
@@ -280,15 +288,16 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
         # than deduplicated: silently accepting it would mean the file an
         # auditor reads and the authorization this engine applies are two
         # different things.
+        # Emptiness is refused by `min_length=1` on the field itself, which is
+        # also what puts `minItems` in the published schema. Duplicates are
+        # refused here because JSON Schema's `uniqueItems` has no pydantic
+        # equivalent for a tuple. Both are load-time refusals for the same
+        # reason `origin_rules` uses one: a target should learn its policy
+        # cannot work when it writes the policy, not when a review silently
+        # never becomes ready.
         if self.permitted_execution_modes is not None:
             if len(self.permitted_execution_modes) != len(set(self.permitted_execution_modes)):
                 raise ValueError("permitted_execution_modes may not repeat a mode")
-            # Same load-time refusal as `origin_rules`: an entry authorising no
-            # execution mode at all can never promote, and a target should learn
-            # that when it writes the policy, not when a review silently never
-            # becomes ready.
-            if not self.permitted_execution_modes:
-                raise ValueError("an entry must permit at least one execution mode")
         # The producer must live in a repository, not in the pull request's own
         # tree by coincidence of path.
         if self.producer_workflow.repository == "":
