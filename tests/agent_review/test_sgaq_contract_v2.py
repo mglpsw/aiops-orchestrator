@@ -38,6 +38,7 @@ import pickle
 
 import pytest
 
+import app.agent_review.sgaq_contract_v2 as sgaq
 from app.agent_review.sgaq_contract_v2 import (
     CarrierReconciliationError,
     DerivationStepV2,
@@ -375,6 +376,92 @@ def test_f15_a_keyed_relation_is_identical_under_caller_key_order() -> None:
         "resolve_exact_oid": frozenset({"class_a", "class_b"}),
     })
     assert semantic_digest(forward) == semantic_digest(backward)
+
+
+# --------------------------------------------------------------------------
+# construction-time guards -- one falsifier per guard, not per witness
+#
+# The paired mutation proof found two production guards with no test reaching
+# them at all, and one test that passed for the wrong reason. Closing the
+# proposition means every guard that can refuse a contract has a case here.
+# --------------------------------------------------------------------------
+
+
+def test_the_production_field_class_table_must_cover_every_field() -> None:
+    """A field in the dataclass but in neither class table is unclassified.
+
+    This is production-internal drift, and it is NOT what C1 checks: C1
+    reconciles the oracle against the dataclass, and stays green while
+    production forgets to classify a field it already has.
+    """
+    original = sgaq._SEMANTIC_FIELDS
+    try:
+        sgaq._SEMANTIC_FIELDS = tuple(n for n in original if n != "object_formats")
+        with pytest.raises(SemanticProjectionError, match="not total"):
+            sgaq._assert_field_universe_is_total()
+    finally:
+        sgaq._SEMANTIC_FIELDS = original
+    sgaq._assert_field_universe_is_total()
+
+
+def test_a_field_declared_in_two_classes_is_refused() -> None:
+    original = sgaq._ENVELOPE_FIELDS
+    try:
+        sgaq._ENVELOPE_FIELDS = original + ("claims",)
+        with pytest.raises(SemanticProjectionError):
+            sgaq._assert_field_universe_is_total()
+    finally:
+        sgaq._ENVELOPE_FIELDS = original
+
+
+def test_a_keyed_relation_with_duplicate_keys_is_refused() -> None:
+    """Distinct from F15, which is about key ORDER. Order-independence and
+    duplicate rejection are different properties of a keyed relation."""
+    with pytest.raises(ValueError, match="duplicate keys"):
+        _contract(candidate_location_grammar=(
+            ("container_template", "one"),
+            ("container_template", "two"),
+        ))
+
+
+@pytest.mark.parametrize(
+    ("label", "overrides", "match"),
+    [
+        ("non-string set member", {"claims": frozenset({"ok"}) | {1}}, "must be a string"),
+        ("empty claim scope", {"claims": frozenset()}, "no supported claim"),
+        ("non-string relation key", {"verification_obligations": ((1, "x"),)}, "must be a string"),
+        ("relation of the wrong shape", {"verification_obligations": "not-a-relation"},
+         "mapping or a sequence"),
+        ("non-string relation value", {"verification_obligations": (("k", 2),)},
+         "expected a string value"),
+        ("wrong nested record type", {"evidence_requirements": {"class_a": "not-a-record"}},
+         "expected exactly EvidenceRequirementV2"),
+        ("wrong ordered member type", {"permitted_derivations": ("not-a-step",)},
+         "must be a DerivationStepV2"),
+        ("empty interpreter identity", {"semantic_projection_algorithm_id": ""}, "required"),
+        ("non-string interpreter identity", {"semantic_projection_algorithm_id": 7}, "required"),
+        ("non-string envelope prose", {"description": 3}, "must be a string"),
+    ],
+)
+def test_construction_refuses_malformed_semantic_input(label, overrides, match) -> None:
+    """Every construction-time guard, enumerated. A guard with no case here is a
+    guard that could be deleted without any test noticing."""
+    with pytest.raises(ValueError, match=match):
+        _contract(**overrides)
+
+
+def test_a_field_stored_by_reference_would_be_caught_by_the_alias_control() -> None:
+    """The alias control must fail for the right reason.
+
+    Copying the caller's iterable into a list already defeats a naive alias
+    attack, so a normalisation that merely copies would pass C6 without
+    sealing anything. This states the property C6 depends on: the stored value
+    is immutable, not merely a copy.
+    """
+    contract = _contract()
+    for name in _MUTABLE_INPUTS:
+        stored = getattr(contract, name)
+        assert isinstance(stored, (frozenset, tuple)), f"{name} is stored as {type(stored)}"
 
 
 # --------------------------------------------------------------------------
