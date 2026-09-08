@@ -102,11 +102,15 @@ three-round history, rather than needing one guard per item:
   was the exception until `#331-A`: it alone was handed whole to one
   `os.open()`, where `O_NOFOLLOW` binds the final component only.
 
-  This closes retargeting by SYMLINK, within a walk. It does not close
-  retargeting by RENAME, between two independent walks: an absolute
-  derived pointer restarts from `/`, so a linked worktree re-walks
-  components by pathname after `repo_root`'s descriptor is already held.
-  Reproduced; unchanged from the predecessor; owned by `#331-B`.
+  This prevents a symlink component from being FOLLOWED at its own
+  authoritative open. It does NOT make the walk atomic against concurrent
+  rename/replacement of components not yet opened -- neither within one
+  walk nor between two of them. An absolute derived pointer additionally
+  restarts from `/`, so a linked worktree re-walks components by pathname
+  after `repo_root`'s descriptor is already held. Both reproduced; the
+  derived-pointer re-walk is unchanged from the predecessor and owned by
+  `#331-B`. See `open_trusted_object_authority_v2` for the full statement
+  of what is and is not established.
 
 ## What still needs its own handling, and why
 
@@ -758,10 +762,16 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
     later call. The exact-`str` gate mirrors `#313`'s trust-anchor
     precedent: a `str` SUBCLASS can override `__str__`/`__eq__` and make a
     later observation disagree with this one, so it is refused rather than
-    coerced. A genuinely wrong argument type raises `TypeError` out of
-    `os.fspath` uncaught, per this package's authority-error-surface
-    doctrine (an expected operational failure gets a typed reason; a
-    programmer defect escapes raw).
+    coerced.
+
+    Two different wrong-type outcomes, distinguished because they are not the
+    same event. An object `os.fspath` itself rejects (an `int`, `None`, a
+    `__fspath__` returning a non-path) raises `TypeError` UNCAUGHT, per this
+    package's authority-error-surface doctrine: a programmer defect escapes
+    raw. A `bytes` locator is NOT one of those -- `os.fspath` accepts it and
+    returns `bytes` -- so it is refused by the exact-`str` gate below and
+    surfaces as a typed refusal instead. Do not read this paragraph as
+    claiming every wrong argument type reaches `TypeError`.
 
     ## Ownership
 
@@ -813,10 +823,17 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
     delivers pending signals: an async exception there escapes outside any
     `try` and strands the descriptor for the process lifetime (measured: 20/20
     leaked at that instant under a transfer contract, 0/20 at the predecessor,
-    which opened the descriptor inside this same function). Borrowing also
-    keeps the seam usable by `#331-B`, whose caller will hold a long-lived
-    authorized directory capability it cannot afford to have closed out from
-    under it, and would otherwise have to `os.dup()` before every call.
+    which opened the descriptor inside this same function). Borrowing RELOCATES
+    that window to the owner's own `try`, where it is bounded; it does not
+    eliminate the class. Independent review measured the residual precisely:
+    an async exception can still strand one descriptor per component opened
+    during the walk, so the number of such windows now scales with locator
+    depth rather than being constant. That is inherent to opening N
+    descriptors in interpreted code and is disclosed rather than claimed away.
+    Borrowing also keeps the seam usable by `#331-B`, whose caller will hold a
+    long-lived authorized directory capability it cannot afford to have closed
+    out from under it, and would otherwise have to `os.dup()` before every
+    call.
 
     It is never re-derived from a pathname here -- `#331-A`'s whole point is
     that the locator string is not consulted again after that first open.
@@ -1383,12 +1400,38 @@ def open_trusted_object_authority_v2(
     (`base_fd` is discarded). `git worktree add` always writes an absolute
     `gitdir:` pointer, so a linked worktree's acquisition performs a second,
     independent pathname walk over components it may share with `repo_root`.
-    Per-component `O_NOFOLLOW` closes symlink retargeting WITHIN one walk; it
-    does not close a component being REPLACED BETWEEN two walks, and a
-    concurrent renamer there was measured swapping the acquired repository.
-    That mechanism is unchanged from the predecessor -- `#331-A` neither
-    introduced nor closed it -- and is owned by `#331-B`, whose authorized
-    capability makes the second walk unnecessary rather than merely safer.
+    Per-component `O_NOFOLLOW` prevents a symbolic-link component from being
+    FOLLOWED at that component's authoritative open. It does not make the
+    multi-step walk atomic: a component that has NOT YET been opened can still
+    be renamed or replaced concurrently, within a single walk as well as
+    between two of them. A descriptor already retained stays bound to the
+    object it opened even if that directory is later renamed; the limitation
+    concerns components not yet reached, never descriptors already held.
+
+    Two consequences, both reproduced during this slice's qualification and
+    disclosed rather than implied:
+
+    * Replacing a component of a DERIVED pointer between two walks: an
+      absolute `gitdir:`/`commondir`/alternates target restarts from `/`, so a
+      linked worktree re-walks components it may share with `repo_root`. That
+      mechanism is unchanged from the predecessor -- `#331-A` neither
+      introduced nor closed it -- and is owned by `#331-B`.
+    * Replacing a not-yet-opened component of the CALLER locator during the
+      ingress walk. Descending component by component means each intermediate
+      directory is genuinely opened rather than merely traversed, so the walk
+      is observable to a watcher and spans several syscalls instead of one
+      kernel path resolution. An adversary who can already rename ancestor
+      directories can use that to make a rename race more reliable than it was
+      against the predecessor's single `os.open`. This is a real cost of the
+      change, accepted because a symlinked ancestor was previously followed
+      unconditionally, which is a strictly easier attack.
+
+    A stronger kernel primitive -- plausibly `openat2` with appropriate
+    resolution flags -- deserves separate investigation. This slice does NOT
+    demonstrate that such a primitive would close every rename race, and no
+    claim to that effect is made here. `#331-B` can avoid part of this class
+    by supplying pre-authorized capabilities/descriptors instead of
+    rediscovering external storage by pathname.
 
     Deliberately no separate
     `Path.is_dir()` pre-check on `repo_root` here (an earlier version had
@@ -1406,8 +1449,18 @@ def open_trusted_object_authority_v2(
     was even entered. `_open_repo_root_fd_v2` is what makes the claim true;
     the wording was not weakened to fit the old mechanism.
 
-    `repo_root` must be ABSOLUTE and free of `..` components. A relative
-    locator is refused (`..._RELATIVE_REPO_ROOT_REASON_V2`) rather than
+    THE LOCATOR CONTRACT, in full, because "absolute-only" is not all of it.
+    `repo_root` must be absolute; free of `..` components; free of symlinks at
+    EVERY component, ancestors as well as the final one; an exact built-in
+    `str` after `os.fspath`; and within the walker's hard segment budget
+    (`_DEFAULT_MAX_PATH_SEGMENTS_V2`, 256 at the time of writing -- ordinary
+    multi-component paths are supported up to that configured budget, which
+    `#331-A` applies to the caller locator for the first time by routing it
+    through the shared walker). Only the first two have their own reason code;
+    the rest surface as `SYMLINK_REJECTED`, `REPOSITORY_UNUSABLE` and
+    `BUDGET_EXCEEDED` respectively.
+
+    A relative locator is refused (`..._RELATIVE_REPO_ROOT_REASON_V2`) rather than
     anchored to the process-wide cwd, which would be an implicit, undeclared
     authority. A `..` component is refused (`..._REPO_ROOT_NOT_NORMALISED_
     REASON_V2`) because, alone among components, its target is not named by

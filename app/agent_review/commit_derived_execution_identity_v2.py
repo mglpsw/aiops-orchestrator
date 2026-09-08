@@ -747,6 +747,14 @@ def verify_executed_source_identity_v2(
     # walks it component by component, no-follow, and retains the resulting
     # descriptor. Nothing below reads `repo_root` again: every subsequent
     # read goes through `authority.trusted_repo_root` (the private CAS).
+    #
+    # The locator contract that authority enforces is absolute, `..`-free,
+    # symlink-free at every component, exact built-in `str`, and within its
+    # segment budget -- see `open_trusted_object_authority_v2`. Every one of
+    # those refusals is reported from here as a single reason code, so the
+    # authority's more specific locator diagnoses do not reach this
+    # function's caller; they remain on `__cause__`. Narrowing that is a
+    # separate, unowned follow-up, deliberately not changed by `#331-A`.
     subject_root = Path(subject_root).resolve()
 
     if not subject_root.is_dir():
@@ -919,6 +927,14 @@ def authorize_commit_for_execution_v2(
     # walks it component by component, no-follow, and retains the resulting
     # descriptor. Nothing below reads `repo_root` again: every subsequent
     # read goes through `authority.trusted_repo_root` (the private CAS).
+    #
+    # The locator contract that authority enforces is absolute, `..`-free,
+    # symlink-free at every component, exact built-in `str`, and within its
+    # segment budget -- see `open_trusted_object_authority_v2`. Every one of
+    # those refusals is reported from here as a single reason code, so the
+    # authority's more specific locator diagnoses do not reach this
+    # function's caller; they remain on `__cause__`. Narrowing that is a
+    # separate, unowned follow-up, deliberately not changed by `#331-A`.
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root

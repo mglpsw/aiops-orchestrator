@@ -2206,8 +2206,15 @@ def test_repo_root_pathname_is_never_reopened_after_the_first_authoritative_open
 
 def test_multi_component_ordinary_repo_root_still_acquires(tmp_path: Path) -> None:
     """Positive control: a perfectly ordinary repository several plain
-    directory components deep must keep working. The per-component walk is a
-    safety mechanism, not a depth restriction."""
+    directory components deep must keep working.
+
+    The per-component walk is a safety mechanism, and ordinary multi-component
+    paths are supported up to the walker's configured hard segment budget
+    (`_DEFAULT_MAX_PATH_SEGMENTS_V2`). `#331-A` routes the caller locator
+    through that shared walker, so that budget now applies to `repo_root` too
+    -- a locator exceeding it is refused as `BUDGET_EXCEEDED` rather than
+    acquired. This test pins the ordinary case, well inside the budget; it is
+    deliberately not a claim that depth is unbounded."""
 
     deep = tmp_path / "p" / "q" / "r" / "repo"
     _init_repo(deep)

@@ -242,8 +242,16 @@ def materialise_commit_subject_v2(
 ) -> MaterialisedCommitSubjectV2:
     """`#331-A`: `repo_root` is passed through to
     `open_trusted_object_authority_v2` unchanged, so this function inherits
-    that authority's locator contract -- the path must be ABSOLUTE and free
-    of `..` components, and is deliberately never `resolve()`d here.
+    that authority's locator contract in full -- absolute, free of `..`, free
+    of symlinks at every component (ancestors included, not just the final
+    one), an exact built-in `str` after `os.fspath`, and within the walker's
+    hard segment budget. It is deliberately never `resolve()`d here. See that
+    function for the contract and for what it does and does not establish.
+
+    Note that this function reports every refusal from that authority as
+    `SUBJECT_TREE_UNREADABLE_REASON_V2`, so the authority's more specific
+    locator reason codes do not reach this caller; they remain available on
+    `__cause__`. Narrowing that is a separate, unowned follow-up.
 
     Write `ref`'s resolved commit's committed bytes into an empty directory.
 
