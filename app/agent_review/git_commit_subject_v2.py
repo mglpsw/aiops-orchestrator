@@ -240,7 +240,12 @@ def _safe_destination_v2(*, subject_root: Path, relative_path: str) -> Path:
 def materialise_commit_subject_v2(
     *, repo_root: Path, ref: str, destination: Path
 ) -> MaterialisedCommitSubjectV2:
-    """Write `ref`'s resolved commit's committed bytes into an empty directory.
+    """`#331-A`: `repo_root` is passed through to
+    `open_trusted_object_authority_v2` unchanged, so this function inherits
+    that authority's locator contract -- the path must be ABSOLUTE and free
+    of `..` components, and is deliberately never `resolve()`d here.
+
+    Write `ref`'s resolved commit's committed bytes into an empty directory.
 
     The result is severed from `repo_root`: deleting or rewriting the
     original checkout afterwards cannot change what was materialised.
