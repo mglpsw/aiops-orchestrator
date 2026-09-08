@@ -92,9 +92,11 @@ three-round history, rather than needing one guard per item:
   with `O_NOFOLLOW`; even if the entry is swapped between listing and
   open, the open() call itself is the authoritative, atomic check.
 - **ancestral-path retargeting** (an intermediate path component, not just
-  the leaf, replaced between resolution steps) -- closed by per-component
-  `dir_fd`-relative descent for every multi-segment string this module
-  resolves: the caller-supplied `repo_root` itself (`#331-A`, see
+  the leaf, retargeted between resolution steps) -- its SYMLINK form is
+  closed by per-component `dir_fd`-relative descent for every multi-segment
+  string this module resolves; its RENAME form is not (see below). The
+  strings so resolved are: the caller-supplied `repo_root` itself
+  (`#331-A`, see
   `_open_repo_root_fd_v2`) and every pointer derived from repository
   content (`gitdir:`/`commondir` pointers, alternates entries). Each step
   is anchored to an already-open, already-verified parent descriptor,
@@ -619,10 +621,22 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     target) ONE COMPONENT AT A TIME, each opened no-follow relative to the
     descriptor reached so far -- never a single multi-segment path handed
     to one `open()` call, which would let the OS resolve intermediate
-    components through its own (symlink-following) walk. This is what
-    closes "ancestral-path retargeting": every step is anchored to an
-    already-open, already-verified parent descriptor, never a re-walked
-    path string.
+    components through its own (symlink-following) walk. Every step is
+    anchored to an already-open, already-verified parent descriptor, never a
+    re-walked path string.
+
+    PRECISELY WHAT THAT CLOSES, and what it does not. It closes retargeting
+    by SYMLINK: no component can be a symlink and still be followed, because
+    each one is opened no-follow in its own right. It does NOT close
+    retargeting by RENAME: a component that has not yet been opened can be
+    renamed away and replaced between two steps of this loop, and the walk
+    will then continue through the replacement, which is a real directory and
+    therefore not something `O_NOFOLLOW` can refuse. Reproduced through a
+    public entry point during `#331-A`'s qualification, with no symlink
+    anywhere. An earlier version of this sentence said this function "closes
+    ancestral-path retargeting" without that qualifier; it does not, and
+    `#331-A` made the sentence load-bearing for the caller-supplied
+    `repo_root` by routing it through here.
 
     An absolute `path_str` starts fresh from `/`; a relative one starts
     from `base_fd` (required in that case). A hard cap on the number of
@@ -787,9 +801,17 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
         NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE
 
     External `gitdir:`, `commondir` and alternates targets remain
-    reachable-but-unauthorized, an absolute derived locator still restarts
-    from `/`, and `..` is still accepted as an ordinary directory entry.
-    Closing that is `#331-B`, not this function.
+    reachable-but-unauthorized, and an absolute DERIVED locator still restarts
+    from `/`. `..` also remains an ordinary directory entry in those derived
+    pointers, where git requires it -- but NOT in the caller-supplied locator
+    this function gates, which refuses it outright a few lines below. Closing
+    the derived-pointer half is `#331-B`, not this function.
+
+    Nor does this function make the walk atomic. A component not yet opened
+    can be renamed away and replaced between two steps; per-component
+    `O_NOFOLLOW` refuses a symlink, not a real directory swapped into place.
+    See `open_trusted_object_authority_v2` for the full statement of that
+    cost.
     """
 
     captured = os.fspath(repo_root)

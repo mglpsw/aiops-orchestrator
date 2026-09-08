@@ -2029,11 +2029,14 @@ def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path
 # -- `#331-A` top-level retained-descriptor ingress -----------------------------
 #
 # RED discipline for this section, matching this file's own docstring: every
-# test below was run against `master@4e334ab4` BEFORE the `#331-A` change. The
-# focal one (`..._ancestor_symlink_...`) was ACCEPTED there and is refused here;
-# the final-component and positive-control cases already held and are pinned so
-# the fix cannot be "achieved" by breaking them. That RED run is recorded in the
-# PR body.
+# test below was run against `master@4e334ab4` BEFORE the `#331-A` change.
+# Several were RED there, not just one: the focal `..._ancestor_symlink_...`
+# was ACCEPTED, and so were the `..`-component and `str`-subclass locators (the
+# latter acquiring its CAS from the decoy repository). The relative locator was
+# refused at base, but under a different reason code than the one this slice
+# introduces. The final-component and positive-control cases already held and
+# are pinned so the fix cannot be "achieved" by breaking them. That RED run is
+# recorded in the PR body.
 #
 # These tests name their own targets literally. None is generated from a
 # production constant whose deletion would also delete the test.
