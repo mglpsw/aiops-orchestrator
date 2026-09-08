@@ -94,9 +94,13 @@ three-round history, rather than needing one guard per item:
 - **ancestral-path retargeting** (an intermediate path component, not just
   the leaf, replaced between resolution steps) -- closed by per-component
   `dir_fd`-relative descent for every multi-segment string this module
-  resolves (`gitdir:`/`commondir` pointers, alternates entries): each step
+  resolves: the caller-supplied `repo_root` itself (`#331-A`, see
+  `_open_repo_root_fd_v2`) and every pointer derived from repository
+  content (`gitdir:`/`commondir` pointers, alternates entries). Each step
   is anchored to an already-open, already-verified parent descriptor,
-  never a re-walked path string handed to a single `open()`.
+  never a re-walked path string handed to a single `open()`. `repo_root`
+  was the exception until `#331-A`: it alone was handed whole to one
+  `os.open()`, where `O_NOFOLLOW` binds the final component only.
 
 ## What still needs its own handling, and why
 
@@ -247,6 +251,13 @@ TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_
 TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2 = "trusted_object_authority_special_file_rejected"
 TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
 TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2 = "trusted_object_authority_pack_verification_failed"
+# G1C2-#331-A: the caller supplied a relative `repo_root`. Distinct from
+# `REPOSITORY_UNUSABLE` because it is a caller-contract error with a
+# different fix (pass an absolute locator), not a statement about what was
+# found on disk. A relative locator can only be anchored to an implicit
+# process-wide cwd, which would be a new, undeclared authority -- refused
+# rather than resolved. See `_open_repo_root_fd_v2`.
+TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2 = "trusted_object_authority_relative_repo_root"
 
 #: Hard budgets, enforced *before* any copied byte is handed to git for
 #: parsing (CAEM ADR 0011's "hard budgets precede untrusted parsing",
@@ -701,14 +712,81 @@ class _GitDirectoriesV2:
     common_dir_fd: int
 
 
-def _resolve_git_directories_fd_v2(repo_root: Path) -> _GitDirectoriesV2:
+def _open_repo_root_fd_v2(repo_root: Path) -> int:
+    """FIRST AUTHORITATIVE OPEN of the caller-supplied `repo_root` locator
+    (`#331-A`), component by component, no-follow at every step.
+
+    ## The asymmetry this closes
+
+    Until `#331-A` this module resolved `repo_root` with a SINGLE
+    `os.open(<whole multi-segment pathname>, O_DIRECTORY | O_NOFOLLOW)`.
+    `O_NOFOLLOW` constrains only the FINAL component: every INTERMEDIATE
+    component was walked by the kernel's own symlink-following resolver.
+    The module therefore applied per-component no-follow descent to every
+    pointer it derived from hostile repository content (`gitdir:`,
+    `commondir`, `objects/info/alternates`) while its own entry locator --
+    the one whose safety everything downstream rests on -- got the weaker
+    treatment. Independently reproduced before this change: a `repo_root`
+    reached through a symlinked ANCESTOR component was ACCEPTED, while the
+    same repository reached through a symlinked FINAL component was
+    correctly refused.
+
+    This function reuses `_open_dir_by_segments_no_follow_v2` -- the walker
+    that already existed for those derived pointers. There is deliberately
+    no second walker.
+
+    ## The locator is read exactly once
+
+    `os.fspath` is called ONCE and only that captured value is used. A
+    `PathLike` whose `__fspath__` returns a different value on a later call
+    cannot make discovery and acquisition disagree, because there is no
+    later call. The exact-`str` gate mirrors `#313`'s trust-anchor
+    precedent: a `str` SUBCLASS can override `__str__`/`__eq__` and make a
+    later observation disagree with this one, so it is refused rather than
+    coerced. A genuinely wrong argument type raises `TypeError` out of
+    `os.fspath` uncaught, per this package's authority-error-surface
+    doctrine (an expected operational failure gets a typed reason; a
+    programmer defect escapes raw).
+
+    ## Ownership
+
+    Returns a descriptor the caller must close. Ownership is transferred to
+    `_resolve_git_directories_fd_v2`, which closes it on every exit path.
+
+    ## What this does NOT establish
+
+    Reaching a directory without following a symlink is not permission to
+    read it:
+
+        NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE
+
+    External `gitdir:`, `commondir` and alternates targets remain
+    reachable-but-unauthorized, an absolute derived locator still restarts
+    from `/`, and `..` is still accepted as an ordinary directory entry.
+    Closing that is `#331-B`, not this function.
+    """
+
+    captured = os.fspath(repo_root)
+    if type(captured) is not str:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
+    if not PurePosixPath(captured).is_absolute():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2)
+    return _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
+
+
+def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
     """Resolve both the worktree-private and shared git directories,
     worktree-aware, ENTIRELY via descriptor-anchored opens -- never a git
     invocation (a hostile/malformed live `config` cannot make this fail,
     since nothing here parses it), and never a pathname re-resolved after
     an earlier check established something about it.
+
+    `repo_root_fd` is the descriptor `_open_repo_root_fd_v2` produced by its
+    first authoritative open. OWNERSHIP IS TRANSFERRED BY THIS CALL: this
+    function closes it on every exit path, success or exception. It is never
+    re-derived from a pathname here -- `#331-A`'s whole point is that the
+    locator string is not consulted again after that first open.
     """
-    repo_root_fd = _open_dir_no_follow_v2(None, str(repo_root))
     try:
         # `.git` is legitimately EITHER a directory (ordinary repo) OR a
         # regular file (a `gitdir:` pointer, linked worktree) -- both
@@ -1267,12 +1345,26 @@ def open_trusted_object_authority_v2(
     pathname re-resolved a second time. Deliberately no separate
     `Path.is_dir()` pre-check on `repo_root` here (an earlier version had
     one): it would itself follow a symlink and would in any case be
-    immediately superseded by `_resolve_git_directories_fd_v2`'s own
-    authoritative, atomic no-follow open of the very same path -- keeping
-    it would have been dead weight inconsistent with this module's own
-    "the open is the check" principle, not a second layer of protection.
+    immediately superseded by the authoritative no-follow open of the very
+    same path -- keeping it would have been dead weight inconsistent with
+    this module's own "the open is the check" principle, not a second layer
+    of protection.
+
+    Until `#331-A` the paragraph above was an OVERCLAIM for `repo_root`
+    itself: the sentence was true of everything this module derived, but
+    `repo_root` was handed whole to one `os.open()`, so its intermediate
+    components were resolved by the kernel's symlink-following walk, and
+    two callers dereferenced it with `Path.resolve()` before this function
+    was even entered. `_open_repo_root_fd_v2` is what makes the claim true;
+    the wording was not weakened to fit the old mechanism.
+
+    `repo_root` must be ABSOLUTE. A relative locator is refused with
+    `TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2` rather than
+    anchored to the process-wide cwd, which would be an implicit, undeclared
+    authority; no caller, test or published document depended on relative
+    locators when this contract was frozen.
     """
-    git_dirs = _resolve_git_directories_fd_v2(Path(repo_root))
+    git_dirs = _resolve_git_directories_fd_v2(repo_root_fd=_open_repo_root_fd_v2(repo_root))
     budget = _ObjectCopyBudgetV2(
         max_total_bytes=max_total_bytes,
         max_object_count=max_object_count,
