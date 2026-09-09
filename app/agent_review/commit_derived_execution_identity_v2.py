@@ -738,7 +738,11 @@ def verify_executed_source_identity_v2(
        lives under the root" are different properties, and neither check is
        asked to cover for the other.
     """
-    repo_root = Path(repo_root).resolve()
+    # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
+    # owns component-wise no-follow acquisition of the raw locator, and states
+    # the locator contract. Nothing below reads `repo_root` again; every read
+    # goes through `authority.trusted_repo_root`. Locator refusals arrive here
+    # as one reason code, with the authority's specific code on `__cause__`.
     subject_root = Path(subject_root).resolve()
 
     if not subject_root.is_dir():
@@ -902,7 +906,11 @@ def authorize_commit_for_execution_v2(
     if not _is_full_commit_sha_shape_v2(trusted_ref_sha):
         raise ExecutedSourceIdentityError(IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2)
 
-    repo_root = Path(repo_root).resolve()
+    # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
+    # owns component-wise no-follow acquisition of the raw locator, and states
+    # the locator contract. Nothing below reads `repo_root` again; every read
+    # goes through `authority.trusted_repo_root`. Locator refusals arrive here
+    # as one reason code, with the authority's specific code on `__cause__`.
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root

@@ -43,19 +43,22 @@ open object -> authenticate the OPENED CAPABILITY -> use that SAME
 capability, never re-resolve by pathname again
 ```
 
-Concretely: open a root directory with `O_NOFOLLOW`, retain the resulting
-file descriptor. Every subsequent step operates on that fd, or on a
-descriptor opened *relative to* it (`os.open(name, ..., dir_fd=parent_fd)`,
-Python's `openat()` equivalent) -- never a fresh absolute/relative pathname
-lookup from the filesystem root. `O_NOFOLLOW` at every step means a symlink
-anywhere in the chain fails to open rather than being followed. `fstat` and
-`read` operate on that same already-open descriptor, never a fresh
-`stat()`/`open()` by path. Multi-segment path strings this module must
-still resolve (a `gitdir:` pointer's target, a `commondir` file's content,
-an `objects/info/alternates` entry) are walked ONE COMPONENT AT A TIME,
-each opened no-follow relative to the descriptor reached so far -- never
-handed whole to a single `open()` call, which would let the OS resolve
-intermediate components through its own (symlink-following) path walk.
+Concretely: reach a root directory by opening it component by component,
+`O_NOFOLLOW` at each step, and retain the resulting file descriptor. Every
+subsequent step operates on that fd, or on a descriptor opened *relative to*
+it (`os.open(name, ..., dir_fd=parent_fd)`, Python's `openat()` equivalent)
+-- never a fresh absolute/relative pathname lookup from the filesystem root.
+`O_NOFOLLOW` at every step means a symlink anywhere in the chain fails to
+open rather than being followed. `fstat` and `read` operate on that same
+already-open descriptor, never a fresh `stat()`/`open()` by path.
+
+Multi-segment acquisition locators handled by this descriptor-anchored path
+-- the caller-supplied `repo_root`, a `gitdir:` pointer's target, a
+`commondir` file's content, an `objects/info/alternates` entry -- are walked
+ONE COMPONENT AT A TIME, each opened no-follow relative to the descriptor
+reached so far, never handed whole to a single `open()` call, which would
+let the OS resolve intermediate components through its own
+(symlink-following) path walk.
 
 This single design structurally dissolves every mechanism in PR #308's
 three-round history, rather than needing one guard per item:
@@ -92,11 +95,25 @@ three-round history, rather than needing one guard per item:
   with `O_NOFOLLOW`; even if the entry is swapped between listing and
   open, the open() call itself is the authoritative, atomic check.
 - **ancestral-path retargeting** (an intermediate path component, not just
-  the leaf, replaced between resolution steps) -- closed by per-component
-  `dir_fd`-relative descent for every multi-segment string this module
-  resolves (`gitdir:`/`commondir` pointers, alternates entries): each step
+  the leaf, retargeted between resolution steps) -- its SYMLINK form is
+  closed by per-component `dir_fd`-relative descent for every multi-segment
+  string this module resolves; its RENAME form is not; see the limitation stated by
+  `open_trusted_object_authority_v2`. The
+  strings so resolved are: the caller-supplied `repo_root` itself
+  (`#331-A`, see
+  `_open_repo_root_fd_v2`) and every pointer derived from repository
+  content (`gitdir:`/`commondir` pointers, alternates entries). Each step
   is anchored to an already-open, already-verified parent descriptor,
   never a re-walked path string handed to a single `open()`.
+
+  This prevents a symlink component from being FOLLOWED at its own
+  authoritative open. It does NOT make the walk atomic against concurrent
+  rename/replacement of components not yet opened -- neither within one
+  walk nor between two of them. An absolute derived pointer additionally
+  restarts from `/`, so a linked worktree re-walks components by pathname
+  after `repo_root`'s descriptor is already held. External storage
+  authorization is not established by pathname safety and is owned by
+  `#331-B`.
 
 ## What still needs its own handling, and why
 
@@ -247,6 +264,22 @@ TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_
 TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2 = "trusted_object_authority_special_file_rejected"
 TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
 TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2 = "trusted_object_authority_pack_verification_failed"
+# G1C2-#331-A: the caller supplied a relative `repo_root`. Distinct from
+# `REPOSITORY_UNUSABLE` because it is a caller-contract error with a
+# different fix (pass an absolute locator), not a statement about what was
+# found on disk. A relative locator can only be anchored to an implicit
+# process-wide cwd, which would be a new, undeclared authority -- refused
+# rather than resolved. See `_open_repo_root_fd_v2`.
+TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2 = "trusted_object_authority_relative_repo_root"
+# G1C2-#331-A: the caller supplied a `repo_root` containing a `..` component.
+# Distinct from `RELATIVE_REPO_ROOT` because the fix differs (normalise the
+# locator vs. absolutise it), and distinct from every on-disk diagnosis
+# because nothing was inspected. `..` is refused ONLY for the caller-supplied
+# locator; it stays legal for pointers derived from repository content, where
+# git requires it (a linked worktree's `commondir` is literally `../..`).
+TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2 = (
+    "trusted_object_authority_repo_root_not_normalised"
+)
 
 #: Hard budgets, enforced *before* any copied byte is handed to git for
 #: parsing (CAEM ADR 0011's "hard budgets precede untrusted parsing",
@@ -331,10 +364,11 @@ _SYMLINK_OR_WRONG_TYPE_ERRNOS_V2 = frozenset({errno.ELOOP, errno.ENOTDIR})
 
 def _open_dir_no_follow_v2(dir_fd: int | None, name: str) -> int:
     """Open a directory, `O_NOFOLLOW`, relative to `dir_fd` (or, if
-    `dir_fd is None`, `name` is used as an absolute/cwd-relative path
-    directly -- used only for a handful of top-level entry points such as
-    `/` itself or a caller-supplied `repo_root`, never for anything found
-    beneath an already-open descriptor). Raises `SYMLINK_REJECTED` if the
+    `dir_fd is None`, `name` is used as a path directly). That mode has
+    EXACTLY ONE call site: the literal `/` that
+    `_open_dir_by_segments_no_follow_v2` starts an absolute walk from.
+    Nothing found beneath an already-open descriptor ever takes it.
+    Raises `SYMLINK_REJECTED` if the
     final path component is a symlink (or any other non-directory --
     see `_SYMLINK_OR_WRONG_TYPE_ERRNOS_V2`), `REPOSITORY_UNUSABLE` if it
     does not exist. This IS the check -- there is no earlier, separate
@@ -589,10 +623,17 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     target) ONE COMPONENT AT A TIME, each opened no-follow relative to the
     descriptor reached so far -- never a single multi-segment path handed
     to one `open()` call, which would let the OS resolve intermediate
-    components through its own (symlink-following) walk. This is what
-    closes "ancestral-path retargeting": every step is anchored to an
-    already-open, already-verified parent descriptor, never a re-walked
-    path string.
+    components through its own (symlink-following) walk. Every step is
+    anchored to an already-open, already-verified parent descriptor, never a
+    re-walked path string.
+
+    PRECISELY WHAT THAT CLOSES, and what it does not. It closes retargeting
+    by SYMLINK: no component can be a symlink and still be followed, because
+    each one is opened no-follow in its own right. It does NOT close
+    retargeting by RENAME: a component that has not yet been opened can be
+    renamed away and replaced between two steps of this loop, and the walk
+    will then continue through the replacement, which is a real directory and
+    therefore not something `O_NOFOLLOW` can refuse.
 
     An absolute `path_str` starts fresh from `/`; a relative one starts
     from `base_fd` (required in that case). A hard cap on the number of
@@ -701,79 +742,134 @@ class _GitDirectoriesV2:
     common_dir_fd: int
 
 
-def _resolve_git_directories_fd_v2(repo_root: Path) -> _GitDirectoriesV2:
+def _open_repo_root_fd_v2(repo_root: Path) -> int:
+    """First authoritative open of the caller-supplied `repo_root` locator,
+    delegated to `_open_dir_by_segments_no_follow_v2` so the walk is
+    component-by-component, no-follow at every step. No second walker exists.
+
+    INPUT CONTRACT. `repo_root` must be absolute, free of `..` components,
+    free of symlink components, an exact built-in `str` after `os.fspath`, and
+    within `_DEFAULT_MAX_PATH_SEGMENTS_V2`. `os.fspath` is called once and
+    only that captured value is used, so a `PathLike` returning a different
+    value on a later call cannot make validation and acquisition disagree.
+    The type gate is `type(...) is str`, not `isinstance`: a `str` subclass
+    can override `__str__` and split `PurePosixPath` from `os.open`.
+
+    FAILURE SEMANTICS. Relative -> `..._RELATIVE_REPO_ROOT_REASON_V2`. A `..`
+    component -> `..._REPO_ROOT_NOT_NORMALISED_REASON_V2`. Symlink component,
+    non-`str`, and over-budget surface as `SYMLINK_REJECTED`,
+    `REPOSITORY_UNUSABLE` and `BUDGET_EXCEEDED`. An object `os.fspath` itself
+    rejects (`int`, `None`, a `__fspath__` returning a non-path) is not
+    refused at all: `TypeError` escapes uncaught, per this package's
+    authority-error-surface doctrine. `bytes` is not such a case --
+    `os.fspath` accepts it, so the type gate refuses it.
+
+    OWNERSHIP. Returns a descriptor the CALLER owns and must close.
+    `_resolve_git_directories_fd_v2` only borrows it.
+
+    LIMITATION. `NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE`. This establishes
+    that no symlink component was followed at its authoritative open. It does
+    not authorize the storage reached, and it does not make the walk atomic
+    against rename/replacement of a component not yet opened. Derived
+    `gitdir:`/`commondir`/alternates pointers keep their own semantics,
+    including legal `..`. Both are owned by `#331-B`.
+
+    Refs #331.
+    """
+
+    captured = os.fspath(repo_root)
+    if type(captured) is not str:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
+    locator = PurePosixPath(captured)
+    if not locator.is_absolute():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2)
+    if ".." in locator.parts:
+        raise TrustedObjectAuthorityError(
+            TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
+        )
+    return _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
+
+
+def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
     """Resolve both the worktree-private and shared git directories,
     worktree-aware, ENTIRELY via descriptor-anchored opens -- never a git
     invocation (a hostile/malformed live `config` cannot make this fail,
     since nothing here parses it), and never a pathname re-resolved after
     an earlier check established something about it.
-    """
-    repo_root_fd = _open_dir_no_follow_v2(None, str(repo_root))
-    try:
-        # `.git` is legitimately EITHER a directory (ordinary repo) OR a
-        # regular file (a `gitdir:` pointer, linked worktree) -- both
-        # expected, common shapes, neither one hostile by itself. `open(...,
-        # O_DIRECTORY | O_NOFOLLOW)` cannot itself distinguish "wrong type
-        # because it's a symlink" from "wrong type because it's an ordinary
-        # regular file" (both raise `ENOTDIR`) -- so which atomic open to
-        # attempt is decided by a preliminary, NON-AUTHORITATIVE
-        # `fstatat`-equivalent classification (`os.stat(..., dir_fd=...,
-        # follow_symlinks=False)`, itself fd-relative, not a re-resolved
-        # absolute pathname). This classification is a HINT only: whichever
-        # branch it selects still goes through the same atomic, no-follow
-        # open as every other path in this module, which is what actually
-        # decides trust -- a symlink planted between the stat and the open
-        # still fails closed (`ELOOP`) at the open, regardless of what the
-        # stat guessed.
-        try:
-            dotgit_kind = os.stat(".git", dir_fd=repo_root_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            dotgit_kind = None
-        except OSError as exc:
-            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2) from exc
 
-        if dotgit_kind is not None and stat.S_ISDIR(dotgit_kind.st_mode):
-            git_dir_fd = _open_dir_no_follow_v2(repo_root_fd, ".git")
-        elif dotgit_kind is not None and stat.S_ISREG(dotgit_kind.st_mode):
-            dotgit_file_fd = _try_open_file_no_follow_v2(repo_root_fd, ".git")
-            if dotgit_file_fd is None:
-                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-            # `.git` is a FILE (linked worktree): a single `gitdir: <path>`
-            # line. The read is a single atomic open+read of THIS file
-            # (already no-follow); the path it names is then resolved
-            # component-by-component, never as one string handed to a
-            # single `open()`.
-            content = _read_and_close_fd_charged_v2(
-                dotgit_file_fd, _ObjectCopyBudgetTrackerV2(_ObjectCopyBudgetV2(1024 * 1024, 1, 0))
-            )
-            text = content.decode("utf-8", "surrogateescape")
-            first_line = text.splitlines()[0] if text else ""
-            prefix = "gitdir:"
-            if not first_line.startswith(prefix):
-                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-            pointed = first_line[len(prefix) :].strip()
-            git_dir_fd = _open_dir_by_segments_no_follow_v2(base_fd=repo_root_fd, path_str=pointed)
-        elif dotgit_kind is not None:
-            # Exists, but is neither a directory nor a regular file --
-            # a symlink or something exotic. Refused loudly.
-            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
+    `repo_root_fd` is BORROWED. This function neither closes it nor retains
+    it past return; `open_trusted_object_authority_v2` owns it and closes it
+    in its own `finally`. Borrowing is what lets a caller holding a
+    long-lived authorized descriptor pass it without an `os.dup()` guard.
+    The returned `git_dir_fd`/`common_dir_fd` carry the ownership contract
+    stated by `_GitDirectoriesV2`.
+
+    The locator string is never re-derived from a pathname here.
+
+    Refs #331.
+    """
+    # `.git` is legitimately EITHER a directory (ordinary repo) OR a
+    # regular file (a `gitdir:` pointer, linked worktree) -- both
+    # expected, common shapes, neither one hostile by itself. `open(...,
+    # O_DIRECTORY | O_NOFOLLOW)` cannot itself distinguish "wrong type
+    # because it's a symlink" from "wrong type because it's an ordinary
+    # regular file" (both raise `ENOTDIR`) -- so which atomic open to
+    # attempt is decided by a preliminary, NON-AUTHORITATIVE
+    # `fstatat`-equivalent classification (`os.stat(..., dir_fd=...,
+    # follow_symlinks=False)`, itself fd-relative, not a re-resolved
+    # absolute pathname). This classification is a HINT only: whichever
+    # branch it selects still goes through the same atomic, no-follow
+    # open as every other path in this module, which is what actually
+    # decides trust -- a symlink planted between the stat and the open
+    # still fails closed (`ELOOP`) at the open, regardless of what the
+    # stat guessed.
+    try:
+        dotgit_kind = os.stat(".git", dir_fd=repo_root_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        dotgit_kind = None
+    except OSError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2) from exc
+
+    if dotgit_kind is not None and stat.S_ISDIR(dotgit_kind.st_mode):
+        git_dir_fd = _open_dir_no_follow_v2(repo_root_fd, ".git")
+    elif dotgit_kind is not None and stat.S_ISREG(dotgit_kind.st_mode):
+        dotgit_file_fd = _try_open_file_no_follow_v2(repo_root_fd, ".git")
+        if dotgit_file_fd is None:
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
+        # `.git` is a FILE (linked worktree): a single `gitdir: <path>`
+        # line. The read is a single atomic open+read of THIS file
+        # (already no-follow); the path it names is then resolved
+        # component-by-component, never as one string handed to a
+        # single `open()`.
+        content = _read_and_close_fd_charged_v2(
+            dotgit_file_fd, _ObjectCopyBudgetTrackerV2(_ObjectCopyBudgetV2(1024 * 1024, 1, 0))
+        )
+        text = content.decode("utf-8", "surrogateescape")
+        first_line = text.splitlines()[0] if text else ""
+        prefix = "gitdir:"
+        if not first_line.startswith(prefix):
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
+        pointed = first_line[len(prefix) :].strip()
+        git_dir_fd = _open_dir_by_segments_no_follow_v2(base_fd=repo_root_fd, path_str=pointed)
+    elif dotgit_kind is not None:
+        # Exists, but is neither a directory nor a regular file --
+        # a symlink or something exotic. Refused loudly.
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
+    else:
+        # `repo_root` might itself be a bare git directory: no `.git`
+        # at all, `HEAD`/`objects` directly present.
+        head_fd = _try_open_file_no_follow_v2(repo_root_fd, "HEAD")
+        objects_probe_fd = _try_open_dir_no_follow_v2(repo_root_fd, "objects")
+        if head_fd is not None and objects_probe_fd is not None:
+            os.close(head_fd)
+            os.close(objects_probe_fd)
+            git_dir_fd = os.dup(repo_root_fd)
         else:
-            # `repo_root` might itself be a bare git directory: no `.git`
-            # at all, `HEAD`/`objects` directly present.
-            head_fd = _try_open_file_no_follow_v2(repo_root_fd, "HEAD")
-            objects_probe_fd = _try_open_dir_no_follow_v2(repo_root_fd, "objects")
-            if head_fd is not None and objects_probe_fd is not None:
+            if head_fd is not None:
                 os.close(head_fd)
+            if objects_probe_fd is not None:
                 os.close(objects_probe_fd)
-                git_dir_fd = os.dup(repo_root_fd)
-            else:
-                if head_fd is not None:
-                    os.close(head_fd)
-                if objects_probe_fd is not None:
-                    os.close(objects_probe_fd)
-                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-    finally:
-        os.close(repo_root_fd)
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
 
     try:
         commondir_file_fd = _try_open_file_no_follow_v2(git_dir_fd, "commondir")
@@ -1260,19 +1356,72 @@ def open_trusted_object_authority_v2(
     state of any kind for a rejected or partial acquisition to leave
     behind. The private directory is removed on exit regardless of outcome.
 
-    Acquisition is entirely descriptor-anchored (see the module docstring):
-    `repo_root` and everything beneath it this module reads is opened
-    exactly once, `O_NOFOLLOW`, and every subsequent operation uses that
-    same retained descriptor (or one opened relative to it) -- never a
-    pathname re-resolved a second time. Deliberately no separate
-    `Path.is_dir()` pre-check on `repo_root` here (an earlier version had
-    one): it would itself follow a symlink and would in any case be
-    immediately superseded by `_resolve_git_directories_fd_v2`'s own
-    authoritative, atomic no-follow open of the very same path -- keeping
-    it would have been dead weight inconsistent with this module's own
-    "the open is the check" principle, not a second layer of protection.
+    ACQUISITION IS DESCRIPTOR-ANCHORED. The caller-supplied `repo_root` is
+    opened component by component, `O_NOFOLLOW` at each step, and everything
+    this module then reads BENEATH it uses that retained descriptor or one
+    opened relative to it -- never that pathname re-resolved. There is no
+    separate `Path.is_dir()` pre-check on `repo_root`: it would itself follow
+    a symlink, and the authoritative open is the check.
+
+    LOCATOR CONTRACT. `repo_root` must be absolute; free of `..`; free of
+    symlink components, ancestors included; an exact built-in `str` after
+    `os.fspath`; and within `_DEFAULT_MAX_PATH_SEGMENTS_V2`. Relative and `..`
+    each carry their own reason code; the rest surface as `SYMLINK_REJECTED`,
+    `REPOSITORY_UNUSABLE` and `BUDGET_EXCEEDED`. See `_open_repo_root_fd_v2`
+    for the full failure semantics, including the `os.fspath` carve-out.
+
+    A relative locator is refused rather than anchored to the process-wide
+    cwd, which would be an implicit, undeclared authority. A `..` component is
+    refused because, alone among components, its target is not named by the
+    locator text: it is re-evaluated at open time against the retained
+    descriptor's CURRENT parent link. Refusing is fail-closed; collapsing `..`
+    lexically would be wrong, because whether the collapse is sound depends on
+    a component this code has not opened yet. This applies to the
+    CALLER-SUPPLIED locator only -- `..` remains legal in pointers derived
+    from repository content, where git requires it.
+
+    WHAT THIS DOES NOT ESTABLISH. Per-component `O_NOFOLLOW` prevents a
+    symlink component from being FOLLOWED at its authoritative open. It does
+    not make the multi-step walk atomic: a component NOT YET opened can be
+    renamed or replaced concurrently, within one walk as well as between two.
+    A descriptor already retained stays bound to the object it opened even if
+    that directory is later renamed; the limitation concerns components not
+    yet reached.
+
+    Two shapes of that limitation, both disclosed rather than implied:
+
+    * An absolute DERIVED pointer restarts the walk from `/`
+      (`_open_dir_by_segments_no_follow_v2` discards `base_fd`), so a linked
+      worktree performs a second, independent pathname walk over components it
+      may share with `repo_root`.
+    * Descending component by component means each intermediate directory is
+      genuinely opened rather than merely traversed, so the walk is observable
+      to a watcher and spans several syscalls instead of one kernel path
+      resolution. An adversary who can already rename ancestor directories can
+      use that to make a rename race more reliable than against a single
+      whole-pathname `os.open`. This cost is accepted because a symlinked
+      ancestor was otherwise followed unconditionally, a strictly easier
+      attack.
+
+    A stronger kernel primitive -- plausibly `openat2` with appropriate
+    resolution flags -- deserves separate investigation. This module does NOT
+    demonstrate that such a primitive would close every rename race, and makes
+    no claim to that effect. `#331-B` owns external-storage authorization and
+    can avoid part of this class by supplying pre-authorized capabilities
+    instead of rediscovering storage by pathname.
+
+    The third public consumer, `git_commit_subject_v2.materialise_commit_
+    subject_v2`, passes `repo_root` through unchanged and is bound by this
+    same contract.
     """
-    git_dirs = _resolve_git_directories_fd_v2(Path(repo_root))
+    repo_root_fd = _open_repo_root_fd_v2(repo_root)
+    try:
+        git_dirs = _resolve_git_directories_fd_v2(repo_root_fd=repo_root_fd)
+    finally:
+        # `_close_ignoring_errors_v2`, not a bare `os.close`: a raising close
+        # here would escape this module's typed-error contract and strand the
+        # descriptors `_resolve_git_directories_fd_v2` just returned.
+        _close_ignoring_errors_v2(repo_root_fd)
     budget = _ObjectCopyBudgetV2(
         max_total_bytes=max_total_bytes,
         max_object_count=max_object_count,

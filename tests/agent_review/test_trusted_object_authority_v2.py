@@ -8,15 +8,12 @@ against the NEW `trusted_object_authority_v2.py` architecture.
 
 Process discipline for this file (this project's established RED-first
 practice, see `test_commit_derived_execution_identity_v2.py`'s own
-docstring for the same pattern on the previous round): every test below was
-run against `master` BEFORE `trusted_object_authority_v2.py` and the
-rewiring of `commit_derived_execution_identity_v2.py` /
-`git_commit_subject_v2.py` existed, to confirm each one is a real,
-demonstrable gap and not a test that was always going to pass. That RED run
-is recorded in the PR body, not repeated here as executable code -- the
-corpus that remains is the permanent GREEN regression suite, exactly as the
-prior round's file states its own two ported falsifiers stay in the
-permanent corpus rather than being thrown away.
+docstring for the same pattern on the previous round): each test was run
+against the `master` preceding the change it defends, to establish whether
+it is a real gap or a control pinning behaviour that already held. That RED
+run is recorded in this branch's commit history, not repeated here as
+executable code -- the corpus that remains is the permanent GREEN regression
+suite.
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ import tempfile
 import time
 import unittest.mock
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -44,12 +41,14 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
+    verify_executed_source_identity_v2,
 )
 from app.agent_review.git_commit_subject_v2 import (
     SubjectMaterialisationError,
     materialise_commit_subject_v2,
     resolve_commit_v2,
 )
+import app.agent_review.trusted_object_authority_v2 as trusted_object_authority_module_v2
 from app.agent_review.trusted_object_authority_v2 import (
     TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2,
@@ -57,11 +56,14 @@ from app.agent_review.trusted_object_authority_v2 import (
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
+    _GitDirectoriesV2,
     open_trusted_object_authority_v2,
 )
 
@@ -2019,3 +2021,386 @@ def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path
     )
     assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
     _ = c3
+
+
+# -- `#331-A` top-level retained-descriptor ingress -----------------------------
+#
+# Some of these were RED at `4e334ab4` and some pin behaviour that already
+# held; the per-test split is recorded in the PR history, not here. Each test
+# names its own target literally -- none is generated from a production
+# constant whose deletion would also delete the test.
+
+
+def _repo_behind_symlinked_ancestor_v2(tmp_path: Path) -> tuple[Path, str]:
+    """`alias/intermediate -> real/`, with the repository at `real/repo`.
+
+    The locator handed to the authority is `alias/intermediate/repo`: the
+    symlink is an ANCESTOR component, never the final one. `O_NOFOLLOW` on a
+    single whole-pathname `open()` does not constrain that component -- which
+    is exactly what `#331-A` closes.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    repo = real / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    commit = _commit_all(repo, "c1")
+    (tmp_path / "alias").mkdir()
+    os.symlink(real, tmp_path / "alias" / "intermediate")
+    return tmp_path / "alias" / "intermediate" / "repo", commit
+
+
+def test_symlinked_ancestor_component_of_repo_root_is_refused(tmp_path: Path) -> None:
+    """THE focal `#331-A` witness. Kills a mutation restoring the one-shot
+    multi-segment `os.open(repo_root, O_DIRECTORY | O_NOFOLLOW)`, and a
+    mutation dropping `O_NOFOLLOW` from an intermediate segment."""
+
+    locator, _ = _repo_behind_symlinked_ancestor_v2(tmp_path)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(locator):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_symlinked_final_component_of_repo_root_is_still_refused(tmp_path: Path) -> None:
+    """Pins the guarantee that already held: `O_NOFOLLOW` binds the final
+    component. Present so the ancestor fix cannot be mistaken for the whole
+    property, and so a regression here cannot hide behind the new test."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    _commit_all(repo, "c1")
+    link = tmp_path / "leaf_link"
+    os.symlink(repo, link)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(link):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_non_directory_intermediate_component_of_repo_root_is_refused(tmp_path: Path) -> None:
+    """A regular file where a directory component must be. The per-component
+    walk refuses at that component instead of letting the kernel produce an
+    `ENOTDIR` for the whole pathname."""
+
+    (tmp_path / "notdir").write_text("x")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(tmp_path / "notdir" / "repo"):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_relative_repo_root_is_refused_with_its_own_reason_code(tmp_path: Path) -> None:
+    """`#331-A` froze the locator contract as absolute-only.
+
+    A relative locator can only be anchored to the process-wide cwd, which
+    would be a new, undeclared authority. It gets its OWN reason code because
+    the fix ("pass an absolute path") differs from every on-disk diagnosis.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    _commit_all(repo, "c1")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(Path("repo")):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+
+
+def test_authorize_commit_for_execution_v2_does_not_pre_resolve_repo_root(tmp_path: Path) -> None:
+    """Kills a mutation restoring `repo_root = Path(repo_root).resolve()` in
+    `authorize_commit_for_execution_v2`.
+
+    With the `resolve()` restored, the symlinked ancestor is dereferenced in
+    userspace before the authority ever sees the locator, the authority is
+    handed an already-clean path, and acquisition SUCCEEDS -- so this
+    assertion is what makes the caller-side removal load-bearing rather than
+    cosmetic.
+    """
+
+    locator, commit = _repo_behind_symlinked_ancestor_v2(tmp_path)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=locator, commit_sha=commit, trusted_ref_sha=commit
+        )
+
+    assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
+
+
+def test_verify_executed_source_identity_v2_does_not_pre_resolve_repo_root(tmp_path: Path) -> None:
+    """The same mutation, killed independently at the second caller.
+
+    `subject_root` deliberately still uses `Path(...).resolve()`; that is a
+    different surface with its own owner (#304/#333) and is NOT what this
+    test constrains.
+    """
+
+    locator, commit = _repo_behind_symlinked_ancestor_v2(tmp_path)
+    subject = tmp_path / "subject"
+    subject.mkdir()
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=locator, commit_sha=commit, subject_root=subject
+        )
+
+    assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
+
+
+def test_repo_root_pathname_is_never_reopened_after_the_first_authoritative_open(
+    tmp_path: Path,
+) -> None:
+    """Kills a mutation that reopens the `repo_root` PATHNAME after the first
+    authoritative open has already established the descriptor.
+
+    The witness renames `repo_root` immediately after that open returns. A
+    retained descriptor still names the same inode, so acquisition must
+    succeed; any later pathname reopen would look up a name that no longer
+    exists and fail. This is the difference between "the descriptor is the
+    authority" and "the descriptor is a cache of a path we can re-derive".
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    commit = _commit_all(repo, "c1")
+
+    real_open = trusted_object_authority_module_v2._open_repo_root_fd_v2
+    renamed = tmp_path / "repo_renamed_after_open"
+
+    def _open_then_replace_the_pathname(repo_root: Path) -> int:
+        fd = real_open(repo_root)
+        os.rename(repo, renamed)
+        return fd
+
+    with unittest.mock.patch.object(
+        trusted_object_authority_module_v2,
+        "_open_repo_root_fd_v2",
+        _open_then_replace_the_pathname,
+    ):
+        with open_trusted_object_authority_v2(repo) as authority:
+            assert resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=commit) == commit
+
+    assert not repo.exists()
+    assert renamed.is_dir()
+
+
+def test_multi_component_ordinary_repo_root_still_acquires(tmp_path: Path) -> None:
+    """Positive control: a perfectly ordinary repository several plain
+    directory components deep must keep working.
+
+    The per-component walk is a safety mechanism, and ordinary multi-component
+    paths are supported up to the walker's configured hard segment budget
+    (`_DEFAULT_MAX_PATH_SEGMENTS_V2`). `#331-A` routes the caller locator
+    through that shared walker, so that budget now applies to `repo_root` too
+    -- a locator exceeding it is refused as `BUDGET_EXCEEDED` rather than
+    acquired. This test pins the ordinary case, well inside the budget; it is
+    deliberately not a claim that depth is unbounded."""
+
+    deep = tmp_path / "p" / "q" / "r" / "repo"
+    _init_repo(deep)
+    (deep / "a.py").write_text("V = 1\n")
+    commit = _commit_all(deep, "c1")
+
+    with open_trusted_object_authority_v2(deep) as authority:
+        assert resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=commit) == commit
+
+
+class _StrSubclassLocatorV2(str):
+    """A `str` SUBCLASS whose `__str__` returns a DIFFERENT path.
+
+    This is the one object that genuinely splits the two consumers of the
+    captured locator: `PurePosixPath(...)` calls `str(obj)` and sees
+    `decoy`, while `os.open(obj)` reads the raw buffer and sees the real
+    bytes. "Validated value != used value" in its purest form.
+
+    `decoy` MUST be a real, acquirable repository. Pointed at a nonexistent
+    path the walk fails with `REPOSITORY_UNUSABLE` under both the strict and
+    the weakened gate, so the test would kill nothing.
+    """
+
+    decoy = ""
+
+    def __str__(self) -> str:  # noqa: D105 - the whole point of the fixture
+        return self.decoy
+
+
+def test_str_subclass_repo_root_locator_is_refused_by_the_exact_type_gate(tmp_path: Path) -> None:
+    """Reject a `repo_root` whose type is a `str` subclass.
+
+    Kills the weakening of `_open_repo_root_fd_v2`'s gate from
+    `type(...) is str` to `isinstance(...)`: a subclass overriding `__str__`
+    splits `PurePosixPath` (which follows it) from `os.open` (which reads the
+    raw buffer), so the mutant acquires the decoy repository. No other test in
+    this file detects that change.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    _commit_all(repo, "c1")
+
+    # The decoy is a REAL, acquirable repository: under the weakened gate the
+    # authority builds its CAS from THIS one while every other `os.*` observer
+    # resolving the same object still sees `repo`.
+    victim = tmp_path / "victim"
+    _init_repo(victim)
+    (victim / "secret.py").write_text("SECRET = 'victim'\n")
+    victim_commit = _commit_all(victim, "victim")
+
+    locator = _StrSubclassLocatorV2(str(repo))
+    locator.decoy = str(victim)
+
+    # The exploit preconditions, asserted rather than assumed.
+    assert isinstance(locator, str) is True, "isinstance is fooled -- this is the trap"
+    assert type(locator) is not str, "but the real type is not str -- this is the gate"
+    assert os.fspath(locator) is locator, "os.fspath returns a str subclass unchanged"
+    assert str(locator) == str(victim), "str() yields the decoy"
+    assert PurePosixPath(locator).name == victim.name, "pathlib follows __str__ to the victim"
+    with open_trusted_object_authority_v2(victim) as victim_authority:
+        assert resolve_commit_v2(repo_root=victim_authority.trusted_repo_root, ref=victim_commit)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(locator):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+
+    # ... and the same locator IS accepted once it is a genuine built-in
+    # `str`, so the refusal is attributable to the type gate and not to some
+    # unrelated property of the fixture path.
+    with open_trusted_object_authority_v2(Path(str(repo))):
+        pass
+
+
+def _open_fd_count_v2() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_repo_root_ingress_conserves_descriptors_across_refusals_and_successes(
+    tmp_path: Path,
+) -> None:
+    """`#331-A` made descriptor ownership load-bearing: the ingress opens the
+    `repo_root` descriptor, `_resolve_git_directories_fd_v2` BORROWS it, and
+    only `open_trusted_object_authority_v2`'s own `finally` closes it. Nothing
+    in this file previously counted descriptors, so that contract had no
+    witness at all -- it was prose.
+
+    Shapes here deliberately avoid the bare-repository `HEAD`/`objects` probe,
+    whose descriptor leak is #323: a real, pre-existing, separately-owned
+    defect this slice does not fix. Including it would make this assertion
+    fail for a reason that is not this contract.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    _commit_all(repo, "c1")
+    sym_root = tmp_path / "sym"
+    sym_root.mkdir()
+    ancestor_symlinked, _ = _repo_behind_symlinked_ancestor_v2(sym_root)
+    (tmp_path / "notdir").write_text("x")
+
+    def _acquire(locator: object) -> None:
+        try:
+            with open_trusted_object_authority_v2(locator):
+                pass
+        except TrustedObjectAuthorityError:
+            pass
+
+    locators = (
+        repo,                                   # success
+        ancestor_symlinked,                     # refused: symlinked ancestor
+        tmp_path / "notdir" / "repo",           # refused: non-directory component
+        Path("relative-locator"),               # refused: relative
+        tmp_path / "does-not-exist",            # refused: missing
+    )
+    for locator in locators:                    # warm up caches/imports first
+        _acquire(locator)
+
+    before = _open_fd_count_v2()
+    for _ in range(20):
+        for locator in locators:
+            _acquire(locator)
+    after = _open_fd_count_v2()
+
+    assert after == before, f"descriptor leak: {before} -> {after} over 100 acquisitions"
+
+
+def test_repo_root_descriptor_is_not_stranded_if_the_borrower_never_runs(tmp_path: Path) -> None:
+    """The `repo_root` descriptor is not stranded when the borrower never runs.
+
+    Kills a revert of the BORROW contract to transfer-on-call: an async
+    exception can fire at the borrower's frame-entry checkpoint, before any
+    `try` inside it executes, so under transfer nothing owns the descriptor at
+    that instant. Simulated deterministically by making the borrower raise on
+    entry, which produces the same observable.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    _commit_all(repo, "c1")
+
+    def _raise_before_borrowing(*, repo_root_fd: int) -> _GitDirectoriesV2:
+        raise KeyboardInterrupt("async exception at the borrower's frame-entry checkpoint")
+
+    with unittest.mock.patch.object(
+        trusted_object_authority_module_v2,
+        "_resolve_git_directories_fd_v2",
+        _raise_before_borrowing,
+    ):
+        for _ in range(3):  # warm up
+            with pytest.raises(KeyboardInterrupt):
+                with open_trusted_object_authority_v2(repo):
+                    pass
+
+        before = _open_fd_count_v2()
+        for _ in range(20):
+            with pytest.raises(KeyboardInterrupt):
+                with open_trusted_object_authority_v2(repo):
+                    pass
+        after = _open_fd_count_v2()
+
+    assert after == before, f"repo_root descriptor stranded: {before} -> {after} over 20 aborts"
+
+
+def test_dotdot_component_in_repo_root_is_refused(tmp_path: Path) -> None:
+    """Reject a `..` component in the caller-supplied locator, with its own
+    reason code.
+
+    Alone among components, `..`'s target is not named by the locator text:
+    the walk re-evaluates it at open time against the retained descriptor's
+    CURRENT parent link, so a concurrent renamer lands it somewhere the
+    locator never named. Refusing is fail-closed; collapsing `..` lexically
+    would be wrong, because whether `/a/b/../c` means `/a/c` depends on
+    whether `b` is a symlink, which this code has not opened yet.
+    """
+
+    repo = tmp_path / "A" / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("V = 1\n")
+    commit = _commit_all(repo, "c1")
+    (tmp_path / "A" / "sibling").mkdir()
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(tmp_path / "A" / "sibling" / ".." / "repo"):
+            pass
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
+
+    # The same repository, named without `..`, is still acquired -- so the
+    # refusal is attributable to the component and not to the fixture.
+    with open_trusted_object_authority_v2(repo) as authority:
+        assert resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=commit) == commit
