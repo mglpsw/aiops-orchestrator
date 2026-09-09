@@ -2377,8 +2377,11 @@ def test_repo_root_descriptor_is_not_stranded_if_the_borrower_never_runs(tmp_pat
     but before the borrower's body -- and therefore before any `try` inside the
     borrower -- has executed. Under a transfer-on-call contract the descriptor
     is owned by nobody at that instant and is stranded for the process
-    lifetime; independent review measured 20/20 leaked. Under the borrow
-    contract the caller's own `finally` closes it.
+    lifetime; independent review measured 20/20 leaked -- a session-only
+    reproduction with no durable artifact in this tree, cited to justify the
+    borrow contract rather than as a standing property. Under the borrow
+    contract the caller's own `finally` closes it. What IS durable is this
+    test.
 
     Simulated deterministically, without signals, by making the borrower raise
     on entry: that is exactly the observable the async case produces.
@@ -2422,7 +2425,10 @@ def test_dotdot_component_in_repo_root_is_refused(tmp_path: Path) -> None:
     a race the predecessor did not have, because its whole-pathname
     `os.open` resolved `..` inside a single syscall and its two callers
     additionally collapsed `..` with `Path.resolve()`. Independent review
-    measured ~27% of successful resolutions escaping under that race.
+    measured ~27% of successful resolutions escaping under that race -- a
+    session-only reproduction with no durable artifact here, and unfalsifiable
+    now that this refusal makes the race unreachable by construction. What IS
+    durable is this test.
 
     Refusing is fail-closed. Collapsing `..` lexically instead would be
     wrong: whether `/a/b/../c` means `/a/c` depends on whether `b` is a

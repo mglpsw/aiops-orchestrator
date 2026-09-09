@@ -43,19 +43,30 @@ open object -> authenticate the OPENED CAPABILITY -> use that SAME
 capability, never re-resolve by pathname again
 ```
 
-Concretely: open a root directory with `O_NOFOLLOW`, retain the resulting
-file descriptor. Every subsequent step operates on that fd, or on a
-descriptor opened *relative to* it (`os.open(name, ..., dir_fd=parent_fd)`,
-Python's `openat()` equivalent) -- never a fresh absolute/relative pathname
-lookup from the filesystem root. `O_NOFOLLOW` at every step means a symlink
-anywhere in the chain fails to open rather than being followed. `fstat` and
-`read` operate on that same already-open descriptor, never a fresh
-`stat()`/`open()` by path. Multi-segment path strings this module must
-still resolve (a `gitdir:` pointer's target, a `commondir` file's content,
-an `objects/info/alternates` entry) are walked ONE COMPONENT AT A TIME,
-each opened no-follow relative to the descriptor reached so far -- never
-handed whole to a single `open()` call, which would let the OS resolve
-intermediate components through its own (symlink-following) path walk.
+Concretely: reach a root directory by opening it component by component,
+`O_NOFOLLOW` at each step, and retain the resulting file descriptor. Every
+subsequent step operates on that fd, or on a descriptor opened *relative to*
+it (`os.open(name, ..., dir_fd=parent_fd)`, Python's `openat()` equivalent)
+-- never a fresh absolute/relative pathname lookup from the filesystem root.
+`O_NOFOLLOW` at every step means a symlink anywhere in the chain fails to
+open rather than being followed. `fstat` and `read` operate on that same
+already-open descriptor, never a fresh `stat()`/`open()` by path.
+
+EVERY multi-segment path string this module resolves is walked ONE COMPONENT
+AT A TIME -- the caller-supplied `repo_root` itself (since `#331-A`), a
+`gitdir:` pointer's target, a `commondir` file's content, an
+`objects/info/alternates` entry -- each opened no-follow relative to the
+descriptor reached so far, never handed whole to a single `open()` call,
+which would let the OS resolve intermediate components through its own
+(symlink-following) path walk.
+
+That enumeration must include `repo_root`. An earlier revision of this
+paragraph listed only the derived pointers and described the root as a
+single open. That was accurate before `#331-A` and became stale the moment
+it landed; it survived two correction passes, including one that enumerated
+this file's prose and misjudged this very paragraph as still correct. It is
+the same defect class as the one retired at `_open_dir_no_follow_v2`: a
+sentence describing the superseded ingress left standing as current.
 
 This single design structurally dissolves every mechanism in PR #308's
 three-round history, rather than needing one guard per item:

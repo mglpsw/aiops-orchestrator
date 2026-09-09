@@ -253,6 +253,12 @@ def materialise_commit_subject_v2(
     locator reason codes do not reach this caller; they remain available on
     `__cause__`. Narrowing that is a separate, unowned follow-up.
 
+    A locator `os.fspath` itself rejects (an `int`, `None`, a `__fspath__`
+    returning a non-path) is not one of those refusals at all: it raises
+    `TypeError` straight out of this function, uncaught, as a programmer
+    defect. `bytes` is not such a case -- `os.fspath` accepts it, so the
+    exact-`str` gate refuses it.
+
     Write `ref`'s resolved commit's committed bytes into an empty directory.
 
     The result is severed from `repo_root`: deleting or rewriting the
