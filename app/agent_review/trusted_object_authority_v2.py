@@ -97,7 +97,8 @@ three-round history, rather than needing one guard per item:
 - **ancestral-path retargeting** (an intermediate path component, not just
   the leaf, retargeted between resolution steps) -- its SYMLINK form is
   closed by per-component `dir_fd`-relative descent for every multi-segment
-  string this module resolves; its RENAME form is not (see below). The
+  string this module resolves; its RENAME form is not; see the limitation stated by
+  `open_trusted_object_authority_v2`. The
   strings so resolved are: the caller-supplied `repo_root` itself
   (`#331-A`, see
   `_open_repo_root_fd_v2`) and every pointer derived from repository
@@ -363,14 +364,11 @@ _SYMLINK_OR_WRONG_TYPE_ERRNOS_V2 = frozenset({errno.ELOOP, errno.ENOTDIR})
 
 def _open_dir_no_follow_v2(dir_fd: int | None, name: str) -> int:
     """Open a directory, `O_NOFOLLOW`, relative to `dir_fd` (or, if
-    `dir_fd is None`, `name` is used as a path directly). Since `#331-A`
-    the `dir_fd is None` mode has EXACTLY ONE call site: the literal `/`
-    that `_open_dir_by_segments_no_follow_v2` starts an absolute walk from.
-    An earlier revision of this sentence also named "a caller-supplied
-    `repo_root`" -- that was the whole-pathname ingress `#331-A` removed,
-    and leaving the sentence would have described the superseded mechanism
-    as current. Nothing found beneath an already-open descriptor ever takes
-    this mode. Raises `SYMLINK_REJECTED` if the
+    `dir_fd is None`, `name` is used as a path directly). That mode has
+    EXACTLY ONE call site: the literal `/` that
+    `_open_dir_by_segments_no_follow_v2` starts an absolute walk from.
+    Nothing found beneath an already-open descriptor ever takes it.
+    Raises `SYMLINK_REJECTED` if the
     final path component is a symlink (or any other non-directory --
     see `_SYMLINK_OR_WRONG_TYPE_ERRNOS_V2`), `REPOSITORY_UNUSABLE` if it
     does not exist. This IS the check -- there is no earlier, separate
@@ -635,12 +633,7 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     retargeting by RENAME: a component that has not yet been opened can be
     renamed away and replaced between two steps of this loop, and the walk
     will then continue through the replacement, which is a real directory and
-    therefore not something `O_NOFOLLOW` can refuse. Reproduced through a
-    public entry point during `#331-A`'s qualification, with no symlink
-    anywhere. An earlier version of this sentence said this function "closes
-    ancestral-path retargeting" without that qualifier; it does not, and
-    `#331-A` made the sentence load-bearing for the caller-supplied
-    `repo_root` by routing it through here.
+    therefore not something `O_NOFOLLOW` can refuse.
 
     An absolute `path_str` starts fresh from `/`; a relative one starts
     from `base_fd` (required in that case). A hard cap on the number of

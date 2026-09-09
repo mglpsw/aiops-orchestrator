@@ -8,17 +8,13 @@ against the NEW `trusted_object_authority_v2.py` architecture.
 
 Process discipline for this file (this project's established RED-first
 practice, see `test_commit_derived_execution_identity_v2.py`'s own
-docstring for the same pattern on the previous round): every test below was
-run against `master` BEFORE `trusted_object_authority_v2.py` and the
-rewiring of `commit_derived_execution_identity_v2.py` /
-`git_commit_subject_v2.py` existed, to confirm each one is a real,
-demonstrable gap and not a test that was always going to pass. (That
-statement scopes the original corpus. The later `#331-A` section below also
-pins several controls that already held at its own base -- see its header.) That RED run
-is recorded in the PR body, not repeated here as executable code -- the
-corpus that remains is the permanent GREEN regression suite, exactly as the
-prior round's file states its own two ported falsifiers stay in the
-permanent corpus rather than being thrown away.
+docstring for the same pattern on the previous round): each test was run
+against the `master` preceding the change it defends, to establish whether
+it is a real gap or a control pinning behaviour that already held. Sections
+added later state their own split; this paragraph does not quantify over
+them. That RED run is
+recorded in this branch's commit history, not repeated here as executable
+code -- the corpus that remains is the permanent GREEN regression suite.
 """
 
 from __future__ import annotations
