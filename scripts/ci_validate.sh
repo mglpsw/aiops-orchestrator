@@ -152,6 +152,17 @@ else
     fi
 fi
 
+# ── 10. Ledger canônico -- invariantes estruturais (#324) ────────────────────
+# Determinístico, offline, sem rede -- gate de CI. O modo --audit-live
+# (não gateado, ver o próprio script) compara com o estado vivo do forge
+# e é deliberadamente separado desta gate por P020 (gates proporcionais).
+header "10. Ledger canônico -- invariantes estruturais"
+if python3 scripts/lint-canonical-ledger.py --check; then
+    ok "ledger canônico sem violação estrutural"
+else
+    fail "ledger canônico viola um invariante estrutural (#324) -- ver scripts/lint-canonical-ledger.py"
+fi
+
 # ── Resultado ────────────────────────────────────────────────────────────────
 echo ""
 if [ $ERRORS -eq 0 ]; then
