@@ -2030,13 +2030,27 @@ def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path
 #
 # RED discipline for this section, matching this file's own docstring: every
 # test below was run against `master@4e334ab4` BEFORE the `#331-A` change.
-# Several were RED there, not just one: the focal `..._ancestor_symlink_...`
-# was ACCEPTED, and so were the `..`-component and `str`-subclass locators (the
-# latter acquiring its CAS from the decoy repository). The relative locator was
-# refused at base, but under a different reason code than the one this slice
-# introduces. The final-component and positive-control cases already held and
-# are pinned so the fix cannot be "achieved" by breaking them. That RED run is
-# recorded in the PR body.
+# EIGHT of the twelve were RED there, four already GREEN. Independently
+# re-measured, with the head test file transplanted onto base and only the new
+# reason-code constants shimmed:
+#
+#   RED at base:   symlinked_ancestor, relative_repo_root, dotdot_component,
+#                  str_subclass, authorize_..._does_not_pre_resolve,
+#                  verify_..._does_not_pre_resolve,
+#                  repo_root_pathname_is_never_reopened,
+#                  repo_root_descriptor_is_not_stranded
+#   GREEN at base: symlinked_final, non_directory_intermediate,
+#                  multi_component_ordinary, ingress_conserves_descriptors
+#
+# One nuance worth stating rather than rounding off, because an earlier version
+# of this comment got it backwards: at base a relative locator was silently
+# ANCHORED TO THE PROCESS-WIDE CWD and ACCEPTED when it resolved there. The
+# relative test is RED at base for that reason -- not because base refused
+# relative locators under some other code. That undeclared cwd authority is
+# exactly what `..._RELATIVE_REPO_ROOT_REASON_V2` exists to refuse.
+#
+# The four GREEN cases are pinned so the fix cannot be "achieved" by breaking
+# them. That RED run is recorded in the PR body.
 #
 # These tests name their own targets literally. None is generated from a
 # production constant whose deletion would also delete the test.

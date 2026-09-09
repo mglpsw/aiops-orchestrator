@@ -755,6 +755,10 @@ def verify_executed_source_identity_v2(
     # authority's more specific locator diagnoses do not reach this
     # function's caller; they remain on `__cause__`. Narrowing that is a
     # separate, unowned follow-up, deliberately not changed by `#331-A`.
+    #
+    # A locator `os.fspath` itself rejects (an `int`, `None`) is not one of
+    # those refusals at all: it raises `TypeError` straight out of this
+    # function, uncaught, as a programmer defect.
     subject_root = Path(subject_root).resolve()
 
     if not subject_root.is_dir():
@@ -935,6 +939,10 @@ def authorize_commit_for_execution_v2(
     # authority's more specific locator diagnoses do not reach this
     # function's caller; they remain on `__cause__`. Narrowing that is a
     # separate, unowned follow-up, deliberately not changed by `#331-A`.
+    #
+    # A locator `os.fspath` itself rejects (an `int`, `None`) is not one of
+    # those refusals at all: it raises `TypeError` straight out of this
+    # function, uncaught, as a programmer defect.
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root

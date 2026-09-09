@@ -363,10 +363,14 @@ _SYMLINK_OR_WRONG_TYPE_ERRNOS_V2 = frozenset({errno.ELOOP, errno.ENOTDIR})
 
 def _open_dir_no_follow_v2(dir_fd: int | None, name: str) -> int:
     """Open a directory, `O_NOFOLLOW`, relative to `dir_fd` (or, if
-    `dir_fd is None`, `name` is used as an absolute/cwd-relative path
-    directly -- used only for a handful of top-level entry points such as
-    `/` itself or a caller-supplied `repo_root`, never for anything found
-    beneath an already-open descriptor). Raises `SYMLINK_REJECTED` if the
+    `dir_fd is None`, `name` is used as a path directly). Since `#331-A`
+    the `dir_fd is None` mode has EXACTLY ONE call site: the literal `/`
+    that `_open_dir_by_segments_no_follow_v2` starts an absolute walk from.
+    An earlier revision of this sentence also named "a caller-supplied
+    `repo_root`" -- that was the whole-pathname ingress `#331-A` removed,
+    and leaving the sentence would have described the superseded mechanism
+    as current. Nothing found beneath an already-open descriptor ever takes
+    this mode. Raises `SYMLINK_REJECTED` if the
     final path component is a symlink (or any other non-directory --
     see `_SYMLINK_OR_WRONG_TYPE_ERRNOS_V2`), `REPOSITORY_UNUSABLE` if it
     does not exist. This IS the check -- there is no earlier, separate
@@ -845,7 +849,10 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
     delivers pending signals: an async exception there escapes outside any
     `try` and strands the descriptor for the process lifetime (measured: 20/20
     leaked at that instant under a transfer contract, 0/20 at the predecessor,
-    which opened the descriptor inside this same function). Borrowing RELOCATES
+    which opened the descriptor inside this same function -- a session-only
+    reproduction with no durable artifact here; what this tree does carry is
+    the pair of checked-in witnesses for the contract this function ships).
+    Borrowing RELOCATES
     that window to the owner's own `try`, where it is bounded; it does not
     eliminate the class. Independent review measured the residual precisely:
     an async exception can still strand one descriptor per component opened
@@ -1480,7 +1487,13 @@ def open_trusted_object_authority_v2(
     `#331-A` applies to the caller locator for the first time by routing it
     through the shared walker). Only the first two have their own reason code;
     the rest surface as `SYMLINK_REJECTED`, `REPOSITORY_UNUSABLE` and
-    `BUDGET_EXCEEDED` respectively.
+    `BUDGET_EXCEEDED` respectively. One carve-out, because "after `os.fspath`"
+    is doing real work in that sentence: an object `os.fspath` ITSELF rejects
+    (an `int`, `None`, a `__fspath__` returning a non-path) is not refused at
+    all -- it raises `TypeError` uncaught, as a programmer defect rather than
+    an operational refusal. A `bytes` locator is NOT such a case: `os.fspath`
+    accepts it, so it is refused by the exact-`str` gate. See
+    `_open_repo_root_fd_v2`.
 
     A relative locator is refused (`..._RELATIVE_REPO_ROOT_REASON_V2`) rather than
     anchored to the process-wide cwd, which would be an implicit, undeclared
@@ -1491,7 +1504,11 @@ def open_trusted_object_authority_v2(
     lands in a directory the locator never named. Independent review measured
     that regression against this change (~27% of successful resolutions
     escaped under a concurrent renamer, versus zero on the predecessor, whose
-    whole-pathname `os.open` resolved `..` inside one syscall). Refusing is
+    whole-pathname `os.open` resolved `..` inside one syscall -- a session-only
+    reproduction with no durable artifact in this tree, and unfalsifiable here
+    now that the refusal below makes the race unreachable by construction. It
+    is cited to justify the refusal, never as a standing security property).
+    Refusing is
     fail-closed; collapsing `..` lexically would be wrong, because whether the
     collapse is sound depends on a component this code has not opened yet.
 
