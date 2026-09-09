@@ -52,12 +52,12 @@ it (`os.open(name, ..., dir_fd=parent_fd)`, Python's `openat()` equivalent)
 open rather than being followed. `fstat` and `read` operate on that same
 already-open descriptor, never a fresh `stat()`/`open()` by path.
 
-EVERY multi-segment path string this module resolves is walked ONE COMPONENT
-AT A TIME -- the caller-supplied `repo_root` itself (since `#331-A`), a
-`gitdir:` pointer's target, a `commondir` file's content, an
-`objects/info/alternates` entry -- each opened no-follow relative to the
-descriptor reached so far, never handed whole to a single `open()` call,
-which would let the OS resolve intermediate components through its own
+Multi-segment acquisition locators handled by this descriptor-anchored path
+-- the caller-supplied `repo_root`, a `gitdir:` pointer's target, a
+`commondir` file's content, an `objects/info/alternates` entry -- are walked
+ONE COMPONENT AT A TIME, each opened no-follow relative to the descriptor
+reached so far, never handed whole to a single `open()` call, which would
+let the OS resolve intermediate components through its own
 (symlink-following) path walk.
 
 This single design structurally dissolves every mechanism in PR #308's

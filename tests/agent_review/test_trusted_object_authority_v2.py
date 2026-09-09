@@ -10,11 +10,10 @@ Process discipline for this file (this project's established RED-first
 practice, see `test_commit_derived_execution_identity_v2.py`'s own
 docstring for the same pattern on the previous round): each test was run
 against the `master` preceding the change it defends, to establish whether
-it is a real gap or a control pinning behaviour that already held. Sections
-added later state their own split; this paragraph does not quantify over
-them. That RED run is
-recorded in this branch's commit history, not repeated here as executable
-code -- the corpus that remains is the permanent GREEN regression suite.
+it is a real gap or a control pinning behaviour that already held. That RED
+run is recorded in this branch's commit history, not repeated here as
+executable code -- the corpus that remains is the permanent GREEN regression
+suite.
 """
 
 from __future__ import annotations
