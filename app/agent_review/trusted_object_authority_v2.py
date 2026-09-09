@@ -60,14 +60,6 @@ descriptor reached so far, never handed whole to a single `open()` call,
 which would let the OS resolve intermediate components through its own
 (symlink-following) path walk.
 
-That enumeration must include `repo_root`. An earlier revision of this
-paragraph listed only the derived pointers and described the root as a
-single open. That was accurate before `#331-A` and became stale the moment
-it landed; it survived two correction passes, including one that enumerated
-this file's prose and misjudged this very paragraph as still correct. It is
-the same defect class as the one retired at `_open_dir_no_follow_v2`: a
-sentence describing the superseded ingress left standing as current.
-
 This single design structurally dissolves every mechanism in PR #308's
 three-round history, rather than needing one guard per item:
 
@@ -111,19 +103,16 @@ three-round history, rather than needing one guard per item:
   `_open_repo_root_fd_v2`) and every pointer derived from repository
   content (`gitdir:`/`commondir` pointers, alternates entries). Each step
   is anchored to an already-open, already-verified parent descriptor,
-  never a re-walked path string handed to a single `open()`. `repo_root`
-  was the exception until `#331-A`: it alone was handed whole to one
-  `os.open()`, where `O_NOFOLLOW` binds the final component only.
+  never a re-walked path string handed to a single `open()`.
 
   This prevents a symlink component from being FOLLOWED at its own
   authoritative open. It does NOT make the walk atomic against concurrent
   rename/replacement of components not yet opened -- neither within one
   walk nor between two of them. An absolute derived pointer additionally
   restarts from `/`, so a linked worktree re-walks components by pathname
-  after `repo_root`'s descriptor is already held. Both reproduced; the
-  derived-pointer re-walk is unchanged from the predecessor and owned by
-  `#331-B`. See `open_trusted_object_authority_v2` for the full statement
-  of what is and is not established.
+  after `repo_root`'s descriptor is already held. External storage
+  authorization is not established by pathname safety and is owned by
+  `#331-B`.
 
 ## What still needs its own handling, and why
 
@@ -761,72 +750,38 @@ class _GitDirectoriesV2:
 
 
 def _open_repo_root_fd_v2(repo_root: Path) -> int:
-    """FIRST AUTHORITATIVE OPEN of the caller-supplied `repo_root` locator
-    (`#331-A`), component by component, no-follow at every step.
+    """First authoritative open of the caller-supplied `repo_root` locator,
+    delegated to `_open_dir_by_segments_no_follow_v2` so the walk is
+    component-by-component, no-follow at every step. No second walker exists.
 
-    ## The asymmetry this closes
+    INPUT CONTRACT. `repo_root` must be absolute, free of `..` components,
+    free of symlink components, an exact built-in `str` after `os.fspath`, and
+    within `_DEFAULT_MAX_PATH_SEGMENTS_V2`. `os.fspath` is called once and
+    only that captured value is used, so a `PathLike` returning a different
+    value on a later call cannot make validation and acquisition disagree.
+    The type gate is `type(...) is str`, not `isinstance`: a `str` subclass
+    can override `__str__` and split `PurePosixPath` from `os.open`.
 
-    Until `#331-A` this module resolved `repo_root` with a SINGLE
-    `os.open(<whole multi-segment pathname>, O_DIRECTORY | O_NOFOLLOW)`.
-    `O_NOFOLLOW` constrains only the FINAL component: every INTERMEDIATE
-    component was walked by the kernel's own symlink-following resolver.
-    The module therefore applied per-component no-follow descent to every
-    pointer it derived from hostile repository content (`gitdir:`,
-    `commondir`, `objects/info/alternates`) while its own entry locator --
-    the one whose safety everything downstream rests on -- got the weaker
-    treatment. Independently reproduced before this change: a `repo_root`
-    reached through a symlinked ANCESTOR component was ACCEPTED, while the
-    same repository reached through a symlinked FINAL component was
-    correctly refused.
+    FAILURE SEMANTICS. Relative -> `..._RELATIVE_REPO_ROOT_REASON_V2`. A `..`
+    component -> `..._REPO_ROOT_NOT_NORMALISED_REASON_V2`. Symlink component,
+    non-`str`, and over-budget surface as `SYMLINK_REJECTED`,
+    `REPOSITORY_UNUSABLE` and `BUDGET_EXCEEDED`. An object `os.fspath` itself
+    rejects (`int`, `None`, a `__fspath__` returning a non-path) is not
+    refused at all: `TypeError` escapes uncaught, per this package's
+    authority-error-surface doctrine. `bytes` is not such a case --
+    `os.fspath` accepts it, so the type gate refuses it.
 
-    This function reuses `_open_dir_by_segments_no_follow_v2` -- the walker
-    that already existed for those derived pointers. There is deliberately
-    no second walker.
+    OWNERSHIP. Returns a descriptor the CALLER owns and must close.
+    `_resolve_git_directories_fd_v2` only borrows it.
 
-    ## The locator is read exactly once
+    LIMITATION. `NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE`. This establishes
+    that no symlink component was followed at its authoritative open. It does
+    not authorize the storage reached, and it does not make the walk atomic
+    against rename/replacement of a component not yet opened. Derived
+    `gitdir:`/`commondir`/alternates pointers keep their own semantics,
+    including legal `..`. Both are owned by `#331-B`.
 
-    `os.fspath` is called ONCE and only that captured value is used. A
-    `PathLike` whose `__fspath__` returns a different value on a later call
-    cannot make discovery and acquisition disagree, because there is no
-    later call. The exact-`str` gate mirrors `#313`'s trust-anchor
-    precedent: a `str` SUBCLASS can override `__str__`/`__eq__` and make a
-    later observation disagree with this one, so it is refused rather than
-    coerced.
-
-    Two different wrong-type outcomes, distinguished because they are not the
-    same event. An object `os.fspath` itself rejects (an `int`, `None`, a
-    `__fspath__` returning a non-path) raises `TypeError` UNCAUGHT, per this
-    package's authority-error-surface doctrine: a programmer defect escapes
-    raw. A `bytes` locator is NOT one of those -- `os.fspath` accepts it and
-    returns `bytes` -- so it is refused by the exact-`str` gate below and
-    surfaces as a typed refusal instead. Do not read this paragraph as
-    claiming every wrong argument type reaches `TypeError`.
-
-    ## Ownership
-
-    Returns a descriptor the CALLER owns and must close. It is only ever
-    BORROWED by `_resolve_git_directories_fd_v2`; nothing downstream closes it
-    or retains it past return.
-
-    ## What this does NOT establish
-
-    Reaching a directory without following a symlink is not permission to
-    read it:
-
-        NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE
-
-    External `gitdir:`, `commondir` and alternates targets remain
-    reachable-but-unauthorized, and an absolute DERIVED locator still restarts
-    from `/`. `..` also remains an ordinary directory entry in those derived
-    pointers, where git requires it -- but NOT in the caller-supplied locator
-    this function gates, which refuses it outright a few lines below. Closing
-    the derived-pointer half is `#331-B`, not this function.
-
-    Nor does this function make the walk atomic. A component not yet opened
-    can be renamed away and replaced between two steps; per-component
-    `O_NOFOLLOW` refuses a symlink, not a real directory swapped into place.
-    See `open_trusted_object_authority_v2` for the full statement of that
-    cost.
+    Refs #331.
     """
 
     captured = os.fspath(repo_root)
@@ -849,34 +804,16 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
     since nothing here parses it), and never a pathname re-resolved after
     an earlier check established something about it.
 
-    `repo_root_fd` is the descriptor `_open_repo_root_fd_v2` produced by its
-    first authoritative open. IT IS BORROWED, NEVER OWNED: this function must
-    not close it, and must not retain it past return. The caller opens it,
-    owns it, and closes it in its own `finally`.
+    `repo_root_fd` is BORROWED. This function neither closes it nor retains
+    it past return; `open_trusted_object_authority_v2` owns it and closes it
+    in its own `finally`. Borrowing is what lets a caller holding a
+    long-lived authorized descriptor pass it without an `os.dup()` guard.
+    The returned `git_dir_fd`/`common_dir_fd` carry the ownership contract
+    stated by `_GitDirectoriesV2`.
 
-    Borrowing rather than taking ownership is deliberate, and independent
-    review measured why. Under a transfer-on-call contract the descriptor is
-    owned by nobody across the callee's frame-entry checkpoint, where CPython
-    delivers pending signals: an async exception there escapes outside any
-    `try` and strands the descriptor for the process lifetime (measured: 20/20
-    leaked at that instant under a transfer contract, 0/20 at the predecessor,
-    which opened the descriptor inside this same function -- a session-only
-    reproduction with no durable artifact here; what this tree does carry is
-    the pair of checked-in witnesses for the contract this function ships).
-    Borrowing RELOCATES
-    that window to the owner's own `try`, where it is bounded; it does not
-    eliminate the class. Independent review measured the residual precisely:
-    an async exception can still strand one descriptor per component opened
-    during the walk, so the number of such windows now scales with locator
-    depth rather than being constant. That is inherent to opening N
-    descriptors in interpreted code and is disclosed rather than claimed away.
-    Borrowing also keeps the seam usable by `#331-B`, whose caller will hold a
-    long-lived authorized directory capability it cannot afford to have closed
-    out from under it, and would otherwise have to `os.dup()` before every
-    call.
+    The locator string is never re-derived from a pathname here.
 
-    It is never re-derived from a pathname here -- `#331-A`'s whole point is
-    that the locator string is not consulted again after that first open.
+    Refs #331.
     """
     # `.git` is legitimately EITHER a directory (ordinary repo) OR a
     # regular file (a `gitdir:` pointer, linked worktree) -- both
@@ -1426,105 +1363,59 @@ def open_trusted_object_authority_v2(
     state of any kind for a rejected or partial acquisition to leave
     behind. The private directory is removed on exit regardless of outcome.
 
-    Acquisition is descriptor-anchored (see the module docstring): the
-    caller-supplied `repo_root` is opened exactly once, `O_NOFOLLOW`, per
-    component, and everything this module then reads BENEATH it uses that
-    retained descriptor or one opened relative to it -- never that pathname
-    re-resolved a second time.
+    ACQUISITION IS DESCRIPTOR-ANCHORED. The caller-supplied `repo_root` is
+    opened component by component, `O_NOFOLLOW` at each step, and everything
+    this module then reads BENEATH it uses that retained descriptor or one
+    opened relative to it -- never that pathname re-resolved. There is no
+    separate `Path.is_dir()` pre-check on `repo_root`: it would itself follow
+    a symlink, and the authoritative open is the check.
 
-    SCOPE, stated precisely because an independent lane reproduced the gap
-    this sentence used to paper over: the guarantee covers `repo_root`'s own
-    walk and its descendants. It does NOT cover a pointer derived from
-    repository content that names an ABSOLUTE target, because
-    `_open_dir_by_segments_no_follow_v2` restarts such a target from `/`
-    (`base_fd` is discarded). `git worktree add` always writes an absolute
-    `gitdir:` pointer, so a linked worktree's acquisition performs a second,
-    independent pathname walk over components it may share with `repo_root`.
-    Per-component `O_NOFOLLOW` prevents a symbolic-link component from being
-    FOLLOWED at that component's authoritative open. It does not make the
-    multi-step walk atomic: a component that has NOT YET been opened can still
-    be renamed or replaced concurrently, within a single walk as well as
-    between two of them. A descriptor already retained stays bound to the
-    object it opened even if that directory is later renamed; the limitation
-    concerns components not yet reached, never descriptors already held.
+    LOCATOR CONTRACT. `repo_root` must be absolute; free of `..`; free of
+    symlink components, ancestors included; an exact built-in `str` after
+    `os.fspath`; and within `_DEFAULT_MAX_PATH_SEGMENTS_V2`. Relative and `..`
+    each carry their own reason code; the rest surface as `SYMLINK_REJECTED`,
+    `REPOSITORY_UNUSABLE` and `BUDGET_EXCEEDED`. See `_open_repo_root_fd_v2`
+    for the full failure semantics, including the `os.fspath` carve-out.
 
-    Two consequences, both reproduced during this slice's qualification and
-    disclosed rather than implied:
+    A relative locator is refused rather than anchored to the process-wide
+    cwd, which would be an implicit, undeclared authority. A `..` component is
+    refused because, alone among components, its target is not named by the
+    locator text: it is re-evaluated at open time against the retained
+    descriptor's CURRENT parent link. Refusing is fail-closed; collapsing `..`
+    lexically would be wrong, because whether the collapse is sound depends on
+    a component this code has not opened yet. This applies to the
+    CALLER-SUPPLIED locator only -- `..` remains legal in pointers derived
+    from repository content, where git requires it.
 
-    * Replacing a component of a DERIVED pointer between two walks: an
-      absolute `gitdir:`/`commondir`/alternates target restarts from `/`, so a
-      linked worktree re-walks components it may share with `repo_root`. That
-      mechanism is unchanged from the predecessor -- `#331-A` neither
-      introduced nor closed it -- and is owned by `#331-B`.
-    * Replacing a not-yet-opened component of the CALLER locator during the
-      ingress walk. Descending component by component means each intermediate
-      directory is genuinely opened rather than merely traversed, so the walk
-      is observable to a watcher and spans several syscalls instead of one
-      kernel path resolution. An adversary who can already rename ancestor
-      directories can use that to make a rename race more reliable than it was
-      against the predecessor's single `os.open`. This is a real cost of the
-      change, accepted because a symlinked ancestor was previously followed
-      unconditionally, which is a strictly easier attack.
+    WHAT THIS DOES NOT ESTABLISH. Per-component `O_NOFOLLOW` prevents a
+    symlink component from being FOLLOWED at its authoritative open. It does
+    not make the multi-step walk atomic: a component NOT YET opened can be
+    renamed or replaced concurrently, within one walk as well as between two.
+    A descriptor already retained stays bound to the object it opened even if
+    that directory is later renamed; the limitation concerns components not
+    yet reached.
+
+    Two shapes of that limitation, both disclosed rather than implied:
+
+    * An absolute DERIVED pointer restarts the walk from `/`
+      (`_open_dir_by_segments_no_follow_v2` discards `base_fd`), so a linked
+      worktree performs a second, independent pathname walk over components it
+      may share with `repo_root`.
+    * Descending component by component means each intermediate directory is
+      genuinely opened rather than merely traversed, so the walk is observable
+      to a watcher and spans several syscalls instead of one kernel path
+      resolution. An adversary who can already rename ancestor directories can
+      use that to make a rename race more reliable than against a single
+      whole-pathname `os.open`. This cost is accepted because a symlinked
+      ancestor was otherwise followed unconditionally, a strictly easier
+      attack.
 
     A stronger kernel primitive -- plausibly `openat2` with appropriate
-    resolution flags -- deserves separate investigation. This slice does NOT
-    demonstrate that such a primitive would close every rename race, and no
-    claim to that effect is made here. `#331-B` can avoid part of this class
-    by supplying pre-authorized capabilities/descriptors instead of
-    rediscovering external storage by pathname.
-
-    Deliberately no separate
-    `Path.is_dir()` pre-check on `repo_root` here (an earlier version had
-    one): it would itself follow a symlink and would in any case be
-    immediately superseded by the authoritative no-follow open of the very
-    same path -- keeping it would have been dead weight inconsistent with
-    this module's own "the open is the check" principle, not a second layer
-    of protection.
-
-    Until `#331-A` the paragraph above was an OVERCLAIM for `repo_root`
-    itself: the sentence was true of everything this module derived, but
-    `repo_root` was handed whole to one `os.open()`, so its intermediate
-    components were resolved by the kernel's symlink-following walk, and
-    two callers dereferenced it with `Path.resolve()` before this function
-    was even entered. `_open_repo_root_fd_v2` is what makes the claim true;
-    the wording was not weakened to fit the old mechanism.
-
-    THE LOCATOR CONTRACT, in full, because "absolute-only" is not all of it.
-    `repo_root` must be absolute; free of `..` components; free of symlinks at
-    EVERY component, ancestors as well as the final one; an exact built-in
-    `str` after `os.fspath`; and within the walker's hard segment budget
-    (`_DEFAULT_MAX_PATH_SEGMENTS_V2`, 256 at the time of writing -- ordinary
-    multi-component paths are supported up to that configured budget, which
-    `#331-A` applies to the caller locator for the first time by routing it
-    through the shared walker). Only the first two have their own reason code;
-    the rest surface as `SYMLINK_REJECTED`, `REPOSITORY_UNUSABLE` and
-    `BUDGET_EXCEEDED` respectively. One carve-out, because "after `os.fspath`"
-    is doing real work in that sentence: an object `os.fspath` ITSELF rejects
-    (an `int`, `None`, a `__fspath__` returning a non-path) is not refused at
-    all -- it raises `TypeError` uncaught, as a programmer defect rather than
-    an operational refusal. A `bytes` locator is NOT such a case: `os.fspath`
-    accepts it, so it is refused by the exact-`str` gate. See
-    `_open_repo_root_fd_v2`.
-
-    A relative locator is refused (`..._RELATIVE_REPO_ROOT_REASON_V2`) rather than
-    anchored to the process-wide cwd, which would be an implicit, undeclared
-    authority. A `..` component is refused (`..._REPO_ROOT_NOT_NORMALISED_
-    REASON_V2`) because, alone among components, its target is not named by
-    the locator text: it is re-evaluated at open time against the retained
-    descriptor's CURRENT parent link, so renaming that directory mid-walk
-    lands in a directory the locator never named. Independent review measured
-    that regression against this change (~27% of successful resolutions
-    escaped under a concurrent renamer, versus zero on the predecessor, whose
-    whole-pathname `os.open` resolved `..` inside one syscall -- a session-only
-    reproduction with no durable artifact in this tree, and unfalsifiable here
-    now that the refusal below makes the race unreachable by construction. It
-    is cited to justify the refusal, never as a standing security property).
-    Refusing is
-    fail-closed; collapsing `..` lexically would be wrong, because whether the
-    collapse is sound depends on a component this code has not opened yet.
-
-    This applies to the CALLER-SUPPLIED locator only. `..` remains legal in
-    pointers derived from repository content, where git requires it.
+    resolution flags -- deserves separate investigation. This module does NOT
+    demonstrate that such a primitive would close every rename race, and makes
+    no claim to that effect. `#331-B` owns external-storage authorization and
+    can avoid part of this class by supplying pre-authorized capabilities
+    instead of rediscovering storage by pathname.
 
     The third public consumer, `git_commit_subject_v2.materialise_commit_
     subject_v2`, passes `repo_root` through unchanged and is bound by this

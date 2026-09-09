@@ -12,7 +12,9 @@ docstring for the same pattern on the previous round): every test below was
 run against `master` BEFORE `trusted_object_authority_v2.py` and the
 rewiring of `commit_derived_execution_identity_v2.py` /
 `git_commit_subject_v2.py` existed, to confirm each one is a real,
-demonstrable gap and not a test that was always going to pass. That RED run
+demonstrable gap and not a test that was always going to pass. (That
+statement scopes the original corpus. The later `#331-A` section below also
+pins several controls that already held at its own base -- see its header.) That RED run
 is recorded in the PR body, not repeated here as executable code -- the
 corpus that remains is the permanent GREEN regression suite, exactly as the
 prior round's file states its own two ported falsifiers stay in the
@@ -2028,32 +2030,10 @@ def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path
 
 # -- `#331-A` top-level retained-descriptor ingress -----------------------------
 #
-# RED discipline for this section, matching this file's own docstring: every
-# test below was run against `master@4e334ab4` BEFORE the `#331-A` change.
-# EIGHT of the twelve were RED there, four already GREEN. Independently
-# re-measured, with the head test file transplanted onto base and only the new
-# reason-code constants shimmed:
-#
-#   RED at base:   symlinked_ancestor, relative_repo_root, dotdot_component,
-#                  str_subclass, authorize_..._does_not_pre_resolve,
-#                  verify_..._does_not_pre_resolve,
-#                  repo_root_pathname_is_never_reopened,
-#                  repo_root_descriptor_is_not_stranded
-#   GREEN at base: symlinked_final, non_directory_intermediate,
-#                  multi_component_ordinary, ingress_conserves_descriptors
-#
-# One nuance worth stating rather than rounding off, because an earlier version
-# of this comment got it backwards: at base a relative locator was silently
-# ANCHORED TO THE PROCESS-WIDE CWD and ACCEPTED when it resolved there. The
-# relative test is RED at base for that reason -- not because base refused
-# relative locators under some other code. That undeclared cwd authority is
-# exactly what `..._RELATIVE_REPO_ROOT_REASON_V2` exists to refuse.
-#
-# The four GREEN cases are pinned so the fix cannot be "achieved" by breaking
-# them. That RED run is recorded in the PR body.
-#
-# These tests name their own targets literally. None is generated from a
-# production constant whose deletion would also delete the test.
+# Some of these were RED at `4e334ab4` and some pin behaviour that already
+# held; the per-test split is recorded in the PR history, not here. Each test
+# names its own target literally -- none is generated from a production
+# constant whose deletion would also delete the test.
 
 
 def _repo_behind_symlinked_ancestor_v2(tmp_path: Path) -> tuple[Path, str]:
@@ -2250,12 +2230,9 @@ class _StrSubclassLocatorV2(str):
     `decoy`, while `os.open(obj)` reads the raw buffer and sees the real
     bytes. "Validated value != used value" in its purest form.
 
-    `decoy` MUST be a real, acquirable repository for this fixture to
-    discriminate. An earlier version pointed it at a nonexistent path: the
-    walk then failed with `REPOSITORY_UNUSABLE` whether the gate was
-    `type(...) is str` or `isinstance(...)`, so the test passed against the
-    weakened gate and killed nothing. The mutation harness caught that. The
-    decoy has to be a repository the mutant would SUCCESSFULLY acquire.
+    `decoy` MUST be a real, acquirable repository. Pointed at a nonexistent
+    path the walk fails with `REPOSITORY_UNUSABLE` under both the strict and
+    the weakened gate, so the test would kill nothing.
     """
 
     decoy = ""
@@ -2265,16 +2242,13 @@ class _StrSubclassLocatorV2(str):
 
 
 def test_str_subclass_repo_root_locator_is_refused_by_the_exact_type_gate(tmp_path: Path) -> None:
-    """`#331-A`'s locator gate is `type(captured) is not str`, not
-    `isinstance`. This is the mutation-discrimination witness for it, in the
-    shape `#322` established for the sibling trust-anchor gate.
+    """Reject a `repo_root` whose type is a `str` subclass.
 
-    Without it, weakening the gate to `isinstance(captured, str)` -- a
-    reviewer-invisible, semantically-plausible refactor -- is not detectable
-    by any other test in this file, and an independent lane reproduced a
-    working acquisition against that mutant: the authority built its CAS from
-    one repository while every other `os.*` observer in the same process,
-    resolving the SAME object, saw another.
+    Kills the weakening of `_open_repo_root_fd_v2`'s gate from
+    `type(...) is str` to `isinstance(...)`: a subclass overriding `__str__`
+    splits `PurePosixPath` (which follows it) from `os.open` (which reads the
+    raw buffer), so the mutant acquires the decoy repository. No other test in
+    this file detects that change.
     """
 
     repo = tmp_path / "repo"
@@ -2370,21 +2344,13 @@ def test_repo_root_ingress_conserves_descriptors_across_refusals_and_successes(
 
 
 def test_repo_root_descriptor_is_not_stranded_if_the_borrower_never_runs(tmp_path: Path) -> None:
-    """Kills a mutation reverting the BORROW contract back to transfer-on-call.
+    """The `repo_root` descriptor is not stranded when the borrower never runs.
 
-    CPython delivers pending signals at a frame-entry checkpoint, so an async
-    exception can fire after `_open_repo_root_fd_v2` has returned a descriptor
-    but before the borrower's body -- and therefore before any `try` inside the
-    borrower -- has executed. Under a transfer-on-call contract the descriptor
-    is owned by nobody at that instant and is stranded for the process
-    lifetime; independent review measured 20/20 leaked -- a session-only
-    reproduction with no durable artifact in this tree, cited to justify the
-    borrow contract rather than as a standing property. Under the borrow
-    contract the caller's own `finally` closes it. What IS durable is this
-    test.
-
-    Simulated deterministically, without signals, by making the borrower raise
-    on entry: that is exactly the observable the async case produces.
+    Kills a revert of the BORROW contract to transfer-on-call: an async
+    exception can fire at the borrower's frame-entry checkpoint, before any
+    `try` inside it executes, so under transfer nothing owns the descriptor at
+    that instant. Simulated deterministically by making the borrower raise on
+    entry, which produces the same observable.
     """
 
     repo = tmp_path / "repo"
@@ -2416,23 +2382,15 @@ def test_repo_root_descriptor_is_not_stranded_if_the_borrower_never_runs(tmp_pat
 
 
 def test_dotdot_component_in_repo_root_is_refused(tmp_path: Path) -> None:
-    """`..` in the CALLER-SUPPLIED locator is refused, with its own reason code.
+    """Reject a `..` component in the caller-supplied locator, with its own
+    reason code.
 
-    Alone among path components, `..`'s target is not named by the locator
-    text: the per-component walk re-evaluates it at open time against the
-    retained descriptor's CURRENT parent link. A concurrent renamer of that
-    directory therefore lands the walk somewhere the locator never named --
-    a race the predecessor did not have, because its whole-pathname
-    `os.open` resolved `..` inside a single syscall and its two callers
-    additionally collapsed `..` with `Path.resolve()`. Independent review
-    measured ~27% of successful resolutions escaping under that race -- a
-    session-only reproduction with no durable artifact here, and unfalsifiable
-    now that this refusal makes the race unreachable by construction. What IS
-    durable is this test.
-
-    Refusing is fail-closed. Collapsing `..` lexically instead would be
-    wrong: whether `/a/b/../c` means `/a/c` depends on whether `b` is a
-    symlink, which this code has not opened yet.
+    Alone among components, `..`'s target is not named by the locator text:
+    the walk re-evaluates it at open time against the retained descriptor's
+    CURRENT parent link, so a concurrent renamer lands it somewhere the
+    locator never named. Refusing is fail-closed; collapsing `..` lexically
+    would be wrong, because whether `/a/b/../c` means `/a/c` depends on
+    whether `b` is a symlink, which this code has not opened yet.
     """
 
     repo = tmp_path / "A" / "repo"

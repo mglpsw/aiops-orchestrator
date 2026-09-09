@@ -738,27 +738,11 @@ def verify_executed_source_identity_v2(
        lives under the root" are different properties, and neither check is
        asked to cover for the other.
     """
-    # `#331-A`: `repo_root` is deliberately NOT `Path(...).resolve()`d here.
-    # `resolve()` dereferences EVERY component against the live -- and, per
-    # this module's own threat scope, hostile and concurrently mutable --
-    # filesystem, which is exactly the pathname-following step the trusted
-    # object authority exists to avoid. The raw locator is handed straight
-    # to `open_trusted_object_authority_v2`, whose first authoritative open
-    # walks it component by component, no-follow, and retains the resulting
-    # descriptor. Nothing below reads `repo_root` again: every subsequent
-    # read goes through `authority.trusted_repo_root` (the private CAS).
-    #
-    # The locator contract that authority enforces is absolute, `..`-free,
-    # symlink-free at every component, exact built-in `str`, and within its
-    # segment budget -- see `open_trusted_object_authority_v2`. Every one of
-    # those refusals is reported from here as a single reason code, so the
-    # authority's more specific locator diagnoses do not reach this
-    # function's caller; they remain on `__cause__`. Narrowing that is a
-    # separate, unowned follow-up, deliberately not changed by `#331-A`.
-    #
-    # A locator `os.fspath` itself rejects (an `int`, `None`) is not one of
-    # those refusals at all: it raises `TypeError` straight out of this
-    # function, uncaught, as a programmer defect.
+    # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
+    # owns component-wise no-follow acquisition of the raw locator, and states
+    # the locator contract. Nothing below reads `repo_root` again; every read
+    # goes through `authority.trusted_repo_root`. Locator refusals arrive here
+    # as one reason code, with the authority's specific code on `__cause__`.
     subject_root = Path(subject_root).resolve()
 
     if not subject_root.is_dir():
@@ -922,27 +906,11 @@ def authorize_commit_for_execution_v2(
     if not _is_full_commit_sha_shape_v2(trusted_ref_sha):
         raise ExecutedSourceIdentityError(IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2)
 
-    # `#331-A`: `repo_root` is deliberately NOT `Path(...).resolve()`d here.
-    # `resolve()` dereferences EVERY component against the live -- and, per
-    # this module's own threat scope, hostile and concurrently mutable --
-    # filesystem, which is exactly the pathname-following step the trusted
-    # object authority exists to avoid. The raw locator is handed straight
-    # to `open_trusted_object_authority_v2`, whose first authoritative open
-    # walks it component by component, no-follow, and retains the resulting
-    # descriptor. Nothing below reads `repo_root` again: every subsequent
-    # read goes through `authority.trusted_repo_root` (the private CAS).
-    #
-    # The locator contract that authority enforces is absolute, `..`-free,
-    # symlink-free at every component, exact built-in `str`, and within its
-    # segment budget -- see `open_trusted_object_authority_v2`. Every one of
-    # those refusals is reported from here as a single reason code, so the
-    # authority's more specific locator diagnoses do not reach this
-    # function's caller; they remain on `__cause__`. Narrowing that is a
-    # separate, unowned follow-up, deliberately not changed by `#331-A`.
-    #
-    # A locator `os.fspath` itself rejects (an `int`, `None`) is not one of
-    # those refusals at all: it raises `TypeError` straight out of this
-    # function, uncaught, as a programmer defect.
+    # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
+    # owns component-wise no-follow acquisition of the raw locator, and states
+    # the locator contract. Nothing below reads `repo_root` again; every read
+    # goes through `authority.trusted_repo_root`. Locator refusals arrive here
+    # as one reason code, with the authority's specific code on `__cause__`.
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root

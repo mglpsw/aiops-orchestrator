@@ -241,23 +241,10 @@ def materialise_commit_subject_v2(
     *, repo_root: Path, ref: str, destination: Path
 ) -> MaterialisedCommitSubjectV2:
     """`#331-A`: `repo_root` is passed through to
-    `open_trusted_object_authority_v2` unchanged, so this function inherits
-    that authority's locator contract in full -- absolute, free of `..`, free
-    of symlinks at every component (ancestors included, not just the final
-    one), an exact built-in `str` after `os.fspath`, and within the walker's
-    hard segment budget. It is deliberately never `resolve()`d here. See that
-    function for the contract and for what it does and does not establish.
-
-    Note that this function reports every refusal from that authority as
-    `SUBJECT_TREE_UNREADABLE_REASON_V2`, so the authority's more specific
-    locator reason codes do not reach this caller; they remain available on
-    `__cause__`. Narrowing that is a separate, unowned follow-up.
-
-    A locator `os.fspath` itself rejects (an `int`, `None`, a `__fspath__`
-    returning a non-path) is not one of those refusals at all: it raises
-    `TypeError` straight out of this function, uncaught, as a programmer
-    defect. `bytes` is not such a case -- `os.fspath` accepts it, so the
-    exact-`str` gate refuses it.
+    `open_trusted_object_authority_v2` unchanged and is never `resolve()`d
+    here, so this function inherits that authority's locator contract and its
+    limitations. Refusals from it arrive as `SUBJECT_TREE_UNREADABLE_REASON_V2`
+    with the specific code on `__cause__`.
 
     Write `ref`'s resolved commit's committed bytes into an empty directory.
 
