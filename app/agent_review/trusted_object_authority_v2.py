@@ -874,20 +874,31 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
 
 
 class AuthorizedGitStorageSetV2:
-    """Host-authorized Git storage capability for AgentReview v2 (#331-B, C2).
+    """Storage capability enforcement for AgentReview v2 (#331-B, C2_A).
 
-    Encapsulates a bounded set of host-authorized storage roots from which Git
-    objects, worktree gitdirs, commondirs, and alternates may be acquired.
+    Encapsulates a bounded set of storage roots from which Git objects,
+    worktree gitdirs, commondirs, and alternates may be acquired.
+
+    ASSURANCE & PROVENANCE BOUNDARY (AOCM-M1):
+    StorageCapabilityEnforcement != StorageCapabilityProvenance
+    MechanismQualified != ProducerBindingProven
+
+    `AuthorizedGitStorageSetV2` strictly ENFORCES the roots it was given;
+    qualification of WHO possesses authority to supply those roots is a separate
+    relation (C2_B, operational host-policy / consumer binding). Passing a raw
+    `Sequence[Path | str]` to `from_roots()` does not intrinsically make the
+    roots host-qualified: a raw sequence can serve as a trusted-boundary
+    factory input ONLY when its caller is already the named authority for that
+    decision.
 
     CONTRACT & INVARIANTS:
-    1. Provenance: Constructed exclusively from qualified host-policy root locators
-       or an already-anchored repository descriptor.
-    2. Descriptor-anchoring: Every root is opened component-by-component no-follow
+    1. Descriptor-anchoring: Every root is opened component-by-component no-follow
        at construction time, capturing the kernel dentry path and (dev, ino).
        Retained descriptors pin the authorized roots against filesystem mutation.
-    3. No Re-resolution: Pathnames are never re-evaluated via `.resolve()` during
-       policy checks, eliminating TOCTOU boundary retargeting (#348, discussion #4086282895).
-    4. Non-Self-Authorization (CM-C2-01): A caller-selected repository locator
+    2. DescriptorIdentity != ReResolvedPathIdentity: Pathnames are never
+       re-evaluated via `.resolve()` during policy checks, eliminating TOCTOU
+       boundary retargeting (#348, discussion #4086282895).
+    3. Non-Self-Authorization (CM-C2-01): A caller-selected repository locator
        (repo_root) does NOT automatically authorize itself. It must be proven
        contained within this authorized storage set.
     """
@@ -919,7 +930,14 @@ class AuthorizedGitStorageSetV2:
         cls,
         roots: Sequence[Path | str],
     ) -> AuthorizedGitStorageSetV2:
-        """Construct an authorized storage capability from a sequence of host-qualified roots."""
+        """Construct an authorized storage capability from a sequence of root locators.
+
+        PROVENANCE NOTE: This factory validates and opens the provided root
+        locators component-by-component no-follow, retaining open descriptors.
+        It enforces the roots it was given; it does not authenticate that the
+        caller had authority to declare them. Producer qualification is the
+        responsibility of C2_B.
+        """
         validated_paths: list[Path] = []
         open_fds: list[int] = []
         dev_inos: list[tuple[int, int]] = []
@@ -1756,22 +1774,43 @@ def open_trusted_object_authority_v2(
     CALLER-SUPPLIED locator only -- `..` remains legal in pointers derived
     from repository content, where git requires it.
 
-    EXTERNAL STORAGE AUTHORIZATION (#331-B, C2). `NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE`.
-    A component-wise no-follow walk ensures no symlink component was followed,
-    but does not prevent an attacker from pointing `gitdir:`, `commondir`, or
-    `objects/info/alternates` to an unauthorized, readable repository elsewhere
-    on the host. Any external storage root transitioned to must be explicitly
-    passed in `authorized_storage` (or `authorized_storage_roots`) by the
-    caller/host policy; otherwise, an escape raises
-    `TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2`.
+    OPERATING MODES & ASSURANCE LEVELS (#331-B, C2):
+    This entrypoint operates in two materially distinct modes with different
+    epistemological assurance levels:
 
-    NON-SELF-AUTHORIZATION (CM-C2-01, #348 F1).
+    * MODE A — SELF_CONTAINED_MODE (No external storage capability provided):
+      When `authorized_storage` and `authorized_storage_roots` are None, the
+      repository descriptor itself becomes the sole bounded storage capability
+      (`AuthorizedGitStorageSetV2.from_repository_fd`). All external storage
+      transitions (`gitdir:`, `commondir`, `objects/info/alternates`) fail
+      closed with `STORAGE_UNAUTHORIZED`.
+      Assurance level: Self-contained repository descriptor confinement.
+      Invariant: `SelfContainedRepositoryConfinement != HostAuthorizedStorage`.
+
+    * MODE B — HOST_AUTHORIZED_MODE (Storage capability provided):
+      When an `AuthorizedGitStorageSetV2` or root sequence is supplied, the
+      caller-selected `repo_root` itself MUST be proven contained within that
+      capability (non-self-authorization, CM-C2-01). External storage
+      transitions succeed only if they remain strictly within that capability.
+      Assurance level: Storage capability enforcement (`C2_A`).
+
+    CLAIM DECOMPOSITION (C2 = C2_A ∧ C2_B):
+    - C2_A (Storage Capability Enforcement): Enforced by this module via
+      `AuthorizedGitStorageSetV2` and descriptor/inode/VFS containment.
+    - C2_B (Host Authorization & Consumer Binding): The relation establishing
+      that the capability consumed by the operational AgentReview acquisition
+      pipeline originates from a host/base-owned trust decision and the real
+      consumer is required to traverse it. C2_B is an open obligation wired
+      in the orchestration layer.
+
+    NON-SELF-AUTHORIZATION (CM-C2-01, #348 F1):
     RepoRootLocator != RepoRootAuthorization
     CallerSelectedRepository != HostAuthorizedStorage
     When host-authorized storage is supplied, `repo_root` does NOT automatically
     authorize itself: it must be contained within the host-authorized capability.
 
-    DESCRIPTOR-BOUND (NO PATH RE-RESOLUTION, #348 F2).
+    DESCRIPTOR-BOUND (NO PATH RE-RESOLUTION, #348 F2):
+    DescriptorIdentity != ReResolvedPathIdentity
     Once opened, repository and storage identity are derived from the open
     descriptors and kernel VFS dentries, never re-resolved by pathname lookup.
     """

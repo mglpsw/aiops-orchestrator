@@ -43,21 +43,30 @@
     },
     {
       "countermodel_id": "CM-C2-01",
-      "claim": "C2",
-      "target_proposition": "Git objects originate only from authorized storage (SafePath != AuthorizedStorage).",
-      "defect_scenario": "Host accepts repository path '/tmp/attacker_repo' because it contains no '..' traversal segments, but the storage is untrusted.",
-      "failure_of_surface_check": "Lexical path validator checks relative-path safety and succeeds; attacker controls repo hooks and objects.",
-      "discriminator": "Negative witness test supplying lexically clean path outside authorized root whitelist.",
-      "mitigation": "Storage authorization gate verifies canonical path against explicit allowed storage boundary."
+      "claim": "C2_A",
+      "target_proposition": "Caller repo_root cannot self-authorize when host-authorized storage is specified (RepoRootLocator != RepoRootAuthorization; CallerSelectedRepository != HostAuthorizedStorage).",
+      "defect_scenario": "Caller supplies repository path '/tmp/attacker_repo' outside host-authorized storage area; repo self-authorizes.",
+      "failure_of_surface_check": "Lexical path validator checks relative-path safety and succeeds; attacker-controlled repo is acquired.",
+      "discriminator": "Negative witness test supplying caller repo_root outside host-authorized storage set (test_cm_c2_01_caller_repo_root_outside_host_authorized_storage_rejected).",
+      "mitigation": "Storage capability verifier rejects any caller-supplied repo_root descriptor not contained within the host-authorized storage set."
     },
     {
       "countermodel_id": "CM-C2-02",
-      "claim": "C2",
-      "target_proposition": "Worktree commondir and alternates pointers cannot reference unauthorized storage.",
-      "defect_scenario": "A .git file in an authorized folder points 'commondir: /etc/forbidden' or 'alternates: /var/untrusted'.",
-      "failure_of_surface_check": "Worktree path is authorized, but object lookup traverses commondir or alternates to untrusted host disk.",
-      "discriminator": "Linked-worktree resolution test checking both worktree path and target commondir/alternates against authorized storage roots.",
-      "mitigation": "trusted_object_authority_v2 resolves and verifies all commondir, gitdir, and alternates references against caller-authorized roots."
+      "claim": "C2_A",
+      "target_proposition": "Worktree commondir, gitdir, and alternates pointers cannot reference unauthorized storage or escape retained descriptors.",
+      "defect_scenario": "A .git file in an authorized folder points 'commondir: /etc/forbidden' or 'alternates: /var/untrusted', or disk paths are swapped after descriptor acquisition (F2).",
+      "failure_of_surface_check": "Worktree path is authorized, but object lookup traverses commondir or alternates to untrusted host disk, or pathname re-resolution permits swapped directory.",
+      "discriminator": "Linked-worktree escape tests and deterministic causal race/hook discriminator (test_f2_pathname_rebind_causal_discriminator).",
+      "mitigation": "AuthorizedGitStorageSetV2 verifies all commondir, gitdir, and alternates descriptors against retained descriptor inodes and VFS dentry hierarchy."
+    },
+    {
+      "countermodel_id": "CM-C2-03",
+      "claim": "C2_B",
+      "target_proposition": "Operational AgentReview acquisition pipeline must bind to host-qualified capability rather than unbounded caller inputs (MechanismQualified != ProducerBindingProven).",
+      "defect_scenario": "Operational review runner invokes materialise_commit_subject_v2 without host-authorized storage capability, defaulting to self-contained mode or unauthenticated path inputs.",
+      "failure_of_surface_check": "Unit tests pass with capability supplied, but operational orchestrator entrypoint fails to generate or bind host capability.",
+      "discriminator": "Orchestrator pipeline integration test verifying required host storage capability injection.",
+      "mitigation": "Operational acquisition runner requires explicit host trust policy capability binding as a non-optional parameter before execution."
     },
     {
       "countermodel_id": "CM-C3-01",

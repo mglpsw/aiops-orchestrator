@@ -16,7 +16,7 @@ Issues on GitHub are communication and tracking carriers. They do not own requir
 
 | GitHub Issue | Title / Role | Terminal Claim | Obligation ID | Current State | Critical Path Position |
 |:---|:---|:---:|:---:|:---:|:---:|
-| **#331-B** | Authorized external Git storage transitions | **C2** | `OBL-C2-01` | **READY_TO_IMPLEMENT** | **Slice 1 (Root unclosed)** |
+| **#331-B** | Authorized external Git storage transitions | **C2** | `OBL-C2A-01`, `OBL-C2B-01` | **C2_A IMPLEMENTED (PR #348); C2_B OPEN** | **Slice 1 (Root unclosed)** |
 | **#304** | Canonical tree materialization & blob verification | **C3** | `OBL-C3-01` | OPEN | Slice 2 (Blocked by #331-B) |
 | **#333** | Proposition definition for execution provenance | **C4** | `OBL-C4-01` | OPEN | Slice 3 Precondition |
 | **#321** | Hostile-read boundary (special files) | **C4** | `OBL-C4-02` | MERGED (PR #312) | Closed in master |

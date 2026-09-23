@@ -7,10 +7,17 @@
   "relations": [
     {
       "relation_id": "REL-01",
-      "from": "OBL-C2-01",
+      "from": "OBL-C2A-01",
       "to": "OBL-C3-01",
       "type": "SECURITY_BOUNDARY_ENABLER",
-      "rationale": "Git tree materialization (C3) must only unpack commits originating from authorized storage boundaries (C2). Unauthenticated storage must never be materialized."
+      "rationale": "Git tree materialization (C3) must only unpack commits originating from authorized storage capabilities (C2_A). Unauthenticated storage must never be materialized."
+    },
+    {
+      "relation_id": "REL-01B",
+      "from": "OBL-C2A-01",
+      "to": "OBL-C2B-01",
+      "type": "CAPABILITY_FOUNDATION",
+      "rationale": "Host authorization and consumer binding (C2_B) requires an established, qualified storage capability enforcement mechanism (C2_A)."
     },
     {
       "relation_id": "REL-02",

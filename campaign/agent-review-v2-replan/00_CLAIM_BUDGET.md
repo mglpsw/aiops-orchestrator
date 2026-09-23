@@ -39,11 +39,21 @@ Issues and PRs are not requirements; they are carriers of obligations. Work on A
 - **Closure Predicate:** Any tampering with or substitution of repository, base OID, head OID, or toolrepo OID causes immediate validation rejection.
 
 ### C2 — Authorized Git Acquisition
-- **Proposition:** Git objects, trees, commits, and blobs used as review authority originate exclusively from storage locations explicitly authorized by the host/caller trust model.
-- **Invariant:** `SafePath != AuthorizedStorage`. A path being syntactically safe (no `..`, no traversal) does not establish that its underlying `.git` directory is an authorized storage boundary.
-- **Truth Maker:** Host-authorized storage boundary verifier in `app/agent_review/trusted_object_authority_v2.py` and `app/agent_review/external_path_ingress_v2.py`. Rejects external/untrusted repos, spoofed gitdirs, and unauthorized worktrees.
-- **Carrier / Issues:** #331-B (successor to #331 / #318 / #312).
-- **Closure Predicate:** Host trust boundary rejects repos residing outside authorized root paths or referencing unauthorized commondir/gitdir pointers.
+- **Proposition:** Git objects, trees, commits, and blobs used as review authority originate exclusively from storage locations explicitly authorized by the host/caller trust model (`C2 = C2_A ∧ C2_B`).
+- **Claim Decomposition**:
+  - **C2_A — Authorized-Storage Capability Enforcement**:
+    - **Proposition**: Open descriptors, derived pointers (`gitdir:`, `commondir`), and alternates are verified and contained within retained `AuthorizedGitStorageSetV2` capability descriptors, preventing boundary escape and TOCTOU pathname retargeting.
+    - **Invariants**: `SafePath != AuthorizedStorage`; `DescriptorIdentity != ReResolvedPathIdentity`; `RepoRootLocator != RepoRootAuthorization`.
+    - **Truth Maker**: `app/agent_review/trusted_object_authority_v2.py` (`AuthorizedGitStorageSetV2`, descriptor-anchored containment).
+    - **Carrier / Issues**: #331-B (PR #348).
+    - **Status**: Implemented, pending exact-head qualification.
+  - **C2_B — Host Authorization & Consumer Binding**:
+    - **Proposition**: The capability consumed by the operational AgentReview acquisition path originates from a host/base-owned trust decision and the real consumer is required to traverse it.
+    - **Invariants**: `StorageCapabilityEnforcement != StorageCapabilityProvenance`; `MechanismQualified != ProducerBindingProven`; `SelfContainedRepositoryConfinement != HostAuthorizedStorage`.
+    - **Truth Maker**: Operational orchestration wiring binding host trust policy to acquisition pipeline consumers (`git_commit_subject_v2`, `materialize_v2`).
+    - **Carrier / Issues**: #331-B / #46.
+    - **Status**: OPEN.
+- **Closure Predicate**: Broad C2 closes only when both C2_A is qualified and C2_B operational wiring is proven.
 
 ### C3 — Canonical Materialization
 - **Proposition:** An admitted commit is materialized into an isolated working subject faithful to the declared Git tree representation without filesystem path reinterpretation changing identity.
