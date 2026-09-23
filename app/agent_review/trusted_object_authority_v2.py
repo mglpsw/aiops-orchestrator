@@ -229,6 +229,7 @@ __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
+    "AuthorizedGitStorageSetV2",
     "TrustedObjectAuthorityError",
     "TrustedObjectAuthorityV2",
     "open_trusted_object_authority_v2",
@@ -636,27 +637,24 @@ def _is_fd_within_authorized_roots(
     NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE (#331-B):
     Prevent hostile checkouts from pointing gitdir:, commondir, or
     objects/info/alternates to arbitrary readable host storage.
+
+    Authorized roots are pre-bound at call entry without subsequent
+    pathname re-resolution, closing TOCTOU retargeting across policy checks.
     """
     # 1. Check using Linux procfs dentry tracking if available
     try:
         proc_link = os.readlink(f"/proc/self/fd/{fd}")
-        proc_path = Path(proc_link).resolve()
-        for root in authorized_roots:
-            canon_root = root.resolve()
-            if proc_path == canon_root or proc_path.is_relative_to(canon_root):
+        proc_path = Path(proc_link)
+        for bound_root in authorized_roots:
+            if proc_path == bound_root or proc_path.is_relative_to(bound_root):
                 return True
     except (OSError, ValueError):
         pass
 
     # 2. Check using tracked logical path from no-follow component traversal
-    try:
-        canon_logical = logical_path.resolve()
-        for root in authorized_roots:
-            canon_root = root.resolve()
-            if canon_logical == canon_root or canon_logical.is_relative_to(canon_root):
-                return True
-    except (OSError, ValueError):
-        pass
+    for bound_root in authorized_roots:
+        if logical_path == bound_root or logical_path.is_relative_to(bound_root):
+            return True
 
     return False
 
@@ -666,6 +664,7 @@ def _open_dir_by_segments_no_follow_v2(
     base_fd: int | None,
     path_str: str,
     base_path: Path | None = None,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
     authorized_roots: tuple[Path, ...] | None = None,
 ) -> int:
     """Resolve `path_str` (absolute or relative, possibly multi-segment --
@@ -730,7 +729,7 @@ def _open_dir_by_segments_no_follow_v2(
         remaining = parts
         if base_path is None:
             try:
-                base_path = Path(os.readlink(f"/proc/self/fd/{base_fd}")).resolve()
+                base_path = Path(os.readlink(f"/proc/self/fd/{base_fd}"))
             except (OSError, ValueError):
                 base_path = Path(".")
         current_logical = base_path
@@ -761,7 +760,15 @@ def _open_dir_by_segments_no_follow_v2(
         raise
 
     final_fd = open_fds[0]
-    if authorized_roots is not None:
+    if authorized_storage is not None:
+        if not authorized_storage.contains_fd(
+            final_fd, logical_path=current_logical
+        ):
+            _close_ignoring_errors_v2(final_fd)
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+            )
+    elif authorized_roots is not None:
         if not _is_fd_within_authorized_roots(
             final_fd, logical_path=current_logical, authorized_roots=authorized_roots
         ):
@@ -866,46 +873,238 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
     return _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
 
 
+class AuthorizedGitStorageSetV2:
+    """Host-authorized Git storage capability for AgentReview v2 (#331-B, C2).
+
+    Encapsulates a bounded set of host-authorized storage roots from which Git
+    objects, worktree gitdirs, commondirs, and alternates may be acquired.
+
+    CONTRACT & INVARIANTS:
+    1. Provenance: Constructed exclusively from qualified host-policy root locators
+       or an already-anchored repository descriptor.
+    2. Descriptor-anchoring: Every root is opened component-by-component no-follow
+       at construction time, capturing the kernel dentry path and (dev, ino).
+       Retained descriptors pin the authorized roots against filesystem mutation.
+    3. No Re-resolution: Pathnames are never re-evaluated via `.resolve()` during
+       policy checks, eliminating TOCTOU boundary retargeting (#348, discussion #4086282895).
+    4. Non-Self-Authorization (CM-C2-01): A caller-selected repository locator
+       (repo_root) does NOT automatically authorize itself. It must be proven
+       contained within this authorized storage set.
+    """
+
+    def __init__(
+        self,
+        *,
+        root_fds: Sequence[int],
+        bound_paths: Sequence[Path],
+        bound_dev_ino: Sequence[tuple[int, int]],
+        owns_fds: bool = True,
+    ) -> None:
+        self._root_fds: tuple[int, ...] = tuple(root_fds)
+        self._bound_paths: tuple[Path, ...] = tuple(bound_paths)
+        self._bound_dev_ino: tuple[tuple[int, int], ...] = tuple(bound_dev_ino)
+        self._owns_fds = owns_fds
+        self._closed = False
+
+    @property
+    def bound_paths(self) -> tuple[Path, ...]:
+        return self._bound_paths
+
+    @property
+    def root_fds(self) -> tuple[int, ...]:
+        return self._root_fds
+
+    @classmethod
+    def from_roots(
+        cls,
+        roots: Sequence[Path | str],
+    ) -> AuthorizedGitStorageSetV2:
+        """Construct an authorized storage capability from a sequence of host-qualified roots."""
+        validated_paths: list[Path] = []
+        open_fds: list[int] = []
+        dev_inos: list[tuple[int, int]] = []
+        try:
+            for item in roots:
+                captured = os.fspath(item)
+                if type(captured) is not str:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+                    )
+                locator = PurePosixPath(captured)
+                if not locator.is_absolute():
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+                    )
+                if ".." in locator.parts:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
+                    )
+                if len(locator.parts) > _DEFAULT_MAX_PATH_SEGMENTS_V2:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2
+                    )
+                root_fd = _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
+                open_fds.append(root_fd)
+                try:
+                    stat_res = os.fstat(root_fd)
+                    dev_inos.append((stat_res.st_dev, stat_res.st_ino))
+                except OSError as exc:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+                    ) from exc
+                try:
+                    bound_path = Path(os.readlink(f"/proc/self/fd/{root_fd}"))
+                except (OSError, ValueError):
+                    bound_path = Path(captured)
+                validated_paths.append(bound_path)
+                logical_bound = Path(captured)
+                if logical_bound != bound_path:
+                    validated_paths.append(logical_bound)
+        except BaseException:
+            for fd in open_fds:
+                _close_ignoring_errors_v2(fd)
+            raise
+
+        return cls(
+            root_fds=open_fds,
+            bound_paths=validated_paths,
+            bound_dev_ino=dev_inos,
+            owns_fds=True,
+        )
+
+    @classmethod
+    def from_repository_fd(
+        cls,
+        repo_fd: int,
+        *,
+        logical_path: Path | None = None,
+    ) -> AuthorizedGitStorageSetV2:
+        """Construct a self-contained capability anchored strictly to an already-open repository descriptor."""
+        try:
+            stat_res = os.fstat(repo_fd)
+            dev_ino = (stat_res.st_dev, stat_res.st_ino)
+        except OSError as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+            ) from exc
+        try:
+            proc_path = Path(os.readlink(f"/proc/self/fd/{repo_fd}"))
+        except (OSError, ValueError):
+            proc_path = logical_path if logical_path is not None else Path(".")
+        paths = [proc_path]
+        if logical_path is not None and logical_path != proc_path:
+            paths.append(logical_path)
+        dup_fd = os.dup(repo_fd)
+        return cls(
+            root_fds=[dup_fd],
+            bound_paths=paths,
+            bound_dev_ino=[dev_ino],
+            owns_fds=True,
+        )
+
+    def contains_fd(
+        self,
+        fd: int,
+        *,
+        logical_path: Path | None = None,
+    ) -> bool:
+        """Check whether `fd` is within this authorized storage set.
+
+        INVARIANT: DescriptorIdentity != ReResolvedPathIdentity.
+        Authority is anchored to retained open descriptors and kernel inode
+        identities, never mutable pathnames on disk.
+        """
+        if self._closed:
+            return False
+
+        try:
+            target_stat = os.fstat(fd)
+            target_dev_ino = (target_stat.st_dev, target_stat.st_ino)
+        except OSError:
+            return False
+
+        # 1. Inode / device comparison against authorized root descriptors
+        if target_dev_ino in self._bound_dev_ino:
+            return True
+
+        # 2. Descendant check against open root descriptors via live procfs canonical dentries
+        try:
+            proc_link = os.readlink(f"/proc/self/fd/{fd}")
+            proc_path = Path(proc_link)
+            for root_fd in self._root_fds:
+                try:
+                    root_stat = os.fstat(root_fd)
+                    if target_stat.st_dev == root_stat.st_dev:
+                        root_proc = Path(os.readlink(f"/proc/self/fd/{root_fd}"))
+                        if proc_path == root_proc or proc_path.is_relative_to(root_proc):
+                            return True
+                except (OSError, ValueError):
+                    pass
+        except (OSError, ValueError):
+            pass
+
+        # 3. Kernel VFS parent traversal via `..` directory descriptors
+        for root_fd in self._root_fds:
+            try:
+                root_stat = os.fstat(root_fd)
+                if target_stat.st_dev != root_stat.st_dev:
+                    continue
+                curr_fd = os.dup(fd)
+                try:
+                    while True:
+                        parent_fd = os.open("..", os.O_RDONLY | os.O_DIRECTORY, dir_fd=curr_fd)
+                        try:
+                            parent_stat = os.fstat(parent_fd)
+                            if (parent_stat.st_dev, parent_stat.st_ino) == (root_stat.st_dev, root_stat.st_ino):
+                                return True
+                            curr_stat = os.fstat(curr_fd)
+                            if (parent_stat.st_dev, parent_stat.st_ino) == (curr_stat.st_dev, curr_stat.st_ino):
+                                break
+                        finally:
+                            os.close(curr_fd)
+                            curr_fd = parent_fd
+                finally:
+                    os.close(curr_fd)
+            except OSError:
+                continue
+
+        return False
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if self._owns_fds:
+                for fd in self._root_fds:
+                    _close_ignoring_errors_v2(fd)
+
+    def __enter__(self) -> AuthorizedGitStorageSetV2:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
 def _validate_authorized_storage_roots_v2(
     authorized_storage_roots: Sequence[Path | str] | None,
 ) -> tuple[Path, ...]:
-    """Validate and normalise caller-supplied external storage roots (#331-B).
-
-    CONTRACT: Each root must be an exact str or PathLike whose `os.fspath`
-    returns an exact built-in `str`; must be absolute; must not contain `..`
-    components; and must be within `_DEFAULT_MAX_PATH_SEGMENTS_V2`.
-    Refusals match the locator contract of `_open_repo_root_fd_v2`.
-    """
+    """Validate and pre-bind caller-supplied external storage roots (#331-B)."""
     if authorized_storage_roots is None:
         return ()
-    validated: list[Path] = []
-    for item in authorized_storage_roots:
-        captured = os.fspath(item)
-        if type(captured) is not str:
-            raise TrustedObjectAuthorityError(
-                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
-            )
-        locator = PurePosixPath(captured)
-        if not locator.is_absolute():
-            raise TrustedObjectAuthorityError(
-                TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
-            )
-        if ".." in locator.parts:
-            raise TrustedObjectAuthorityError(
-                TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
-            )
-        if len(locator.parts) > _DEFAULT_MAX_PATH_SEGMENTS_V2:
-            raise TrustedObjectAuthorityError(
-                TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2
-            )
-        validated.append(Path(captured).resolve())
-    return tuple(validated)
+    cap = AuthorizedGitStorageSetV2.from_roots(authorized_storage_roots)
+    try:
+        return cap.bound_paths
+    finally:
+        cap.close()
 
 
 def _resolve_git_directories_fd_v2(
     *,
     repo_root_fd: int,
     repo_root_path: Path | None = None,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
     authorized_roots: tuple[Path, ...] | None = None,
 ) -> _GitDirectoriesV2:
     """Resolve both the worktree-private and shared git directories,
@@ -927,11 +1126,13 @@ def _resolve_git_directories_fd_v2(
     """
     if repo_root_path is None:
         try:
-            repo_root_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}")).resolve()
-        except (OSError, ValueError):
-            repo_root_path = Path("/").resolve()
+            repo_root_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}"))
+        except (OSError, ValueError) as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+            ) from exc
     if authorized_roots is None:
-        authorized_roots = (repo_root_path.resolve(),)
+        authorized_roots = (repo_root_path,)
 
     try:
         dotgit_kind = os.stat(".git", dir_fd=repo_root_fd, follow_symlinks=False)
@@ -965,12 +1166,13 @@ def _resolve_git_directories_fd_v2(
             base_fd=repo_root_fd,
             path_str=pointed,
             base_path=repo_root_path,
+            authorized_storage=authorized_storage,
             authorized_roots=authorized_roots,
         )
         try:
-            git_dir_path = Path(os.readlink(f"/proc/self/fd/{git_dir_fd}")).resolve()
+            git_dir_path = Path(os.readlink(f"/proc/self/fd/{git_dir_fd}"))
         except (OSError, ValueError):
-            git_dir_path = (repo_root_path / pointed).resolve()
+            git_dir_path = repo_root_path / pointed
     elif dotgit_kind is not None:
         # Exists, but is neither a directory nor a regular file --
         # a symlink or something exotic. Refused loudly.
@@ -1003,6 +1205,7 @@ def _resolve_git_directories_fd_v2(
                 base_fd=git_dir_fd,
                 path_str=raw_text,
                 base_path=git_dir_path,
+                authorized_storage=authorized_storage,
                 authorized_roots=authorized_roots,
             )
         else:
@@ -1155,6 +1358,7 @@ def _copy_objects_dir_fd_v2(
     visited_dev_ino: set[tuple[int, int]],
     depth: int,
     budget: _ObjectCopyBudgetV2,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
     authorized_roots: tuple[Path, ...] | None = None,
 ) -> None:
     """Copy every object physically present under one ALREADY-OPEN,
@@ -1255,7 +1459,7 @@ def _copy_objects_dir_fd_v2(
                     try:
                         source_objects_path = Path(
                             os.readlink(f"/proc/self/fd/{source_objects_fd}")
-                        ).resolve()
+                        )
                     except (OSError, ValueError):
                         source_objects_path = None
                     for alt_base_fd, alt_path_str in _parse_alternates_v2(raw, owning_objects_fd=source_objects_fd):
@@ -1263,6 +1467,7 @@ def _copy_objects_dir_fd_v2(
                             base_fd=alt_base_fd,
                             path_str=alt_path_str,
                             base_path=source_objects_path,
+                            authorized_storage=authorized_storage,
                             authorized_roots=authorized_roots,
                         )
                         _copy_objects_dir_fd_v2(
@@ -1272,6 +1477,7 @@ def _copy_objects_dir_fd_v2(
                             visited_dev_ino=visited_dev_ino,
                             depth=depth + 1,
                             budget=budget,
+                            authorized_storage=authorized_storage,
                             authorized_roots=authorized_roots,
                         )
             finally:
@@ -1509,8 +1715,9 @@ class TrustedObjectAuthorityV2:
 
 @contextlib.contextmanager
 def open_trusted_object_authority_v2(
-    repo_root: Path,
+    repo_root: Path | str,
     *,
+    authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
     authorized_storage_roots: Sequence[Path | str] | None = None,
     max_total_bytes: int = _DEFAULT_MAX_TOTAL_BYTES_V2,
     max_object_count: int = _DEFAULT_MAX_OBJECT_COUNT_V2,
@@ -1549,65 +1756,87 @@ def open_trusted_object_authority_v2(
     CALLER-SUPPLIED locator only -- `..` remains legal in pointers derived
     from repository content, where git requires it.
 
-    EXTERNAL STORAGE AUTHORIZATION (#331-B). `NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE`.
+    EXTERNAL STORAGE AUTHORIZATION (#331-B, C2). `NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE`.
     A component-wise no-follow walk ensures no symlink component was followed,
     but does not prevent an attacker from pointing `gitdir:`, `commondir`, or
     `objects/info/alternates` to an unauthorized, readable repository elsewhere
     on the host. Any external storage root transitioned to must be explicitly
-    passed in `authorized_storage_roots` by the caller/host policy; otherwise,
-    an escape raises `TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2`.
+    passed in `authorized_storage` (or `authorized_storage_roots`) by the
+    caller/host policy; otherwise, an escape raises
+    `TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2`.
 
-    WHAT THIS DOES NOT ESTABLISH. Per-component `O_NOFOLLOW` prevents a
-    symlink component from being FOLLOWED at its authoritative open. It does
-    not make the multi-step walk atomic: a component NOT YET opened can be
-    renamed or replaced concurrently, within one walk as well as between two.
-    A descriptor already retained stays bound to the object it opened even if
-    that directory is later renamed; the limitation concerns components not
-    yet reached.
+    NON-SELF-AUTHORIZATION (CM-C2-01, #348 F1).
+    RepoRootLocator != RepoRootAuthorization
+    CallerSelectedRepository != HostAuthorizedStorage
+    When host-authorized storage is supplied, `repo_root` does NOT automatically
+    authorize itself: it must be contained within the host-authorized capability.
 
-    Two shapes of that limitation, both disclosed rather than implied:
-
-    * An absolute DERIVED pointer restarts the walk from `/`
-      (`_open_dir_by_segments_no_follow_v2` discards `base_fd`), so a linked
-      worktree performs a second, independent pathname walk over components it
-      may share with `repo_root`.
-    * Descending component by component means each intermediate directory is
-      genuinely opened rather than merely traversed, so the walk is observable
-      to a watcher and spans several syscalls instead of one kernel path
-      resolution. An adversary who can already rename ancestor directories can
-      use that to make a rename race more reliable than against a single
-      whole-pathname `os.open`. This cost is accepted because a symlinked
-      ancestor was otherwise followed unconditionally, a strictly easier
-      attack.
-
-    A stronger kernel primitive -- plausibly `openat2` with appropriate
-    resolution flags -- deserves separate investigation. This module does NOT
-    demonstrate that such a primitive would close every rename race, and makes
-    no claim to that effect. `#331-B` owns external-storage authorization and
-    can avoid part of this class by supplying pre-authorized capabilities
-    instead of rediscovering storage by pathname.
-
-    The third public consumer, `git_commit_subject_v2.materialise_commit_
-    subject_v2`, passes `repo_root` through unchanged and is bound by this
-    same contract.
+    DESCRIPTOR-BOUND (NO PATH RE-RESOLUTION, #348 F2).
+    Once opened, repository and storage identity are derived from the open
+    descriptors and kernel VFS dentries, never re-resolved by pathname lookup.
     """
-    validated_roots = _validate_authorized_storage_roots_v2(authorized_storage_roots)
-    repo_root_fd = _open_repo_root_fd_v2(repo_root)
-    try:
-        repo_root_path = Path(os.fspath(repo_root)).resolve()
-    except (TypeError, ValueError, OSError):
-        try:
-            repo_root_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}")).resolve()
-        except (OSError, ValueError):
-            repo_root_path = Path("/").resolve()
+    if isinstance(authorized_storage, AuthorizedGitStorageSetV2):
+        storage_set = authorized_storage
+        owns_storage_set = False
+    elif authorized_storage is not None:
+        storage_set = AuthorizedGitStorageSetV2.from_roots(authorized_storage)
+        owns_storage_set = True
+    elif authorized_storage_roots is not None:
+        storage_set = AuthorizedGitStorageSetV2.from_roots(authorized_storage_roots)
+        owns_storage_set = True
+    else:
+        storage_set = None
+        owns_storage_set = False
 
-    all_authorized_roots = (repo_root_path,) + validated_roots
+    repo_root_fd = _open_repo_root_fd_v2(repo_root)
+    active_storage_set: AuthorizedGitStorageSetV2 | None = None
+    owns_active_storage_set = False
+    try:
+        try:
+            repo_root_proc_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}"))
+        except (OSError, ValueError):
+            repo_root_proc_path = None
+        captured_root = os.fspath(repo_root)
+        if type(captured_root) is not str:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+            )
+        logical_repo_path = Path(captured_root)
+        if not logical_repo_path.is_absolute():
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+            )
+
+        if storage_set is not None:
+            # Finding F1: repo_root must be within the host-authorized storage set.
+            # A caller-selected repo_root DOES NOT self-authorize!
+            if not storage_set.contains_fd(repo_root_fd, logical_path=logical_repo_path):
+                _close_ignoring_errors_v2(repo_root_fd)
+                raise TrustedObjectAuthorityError(
+                    TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+                )
+            active_storage_set = storage_set
+            owns_active_storage_set = owns_storage_set
+        else:
+            # When no host-authorized storage is specified, the repository is
+            # authorized strictly to its own descriptor (no external storage transitions).
+            active_storage_set = AuthorizedGitStorageSetV2.from_repository_fd(
+                repo_root_fd, logical_path=logical_repo_path
+            )
+            owns_active_storage_set = True
+
+        repo_root_path = repo_root_proc_path if repo_root_proc_path is not None else logical_repo_path
+    except BaseException:
+        _close_ignoring_errors_v2(repo_root_fd)
+        if owns_storage_set and storage_set is not None:
+            storage_set.close()
+        raise
 
     try:
         git_dirs = _resolve_git_directories_fd_v2(
             repo_root_fd=repo_root_fd,
             repo_root_path=repo_root_path,
-            authorized_roots=all_authorized_roots,
+            authorized_storage=active_storage_set,
         )
     finally:
         # `_close_ignoring_errors_v2`, not a bare `os.close`: a raising close
@@ -1627,12 +1856,6 @@ def open_trusted_object_authority_v2(
         try:
             _write_minimal_bare_skeleton_v2(cas_dir)
             if objects_fd is not None:
-                # `_copy_objects_dir_fd_v2` takes ownership of and closes
-                # `objects_fd` (and every fd it opens) on every exit path,
-                # success OR exception -- so ownership is transferred (and
-                # the outer `finally` told not to double-close) BEFORE the
-                # call, not after: if the call raises, control never
-                # reaches a line placed after it.
                 transferred_fd, objects_fd = objects_fd, None
                 _copy_objects_dir_fd_v2(
                     source_objects_fd=transferred_fd,
@@ -1641,7 +1864,7 @@ def open_trusted_object_authority_v2(
                     visited_dev_ino=set(),
                     depth=0,
                     budget=budget,
-                    authorized_roots=all_authorized_roots,
+                    authorized_storage=active_storage_set,
                 )
             _copy_refs_fd_v2(
                 common_dir_fd=git_dirs.common_dir_fd,
@@ -1673,3 +1896,11 @@ def open_trusted_object_authority_v2(
         yield authority
     finally:
         shutil.rmtree(cas_dir, ignore_errors=True)
+        if owns_active_storage_set and active_storage_set is not None:
+            active_storage_set.close()
+        if (
+            owns_storage_set
+            and storage_set is not None
+            and storage_set is not active_storage_set
+        ):
+            storage_set.close()
