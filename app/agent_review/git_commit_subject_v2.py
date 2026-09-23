@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import shutil
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -238,13 +239,20 @@ def _safe_destination_v2(*, subject_root: Path, relative_path: str) -> Path:
 
 
 def materialise_commit_subject_v2(
-    *, repo_root: Path, ref: str, destination: Path
+    *,
+    repo_root: Path,
+    ref: str,
+    destination: Path,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> MaterialisedCommitSubjectV2:
     """`#331-A`: `repo_root` is passed through to
     `open_trusted_object_authority_v2` unchanged and is never `resolve()`d
     here, so this function inherits that authority's locator contract and its
     limitations. Refusals from it arrive as `SUBJECT_TREE_UNREADABLE_REASON_V2`
     with the specific code on `__cause__`.
+
+    `#331-B`: external storage transitions (linked worktrees, alternates)
+    require caller-authorized storage roots passed in `authorized_storage_roots`.
 
     Write `ref`'s resolved commit's committed bytes into an empty directory.
 
@@ -267,7 +275,9 @@ def materialise_commit_subject_v2(
     destination.mkdir(parents=True, exist_ok=True)
 
     try:
-        with open_trusted_object_authority_v2(repo_root) as authority:
+        with open_trusted_object_authority_v2(
+            repo_root, authorized_storage_roots=authorized_storage_roots
+        ) as authority:
             trusted_root = authority.trusted_repo_root
             commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
             entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=commit_sha)

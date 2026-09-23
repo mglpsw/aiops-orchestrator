@@ -60,6 +60,7 @@ from app.agent_review.trusted_object_authority_v2 import (
     TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
@@ -345,11 +346,15 @@ def test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktr
 
     destination = tmp_path / "subject"
     destination.mkdir()
-    result = materialise_commit_subject_v2(repo_root=worktree, ref=c1, destination=destination)
+    result = materialise_commit_subject_v2(
+        repo_root=worktree, ref=c1, destination=destination, authorized_storage_roots=[repo]
+    )
     assert result.commit_sha == c1
     assert "V = 1" in (destination / "pkg" / "a.py").read_text()
 
-    authorization = authorize_commit_for_execution_v2(repo_root=worktree, commit_sha=c1, trusted_ref_sha=c3)
+    authorization = authorize_commit_for_execution_v2(
+        repo_root=worktree, commit_sha=c1, trusted_ref_sha=c3, authorized_storage_roots=[repo]
+    )
     assert authorization.authorized is True
 
 
@@ -381,7 +386,9 @@ def test_linked_worktree_head_resolves_the_linked_worktrees_own_commit_not_mains
 
     destination = tmp_path / "subject"
     destination.mkdir()
-    result = materialise_commit_subject_v2(repo_root=worktree, ref="HEAD", destination=destination)
+    result = materialise_commit_subject_v2(
+        repo_root=worktree, ref="HEAD", destination=destination, authorized_storage_roots=[repo]
+    )
     assert result.commit_sha == c1, (
         "materialise_commit_subject_v2(repo_root=linked_worktree, ref='HEAD') must resolve "
         "the LINKED worktree's own HEAD, not the main worktree's"
@@ -508,7 +515,7 @@ def test_symlinked_head_sibling_does_not_fool_the_alternate_containment_check(
     (info_dir / "alternates").write_text(str(ordinary_dir / "objects") + "\n")
 
     with pytest.raises(TrustedObjectAuthorityError) as excinfo:
-        with open_trusted_object_authority_v2(repo):
+        with open_trusted_object_authority_v2(repo, authorized_storage_roots=[ordinary_dir]):
             pytest.fail("should have raised -- symlinked HEAD sibling must not pass containment")
     assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
     _ = c3
@@ -873,7 +880,9 @@ def test_alternate_object_directory_is_flattened_into_the_authority(tmp_path: Pa
 
     destination = tmp_path / "subject"
     destination.mkdir()
-    result = materialise_commit_subject_v2(repo_root=fork, ref=base_sha, destination=destination)
+    result = materialise_commit_subject_v2(
+        repo_root=fork, ref=base_sha, destination=destination, authorized_storage_roots=[base]
+    )
     assert result.commit_sha == base_sha
     assert (destination / "pkg" / "a.py").read_text() == "V = 1\n"
 
@@ -1258,7 +1267,7 @@ def test_alternate_pointing_at_an_ordinary_non_repository_directory_is_refused(
     (info_dir / "alternates").write_text(str(ordinary_dir) + "\n")
 
     with pytest.raises(TrustedObjectAuthorityError) as excinfo:
-        with open_trusted_object_authority_v2(repo):
+        with open_trusted_object_authority_v2(repo, authorized_storage_roots=[ordinary_dir]):
             pytest.fail("should have raised on the non-repository-shaped alternate")
     assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
     _ = c3
@@ -1281,7 +1290,9 @@ def test_legitimate_alternate_still_works_after_containment_check(tmp_path: Path
 
     destination = tmp_path / "subject"
     destination.mkdir()
-    result = materialise_commit_subject_v2(repo_root=fork, ref=base_sha, destination=destination)
+    result = materialise_commit_subject_v2(
+        repo_root=fork, ref=base_sha, destination=destination, authorized_storage_roots=[base]
+    )
     assert result.commit_sha == base_sha
 
 
@@ -1609,7 +1620,12 @@ def _bounded_by_signal_alarm_v2(seconds: int):
     return _cm()
 
 
-def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0) -> TrustedObjectAuthorityError:
+def _open_and_expect_refusal_within_v2(
+    repo: Path,
+    *,
+    bound_seconds: float = 2.0,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
+) -> TrustedObjectAuthorityError:
     """Opens `repo` through the real public entry point and asserts it raises a typed
     `TrustedObjectAuthorityError` FAST -- not merely "eventually, rescued by the safety-net
     alarm". A safety-net alarm roughly 4x the assertion bound backstops the test itself against
@@ -1618,7 +1634,9 @@ def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0
     start = time.monotonic()
     with _bounded_by_signal_alarm_v2(int(bound_seconds) + 6):
         with pytest.raises(TrustedObjectAuthorityError) as excinfo:
-            with open_trusted_object_authority_v2(repo):
+            with open_trusted_object_authority_v2(
+                repo, authorized_storage_roots=authorized_storage_roots
+            ):
                 pytest.fail("should have refused, not opened")
     elapsed = time.monotonic() - start
     assert elapsed < bound_seconds, (
@@ -1692,7 +1710,7 @@ def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_pa
     info_dir.mkdir(parents=True, exist_ok=True)
     (info_dir / "alternates").write_text(str(ordinary_dir / "objects") + "\n")
 
-    value = _open_and_expect_refusal_within_v2(repo)
+    value = _open_and_expect_refusal_within_v2(repo, authorized_storage_roots=[ordinary_dir])
     assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
     _ = c3
 
@@ -2353,7 +2371,7 @@ def test_repo_root_descriptor_is_not_stranded_if_the_borrower_never_runs(tmp_pat
     (repo / "a.py").write_text("V = 1\n")
     _commit_all(repo, "c1")
 
-    def _raise_before_borrowing(*, repo_root_fd: int) -> _GitDirectoriesV2:
+    def _raise_before_borrowing(*, repo_root_fd: int, **_extra: object) -> _GitDirectoriesV2:
         raise KeyboardInterrupt("async exception at the borrower's frame-entry checkpoint")
 
     with unittest.mock.patch.object(
@@ -2404,3 +2422,152 @@ def test_dotdot_component_in_repo_root_is_refused(tmp_path: Path) -> None:
     # refusal is attributable to the component and not to the fixture.
     with open_trusted_object_authority_v2(repo) as authority:
         assert resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=commit) == commit
+
+
+# -- #331-B / #331-C: authorized storage roots and standalone object databases --
+
+
+def test_unauthorized_external_gitdir_is_refused(tmp_path: Path) -> None:
+    """NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE (#331-B):
+    A checkout pointing `gitdir:` to an external directory outside `repo_root`
+    must be refused unless caller/host policy authorizes that storage root."""
+    decoy = tmp_path / "decoy_repo"
+    _init_repo(decoy)
+    (decoy / "a.py").write_text("V = 1\n")
+    _commit_all(decoy, "decoy commit")
+
+    hostile_worktree = tmp_path / "hostile_worktree"
+    hostile_worktree.mkdir()
+    (hostile_worktree / ".git").write_text(f"gitdir: {decoy / '.git'}\n")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(hostile_worktree):
+            pytest.fail("should have refused unauthorized external gitdir")
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+
+
+def test_unauthorized_external_commondir_escape_is_refused(tmp_path: Path) -> None:
+    """NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE (#331-B):
+    A linked worktree whose `commondir` escapes caller-authorized roots
+    must be refused with TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2."""
+    repo, c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(worktree), c1],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    unauthorized_decoy = tmp_path / "unauthorized_shared_git"
+    unauthorized_decoy.mkdir()
+    (unauthorized_decoy / "HEAD").write_text("ref: refs/heads/main\n")
+    (unauthorized_decoy / "objects").mkdir()
+
+    # Tamper commondir in the worktree's private gitdir to point to unauthorized_decoy
+    dotgit_content = (worktree / ".git").read_text()
+    gitdir_str = dotgit_content.split("gitdir:")[1].strip()
+    gitdir_path = Path(gitdir_str)
+    (gitdir_path / "commondir").write_text(str(unauthorized_decoy) + "\n")
+
+    # Authorizing `repo` does NOT authorize `unauthorized_decoy`
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(worktree, authorized_storage_roots=[repo]):
+            pytest.fail("should have refused unauthorized commondir escape")
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+
+
+def test_unauthorized_external_alternates_is_refused(tmp_path: Path) -> None:
+    """NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE (#331-B):
+    An `objects/info/alternates` pointing to an external directory outside
+    authorized roots must be refused with STORAGE_UNAUTHORIZED."""
+    repo, _c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+    unauthorized_store = tmp_path / "unauthorized_store"
+    unauthorized_store.mkdir()
+    (unauthorized_store / "objects" / "pack").mkdir(parents=True)
+    (unauthorized_store / "HEAD").write_text("ref: refs/heads/main\n")
+
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(unauthorized_store / "objects") + "\n")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have refused unauthorized external alternates")
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+
+
+def test_authorized_external_gitdir_and_commondir_accepted(tmp_path: Path) -> None:
+    """Positive test for #331-B:
+    A linked worktree with explicitly authorized parent repository storage
+    is acquired successfully and resolves commits."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(worktree), c3],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    with open_trusted_object_authority_v2(worktree, authorized_storage_roots=[repo]) as authority:
+        resolved = resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=c1)
+        assert resolved == c1
+
+
+def test_authorized_standalone_shared_object_pool_accepted(tmp_path: Path) -> None:
+    """Positive test for #331-C:
+    Git alternate object stores can legitimately be standalone object databases
+    without a sibling HEAD. When authorized via `authorized_storage_roots`,
+    the standalone object pool is accepted and its objects are flattened into CAS."""
+    base, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+
+    # Create a standalone object database without sibling HEAD
+    pool_dir = tmp_path / "standalone_shared_pool"
+    pool_dir.mkdir()
+    # Copy objects from base
+    shutil.copytree(base / ".git" / "objects", pool_dir / "objects")
+    assert not (pool_dir / "HEAD").exists(), "fixture must not have sibling HEAD"
+
+    # Create a repository that references the pool via alternates
+    consumer = tmp_path / "consumer_repo"
+    _init_repo(consumer)
+    info_dir = consumer / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(pool_dir / "objects") + "\n")
+
+    # Acquire consumer with pool_dir authorized
+    with open_trusted_object_authority_v2(
+        consumer, authorized_storage_roots=[pool_dir]
+    ) as authority:
+        # Commit c3 was copied from the pool and is resolvable in the authority
+        resolved = resolve_commit_v2(repo_root=authority.trusted_repo_root, ref=c3)
+        assert resolved == c3
+
+
+def test_authorized_storage_roots_validation(tmp_path: Path) -> None:
+    """Caller-contract validation for `authorized_storage_roots` (#331-B)."""
+    repo, _c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+
+    # Relative root refused
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo, authorized_storage_roots=["relative/path"]):
+            pass
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+
+    # Un-normalised `..` root refused
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(
+            repo, authorized_storage_roots=[tmp_path / "a" / ".." / "b"]
+        ):
+            pass
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
+
+    # Bad type escapes as TypeError (matching repo_root locator contract)
+    with pytest.raises(TypeError):
+        with open_trusted_object_authority_v2(repo, authorized_storage_roots=[123]):  # type: ignore[list-item]
+            pass
+

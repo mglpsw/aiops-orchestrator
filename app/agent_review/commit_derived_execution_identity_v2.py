@@ -275,6 +275,7 @@ from __future__ import annotations
 import os
 import posixpath
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -675,6 +676,7 @@ def verify_executed_source_identity_v2(
     commit_sha: str,
     subject_root: Path,
     loaded_module_paths: tuple[Path, ...] | None = None,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> ExecutedSourceIdentityV2:
     """Prove ``subject_root``'s bytes are exactly ``commit_sha``'s tree.
 
@@ -743,6 +745,7 @@ def verify_executed_source_identity_v2(
     # the locator contract. Nothing below reads `repo_root` again; every read
     # goes through `authority.trusted_repo_root`. Locator refusals arrive here
     # as one reason code, with the authority's specific code on `__cause__`.
+    # `#331-B`: external storage transitions require explicit authorized_storage_roots.
     subject_root = Path(subject_root).resolve()
 
     if not subject_root.is_dir():
@@ -753,7 +756,9 @@ def verify_executed_source_identity_v2(
     # right now -- never against `repo_root` directly. `repo_root` itself is
     # discovery input only; see `trusted_object_authority_v2.py`.
     try:
-        with open_trusted_object_authority_v2(repo_root) as authority:
+        with open_trusted_object_authority_v2(
+            repo_root, authorized_storage_roots=authorized_storage_roots
+        ) as authority:
             trusted_root = authority.trusted_repo_root
             try:
                 resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
@@ -832,7 +837,11 @@ def verify_executed_source_identity_v2(
 
 
 def authorize_commit_for_execution_v2(
-    *, repo_root: Path, commit_sha: str, trusted_ref_sha: str
+    *,
+    repo_root: Path,
+    commit_sha: str,
+    trusted_ref_sha: str,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> ExecutedSourceAuthorizationV2:
     """Is ``commit_sha`` reachable from ``trusted_ref_sha``? Distinct from identity.
 
@@ -911,8 +920,11 @@ def authorize_commit_for_execution_v2(
     # the locator contract. Nothing below reads `repo_root` again; every read
     # goes through `authority.trusted_repo_root`. Locator refusals arrive here
     # as one reason code, with the authority's specific code on `__cause__`.
+    # `#331-B`: external storage transitions require explicit authorized_storage_roots.
     try:
-        with open_trusted_object_authority_v2(repo_root) as authority:
+        with open_trusted_object_authority_v2(
+            repo_root, authorized_storage_roots=authorized_storage_roots
+        ) as authority:
             trusted_root = authority.trusted_repo_root
             try:
                 resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
