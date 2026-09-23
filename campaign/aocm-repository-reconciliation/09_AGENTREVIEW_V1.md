@@ -50,7 +50,7 @@ review-telemetry.json (Observação pós-gate)
 
 - **Autoridade Canônica:** `review-quality-gate.json` é a **única** autoridade de decisão pós-síntese no v1.
 - **Não-substituição por Síntese:** O artefato `final-review.json` é uma síntese textual de observações e não possui autoridade para substituir o gate caso este esteja ausente, corrompido ou inconclusivo.
-- **Fail-Closed:** Qualquer falha de schema, divergência de versão ou violação de invariantes no quality gate força resultado não-conclusivo (`manual_required`), bloqueando publicação automática.
+- **Fail-Closed:** Falhas estruturais de schema ou JSON inválido causam falha imediata da CLI com código de saída não-zero sem emissão de artefato de gate. Quando o gate avalia observações válidas mas encontra severidades bloqueantes ou incerteza, emite o status formal `manual_review_required` (bloqueando publicação automática). O status `manual_required` não existe no schema v1.
 
 ---
 

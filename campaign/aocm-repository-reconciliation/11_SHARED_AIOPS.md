@@ -33,9 +33,11 @@ O repositório `mglpsw/aiops-orchestrator` abriga duas superfícies operacionais
 | Servidor FastAPI e Rotas HTTP | `app/main.py`, `app/api/` | AIOps-owned | Implementação de serviço de runtime homelab. |
 | Catálogo de Ações Homelab | `config/actions.yaml`, `app/services/action_runner.py` | AIOps-owned | Contrato de ações permitidas e seguras em CT102. |
 | Motor de Auditoria e Aprovações | `app/services/audit_service.py`, `app/services/approval_service.py` | AIOps-owned | Registro transacional imutável de operações. |
-| Cliente do Agent Router | `app/agent_router/client.py`, `config/routes.yml` | Router-owned | Interface de transporte para o gateway de inferência LLM (`agent-router-api`). |
-| Redação e Sanitização de Segredos | `app/agent_review/redaction.py` | shared interface | Sanitizador determinístico compartilhado entre v1, v2 e AIOps chat. |
-| Adapters Legados de Execução | `app/adapters/` (`docker.py`, `executor_ssh.py`, etc.) | historical | Código legado preservado para compatibilidade; fora do runner oficial. |
+| Cliente do Agent Router | `app/agent_router/client.py` | Router-owned | Interface de transporte HTTPS para o gateway de inferência LLM (`agent-router-api`). |
+| Roteamento Local de Provedores | `config/routes.yml` | AIOps-owned | Configuração local carregada pelo `ProviderRegistry` em `app/core/config.py` para selecionar adaptadores e executor local. |
+| Sanitização de Segredos de Chat | `app/utils/secrets.py` | AIOps-owned | Utilitário de redação de segredos (`mask_secrets`, `truncate`) consumido pelo runtime e rotas de chat do AIOps. |
+| Redação de Segredos do Review | `app/agent_review/redaction.py` | AgentReview-owned | Sanitizador determinístico do engine de review (v1, v2 e conformidade); não consumido pelo chat do AIOps. |
+| Adapters Legados de Execução | `app/adapters/` (`docker.py`, `executor_ssh.py`, etc.) | legacy_supported | Código legado de execução consumido por `app/api/routes.py` via `Orchestrator` com `LocalExecutor` por padrão em CT102. |
 | Contrato com Repositório Alvo | `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md` | target-repository-owned | Especificação de como o AgentEscala consome o toolrepo por commit SHA. |
 | Procedimento de Blue/Green Deploy | `deploy/docker-compose.bluegreen.yml`, `docs/bluegreen-deployment.md` | AIOps-owned | Runbook e infraestrutura de deploy de containers em CT102. |
 | Scripts Utilitários de CI | `scripts/ci_validate.sh`, `scripts/test.sh` | AIOps-owned | Gates determinísticos locais executados em CI e pre-commit. |
