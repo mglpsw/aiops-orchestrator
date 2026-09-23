@@ -1,0 +1,49 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "consumption_flows": [
+    {
+      "flow_id": "FLOW-01-AGENTREVIEW-V1-PIPELINE",
+      "producer": "Target Repository (AgentEscala tool wrapper)",
+      "carrier_interface": "aiops-intake.json + target-profile.json",
+      "consumer": "AgentReview v1 offline pipeline (scripts/aiops-review-*.py, app/agent_review/)",
+      "runtime_result": "review-quality-gate.json + final-review.md -> GitHub PR comment posted by AgentEscala"
+    },
+    {
+      "flow_id": "FLOW-02-AGENTREVIEW-V2-PIPELINE",
+      "producer": "Target Repository (opt-in shadow runner)",
+      "carrier_interface": "GitCommitSubjectV2 + TargetProfileV2 + target repository object store",
+      "consumer": "AgentReview v2 pipeline (ManifestV2, PayloadSetV2, IsolatedExecutorV2, ReadinessDecisionV2)",
+      "runtime_result": "ReviewReadinessV2 + ReviewReadinessEmissionV2 (shadow decision, non-blocking on PR)"
+    },
+    {
+      "flow_id": "FLOW-03-AIOPS-CT102-DIAGNOSTIC",
+      "producer": "Operator / chat.ks-sm.net user",
+      "carrier_interface": "HTTP POST /api/v1/diagnostic, /api/v1/chat",
+      "consumer": "FastAPI routes (app/api/) -> DiagnosticService -> ActionRunner -> PolicyEngine",
+      "runtime_result": "DiagnosticResponse + persistent audit log entry in database / JSONL"
+    },
+    {
+      "flow_id": "FLOW-04-AGENT-ROUTER-INFERENCE",
+      "producer": "app/agent_router/client.py or review_transport_v2.py",
+      "carrier_interface": "HTTPS token-gated Agent Router API (mglpsw/agent-router-api)",
+      "consumer": "LLM backends (Ollama CT104, OpenAI, Claude, Codex)",
+      "runtime_result": "ChunkResponseV2 / LLM completion with inference receipt hash"
+    },
+    {
+      "flow_id": "FLOW-05-CI-VALIDATION-PIPELINE",
+      "producer": "GitHub Actions runner (ubuntu-latest)",
+      "carrier_interface": ".github/workflows/ci.yml -> scripts/ci_validate.sh",
+      "consumer": "Python unittests, schema exporter, eval harness, CAEM pin verifier",
+      "runtime_result": "Deterministic check status (green/red) gating pull request mergeability"
+    },
+    {
+      "flow_id": "FLOW-06-WORKSPACE-INSTRUCTION-DISCOVERY",
+      "producer": "GEMINI.md at repository root",
+      "carrier_interface": ".aocm/ENTRYPOINT.md -> .aocm/ADOPTION.md -> .aocm/repository-profile.json",
+      "consumer": "Antigravity (AGY) agent session",
+      "runtime_result": "Bounded engineering change plan respecting local methodology, product contracts, and maintainer grants"
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "authorities": [
+    {
+      "authority_name": "human_maintainer",
+      "entity": "Miguel (mglpsw)",
+      "scope": "Repository grants, adoption decisions, protected actions (merge, release, deploy, Ready)",
+      "normative_expression": [
+        ".aocm/ADOPTION.md",
+        "PR approvals and issues"
+      ],
+      "delegation_limits": "Handoff does not transfer grants; agents possess advisory status only."
+    },
+    {
+      "authority_name": "product_runtime_and_engine",
+      "entity": "mglpsw/aiops-orchestrator",
+      "scope": "CT102 runtime service, action catalog, diagnostics, safety guardrails",
+      "normative_expression": [
+        "docs/ARCHITECTURE.md",
+        "docs/engineering/PROJECT_OVERLAY.md",
+        "config/actions.yaml"
+      ],
+      "delegation_limits": "No external provider or consumer can modify action boundaries without code merge."
+    },
+    {
+      "authority_name": "agentreview_v1_decision_authority",
+      "entity": "mglpsw/aiops-orchestrator",
+      "scope": "V1 post-synthesis decision; quality gate schema, reason codes, and gate verdicts",
+      "normative_expression": [
+        "docs/AGENT_REVIEW_QUALITY_GATE.md",
+        "app/agent_review/quality_gate.py"
+      ],
+      "delegation_limits": "review-quality-gate.json is the sole post-synthesis decision authority; final-review.json cannot substitute."
+    },
+    {
+      "authority_name": "agentreview_v2_contracts_and_readiness",
+      "entity": "mglpsw/aiops-orchestrator",
+      "scope": "V2 exact-subject binding, hunk content extraction, DLP, trusted checks, readiness decision",
+      "normative_expression": [
+        "docs/AGENT_REVIEW_V2_CONTRACTS.md",
+        "docs/AGENT_REVIEW_V2_READINESS_DECISION.md",
+        "schemas/agent-review/v2/"
+      ],
+      "delegation_limits": "ReviewReadinessV2 is sole authority; external observations (Codex) are advisory only."
+    },
+    {
+      "authority_name": "structural_governance_and_stop_redesign",
+      "entity": "mglpsw/aiops-orchestrator",
+      "scope": "Preflight obligations, recurrence conditions, and mandatory architectural STOP / REDESIGN triggers",
+      "normative_expression": [
+        "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md"
+      ],
+      "delegation_limits": "Sole owner of STOP/REDESIGN; no secondary check or document is normative for its rules."
+    },
+    {
+      "authority_name": "caem_upstream_interface",
+      "entity": "mglpsw/caem",
+      "scope": "Upstream architecture and engineering canon interface pin",
+      "normative_expression": [
+        "config/caem/caem-3.0-f0.pin.json"
+      ],
+      "delegation_limits": "authority_effect=none; normative authority remains upstream in mglpsw/caem."
+    },
+    {
+      "authority_name": "local_engineering_method",
+      "entity": "AOCM-MPACK-0.1.0-preview.1 (adotado por mglpsw)",
+      "scope": "Local procedural engineering method (planning, causal testing, PR lifecycle, obligation matrix)",
+      "normative_expression": [
+        ".aocm/vendor/method/CORE.md",
+        ".aocm/vendor/method/PR_LIFECYCLE.md",
+        ".aocm/ADOPTION.md"
+      ],
+      "delegation_limits": "Governs engineering method only; does not override product domain contracts or runtime safety."
+    },
+    {
+      "authority_name": "router_gateway_interface",
+      "entity": "mglpsw/agent-router-api",
+      "scope": "LLM inference gateway endpoints, routing models, and provider interfaces",
+      "normative_expression": [
+        "docs/HANDOFF_AGENT_ROUTER_API.md",
+        "config/routes.yml"
+      ],
+      "delegation_limits": "Inference transport only; does not authorize filesystem, network, or execution."
+    },
+    {
+      "authority_name": "roadmap_authority",
+      "entity": "mglpsw/aiops-orchestrator Issue #46",
+      "scope": "Canonical development roadmap, epic tracking, and milestone progression",
+      "normative_expression": [
+        "https://github.com/mglpsw/aiops-orchestrator/issues/46"
+      ],
+      "delegation_limits": "Sole roadmap authority; in-tree documents (e.g. AGENT_REVIEW_V2_ROADMAP.md) are superseded snapshots."
+    }
+  ]
+}

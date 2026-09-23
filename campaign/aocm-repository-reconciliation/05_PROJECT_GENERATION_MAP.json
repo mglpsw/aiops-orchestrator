@@ -1,0 +1,152 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "projects": [
+    {
+      "project_name": "AIOps Orchestrator",
+      "generation": "v1.0",
+      "role": "CT102 Production Runtime & Action Engine",
+      "status": "active_in_production",
+      "subsystems": [
+        {
+          "subsystem": "HTTP API & Middlewares",
+          "paths": ["app/api/", "app/main.py"],
+          "contracts": ["/health", "/ready", "/metrics", "/api/v1/diagnostic", "/api/v1/chat", "/api/v1/approvals", "/api/v1/history"]
+        },
+        {
+          "subsystem": "Action Execution & Safety Catalog",
+          "paths": ["app/services/action_runner.py", "app/services/action_service.py", "config/actions.yaml"],
+          "contracts": ["Allowlisted action execution; strict read-only / bounded guardrails; no free shell"]
+        },
+        {
+          "subsystem": "Audit Logging & Approval Engine",
+          "paths": ["app/services/audit_service.py", "app/services/approval_service.py", "app/services/history_service.py", "app/models/database.py"],
+          "contracts": ["Persistent SQLite/PostgreSQL append-only audit trail and human approvals"]
+        },
+        {
+          "subsystem": "Deployment Infrastructure",
+          "paths": ["deploy/Dockerfile", "deploy/docker-compose.yml", "deploy/docker-compose.bluegreen.yml"],
+          "contracts": ["Blue/green container orchestration on CT102"]
+        }
+      ]
+    },
+    {
+      "project_name": "AgentReview v1",
+      "generation": "v1",
+      "role": "Deterministic Offline Code Review Pipeline (Released Baseline)",
+      "status": "legacy_supported_feature_frozen",
+      "released_versions": ["v0.20.0", "v0.21.0", "v0.22.0"],
+      "subsystems": [
+        {
+          "subsystem": "V1 Pipeline Engine",
+          "paths": ["app/agent_review/schemas.py", "app/agent_review/pr_brief.py", "app/agent_review/semantic_chunker.py", "app/agent_review/final_synthesizer.py"],
+          "contracts": ["aiops-intake.json -> pr-brief.json -> semantic-chunk-plan.json -> final-review.json"]
+        },
+        {
+          "subsystem": "V1 Canonical Quality Gate",
+          "paths": ["app/agent_review/quality_gate.py"],
+          "contracts": ["review-quality-gate.json (canonical decision authority)"]
+        },
+        {
+          "subsystem": "V1 CLI Wrappers",
+          "paths": ["scripts/aiops-review-intake.py", "scripts/aiops-review-plan-chunks.py", "scripts/aiops-review-build-payloads.py", "scripts/aiops-review-parse-chunks.py"],
+          "contracts": ["Offline deterministic CLI invocations executed by AgentEscala tool wrapper"]
+        }
+      ]
+    },
+    {
+      "project_name": "AgentReview v2",
+      "generation": "v2",
+      "role": "Formal Contracts, Exact Subject Binding, Trusted Checks & Readiness (Successor)",
+      "status": "shadow_opt_in_development",
+      "released_versions": ["v0.21.0 (foundation)", "v0.22.0 (hunk extraction & trusted checks)"],
+      "subsystems": [
+        {
+          "subsystem": "Exact Subject & Object Authority",
+          "paths": ["app/agent_review/git_commit_subject_v2.py", "app/agent_review/trusted_object_authority_v2.py", "app/agent_review/commit_derived_execution_identity_v2.py", "app/agent_review/bounded_git_v2.py", "app/agent_review/external_path_ingress_v2.py"],
+          "contracts": ["Exact 40-char SHA anchoring, component-wise no-follow descent, bounded git probes"]
+        },
+        {
+          "subsystem": "Review Content Extraction & Declarative DLP",
+          "paths": ["app/agent_review/diff_acquisition_v2.py", "app/agent_review/review_content_v2.py", "app/agent_review/review_content_extraction_v2.py", "app/agent_review/dlp_v2.py"],
+          "contracts": ["agent-review.review-content.v2, agent-review.dlp-policy.v1"]
+        },
+        {
+          "subsystem": "Payload Set & Manifest Assembly",
+          "paths": ["app/agent_review/manifest_v2.py", "app/agent_review/payload_set_v2.py", "app/agent_review/payload_builder_v2.py", "app/agent_review/semantic_grouping_policy_v2.py"],
+          "contracts": ["agent-review.manifest.v2, agent-review.chunk-payload.v2 with cryptographic hash binding"]
+        },
+        {
+          "subsystem": "Trusted Checks & Isolated Execution",
+          "paths": ["app/agent_review/trusted_checks_v2.py", "app/agent_review/trusted_check_supervisor_v2.py", "app/agent_review/trusted_check_simulator_v2.py", "app/agent_review/isolated_executor_v2.py", "app/agent_review/required_check_provenance_v2.py"],
+          "contracts": ["agent-review.trusted-check-plan.v2, agent-review.trusted-check-result.v2"]
+        },
+        {
+          "subsystem": "Readiness Decision & Lifecycle",
+          "paths": ["app/agent_review/readiness_decision_v2.py", "app/agent_review/review_readiness_emission_v2.py", "app/agent_review/lifecycle_v2.py"],
+          "contracts": ["agent-review.review-readiness.v2 (sole canonical authority for v2)"]
+        },
+        {
+          "subsystem": "Target Pack & Portability",
+          "paths": ["app/agent_review/target_pack_*.py", "scripts/agent-review-target-pack-v2.py"],
+          "contracts": ["agent-review.target-pack-manifest.v2, agent-review.target-pack-operation-plan.v2"]
+        },
+        {
+          "subsystem": "Dual-Target Benchmark & Conformance",
+          "paths": ["evals/agent_review_v2/", "tests/evals/"],
+          "contracts": ["Deterministic replay across 9 benchmark cases over AgentEscala and InterLeitos"]
+        }
+      ]
+    },
+    {
+      "project_name": "Agent Router Interface",
+      "generation": "v1.0",
+      "role": "Inference Gateway Gateway & Transport Client",
+      "status": "active",
+      "subsystems": [
+        {
+          "subsystem": "Router Client",
+          "paths": ["app/agent_router/client.py", "app/agent_router/main.py", "config/routes.yml", "config/providers.yml"],
+          "contracts": ["Inference routing to Ollama local, OpenAI, Claude, Codex backends"]
+        }
+      ]
+    },
+    {
+      "project_name": "CAEM Integration",
+      "generation": "v3.0-F0",
+      "role": "Upstream Canon Consumer Interface",
+      "status": "active_reference_only",
+      "subsystems": [
+        {
+          "subsystem": "Consumer Pin & Verifier",
+          "paths": ["config/caem/caem-3.0-f0.pin.json", "app/caem_consumer/f0.py", "scripts/verify-caem-f0-pin.py"],
+          "contracts": ["Verifies carrier 28ca73f338417b5c7e9275c6154b6a0eddbb8bc7; authority_effect=none"]
+        },
+        {
+          "subsystem": "Quarantined CAEM 2.1 Bundle",
+          "paths": [".caem/quarantine/caem-2.1/"],
+          "contracts": ["Read-only historical bundle; authority_effect=none"]
+        }
+      ]
+    },
+    {
+      "project_name": "AOCM Method",
+      "generation": "0.1.0-preview.1",
+      "role": "Adopted Local Engineering Method",
+      "status": "locally_adopted",
+      "subsystems": [
+        {
+          "subsystem": "Vendor Distribution & Tools",
+          "paths": [".aocm/vendor/"],
+          "contracts": ["CORE.md, PR_LIFECYCLE.md, profiles, mpack.py (verify, install, doctor)"]
+        },
+        {
+          "subsystem": "Local Profile & Adoption Record",
+          "paths": [".aocm/ADOPTION.md", ".aocm/repository-profile.json", ".aocm/ENTRYPOINT.md", "GEMINI.md"],
+          "contracts": ["ADOPTED_BY_MAINTAINER; domain precedence; AGY instructions entrypoint"]
+        }
+      ]
+    }
+  ]
+}
