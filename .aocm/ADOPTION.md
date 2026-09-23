@@ -20,7 +20,7 @@ Referência do grant humano: Concedido pelo mantenedor Miguel (`mglpsw`) em sess
 A precedência de autoridades neste repositório é estritamente demarcada por domínio, evitando supersessões implícitas ou diluição de contratos existentes:
 
 1. **Comportamento, Schemas, Segurança e Engine do Produto**:
-   - Os contratos canônicos e owners de `mglpsw/aiops-orchestrator` e `AgentReview` governam com exclusividade a execução em produção, esquemas de produto, intake, chunking, sanitização, parsers, síntese, quality/readiness gates, publisher, Router, runners e resultados publicáveis (`docs/engineering/PROJECT_OVERLAY.md`, `docs/AGENT_REVIEW_V2_ROADMAP.md`).
+   - Os contratos canônicos e owners de `mglpsw/aiops-orchestrator` e `AgentReview` governam com exclusividade a execução em produção, esquemas de produto, intake, chunking, sanitização, parsers, síntese, quality/readiness gates, publisher, Router, runners e resultados publicáveis (`docs/engineering/PROJECT_OVERLAY.md`, issue #46 como autoridade canônica de roadmap; `docs/AGENT_REVIEW_V2_ROADMAP.md` permanece arquivado como snapshot histórico de 2026-07-23).
 2. **Procedimento Local de Engenharia**:
    - O `AOCM-MPACK 0.1.0-preview.1` governa o método operacional local (planejamento, derivação de obrigações, testes causais, contramodelos, ciclo de PR e isolamento de claims). O método auxilia o processo de engenharia e não substitui a interpretação competente do domínio.
 3. **Norma CAEM (Upstream)**:
@@ -58,9 +58,9 @@ A precedência de autoridades neste repositório é estritamente demarcada por d
 
 ## 4. Separação de Estados do Registro
 
-- **Decisão Humana**: Concedida por Miguel (`mglpsw`) em 2026-09-23.
-- **Aplicação Local**: Executada no worktree local sob branch dedicada (`feat/adopt-aocm-mpack`), mantendo o pacote íntegro em `.aocm/vendor/`.
-- **Integração na Branch Principal**: Pendente (não integrada na branch `master` nem publicada remotamente).
-- **Qualificação Observada**: Verificação de integridade de bytes e suite de testes do pacote executadas localmente.
-- **Revisão Independente**: Não realizada nesta etapa.
-- **Ações Protegidas**: Push, merge, PR remota, release, deploy e ativação de checks bloqueantes permanecem estritamente NÃO executados.
+- **Decisão Humana**: Concedida por Miguel (`mglpsw`) em sessão de engenharia de 2026-09-23.
+- **Aplicação Local**: Executada no worktree local mantendo o pacote íntegro em `.aocm/vendor/`.
+- **Integração na Branch Principal**: Integrada em `master` via PR #344 (commit `9dd69b964cbeef4615307758f90a3f83116b25f9`). Estado vivo subsequente deve ser revalidado no forge / git.
+- **Qualificação Observada**: 57/57 testes do pacote aprovados, manifest `c16f9abe...` verificado, `verify-caem-f0-pin.py` verificado e gates de CI aprovados.
+- **Revisão Independente**: Revisão Codex concluída (PR #344); observações locais reconciliadas.
+- **Ações Protegidas**: Push, merge, PR remota, release, deploy e ativação de checks bloqueantes permanecem governados pela matriz de autoridade local.

@@ -1,0 +1,187 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "status": "PROPOSED_AOCM_REPLAN",
+  "schema_version": 1,
+  "campaign": "agent-review-v2-replan",
+  "generated_at": "2026-09-23T15:00:00-03:00",
+  "master_head": "c58eecd4a08a5ff38c3a6f4730f51b4f5467e295",
+  "implementation_slices": [
+    {
+      "slice_id": "SLICE-HIST-01",
+      "name": "PR #312: Bounded special-file acquisition",
+      "commit": "021d188",
+      "obligations_affected": ["OBL-C4-02"],
+      "status": "MERGED_IN_MASTER",
+      "description": "Salvaged bounded special-file acquisition after STOP_318."
+    },
+    {
+      "slice_id": "SLICE-HIST-02",
+      "name": "PR #322: Trust anchor type gate regression witness",
+      "commit": "4e334ab",
+      "obligations_affected": ["OBL-C4-02"],
+      "status": "MERGED_IN_MASTER",
+      "description": "Exact built-in str type gate regression witness."
+    },
+    {
+      "slice_id": "SLICE-HIST-03",
+      "name": "PR #341: Component-wise no-follow ingress for caller repo_root",
+      "commit": "68eebb5",
+      "obligations_affected": ["OBL-C2-01", "OBL-C4-02"],
+      "status": "MERGED_IN_MASTER",
+      "description": "Component-wise no-follow ingress locator for caller repo_root."
+    },
+    {
+      "slice_id": "SLICE-HIST-04",
+      "name": "PR #344: Adopt AOCM-MPACK 0.1.0-preview.1",
+      "commit": "9dd69b9",
+      "obligations_affected": ["OBL-C0-01"],
+      "status": "MERGED_IN_MASTER",
+      "description": "Local engineering method adoption."
+    },
+    {
+      "slice_id": "SLICE-HIST-05",
+      "name": "PR #345: Preserve knowledge reconciliation evidence",
+      "commit": "c58eecd",
+      "obligations_affected": ["OBL-C0-01", "OBL-C1-01"],
+      "status": "MERGED_IN_MASTER",
+      "description": "Repository knowledge map and historical CURRENT_CHECKPOINT boundary reconciliation."
+    },
+    {
+      "slice_id": "SLICE-OPEN-01",
+      "name": "C2 / #331-B: Authorized external Git storage transitions",
+      "issue": "#331-B",
+      "obligations_affected": ["OBL-C2-01"],
+      "status": "READY_TO_IMPLEMENT",
+      "files_in_scope": [
+        "app/agent_review/trusted_object_authority_v2.py",
+        "app/agent_review/external_path_ingress_v2.py",
+        "tests/agent_review_v2/test_trusted_object_authority_v2.py"
+      ],
+      "description": "Structural boundary enforcing SafePath != AuthorizedStorage for external repos and worktrees."
+    },
+    {
+      "slice_id": "SLICE-OPEN-02",
+      "name": "C3 / #304: Canonical tree materialization",
+      "issue": "#304",
+      "obligations_affected": ["OBL-C3-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_01",
+      "files_in_scope": [
+        "app/agent_review/materialize_v2.py"
+      ],
+      "description": "Isolated commit tree extraction verifying blob hashes."
+    },
+    {
+      "slice_id": "SLICE-OPEN-03",
+      "name": "C4 / #301, #333: Execution provenance and environment scrub",
+      "issue": "#301, #333",
+      "obligations_affected": ["OBL-C4-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_02",
+      "files_in_scope": [
+        "app/agent_review/trusted_checks_v2.py"
+      ],
+      "description": "Subprocess execution isolation and python environment scrubbing."
+    },
+    {
+      "slice_id": "SLICE-OPEN-04",
+      "name": "C5 / #298: Semantic diff coverage and fragment accounting",
+      "issue": "#298",
+      "obligations_affected": ["OBL-C5-01", "OBL-C1-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_03",
+      "files_in_scope": [
+        "app/agent_review/diff_authority_v2.py",
+        "app/agent_review/manifest_v2.py"
+      ],
+      "description": "Authoritative hunk chunking and conservation accounting."
+    },
+    {
+      "slice_id": "SLICE-OPEN-05",
+      "name": "C6 / #314: Outbound DLP and path sanitization",
+      "issue": "#314",
+      "obligations_affected": ["OBL-C6-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_04",
+      "files_in_scope": [
+        "app/agent_review/sanitization_v2.py",
+        "app/agent_review/dlp_v2.py"
+      ],
+      "description": "Secret redaction and absolute path stripping before external transport."
+    },
+    {
+      "slice_id": "SLICE-OPEN-06",
+      "name": "C7-C8 / #320, #323: Router receipt binding and deterministic readiness",
+      "issue": "#320, #323",
+      "obligations_affected": ["OBL-C7-01", "OBL-C8-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_05",
+      "files_in_scope": [
+        "app/agent_review/router_receipt_v2.py",
+        "app/agent_review/readiness_v2.py"
+      ],
+      "description": "Receipt cryptographic verification and pure functional readiness gate."
+    },
+    {
+      "slice_id": "SLICE-OPEN-07",
+      "name": "C11 / G5 (#326, #332): Operational composition",
+      "issue": "G5, #326, #332",
+      "obligations_affected": ["OBL-C11-01"],
+      "status": "BLOCKED_BY_SLICE_OPEN_06",
+      "files_in_scope": [
+        "tests/agent_review_v2/test_composition_g5.py"
+      ],
+      "description": "End-to-end integration test proving complete dataflow without mock leakage."
+    },
+    {
+      "slice_id": "SLICE-PARALLEL-01",
+      "name": "C9 / #201: Trusted required checks",
+      "issue": "#201",
+      "obligations_affected": ["OBL-C9-01"],
+      "status": "INDEPENDENT_LANE_READY",
+      "files_in_scope": [
+        "app/agent_review/trusted_checks_v2.py"
+      ],
+      "description": "Host-controlled check runner signed attestation."
+    },
+    {
+      "slice_id": "SLICE-PARALLEL-02",
+      "name": "C10 / #202: Canonical path identity",
+      "issue": "#202",
+      "obligations_affected": ["OBL-C10-01"],
+      "status": "INDEPENDENT_LANE_READY",
+      "files_in_scope": [
+        "app/agent_review/path_identity_v2.py"
+      ],
+      "description": "Universal path normalization across Unicode, octal C-quotes, and separators."
+    },
+    {
+      "slice_id": "SLICE-DOWNSTREAM-01",
+      "name": "C12 / #203: Portable target pack distribution",
+      "issue": "#203",
+      "obligations_affected": ["OBL-C12-01"],
+      "status": "BLOCKED_BY_G5",
+      "files_in_scope": [
+        "app/agent_review/packaging/"
+      ],
+      "description": "Pack generator, installer, and rollback tooling."
+    },
+    {
+      "slice_id": "SLICE-DOWNSTREAM-02",
+      "name": "C13 / #204: Dual-target conformance",
+      "issue": "#204",
+      "obligations_affected": ["OBL-C13-01"],
+      "status": "BLOCKED_BY_C12",
+      "files_in_scope": [
+        "evals/agent_review_v2/test_dual_target_conformance.py"
+      ],
+      "description": "AgentEscala and InterLeitos dual evaluation."
+    },
+    {
+      "slice_id": "SLICE-DOWNSTREAM-03",
+      "name": "C14 / #205: Pinable release candidate",
+      "issue": "#205",
+      "obligations_affected": ["OBL-C14-01"],
+      "status": "BLOCKED_BY_C13",
+      "files_in_scope": [
+        "scripts/release_agent_review_v2.py"
+      ],
+      "description": "Release manifest, cryptographic evidence bundle, and release tagging."
+    }
+  ]
+}
