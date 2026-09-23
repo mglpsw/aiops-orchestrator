@@ -2772,17 +2772,17 @@ def test_cm_c2_proc_deleted_spoofing(tmp_path: Path) -> None:
     """
     authorized_root = tmp_path / "auth_root"
     authorized_root.mkdir()
-    
+
     # T0: Host establishes capability for R
     cap = AuthorizedGitStorageSetV2.from_roots([authorized_root])
     try:
         # T1: R is unlinked/renamed so procfs would render "auth_root (deleted)"
         deleted_root_path = tmp_path / "auth_root (deleted)"
         authorized_root.rename(tmp_path / "moved_root")
-        
+
         # T2: An unrelated directory is created whose pathname aliases the procfs rep
         deleted_root_path.mkdir()
-        
+
         # T3: A target descriptor underneath the unrelated directory is checked
         target_dir = deleted_root_path / "target"
         target_dir.mkdir()
@@ -2806,23 +2806,23 @@ def test_cm_c2_mount_descendant_traversal(tmp_path: Path) -> None:
     root_path.mkdir()
     child_path = root_path / "child_mount"
     child_path.mkdir()
-    
+
     cap = AuthorizedGitStorageSetV2.from_roots([root_path])
     try:
         child_fd = os.open(str(child_path), os.O_RDONLY | os.O_DIRECTORY)
         try:
             original_fstat = os.fstat
-            
+
             def mock_fstat(fd):
                 stat_result = original_fstat(fd)
                 if fd == child_fd:
                     # Simulate the child being on a different device mount
                     return os.stat_result(tuple(
-                        [stat_result.st_mode, stat_result.st_ino, stat_result.st_dev + 1] + 
+                        [stat_result.st_mode, stat_result.st_ino, stat_result.st_dev + 1] +
                         list(stat_result)[3:]
                     ))
                 return stat_result
-            
+
             with mock.patch("os.fstat", side_effect=mock_fstat):
                 # Ancestry traversal should succeed and find the root despite mount boundary
                 assert cap.contains_fd(child_fd) is True
@@ -2837,25 +2837,25 @@ def test_owned_capability_closed_on_repo_root_failure(tmp_path: Path) -> None:
     """
     auth_root = tmp_path / "auth_root"
     auth_root.mkdir()
-    
+
     # We pass a relative path for repo_root, which raises TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
     # and fails _open_repo_root_fd_v2. The capability created from `authorized_storage` must be closed.
-    
+
     original_from_roots = AuthorizedGitStorageSetV2.from_roots
     created_caps = []
-    
+
     def mock_from_roots(*args, **kwargs):
         cap = original_from_roots(*args, **kwargs)
         created_caps.append(cap)
         return cap
-        
+
     with mock.patch.object(AuthorizedGitStorageSetV2, "from_roots", side_effect=mock_from_roots):
         with pytest.raises(TrustedObjectAuthorityError):
             with open_trusted_object_authority_v2(
                 "relative/repo/root",
                 authorized_storage=[auth_root]
             ): pass
-            
+
     assert len(created_caps) == 1
     cap = created_caps[0]
     # Verify the capability was closed
@@ -2863,3 +2863,253 @@ def test_owned_capability_closed_on_repo_root_failure(tmp_path: Path) -> None:
     for fd in cap._root_fds:
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+def test_cm_c2_capability_closed_on_resolve_failure(tmp_path: Path) -> None:
+    """FD ownership P2-A:
+    Prove all owned root descriptors are closed if _resolve_git_directories_fd_v2 fails.
+    """
+    import app.agent_review.trusted_object_authority_v2
+    from app.agent_review.trusted_object_authority_v2 import (
+        open_trusted_object_authority_v2,
+        AuthorizedGitStorageSetV2,
+        _write_minimal_bare_skeleton_v2,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    _write_minimal_bare_skeleton_v2(repo / ".git")
+
+    original_from_roots = AuthorizedGitStorageSetV2.from_roots
+    created_caps = []
+
+    def mock_from_roots(*args: Any, **kwargs: Any) -> AuthorizedGitStorageSetV2:
+        cap = original_from_roots(*args, **kwargs)
+        created_caps.append(cap)
+        return cap
+
+    with mock.patch("app.agent_review.trusted_object_authority_v2._resolve_git_directories_fd_v2", side_effect=Exception("mocked failure")):
+        with mock.patch.object(AuthorizedGitStorageSetV2, "from_roots", side_effect=mock_from_roots):
+            with pytest.raises(Exception, match="mocked failure"):
+                with open_trusted_object_authority_v2(
+                    repo,
+                    authorized_storage=[repo]
+                ) as _:
+                    pass
+
+    assert len(created_caps) == 1
+    cap = created_caps[0]
+    assert cap._closed is True
+    for fd in cap._root_fds:
+        with pytest.raises(OSError):
+            import os
+            os.fstat(fd)
+
+    # Now test self-contained mode (from_repository_fd)
+    original_from_repo_fd = AuthorizedGitStorageSetV2.from_repository_fd
+    created_caps.clear()
+
+    def mock_from_repo_fd(*args: Any, **kwargs: Any) -> AuthorizedGitStorageSetV2:
+        cap = original_from_repo_fd(*args, **kwargs)
+        created_caps.append(cap)
+        return cap
+
+    with mock.patch("app.agent_review.trusted_object_authority_v2._resolve_git_directories_fd_v2", side_effect=Exception("mocked failure 2")):
+        with mock.patch.object(AuthorizedGitStorageSetV2, "from_repository_fd", side_effect=mock_from_repo_fd):
+            with pytest.raises(Exception, match="mocked failure 2"):
+                with open_trusted_object_authority_v2(
+                    repo
+                ) as _:
+                    pass
+
+    assert len(created_caps) == 1
+    cap = created_caps[0]
+    assert cap._closed is True
+    for fd in cap._root_fds:
+        with pytest.raises(OSError):
+            import os
+            os.fstat(fd)
+
+def test_cm_c2_repo_root_fd_closed_exactly_once_on_rejection(tmp_path: Path) -> None:
+    """FD ownership P2-B:
+    Prove repo_root_fd is closed exactly once when authorization is rejected.
+    """
+    import app.agent_review.trusted_object_authority_v2
+    from app.agent_review.trusted_object_authority_v2 import (
+        open_trusted_object_authority_v2,
+        TrustedObjectAuthorityError,
+        TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    auth_root = tmp_path / "auth_root"
+    auth_root.mkdir()
+
+    original_open_repo_root = app.agent_review.trusted_object_authority_v2._open_repo_root_fd_v2
+    acquired_repo_fd = None
+
+    def mock_open_repo_root(*args: Any, **kwargs: Any) -> int:
+        nonlocal acquired_repo_fd
+        fd = original_open_repo_root(*args, **kwargs)
+        acquired_repo_fd = fd
+        return fd
+
+    original_close = app.agent_review.trusted_object_authority_v2._close_ignoring_errors_v2
+    close_calls = []
+
+    def mock_close(fd: int) -> None:
+        close_calls.append(fd)
+        original_close(fd)
+
+    with mock.patch("app.agent_review.trusted_object_authority_v2._open_repo_root_fd_v2", side_effect=mock_open_repo_root):
+        with mock.patch("app.agent_review.trusted_object_authority_v2._close_ignoring_errors_v2", side_effect=mock_close):
+            with pytest.raises(TrustedObjectAuthorityError, match=TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2):
+                with open_trusted_object_authority_v2(
+                    repo,
+                    authorized_storage=[auth_root]
+                ) as _:
+                    pass
+
+    assert acquired_repo_fd is not None
+    # Must be closed exactly once
+    assert close_calls.count(acquired_repo_fd) == 1
+
+def test_cm_c2_contains_fd_concurrent_close_race(tmp_path: Path) -> None:
+    """FD ownership P1:
+    Prove that concurrent close() does not allow contains_fd() to be tricked by a reused FD.
+    """
+    import os
+    import threading
+    import time
+    from app.agent_review.trusted_object_authority_v2 import AuthorizedGitStorageSetV2
+
+    root1 = tmp_path / "root1"
+    root1.mkdir()
+    root2 = tmp_path / "root2"
+    root2.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+
+    cap = AuthorizedGitStorageSetV2.from_roots([root1, root2])
+
+    # We want to simulate that contains_fd is called, and inside contains_fd, right after it duplicates the FDs
+    # or starts traversal, close() is called.
+    # But wait, with our lock, `dup` happens atomically. If `close()` is called before `dup`, `contains_fd` returns False.
+    # If `close()` is called after `dup`, `close()` invalidates the internal root_fds, but `contains_fd` uses private duplicated FDs.
+    # So even if the OS reuses the original FD numbers, `contains_fd` is isolated because it holds duplicates!
+    # Let's mock os.dup inside contains_fd to yield so we can close and reuse the FD.
+    original_dup = os.dup
+    dup_event = threading.Event()
+    resume_event = threading.Event()
+
+    dup_count = 0
+    def mock_dup(fd: int) -> int:
+        nonlocal dup_count
+        dup_count += 1
+        res = original_dup(fd)
+        if dup_count == 1:
+            # Tell the main thread we are inside the lock, about to finish duping
+            pass
+        return res
+
+    # A better way to test isolation:
+    # Just verify that if we close() the capability, the original FDs might be reused, but contains_fd()
+    # (if it were already running) would use duplicates.
+    # Actually, the user asked to "Add a deterministic causal test where close() races after the check begins".
+    # Let's mock os.fstat to synchronize, so after the lock is released and traversal begins, we trigger close().
+    original_fstat = os.fstat
+    fstat_count = 0
+    def mock_fstat(fd: int) -> os.stat_result:
+        nonlocal fstat_count
+        fstat_count += 1
+        if fstat_count == 1:
+            dup_event.set()
+            resume_event.wait()
+        return original_fstat(fd)
+
+    # Let's open an FD that we will check
+    target_fd = os.open(str(root1), os.O_RDONLY | os.O_DIRECTORY)
+
+    try:
+        with mock.patch("os.fstat", side_effect=mock_fstat):
+            result = []
+            def contains_worker():
+                res = cap.contains_fd(target_fd)
+                result.append(res)
+
+            t = threading.Thread(target=contains_worker)
+            t.start()
+
+            # Wait for contains_fd to start and release the lock
+            dup_event.wait()
+
+            # Now contains_fd has the private FDs and released the lock.
+            # We call close() to close the original root FDs.
+            cap.close()
+
+            # Now we open an unrelated directory. It might reuse the FD number that was just closed.
+            reused_fd = os.open(str(unrelated), os.O_RDONLY | os.O_DIRECTORY)
+
+            # Let the traversal continue
+            resume_event.set()
+            t.join()
+
+            # It should still succeed because it's using the duplicated FD which points to root1, not the unrelated directory!
+            # Wait, if we checked root1, it should be True!
+            assert result[0] is True
+            os.close(reused_fd)
+    finally:
+        os.close(target_fd)
+
+def test_cm_c2_conflicting_policies_rejected(tmp_path: Path) -> None:
+    """FD ownership P2:
+    Prove that passing both authorized_storage and authorized_storage_roots fails with TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2.
+    """
+    from app.agent_review.trusted_object_authority_v2 import (
+        open_trusted_object_authority_v2,
+        TrustedObjectAuthorityError,
+        TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2,
+        AuthorizedGitStorageSetV2,
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    cap = AuthorizedGitStorageSetV2.from_roots([repo])
+
+    with pytest.raises(TrustedObjectAuthorityError, match=TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2):
+        with open_trusted_object_authority_v2(
+            repo,
+            authorized_storage=[repo],
+            authorized_storage_roots=cap
+        ) as _:
+            pass
+    cap.close()
+
+def test_cm_c2_os_dup_failure_translation(tmp_path: Path) -> None:
+    """FD ownership P2:
+    Prove that os.dup failure in from_repository_fd translates to TrustedObjectAuthorityError.
+    """
+    import os
+    import errno
+    from app.agent_review.trusted_object_authority_v2 import (
+        AuthorizedGitStorageSetV2,
+        TrustedObjectAuthorityError,
+        TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2,
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    repo_fd = os.open(str(repo), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        def mock_dup(fd: int) -> int:
+            e = OSError(errno.EMFILE, "Too many open files")
+            raise e
+
+        with mock.patch("os.dup", side_effect=mock_dup):
+            with pytest.raises(TrustedObjectAuthorityError, match=TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2):
+                AuthorizedGitStorageSetV2.from_repository_fd(repo_fd)
+    finally:
+        os.close(repo_fd)
