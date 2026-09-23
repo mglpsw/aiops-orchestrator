@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "lifecycle": "ADOPTED_BY_MAINTAINER",
+  "repository": "mglpsw/aiops-orchestrator",
+  "authority_by_domain": [
+    {
+      "domain": "local_engineering_method",
+      "owner": "mglpsw",
+      "source": ".aocm/ADOPTION.md"
+    },
+    {
+      "domain": "product_runtime_and_contracts",
+      "owner": "mglpsw/aiops-orchestrator",
+      "source": "docs/engineering/PROJECT_OVERLAY.md"
+    },
+    {
+      "domain": "structural_change_and_stop_redesign",
+      "owner": "mglpsw/aiops-orchestrator",
+      "source": "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md"
+    },
+    {
+      "domain": "caem_normative_interface",
+      "owner": "mglpsw/caem",
+      "source": "config/caem/caem-3.0-f0.pin.json"
+    },
+    {
+      "domain": "ci_and_github_workflows",
+      "owner": "mglpsw/aiops-orchestrator",
+      "source": ".github/AGENTS.md"
+    }
+  ],
+  "selected_profiles": [
+    "docs",
+    "method-evolution",
+    "knowledge-reconciliation"
+  ],
+  "gate_commands": [
+    "python3 scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check",
+    "bash scripts/ci_validate.sh",
+    "bash scripts/test.sh",
+    "python3 -B .aocm/vendor/tools/mpack.py doctor --repo .",
+    "python3 -B .aocm/vendor/tools/mpack.py verify --root .aocm/vendor --expect-manifest c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d"
+  ],
+  "protected_actions": [
+    "Ready",
+    "merge",
+    "release",
+    "deploy",
+    "real_providers",
+    "destructive_database"
+  ],
+  "decision_record": ".aocm/ADOPTION.md",
+  "observed_head": "68eebb5e3036130e79e5bdb44b0ec56715e86f89",
+  "observed_at": "2026-09-23T16:50:28.679313+00:00"
+}

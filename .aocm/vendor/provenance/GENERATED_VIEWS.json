@@ -1,0 +1,17 @@
+{
+  "views": [
+    {
+      "path": "chatgpt/CHAT_CONTEXT.md",
+      "sources": [
+        "method/CORE.md",
+        "method/PR_LIFECYCLE.md",
+        "method/CONVERGENCE.md",
+        "method/SEMANTIC_CONTRACTS.md",
+        "provenance/RECONCILIATION.md",
+        "provenance/GAPS.md",
+        "prompts/START.md"
+      ],
+      "build_rule": "tools/generate_views.py: render; ordered full source texts"
+    }
+  ]
+}

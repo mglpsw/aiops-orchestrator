@@ -1,0 +1,11 @@
+{
+  "operation": "INSTALL_COMPLETED",
+  "apply": true,
+  "destination": "/home/mglpsw/dev/aiops/.aocm",
+  "version": "0.1.0-preview.1",
+  "manifest_sha256": "c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d",
+  "files": 53,
+  "adoption": "UNADOPTED",
+  "repository_head_observed": "68eebb5e3036130e79e5bdb44b0ec56715e86f89",
+  "semantic_verdict_issued": false
+}

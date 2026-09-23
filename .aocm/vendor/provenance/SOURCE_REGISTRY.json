@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-09-23",
+  "time_zone": "America/Sao_Paulo",
+  "scope": "SELECTED_MATERIAL_LESSONS_NOT_EXHAUSTIVE_CORPUS",
+  "sources": [
+    {
+      "source_id": "S01",
+      "repository": "mglpsw/AgentEscala",
+      "path": "docs/canonical/aocm/AGENTESCALA_OPERATIONAL_CLOSURE_METHOD.md",
+      "commit": "72bec4afbbbb56d65c84be25ec785912177ba885",
+      "locator": "https://github.com/mglpsw/AgentEscala/blob/72bec4afbbbb56d65c84be25ec785912177ba885/docs/canonical/aocm/AGENTESCALA_OPERATIONAL_CLOSURE_METHOD.md",
+      "source_role": "INTEGRATED_LOCAL_METHOD",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "PARTIAL_TEXT",
+      "sections_used": [
+        "Status/scope",
+        "Method lens",
+        "AOCM-I1–I10",
+        "Finite protocol",
+        "Terminal qualification",
+        "Affected-gate closure"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": [
+        "Read via connector; full-file response was truncated. No claim of exhaustive source acquisition."
+      ]
+    },
+    {
+      "source_id": "S02",
+      "repository": "mglpsw/AgentEscala",
+      "path": "docs/canonical/aocm/profiles/calendar_projection.md",
+      "commit": "72bec4afbbbb56d65c84be25ec785912177ba885",
+      "locator": "https://github.com/mglpsw/AgentEscala/blob/72bec4afbbbb56d65c84be25ec785912177ba885/docs/canonical/aocm/profiles/calendar_projection.md",
+      "source_role": "INTEGRATED_LOCAL_PROFILE",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "FULL_TEXT",
+      "sections_used": [
+        "Aggregate presentation",
+        "Selection universe",
+        "Freshness/cache",
+        "Producer/consumer proof boundary"
+      ],
+      "blob_id_reported": "7427bb4a7d3fd3e82c341f41352d8c806de6bed6",
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": []
+    },
+    {
+      "source_id": "S03",
+      "repository": "mglpsw/caem",
+      "path": "caem_contracts/f1/decision.py",
+      "commit": "6b9eec58b0b72770a03edb0b519d6d446bc03461",
+      "locator": "https://github.com/mglpsw/caem/blob/6b9eec58b0b72770a03edb0b519d6d446bc03461/caem_contracts/f1/decision.py",
+      "source_role": "INTEGRATED_IMPLEMENTATION",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "LINES_1_155",
+      "sections_used": [
+        "Module contract",
+        "Form applicability",
+        "ADR0016 predicates"
+      ],
+      "blob_id_reported": "c3b0d0826425903fa856c5f7353c58542cfa523d",
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": [
+        "Implementation read is not a requalification of F1 or its normative ADRs."
+      ]
+    },
+    {
+      "source_id": "S04",
+      "repository": "mglpsw/caem",
+      "path": "provenance/f1/README.md",
+      "commit": "6b9eec58b0b72770a03edb0b519d6d446bc03461",
+      "locator": "https://github.com/mglpsw/caem/blob/6b9eec58b0b72770a03edb0b519d6d446bc03461/provenance/f1/README.md",
+      "source_role": "INTEGRATED_NON_NORMATIVE_REPRESENTATION",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "LINES_1_210",
+      "sections_used": [
+        "30 seconds",
+        "History",
+        "Final architecture",
+        "Lessons",
+        "Relation signatures"
+      ],
+      "blob_id_reported": "c1e4c1771e4ee01414db87c8775575c3e1e1cc90",
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": []
+    },
+    {
+      "source_id": "S05",
+      "repository": "mglpsw/caem",
+      "path": "provenance/rk1/q1/README.md",
+      "commit": "33a91d7a5e4b7492df4711da8594b7025a9566b1",
+      "locator": "https://github.com/mglpsw/caem/blob/33a91d7a5e4b7492df4711da8594b7025a9566b1/provenance/rk1/q1/README.md",
+      "source_role": "OPEN_PR_EXPLANATORY_CANDIDATE",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "PARTIAL_TEXT",
+      "sections_used": [
+        "Mission freeze",
+        "Five identities",
+        "Unavailable sources",
+        "Validity before relation",
+        "Sets",
+        "Q1-0/Q1-1 ownership"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": [
+        "PR #98 OPEN/Draft at read. Live head differs from head named in PR body.",
+        "QUALIFICATION_MISSION.json is the source-declared owner; its complete bytes were not acquired for this pack.",
+        "No Q1 execution or Q1 verdict is inferred."
+      ]
+    },
+    {
+      "source_id": "S06",
+      "repository": "mglpsw/sacr-as",
+      "path": "docs/projection-closure-method.md",
+      "commit": "6c3b9b944ffeb778eee45e91a5de984821e583bc",
+      "locator": "https://github.com/mglpsw/sacr-as/blob/6c3b9b944ffeb778eee45e91a5de984821e583bc/docs/projection-closure-method.md",
+      "source_role": "OPEN_PR_METHOD_CANDIDATE",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "SELECTED_RANGES",
+      "sections_used": [
+        "§6A / D4",
+        "§8 APCP v2 / D5",
+        "§10 demarcation",
+        "§11 gate contract"
+      ],
+      "blob_id_reported": "81a77651069e5d417decc0a9e4da87e02f35ec3b",
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": [
+        "Ranges read: 1730–1990 (response truncated), 1880–1955, 1960–2050.",
+        "PR #33 OPEN, not merged. PR body still describes 0a0bcb7; exact head is 6c3b9b9.",
+        "No claim that all candidate predicates are correct or that its CLEAN predicate is satisfied."
+      ]
+    },
+    {
+      "source_id": "S07",
+      "repository": "mglpsw/sacr-as",
+      "path": "campaign/PR33_RECONSTRUCTION_HANDOFF.md",
+      "commit": "a5f9c67ce6e52eaa82db7ecd7f6371d8df73d320",
+      "locator": "https://github.com/mglpsw/sacr-as/blob/a5f9c67ce6e52eaa82db7ecd7f6371d8df73d320/campaign/PR33_RECONSTRUCTION_HANDOFF.md",
+      "source_role": "OPEN_PR_EVIDENCE_HANDOFF",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "LINES_1_200",
+      "sections_used": [
+        "Mandate",
+        "Failure corpus",
+        "K12 routing",
+        "Oracle scope/limits",
+        "Test invocation",
+        "D4"
+      ],
+      "blob_id_reported": "95e3db4ce3c9d6d82ffd1ccd3da6541e5d7176e9",
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_REEXECUTED_BY_THIS_PACK",
+      "notes": [
+        "Internal live-state table is explicitly dated 2026-09-22, not current metadata.",
+        "PR #41 evidence is not qualification of PR #33."
+      ]
+    },
+    {
+      "source_id": "S08",
+      "repository": "mglpsw/caem",
+      "path": null,
+      "commit": null,
+      "locator": "https://github.com/mglpsw/caem/issues/74",
+      "source_role": "MUTABLE_ROADMAP_PROPOSAL",
+      "acquisition": "CONNECTOR_TEXT_READ",
+      "reading_coverage": "PARTIAL_ISSUE_BODY",
+      "sections_used": [
+        "RK1 → F2 handoff refinement",
+        "A0/A1",
+        "Q1",
+        "A2–E",
+        "Freshness"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": null,
+      "qualification": "NOT_ESTABLISHED",
+      "notes": [
+        "Observed on 2026-09-23; body contains dated checkpoints. Not an immutable normative contract.",
+        "RK1 ACTIVE; no canonical completed RK1 or F2 implementation claimed."
+      ]
+    },
+    {
+      "source_id": "S09",
+      "repository": null,
+      "path": "PROTOCOLO_PLANEJAMENTO_QUALIFICACAO_SLICES.md",
+      "commit": null,
+      "locator": "project-attachment:PROTOCOLO_PLANEJAMENTO_QUALIFICACAO_SLICES.md",
+      "source_role": "LOCAL_NON_NORMATIVE_PROTOCOL",
+      "acquisition": "MOUNTED_ATTACHMENT_READ",
+      "reading_coverage": "FULL_AVAILABLE_TEXT",
+      "sections_used": [
+        "Source as supplied; distilled, not republished verbatim"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": "559dd3cea0ca15870e02c6d9af59ab748f33771cbe531750fabfaf29bd163487",
+      "qualification": "CONTEXT_NOT_LIVE_STATE",
+      "notes": [
+        "Full attachment not bundled. Exact attachment bytes hashed locally."
+      ]
+    },
+    {
+      "source_id": "S10",
+      "repository": null,
+      "path": "AGENTESCALA_AOCM_CHECKPOINT_POS_M1_2026-09-22.md",
+      "commit": null,
+      "locator": "project-attachment:AGENTESCALA_AOCM_CHECKPOINT_POS_M1_2026-09-22.md",
+      "source_role": "DATED_HISTORICAL_CHECKPOINT",
+      "acquisition": "MOUNTED_ATTACHMENT_READ",
+      "reading_coverage": "FULL_AVAILABLE_TEXT",
+      "sections_used": [
+        "Source as supplied; distilled, not republished verbatim"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": "4e3d3f06ee0887e57dac560b9bffdd05e437b6cbaa3892870ad5839df70ce86e",
+      "qualification": "CONTEXT_NOT_LIVE_STATE",
+      "notes": [
+        "Full attachment not bundled. Exact attachment bytes hashed locally."
+      ]
+    },
+    {
+      "source_id": "S11",
+      "repository": null,
+      "path": "AGENTESCALA_PR801_OPERATIONAL_CALENDAR_QUALIFICATION_RETROSPECTIVE.md",
+      "commit": null,
+      "locator": "project-attachment:AGENTESCALA_PR801_OPERATIONAL_CALENDAR_QUALIFICATION_RETROSPECTIVE.md",
+      "source_role": "HISTORICAL_RETROSPECTIVE",
+      "acquisition": "MOUNTED_ATTACHMENT_READ",
+      "reading_coverage": "FULL_AVAILABLE_TEXT",
+      "sections_used": [
+        "Source as supplied; distilled, not republished verbatim"
+      ],
+      "blob_id_reported": null,
+      "raw_bytes_sha256_recomputed": "3ae508b5853a6e298ad93bc57019194e9f19be65c88c41b69a80e562b340098e",
+      "qualification": "CONTEXT_NOT_LIVE_STATE",
+      "notes": [
+        "Full attachment not bundled. Exact attachment bytes hashed locally."
+      ]
+    }
+  ],
+  "upstream_suites_reexecuted": false,
+  "upstream_normative_effect": "NONE"
+}

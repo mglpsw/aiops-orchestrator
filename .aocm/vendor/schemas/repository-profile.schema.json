@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "MPACK repository profile; unadopted by default",
+  "required": [
+    "schema_version",
+    "lifecycle",
+    "repository",
+    "authority_by_domain",
+    "selected_profiles",
+    "gate_commands",
+    "protected_actions",
+    "decision_record"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "lifecycle": {
+      "enum": [
+        "UNADOPTED",
+        "PROPOSED",
+        "ADOPTED_BY_MAINTAINER"
+      ]
+    },
+    "repository": {
+      "type": "string"
+    },
+    "authority_by_domain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain",
+          "owner",
+          "source"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "selected_profiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate_commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "protected_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "decision_record": {
+      "type": "string"
+    },
+    "observed_head": {
+      "type": "string"
+    },
+    "observed_at": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lifecycle": {
+            "const": "ADOPTED_BY_MAINTAINER"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "decision_record": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authority_by_domain": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

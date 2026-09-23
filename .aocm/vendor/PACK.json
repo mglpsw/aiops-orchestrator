@@ -1,0 +1,29 @@
+{
+  "pack_id": "AOCM-MPACK",
+  "version": "0.1.0-preview.1",
+  "status": "CANDIDATE_DISTRIBUTION",
+  "format": "directory-plus-json-manifest",
+  "transport": "ZIP; .mpack is a byte-identical ZIP alias, not a registered standard",
+  "method_owner": "method/CORE.md",
+  "provenance_owner": "provenance/SOURCE_REGISTRY.json",
+  "knowledge_owner": "provenance/KNOWLEDGE_REGISTER.json",
+  "implemented_commands": [
+    "verify",
+    "install",
+    "doctor"
+  ],
+  "not_implemented": [
+    "generic semantic qualification",
+    "automatic plan/classify/qualify/close",
+    "upstream Q1 execution",
+    "F1 runtime integration",
+    "RK1 resolver",
+    "CI enforcement",
+    "updater",
+    "merge",
+    "release",
+    "deploy"
+  ],
+  "upstream_authority_effect": "NONE",
+  "adoption_default": "UNADOPTED"
+}

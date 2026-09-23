@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "scope": "TWELVE_DECLARED_DISTILLATIONS_NOT_A_UNIVERSAL_ONTOLOGY",
+  "items": [
+    {
+      "knowledge_id": "MP-K01",
+      "title": "Autoridade por domínio",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S09"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CORE.md",
+      "proposition": "Nomear owner/contrato; fato observado não revoga dever.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K02",
+      "title": "Subject e identidade consumida",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S03",
+        "S04"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/SEMANTIC_CONTRACTS.md",
+      "proposition": "Base/head/tree não colapsam; evidência acompanha subject consumido.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K03",
+      "title": "Claim budget proporcional",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S11"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CORE.md",
+      "proposition": "Claim, non-claim, domínio, limitação e nearest counterclaim.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K04",
+      "title": "Obrigações e três grafos",
+      "pack_role": "CORE",
+      "source_maturity": "LOCAL_ENGINEERING_SYNTHESIS",
+      "source_refs": [
+        "S01",
+        "S09"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CORE.md",
+      "proposition": "Derivação, consumo e justificação não provam uns aos outros.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K05",
+      "title": "Satisfação de gates",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S06"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/SEMANTIC_CONTRACTS.md",
+      "proposition": "Required/terminal/satisfied distintos; não gated obligations sobrevivem.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K06",
+      "title": "Discriminação causal",
+      "pack_role": "CORE",
+      "source_maturity": "LOCAL_ENGINEERING_SYNTHESIS",
+      "source_refs": [
+        "S01",
+        "S06",
+        "S09"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CONVERGENCE.md",
+      "proposition": "Negativo focal e positivo; ablação proporcional, não contagem.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K07",
+      "title": "D4/D5 evolução e reparo",
+      "pack_role": "PROFILE_CANDIDATE",
+      "source_maturity": "UPSTREAM_OPEN_PR_CANDIDATE",
+      "source_refs": [
+        "S06",
+        "S07"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CONVERGENCE.md",
+      "proposition": "Preservar obrigação, incremental/acumulada; contrair só por owner.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K08",
+      "title": "Q1 integridade versus semântica",
+      "pack_role": "PROFILE_CANDIDATE",
+      "source_maturity": "UPSTREAM_OPEN_PR_CANDIDATE",
+      "source_refs": [
+        "S05"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/SEMANTIC_CONTRACTS.md",
+      "proposition": "Freeze e validator não executam Q1; validade antes de relação.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K09",
+      "title": "Limite da prova e convergência",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S11"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/CONVERGENCE.md",
+      "proposition": "Finding não exige mais código; stop por responsabilidade crescente.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K10",
+      "title": "Revisão e adjudicação finitas",
+      "pack_role": "CORE",
+      "source_maturity": "DERIVED_FROM_INTEGRATED_LOCAL_METHOD",
+      "source_refs": [
+        "S01",
+        "S09"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/PR_LIFECYCLE.md",
+      "proposition": "Reviewer novelty, sem consenso como autoridade ou quota fixa.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K11",
+      "title": "Identidade e lifecycle do conhecimento",
+      "pack_role": "PROFILE_CANDIDATE",
+      "source_maturity": "UPSTREAM_ROADMAP_PROPOSAL",
+      "source_refs": [
+        "S04",
+        "S05",
+        "S08"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "profiles/knowledge-reconciliation.md",
+      "proposition": "Path/knowledge, adquirido/qualificado e fonte/visão separados.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    },
+    {
+      "knowledge_id": "MP-K12",
+      "title": "Qualificação e ações protegidas",
+      "pack_role": "CORE",
+      "source_maturity": "LOCAL_ENGINEERING_SYNTHESIS",
+      "source_refs": [
+        "S01",
+        "S03",
+        "S06"
+      ],
+      "semantic_owner": "MPACK_DERIVED_SYNTHESIS",
+      "upstream_normative_effect": "NONE",
+      "lifecycle": "CANDIDATE_FOR_LOCAL_ADOPTION",
+      "acquisition": "DERIVED_FROM_DECLARED_READINGS",
+      "qualification": "AUTHOR_RECONCILED_NOT_INDEPENDENTLY_QUALIFIED",
+      "content_locator": "method/PR_LIFECYCLE.md",
+      "proposition": "Método encerra pergunta; grants, Ready, merge/release/deploy separados.",
+      "freshness": "PINNED_SOURCE_READING_PLUS_DATED_MUTABLE_CONTEXT"
+    }
+  ]
+}
