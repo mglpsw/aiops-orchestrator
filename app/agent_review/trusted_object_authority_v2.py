@@ -1041,42 +1041,32 @@ class AuthorizedGitStorageSetV2:
         except OSError:
             return False
 
-        # 1. Inode / device comparison against authorized root descriptors
+        # 1. Direct match (optimization)
         if target_dev_ino in self._bound_dev_ino:
             return True
 
-        # 2. Descendant check against open root descriptors via live procfs canonical dentries
-        try:
-            proc_link = os.readlink(f"/proc/self/fd/{fd}")
-            proc_path = Path(proc_link)
-            for root_fd in self._root_fds:
-                try:
-                    root_stat = os.fstat(root_fd)
-                    if target_stat.st_dev == root_stat.st_dev:
-                        root_proc = Path(os.readlink(f"/proc/self/fd/{root_fd}"))
-                        if proc_path == root_proc or proc_path.is_relative_to(root_proc):
-                            return True
-                except (OSError, ValueError):
-                    pass
-        except (OSError, ValueError):
-            pass
-
-        # 3. Kernel VFS parent traversal via `..` directory descriptors
+        # 2. Kernel VFS parent traversal via `..` directory descriptors
+        # Procfs pathname string matching is deliberately omitted here.
+        # ProcfsDentryString != DescriptorIdentity.
         for root_fd in self._root_fds:
             try:
                 root_stat = os.fstat(root_fd)
-                if target_stat.st_dev != root_stat.st_dev:
-                    continue
+                root_dev_ino = (root_stat.st_dev, root_stat.st_ino)
+                
                 curr_fd = os.dup(fd)
                 try:
                     while True:
                         parent_fd = os.open("..", os.O_RDONLY | os.O_DIRECTORY, dir_fd=curr_fd)
                         try:
                             parent_stat = os.fstat(parent_fd)
-                            if (parent_stat.st_dev, parent_stat.st_ino) == (root_stat.st_dev, root_stat.st_ino):
+                            parent_dev_ino = (parent_stat.st_dev, parent_stat.st_ino)
+                            if parent_dev_ino == root_dev_ino:
                                 return True
+                            
                             curr_stat = os.fstat(curr_fd)
-                            if (parent_stat.st_dev, parent_stat.st_ino) == (curr_stat.st_dev, curr_stat.st_ino):
+                            curr_dev_ino = (curr_stat.st_dev, curr_stat.st_ino)
+                            if parent_dev_ino == curr_dev_ino:
+                                # Reached namespace root without matching the authorized root
                                 break
                         finally:
                             os.close(curr_fd)
@@ -1104,18 +1094,6 @@ class AuthorizedGitStorageSetV2:
     def __del__(self) -> None:
         self.close()
 
-
-def _validate_authorized_storage_roots_v2(
-    authorized_storage_roots: Sequence[Path | str] | None,
-) -> tuple[Path, ...]:
-    """Validate and pre-bind caller-supplied external storage roots (#331-B)."""
-    if authorized_storage_roots is None:
-        return ()
-    cap = AuthorizedGitStorageSetV2.from_roots(authorized_storage_roots)
-    try:
-        return cap.bound_paths
-    finally:
-        cap.close()
 
 
 def _resolve_git_directories_fd_v2(
@@ -1827,7 +1805,13 @@ def open_trusted_object_authority_v2(
         storage_set = None
         owns_storage_set = False
 
-    repo_root_fd = _open_repo_root_fd_v2(repo_root)
+    try:
+        repo_root_fd = _open_repo_root_fd_v2(repo_root)
+    except BaseException:
+        if owns_storage_set and storage_set is not None:
+            storage_set.close()
+        raise
+        
     active_storage_set: AuthorizedGitStorageSetV2 | None = None
     owns_active_storage_set = False
     try:

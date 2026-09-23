@@ -2752,3 +2752,114 @@ def test_authorized_git_storage_set_v2_from_repository_fd(tmp_path: Path) -> Non
             cap.close()
     finally:
         os.close(repo_fd)
+import os
+import tempfile
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from app.agent_review.trusted_object_authority_v2 import (
+    AuthorizedGitStorageSetV2,
+    TrustedObjectAuthorityError,
+    open_trusted_object_authority_v2,
+)
+
+def test_cm_c2_proc_deleted_spoofing(tmp_path: Path) -> None:
+    """CM-C2-PROC-DELETED:
+    Prove that an unrelated real directory whose pathname text aliases the procfs
+    '(deleted)' representation of an authorized root does NOT acquire authorization.
+    """
+    authorized_root = tmp_path / "auth_root"
+    authorized_root.mkdir()
+    
+    # T0: Host establishes capability for R
+    cap = AuthorizedGitStorageSetV2.from_roots([authorized_root])
+    try:
+        # T1: R is unlinked/renamed so procfs would render "auth_root (deleted)"
+        deleted_root_path = tmp_path / "auth_root (deleted)"
+        authorized_root.rename(tmp_path / "moved_root")
+        
+        # T2: An unrelated directory is created whose pathname aliases the procfs rep
+        deleted_root_path.mkdir()
+        
+        # T3: A target descriptor underneath the unrelated directory is checked
+        target_dir = deleted_root_path / "target"
+        target_dir.mkdir()
+        target_fd = os.open(str(target_dir), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            # Expected: False. Only true descriptor ancestry is authorized.
+            assert cap.contains_fd(target_fd) is False
+        finally:
+            os.close(target_fd)
+    finally:
+        cap.close()
+
+def test_cm_c2_mount_descendant_traversal(tmp_path: Path) -> None:
+    """CM-C2-MOUNT-DESCENDANT:
+    Prove that an explicitly authorized descendant remains authorized even when
+    a nested mount changes st_dev.
+    Since we cannot create privileged mounts in standard CI, we mock os.fstat
+    only during the contains_fd check to simulate different st_dev values.
+    """
+    root_path = tmp_path / "mount_root"
+    root_path.mkdir()
+    child_path = root_path / "child_mount"
+    child_path.mkdir()
+    
+    cap = AuthorizedGitStorageSetV2.from_roots([root_path])
+    try:
+        child_fd = os.open(str(child_path), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            original_fstat = os.fstat
+            
+            def mock_fstat(fd):
+                stat_result = original_fstat(fd)
+                if fd == child_fd:
+                    # Simulate the child being on a different device mount
+                    return os.stat_result(tuple(
+                        [stat_result.st_mode, stat_result.st_ino, stat_result.st_dev + 1] + 
+                        list(stat_result)[3:]
+                    ))
+                return stat_result
+            
+            with mock.patch("os.fstat", side_effect=mock_fstat):
+                # Ancestry traversal should succeed and find the root despite mount boundary
+                assert cap.contains_fd(child_fd) is True
+        finally:
+            os.close(child_fd)
+    finally:
+        cap.close()
+
+def test_owned_capability_closed_on_repo_root_failure(tmp_path: Path) -> None:
+    """FD ownership P2:
+    Prove all owned root descriptors are closed if repo_root acquisition fails.
+    """
+    auth_root = tmp_path / "auth_root"
+    auth_root.mkdir()
+    
+    # We pass a relative path for repo_root, which raises TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+    # and fails _open_repo_root_fd_v2. The capability created from `authorized_storage` must be closed.
+    
+    original_from_roots = AuthorizedGitStorageSetV2.from_roots
+    created_caps = []
+    
+    def mock_from_roots(*args, **kwargs):
+        cap = original_from_roots(*args, **kwargs)
+        created_caps.append(cap)
+        return cap
+        
+    with mock.patch.object(AuthorizedGitStorageSetV2, "from_roots", side_effect=mock_from_roots):
+        with pytest.raises(TrustedObjectAuthorityError):
+            with open_trusted_object_authority_v2(
+                "relative/repo/root",
+                authorized_storage=[auth_root]
+            ): pass
+            
+    assert len(created_caps) == 1
+    cap = created_caps[0]
+    # Verify the capability was closed
+    assert cap._closed is True
+    for fd in cap._root_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
