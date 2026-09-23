@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "MPACK observation skeleton; no verdict machine",
+  "required": [
+    "schema_version",
+    "observation_id",
+    "record_kind",
+    "subject",
+    "task_ref",
+    "mission_digest",
+    "observed_at",
+    "executor",
+    "independence",
+    "commands",
+    "evidence",
+    "limitations",
+    "disposition"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "observation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "record_kind": {
+      "enum": [
+        "UNEXECUTED_TEMPLATE",
+        "EXECUTED_OBSERVATION"
+      ]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "base",
+        "head",
+        "tree",
+        "context"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "head": {
+          "type": "string"
+        },
+        "tree": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        }
+      }
+    },
+    "task_ref": {
+      "type": "string"
+    },
+    "mission_digest": {
+      "type": "string"
+    },
+    "observed_at": {
+      "type": "string"
+    },
+    "executor": {
+      "type": "string"
+    },
+    "independence": {
+      "enum": [
+        "NONE",
+        "ROLE_SEPARATED_ONLY",
+        "DECLARED_WITH_EVIDENCE"
+      ]
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "locator",
+          "consumed_subject",
+          "result",
+          "limitations"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "locator": {
+            "type": "string"
+          },
+          "consumed_subject": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "disposition": {
+      "enum": [
+        "NOT_EVALUATED",
+        "LOCAL_OBSERVATION_ONLY",
+        "BLOCKED",
+        "REFUTED",
+        "READY_FOR_HUMAN_DECISION"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_kind": {
+            "const": "UNEXECUTED_TEMPLATE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "disposition": {
+            "const": "NOT_EVALUATED"
+          },
+          "evidence": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

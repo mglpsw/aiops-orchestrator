@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "pack_id": "AOCM-MPACK",
+  "version": "0.1.0-preview.1",
+  "hash_algorithm": "sha256",
+  "files": [
+    {
+      "path": "INSTALL.md",
+      "size": 3713,
+      "sha256": "d6f4a9e7862283375594b431db5fc18528b10d13f9f09b3befbe7ce7fc651701"
+    },
+    {
+      "path": "NOTICE.md",
+      "size": 798,
+      "sha256": "ab047d6027989e9588e592a31a472d6c62aa5a8b1642059df9d677eac8c09935"
+    },
+    {
+      "path": "PACK.json",
+      "size": 800,
+      "sha256": "25179fca31091dca60e5cd8c9e5408ae602084dd9a30055a0f3cee6853ec33fc"
+    },
+    {
+      "path": "README.md",
+      "size": 2841,
+      "sha256": "4d6c8bb9a5f095359592843f6875528199f2507c382b2e2c8bdb45e0c6d502f1"
+    },
+    {
+      "path": "agents/ENTRYPOINT.md",
+      "size": 894,
+      "sha256": "4aa2c0ca03ee7ce1155373fc53ca59b7b21bf11a4711d5f3b465b943f07d0d49"
+    },
+    {
+      "path": "chatgpt/CHAT_CONTEXT.md",
+      "size": 22217,
+      "sha256": "fbdf562b1f8c089804bb2e7605cde91610e1d5250d4494ff6081b2821d03de13"
+    },
+    {
+      "path": "chatgpt/PROJECT_INSTRUCTIONS.txt",
+      "size": 807,
+      "sha256": "2a39e34852dcac109d46effb4197f93f9d1cd7f1360fa7526dcc348825b078d9"
+    },
+    {
+      "path": "chatgpt/README.md",
+      "size": 559,
+      "sha256": "27f00d9fd16df8ec5a2b6ec162c605a3f2c78f114223db7bc1548a4192adb4a9"
+    },
+    {
+      "path": "examples/COLD_START.md",
+      "size": 1408,
+      "sha256": "ef05f1f8dde7b5848af944bb6928190d65dc14d66cf539ceb06244a6a4df719a"
+    },
+    {
+      "path": "examples/SOURCE_VS_OBSERVATION.md",
+      "size": 1022,
+      "sha256": "a0e61b863b24d8f916724a319063f1dc624b39a7ed9aaef34836b69f36a113c3"
+    },
+    {
+      "path": "method/CONVERGENCE.md",
+      "size": 2771,
+      "sha256": "36b732507368b5bac0a5048e335a48af4b9860b9d720d4bb08b844019bacbdb8"
+    },
+    {
+      "path": "method/CORE.md",
+      "size": 3816,
+      "sha256": "3853a169e93df26fb5657a4727d7fad08e0ed1c8f10370f2c12944b1e4769b0c"
+    },
+    {
+      "path": "method/GLOSSARY.md",
+      "size": 1640,
+      "sha256": "0045d9652a6f8f586724e022456f863988305e8f8a1f9e7afb68c357af5d2c22"
+    },
+    {
+      "path": "method/GUIA_HUMANO.md",
+      "size": 3275,
+      "sha256": "b2351424c12d16f28e55b524e89eb46aba3b741bd377606fb3ebaa9bd3f3bd39"
+    },
+    {
+      "path": "method/PR_LIFECYCLE.md",
+      "size": 3486,
+      "sha256": "4305c6393742d70426d6fda6ad4e38e641bfbaf8323925adcdbf62f4f567880a"
+    },
+    {
+      "path": "method/SEMANTIC_CONTRACTS.md",
+      "size": 4728,
+      "sha256": "7982ab2ff0dd99c0ce5f3c69e187a2970ddd8072e03c6e5ee4fbb5dcac16dff9"
+    },
+    {
+      "path": "profiles/ci-governance.md",
+      "size": 889,
+      "sha256": "22b3b6e9726681747a432b3bababb1dc5e3e04dea854c21e4cdd754b67a61dcf"
+    },
+    {
+      "path": "profiles/docs.md",
+      "size": 751,
+      "sha256": "8b13f9b2ffe506bfc66a4adf86c22dbdfa1a439323b2316a2073c0aa0027ff78"
+    },
+    {
+      "path": "profiles/external-effects.md",
+      "size": 842,
+      "sha256": "cee8c2742051962cc4b5e938ee55aedab43e8081500ad1dce532eaee2f229443"
+    },
+    {
+      "path": "profiles/knowledge-reconciliation.md",
+      "size": 870,
+      "sha256": "49cfc5097f4c1aa7fa2d2ba6f465c2cbfb47476bed1124544a273f2d7634a289"
+    },
+    {
+      "path": "profiles/method-evolution.md",
+      "size": 857,
+      "sha256": "40c4bfb359480f18550575f987144eecc7448324c9a9069669ccd47747584ab0"
+    },
+    {
+      "path": "profiles/product-code.md",
+      "size": 741,
+      "sha256": "b2203c474201f6d19663272f525c5062f985b316a9a4b1dd2fac6c8f99aeb313"
+    },
+    {
+      "path": "profiles/projection.md",
+      "size": 835,
+      "sha256": "2d648b0ff5db69ef9c2b773373ade1c9a788e2ec5813fd828e3244cd2909b9b2"
+    },
+    {
+      "path": "profiles/release.md",
+      "size": 837,
+      "sha256": "adce7e450e0bdbf1b35f6c0f1a849cfaf43a233544119808f3393aed1caae011"
+    },
+    {
+      "path": "profiles/transactional-writer.md",
+      "size": 814,
+      "sha256": "5d75c8fddb60f6af535ce630e6216ad0d0620386b15a40a8d77c073ea910ed86"
+    },
+    {
+      "path": "prompts/HANDOFF.md",
+      "size": 426,
+      "sha256": "4ac05c2410517f6e307ea22025eec94370b9c22adc63e8932670671877c609f0"
+    },
+    {
+      "path": "prompts/PLAN_PR.md",
+      "size": 529,
+      "sha256": "07ba63df8a6701330015be9bbec64078de44816f4bcba9c66538e8b9453896f1"
+    },
+    {
+      "path": "prompts/QUALIFY.md",
+      "size": 518,
+      "sha256": "1ef23c44c4ae55f17f40ee410b1ee3b0c9513d56d4cbfa4f5ac66645e693db07"
+    },
+    {
+      "path": "prompts/REPAIR.md",
+      "size": 508,
+      "sha256": "7b0caa874a0a4e50fab25f1e0d87e4604b3d949e182fbf2158b3e3031a7c40ff"
+    },
+    {
+      "path": "prompts/REVIEW_PR.md",
+      "size": 626,
+      "sha256": "8f98a1432c0ee34cb9b635e2c623294163d1eac149e5f2af5c6a32e78c4200e6"
+    },
+    {
+      "path": "prompts/START.md",
+      "size": 614,
+      "sha256": "09a8cd9272aba273a87aaa5994e2fe7dc105a3884eae3f0b94d3513cfff25b3e"
+    },
+    {
+      "path": "provenance/GAPS.md",
+      "size": 1671,
+      "sha256": "4d584bc864153012309302320f22b17d731c0352fbc2dda3a8cfb26071dff690"
+    },
+    {
+      "path": "provenance/GENERATED_VIEWS.json",
+      "size": 413,
+      "sha256": "4316221be21b5805c5aa802f059b5ead00fac14e29009aaafbac8fc2c0a5cbb5"
+    },
+    {
+      "path": "provenance/KNOWLEDGE_REGISTER.json",
+      "size": 8894,
+      "sha256": "046c727cf64136503654a4290b567cf01b4900a4293fa7dd8f4e855dc8815e8a"
+    },
+    {
+      "path": "provenance/RECONCILIATION.md",
+      "size": 4654,
+      "sha256": "f6125fc1a48fb2d8a6ed6247c56599563d0283ce702f0aee73f6881507941f4b"
+    },
+    {
+      "path": "provenance/SOURCE_REGISTRY.json",
+      "size": 9975,
+      "sha256": "5c0e55a3e4ce0dab812d8b408e9dc6bee771bbe08907583c14fbeb7fb0131aa8"
+    },
+    {
+      "path": "requirements-dev.txt",
+      "size": 19,
+      "sha256": "756cc9e506ae4ee1a6f6c0507088b5cfc0dc8ba350fb2d2d46f1ffa72033adb6"
+    },
+    {
+      "path": "research/NOT_IMPLEMENTED.md",
+      "size": 1405,
+      "sha256": "43d4102c8efa512cdc0b0165b3e37ecc58280327ecfc1946c77b02103e5cdac6"
+    },
+    {
+      "path": "schemas/README.md",
+      "size": 841,
+      "sha256": "629060f26c730ecae1e4e73c9bee0a01e74481a79b2b9a4d8cdddda99a9ae245"
+    },
+    {
+      "path": "schemas/observation.schema.json",
+      "size": 2941,
+      "sha256": "1075996e035d35504b3a5b3d886000017a7e403992d635d3b8341707da3a6805"
+    },
+    {
+      "path": "schemas/repository-profile.schema.json",
+      "size": 2044,
+      "sha256": "b266c6ec2f9e9babf55d850266cfc82a14b3fc5ed7d217714fa16e402f71106c"
+    },
+    {
+      "path": "schemas/task.schema.json",
+      "size": 2880,
+      "sha256": "0c890ade155deb1bbe9fe31c12eca8ec810bf9eb40354345bf6b9e770a6bfccd"
+    },
+    {
+      "path": "templates/EVOLUTION_LEDGER.md",
+      "size": 773,
+      "sha256": "801931971facfe775ef715322806cb420fc00cab752d63e4ca1f6ff02279f4f1"
+    },
+    {
+      "path": "templates/OBLIGATION_MATRIX.md",
+      "size": 595,
+      "sha256": "02b69bb5b8f1ec04438660ce203da9820fc3172631038b206e0fd26df030ffc5"
+    },
+    {
+      "path": "templates/PR_BODY.md",
+      "size": 794,
+      "sha256": "084aab0159dd1735558f1c0a7811e1558736f449d76b6f46e2979bc540cc1aa4"
+    },
+    {
+      "path": "templates/RELATION_CONTRACT.md",
+      "size": 568,
+      "sha256": "ff9d9ac4302b856f7cda9c9ac5c38ae7d9c5785153aebb0d0ea2578fb5b41d2d"
+    },
+    {
+      "path": "templates/observation.json",
+      "size": 447,
+      "sha256": "68f9c66b7b209ac59415d2cc892a12e0ca04778dd06995f6d8582f519dab3ce3"
+    },
+    {
+      "path": "templates/repository-profile.json",
+      "size": 312,
+      "sha256": "1a19019d5ef43e5f9d1081ac92df80ebaa27e1580bf83aca68515dd6a131d6cb"
+    },
+    {
+      "path": "templates/task.json",
+      "size": 483,
+      "sha256": "73d15eb4909298e9697d00923f81415199e3a92b99c0dc8fdb48aa503a8949f9"
+    },
+    {
+      "path": "tests/README.md",
+      "size": 653,
+      "sha256": "de699a102b4a6852c450d624ab9950ea2f399dbdc22397b8d033e37d99a8e1fb"
+    },
+    {
+      "path": "tests/test_pack.py",
+      "size": 18313,
+      "sha256": "e2878c6120dcf618ef56cc0e66d01bc8a47ee0447b753dc4d7886682b11ea081"
+    },
+    {
+      "path": "tools/generate_views.py",
+      "size": 885,
+      "sha256": "276d29a3231eb36e17abbb4a4389786ac17329d30e35a29eb503823492632001"
+    },
+    {
+      "path": "tools/mpack.py",
+      "size": 14739,
+      "sha256": "f7bf42029dc991407493c9ce53e309a9ca669c627c3215236b57be105eb8e24f"
+    }
+  ]
+}

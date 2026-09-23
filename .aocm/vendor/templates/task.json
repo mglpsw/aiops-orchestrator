@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "task_id": "TASK-TO-DEFINE",
+  "lifecycle": "DRAFT_PLAN",
+  "subject": {
+    "repository": "",
+    "base": "",
+    "head": "",
+    "tree": "",
+    "context": ""
+  },
+  "objective": "Definir objetivo com o owner",
+  "scope_in": [],
+  "scope_out": [],
+  "claims": [],
+  "profiles": [],
+  "evidence_requirements": [],
+  "stop_conditions": [
+    "STOP_SUBJECT_DRIFT",
+    "STOP_OWNER_BOUNDARY",
+    "STOP_UNRESOLVED_POLICY"
+  ],
+  "authorization_record": ""
+}

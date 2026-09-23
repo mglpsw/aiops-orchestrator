@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "lifecycle": "UNADOPTED",
+  "repository": "",
+  "authority_by_domain": [],
+  "selected_profiles": [],
+  "gate_commands": [],
+  "protected_actions": [
+    "Ready",
+    "merge",
+    "release",
+    "deploy",
+    "real_providers",
+    "destructive_database"
+  ],
+  "decision_record": ""
+}

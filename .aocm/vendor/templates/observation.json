@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "observation_id": "OBS-TO-DEFINE",
+  "record_kind": "UNEXECUTED_TEMPLATE",
+  "subject": {
+    "repository": "",
+    "base": "",
+    "head": "",
+    "tree": "",
+    "context": ""
+  },
+  "task_ref": "",
+  "mission_digest": "",
+  "observed_at": "",
+  "executor": "",
+  "independence": "NONE",
+  "commands": [],
+  "evidence": [],
+  "limitations": [
+    "Template only; no execution."
+  ],
+  "disposition": "NOT_EVALUATED"
+}
