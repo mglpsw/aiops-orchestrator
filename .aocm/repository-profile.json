@@ -39,17 +39,26 @@
     "bash scripts/ci_validate.sh",
     "bash scripts/test.sh",
     "python3 -B .aocm/vendor/tools/mpack.py doctor --repo .",
-    "python3 -B .aocm/vendor/tools/mpack.py verify --root .aocm/vendor --expect-manifest c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d"
+    "python3 -B .aocm/vendor/tools/mpack.py verify --root .aocm/vendor --expect-manifest c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d",
+    "python3 -B -m unittest discover -s .aocm/vendor/tests -p 'test_*.py'"
   ],
   "protected_actions": [
     "Ready",
+    "push",
+    "create_pr",
     "merge",
     "release",
+    "tag",
     "deploy",
+    "ct102_mutate",
+    "branch_protection",
+    "activate_required_check",
+    "v1_retire",
+    "v2_promote",
     "real_providers",
     "destructive_database"
   ],
   "decision_record": ".aocm/ADOPTION.md",
-  "observed_head": "68eebb5e3036130e79e5bdb44b0ec56715e86f89",
-  "observed_at": "2026-09-23T16:50:28.679313+00:00"
+  "observed_head": "c58eecd4a08a5ff38c3a6f4730f51b4f5467e295",
+  "observed_at": "2026-09-23T18:10:00.000000+00:00"
 }
