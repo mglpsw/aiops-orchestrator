@@ -1,0 +1,142 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "lineages": [
+    {
+      "lineage_id": "LINEAGE-01-OBJECT-STORE-INGRESS-AND-AUTHORITY",
+      "track": "agentreview_v2_core",
+      "issue": 200,
+      "sub_issues": [312, 313, 318, 321, 322, 331, 341],
+      "events": [
+        {
+          "step": "reproduced_finding",
+          "subject": "PR #318 FIFO hang / special file open vulnerability",
+          "outcome": "Architectural STOP fired under #318; branch quarantined, zero commits carried forward"
+        },
+        {
+          "step": "salvage_successor",
+          "subject": "PR #312 (feat/200-g1c2-f1)",
+          "head": "021d18816ff202683a8d7759586845e93156f0f8",
+          "outcome": "MERGED (closed #312): bounded special-file open with O_RDONLY|O_NOFOLLOW|O_NONBLOCK and same-fd fstat"
+        },
+        {
+          "step": "trust_anchor_fix",
+          "subject": "PR #313 (feat/200-g1c2-f2)",
+          "head": "78f616a2f45e936ec7871f264175b93c8b19bccd",
+          "outcome": "MERGED (closed #313): exact 40-char lowercase hex out-of-band SHA trust anchor"
+        },
+        {
+          "step": "regression_witness",
+          "subject": "PR #328 (#322)",
+          "head": "4e334ab4ffa7e989a2244668332b0be057f8870c",
+          "outcome": "MERGED (closed #322): exact built-in str type-gate regression witness"
+        },
+        {
+          "step": "top_level_retained_descriptor",
+          "subject": "PR #341 (#331-A)",
+          "head": "68eebb5e3036130e79e5bdb44b0ec56715e86f89",
+          "outcome": "MERGED (closed #331-A): component-wise no-follow descent for caller repo_root"
+        }
+      ],
+      "current_integrated_state": "68eebb5e3036130e79e5bdb44b0ec56715e86f89 (remote master)"
+    },
+    {
+      "lineage_id": "LINEAGE-02-TARGET-PACK-DISTRIBUTION",
+      "track": "agent_review_distribution",
+      "issue": 199,
+      "sub_issues": [203, 204, 205, 226, 228, 230, 247, 258],
+      "events": [
+        {
+          "step": "init_binding",
+          "subject": "PR #228",
+          "outcome": "MERGED: target pack init plan binding"
+        },
+        {
+          "step": "identity_hardening",
+          "subject": "PR #230 (H1-A)",
+          "outcome": "MERGED: closed target pack install identity gaps"
+        },
+        {
+          "step": "runtime_authority_centralization",
+          "subject": "PR #247",
+          "outcome": "MERGED: centralized target pack runtime authorities view generation"
+        },
+        {
+          "step": "mutation_epoch",
+          "subject": "PR #258",
+          "outcome": "MERGED: added target K mutation epoch context"
+        }
+      ],
+      "current_integrated_state": "Implemented init/doctor; validate/apply/rollback remain planned under #203"
+    },
+    {
+      "lineage_id": "LINEAGE-03-METHODOLOGICAL-CONVERGENCE",
+      "track": "repository_governance",
+      "issue": 264,
+      "sub_issues": [263, 265, 266],
+      "events": [
+        {
+          "step": "convergence_review_publication",
+          "subject": "PR #263",
+          "outcome": "MERGED: published bounded Authority-First Convergence Review"
+        },
+        {
+          "step": "review_debt_reconciliation",
+          "subject": "PR #265 & PR #266",
+          "outcome": "MERGED: reconciled post-merge convergence review debt and established STRUCTURAL_CHANGE_PREFLIGHT.md"
+        }
+      ],
+      "current_integrated_state": "STRUCTURAL_CHANGE_PREFLIGHT.md established as active normative preflight and STOP/REDESIGN owner"
+    },
+    {
+      "lineage_id": "LINEAGE-04-CANONICAL-LEDGER-LINTER",
+      "track": "repository_governance",
+      "issue": 324,
+      "sub_issues": [327, 329],
+      "events": [
+        {
+          "step": "canonical_backlog_creation",
+          "subject": "Commit 280a736 (PR #316)",
+          "outcome": "MERGED: created docs/checkpoints/AGENT_REVIEW_CANONICAL_BACKLOG_AND_CAEM_REUSE_LEDGER.md"
+        },
+        {
+          "step": "ledger_linter_candidate",
+          "subject": "PR #327 (docs/324-ledger-authority-architecture)",
+          "head": "0b0e58ce0d1a7c339eef9d83495625cc8ae7b49f",
+          "outcome": "DRAFT OPEN: implements rules R1-R5; held under candidate corpus status"
+        },
+        {
+          "step": "completeness_finding",
+          "subject": "Issue #329",
+          "outcome": "OPEN: identified mutation-corpus completeness needs a different mechanism"
+        }
+      ],
+      "current_integrated_state": "Ledger document integrated on master; linter unmerged on PR #327 branch"
+    },
+    {
+      "lineage_id": "LINEAGE-05-AOCM-MPACK-ADOPTION",
+      "track": "repository_governance",
+      "issue": 0,
+      "sub_issues": [],
+      "events": [
+        {
+          "step": "package_acquisition",
+          "subject": "AOCM-MPACK 0.1.0-preview.1 ZIP & MPACK (Nextcloud AOCM)",
+          "outcome": "Verified SHA-256 anchors for ZIP (9d256b0f...) and PACK_MANIFEST.json (c16f9abe...)"
+        },
+        {
+          "step": "vendor_installation",
+          "subject": "Commit b4f7daf",
+          "outcome": "MERGED locally: .aocm/vendor/ and UNADOPTED INSTALL_RECEIPT.json"
+        },
+        {
+          "step": "maintainer_adoption",
+          "subject": "Commit 8e533db",
+          "outcome": "MERGED locally: .aocm/ADOPTION.md, repository-profile.json (ADOPTED_BY_MAINTAINER), GEMINI.md"
+        }
+      ],
+      "current_integrated_state": "Active in local worktree branch feat/adopt-aocm-mpack; upstream PR pending"
+    }
+  ]
+}

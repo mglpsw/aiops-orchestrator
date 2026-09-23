@@ -1,0 +1,98 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "sources": [
+    {
+      "source_id": "SRC-01-CAEM-PIN",
+      "locator": "config/caem/caem-3.0-f0.pin.json",
+      "role": "upstream_interface_pin",
+      "carrier_sha": "28ca73f338417b5c7e9275c6154b6a0eddbb8bc7",
+      "digest": "sha256:6e2fdff772a16466b8af1934d03b4e29ec03aeae053ccb2bfa0b705f50ab48e5"
+    },
+    {
+      "source_id": "SRC-02-STRUCTURAL-PREFLIGHT",
+      "locator": "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md",
+      "role": "normative_source_structural_governance",
+      "owner": "mglpsw/aiops-orchestrator",
+      "status": "active"
+    },
+    {
+      "source_id": "SRC-03-PROJECT-OVERLAY",
+      "locator": "docs/engineering/PROJECT_OVERLAY.md",
+      "role": "generated_view_caem_2_1_projection",
+      "owner": "historical_caem_2_1_projection",
+      "status": "legacy_supported"
+    },
+    {
+      "source_id": "SRC-04-ROOT-AGENTS",
+      "locator": "AGENTS.md",
+      "role": "generated_view_caem_2_1_projection",
+      "owner": "historical_caem_2_1_projection",
+      "status": "legacy_supported"
+    },
+    {
+      "source_id": "SRC-05-ROOT-CLAUDE",
+      "locator": "CLAUDE.md",
+      "role": "generated_view_caem_2_1_projection",
+      "owner": "historical_caem_2_1_projection",
+      "status": "legacy_supported"
+    },
+    {
+      "source_id": "SRC-06-ROOT-GEMINI",
+      "locator": "GEMINI.md",
+      "role": "native_workspace_instruction_pointer",
+      "owner": "mglpsw (AGY extension point)",
+      "status": "active"
+    },
+    {
+      "source_id": "SRC-07-GITHUB-AGENTS",
+      "locator": ".github/AGENTS.md",
+      "role": "specialized_workflow_instruction",
+      "owner": "mglpsw/aiops-orchestrator",
+      "status": "active"
+    },
+    {
+      "source_id": "SRC-08-AOCM-MANIFEST",
+      "locator": ".aocm/vendor/PACK_MANIFEST.json",
+      "role": "portable_method_manifest",
+      "sha256": "c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d",
+      "status": "active"
+    },
+    {
+      "source_id": "SRC-09-AOCM-ADOPTION",
+      "locator": ".aocm/ADOPTION.md",
+      "role": "maintainer_adoption_record",
+      "owner": "mglpsw",
+      "status": "active"
+    },
+    {
+      "source_id": "SRC-10-AOCM-PROFILE",
+      "locator": ".aocm/repository-profile.json",
+      "role": "repository_method_profile",
+      "owner": "mglpsw",
+      "lifecycle": "ADOPTED_BY_MAINTAINER"
+    },
+    {
+      "source_id": "SRC-11-CANONICAL-LEDGER",
+      "locator": "docs/checkpoints/AGENT_REVIEW_CANONICAL_BACKLOG_AND_CAEM_REUSE_LEDGER.md",
+      "role": "canonical_backlog_checkpoint",
+      "commit": "280a73696a6f28234bdf58b700d744202c13362c",
+      "status": "active_checkpoint"
+    },
+    {
+      "source_id": "SRC-12-ROADMAP-ISSUE-46",
+      "locator": "https://github.com/mglpsw/aiops-orchestrator/issues/46",
+      "role": "canonical_roadmap_authority",
+      "owner": "mglpsw/aiops-orchestrator",
+      "status": "live_forge_issue"
+    },
+    {
+      "source_id": "SRC-13-PR-327-CANDIDATE",
+      "locator": "https://github.com/mglpsw/aiops-orchestrator/pull/327",
+      "role": "historical_and_current_candidate_corpus",
+      "head_oid": "0b0e58ce0d1a7c339eef9d83495625cc8ae7b49f",
+      "status": "draft_open"
+    }
+  ]
+}

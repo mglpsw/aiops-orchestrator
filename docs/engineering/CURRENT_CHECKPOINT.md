@@ -1,12 +1,13 @@
 # CURRENT CHECKPOINT — AIOps/AgentReview
 
-**Status:** `CANONICAL | CURRENT`
+**Status:** `HISTORICAL_SNAPSHOT (2026-08-16)`
+**Boundary:** `historical/snapshot carrier != live-state authority (see Issue #46 and forge)`
 **Corte temporal:** 2026-08-16 (America/Sao_Paulo)
-**Classe:** estado observado; revalidar HEAD, runs e issues antes de qualquer ação.
+**Classe:** estado observado histórico; revalidar HEAD, runs e issues antes de qualquer ação.
 
-Este documento é importado pelo `CLAUDE.md` do repositório, portanto entra no
-contexto de toda sessão de agente. Ele descreve o estado observado no corte, não
-concede autoridade e não substitui consulta viva ao forge.
+Este documento é um registro histórico de estado observado no corte de 2026-08-16
+(PR #239). Ele descreve o estado observado naquele corte histórico, não concede autoridade
+normativa corrente e não substitui consulta viva ao forge / Issue #46.
 
 ## Identidade — âncora vs. HEAD vivo
 

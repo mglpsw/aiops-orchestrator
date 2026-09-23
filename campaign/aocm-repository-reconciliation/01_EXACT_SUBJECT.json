@@ -1,0 +1,63 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "generated_at": "2026-09-23T14:08:00-03:00",
+  "exact_subject": {
+    "repository": "mglpsw/aiops-orchestrator",
+    "remote_origin": "https://github.com/mglpsw/aiops-orchestrator.git",
+    "default_branch": "master",
+    "observed_remote_master_sha": "9dd69b964cbeef4615307758f90a3f83116b25f9",
+    "local_base_sha": "9dd69b964cbeef4615307758f90a3f83116b25f9",
+    "local_campaign_branch": "campaign/aocm-repository-reconciliation",
+    "local_parent_sha": "9dd69b964cbeef4615307758f90a3f83116b25f9",
+    "tree_sha": "261d1bf0e26808e0dd46a15ca2427d9a566cf83f",
+    "tracked_files_count": 765,
+    "worktree_path": "/home/mglpsw/dev/aiops"
+  },
+  "forge_state": {
+    "open_prs": [
+      {
+        "number": 327,
+        "title": "feat(engineering): canonical ledger structural invariant linter (#324)",
+        "head_ref_name": "docs/324-ledger-authority-architecture",
+        "head_ref_oid": "0b0e58ce0d1a7c339eef9d83495625cc8ae7b49f",
+        "is_draft": true,
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "role": "historical_and_current_candidate_corpus"
+      }
+    ],
+    "open_issues_count": 50,
+    "canonical_roadmap_issue": 46,
+    "distribution_epic_issue": 199,
+    "latest_release_tag": "v0.22.0",
+    "release_tags": [
+      "v0.22.0",
+      "v0.22.0-rc.1",
+      "v0.21.0",
+      "v0.21.0-rc.1",
+      "v0.20.0",
+      "v0.20.0-rc.1",
+      "v0.19.0",
+      "v0.18.0"
+    ]
+  },
+  "external_interfaces": {
+    "caem": {
+      "target_release": "3.0.0",
+      "stage": "F0",
+      "maturity": "development_freeze",
+      "carrier_sha": "28ca73f338417b5c7e9275c6154b6a0eddbb8bc7",
+      "pin_file": "config/caem/caem-3.0-f0.pin.json",
+      "authority_effect": "none"
+    },
+    "aocm_mpack": {
+      "version": "0.1.0-preview.1",
+      "status": "LOCAL_ENGINEERING_METHOD_ADOPTED",
+      "decision_record": ".aocm/ADOPTION.md",
+      "profile_lifecycle": "ADOPTED_BY_MAINTAINER",
+      "vendor_manifest_sha256": "c16f9abed12681bf237ed6ab0a3e437da7f44ee657ea200eb6d91992e1e1575d"
+    }
+  }
+}

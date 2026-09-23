@@ -1,0 +1,618 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "schema_version": 1,
+  "campaign": "aocm-repository-reconciliation",
+  "total_knowledge_identities": 19,
+  "knowledge_registry": [
+    {
+      "knowledge_id": "K-AIOPS-CT102-RUNTIME",
+      "title": "AIOps Orchestrator CT102 Production Runtime & Action Engine",
+      "project": "aiops",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/ARCHITECTURE.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/main.py",
+        "app/api/routes.py",
+        "app/api/diagnostic.py",
+        "app/api/chat.py",
+        "app/api/approvals.py",
+        "app/api/history.py",
+        "app/services/action_runner.py",
+        "app/services/diagnostic_service.py",
+        "app/services/action_service.py",
+        "app/policies/policy_engine.py",
+        "config/actions.yaml"
+      ],
+      "tests": [
+        "tests/test_action_catalog.py",
+        "tests/test_action_dry_run.py",
+        "tests/test_action_planner.py",
+        "tests/test_action_run.py",
+        "tests/test_aiops_diagnostic.py",
+        "tests/test_approvals.py",
+        "tests/test_policy_engine.py"
+      ],
+      "historical_observations": [
+        "docs/RELEASE_V0_19_0.md",
+        "docs/RELEASE_V0_20_0.md",
+        "docs/CT102_RUNTIME_TRANSITION_V019.md"
+      ],
+      "consumers": [
+        "CT102 homelab host",
+        "chat.ks-sm.net web UI",
+        "Open WebUI integration"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Read-only allowlisted actions only; no free shell, SSH or docker exec permitted."
+      ]
+    },
+    {
+      "knowledge_id": "K-AIOPS-ROUTER-GATEWAY",
+      "title": "Agent Router API Gateway Interface & Inference Transport",
+      "project": "router_interface",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/agent-router-api",
+      "normative_source": "docs/HANDOFF_AGENT_ROUTER_API.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_router/client.py",
+        "app/agent_router/main.py",
+        "app/agent_router/schemas.py",
+        "config/routes.yml",
+        "config/providers.yml"
+      ],
+      "tests": [
+        "tests/test_aiops_chat_router.py"
+      ],
+      "historical_observations": [
+        "docs/LEGACY_ADAPTERS.md"
+      ],
+      "consumers": [
+        "app/main.py",
+        "app/agent_review/review_transport_v2.py"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "HTTPS token-gated inference only; does not authorize filesystem or host access."
+      ]
+    },
+    {
+      "knowledge_id": "K-CAEM-CONSUMER-PIN",
+      "title": "CAEM 3.0 F0 Upstream Consumer Interface Pin",
+      "project": "caem_integration",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/caem",
+      "normative_source": "config/caem/caem-3.0-f0.pin.json",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/caem_consumer/f0.py",
+        "scripts/verify-caem-f0-pin.py"
+      ],
+      "tests": [
+        "tests/caem_consumer/test_f0.py",
+        "tests/caem_consumer/test_cli.py"
+      ],
+      "historical_observations": [
+        ".caem/quarantine/caem-2.1/metadata.json",
+        ".caem/quarantine/caem-2.1/policy.json"
+      ],
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_validate.sh"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "authority_effect=none; pin provides schema and contract verification without conferring normative governance."
+      ]
+    },
+    {
+      "knowledge_id": "K-CAEM-HISTORICAL-PROJECTION",
+      "title": "Preserved Historical CAEM 2.1 Projection Views",
+      "project": "caem_integration",
+      "semantic_role": "generated_view",
+      "semantic_owner": "historical_caem_2_1_projection (external generator)",
+      "normative_source": "mglpsw/caem (external upstream v2.1 bundle)",
+      "generated_views": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/engineering/CAEM_CORE.md",
+        "docs/engineering/PROJECT_OVERLAY.md"
+      ],
+      "implementation_carriers": [],
+      "tests": [
+        "scripts/verify-caem-f0-pin.py --check"
+      ],
+      "historical_observations": [
+        "docs/RI_A0_CAEM_REUSE_MATRIX.md",
+        "docs/RI_A1_ADR_OWNERSHIP_MAP.md"
+      ],
+      "consumers": [
+        "AI agents entering workspace via AGENTS.md or CLAUDE.md",
+        "scripts/verify-caem-f0-pin.py"
+      ],
+      "lifecycle": "legacy_supported",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Must NOT be hand-edited in isolation; external generator not present in-repo."
+      ]
+    },
+    {
+      "knowledge_id": "K-AOCM-LOCAL-ENGINEERING-METHOD",
+      "title": "AOCM-MPACK Local Methodological Authority & Engineering Protocol",
+      "project": "aocm_method",
+      "semantic_role": "normative_source",
+      "semantic_owner": "mglpsw (maintainer decision)",
+      "normative_source": ".aocm/ADOPTION.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        ".aocm/vendor/tools/mpack.py",
+        ".aocm/vendor/method/CORE.md",
+        ".aocm/vendor/method/PR_LIFECYCLE.md",
+        ".aocm/repository-profile.json",
+        ".aocm/ENTRYPOINT.md",
+        "GEMINI.md"
+      ],
+      "tests": [
+        ".aocm/vendor/tests/test_pack.py"
+      ],
+      "historical_observations": [
+        ".aocm/INSTALL_RECEIPT.json"
+      ],
+      "consumers": [
+        "AGY pair programmer sessions",
+        "Local engineering worktrees"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Governs local engineering procedure only; does not replace domain runtime contracts or CAEM upstream authority."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V1-ENGINE",
+      "title": "AgentReview v1 Deterministic Review Pipeline & Artifact Hierarchy",
+      "project": "agentreview_v1",
+      "semantic_role": "implementation",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_ENGINE.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/schemas.py",
+        "app/agent_review/pr_brief.py",
+        "app/agent_review/semantic_chunker.py",
+        "app/agent_review/final_synthesizer.py",
+        "app/agent_review/payload_cost_model.py",
+        "app/agent_review/false_positive_signatures.py",
+        "app/agent_review/contract_suggestions.py"
+      ],
+      "tests": [
+        "tests/agent_review/test_schemas.py",
+        "tests/agent_review/test_pr_brief.py",
+        "tests/agent_review/test_semantic_chunker.py",
+        "tests/agent_review/test_final_synthesizer.py",
+        "tests/agent_review/test_false_positive_signatures.py"
+      ],
+      "historical_observations": [
+        "docs/RELEASE_V0_20_0.md",
+        "docs/RELEASE_V0_22_0.md"
+      ],
+      "consumers": [
+        "AgentEscala target repository review wrapper",
+        "scripts/aiops-review-*.py"
+      ],
+      "lifecycle": "legacy_supported",
+      "current_decision_relevance": "conditional",
+      "limitations": [
+        "Frozen for features; receives only security and critical bug fixes. To be superseded by v2 once v2 reaches GA."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V1-QUALITY-GATE",
+      "title": "AgentReview v1 Canonical Quality Gate Authority",
+      "project": "agentreview_v1",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_QUALITY_GATE.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/quality_gate.py"
+      ],
+      "tests": [
+        "tests/agent_review/test_quality_gate.py"
+      ],
+      "historical_observations": [],
+      "consumers": [
+        "AgentEscala publication step",
+        "scripts/aiops-review-quality-gate.py"
+      ],
+      "lifecycle": "legacy_supported",
+      "current_decision_relevance": "conditional",
+      "limitations": [
+        "Sole canonical decision authority for v1 runs; final_review.json is synthesis-only and cannot substitute."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V1-V2-COMPATIBILITY",
+      "title": "AgentReview v1 and v2 Disjoint Pipeline Isolation & Migration Rule",
+      "project": "agentreview_shared",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V1_V2_COMPATIBILITY.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/profile_migration_v1_v2.py"
+      ],
+      "tests": [
+        "tests/agent_review/test_profile_migration_v1_v2.py"
+      ],
+      "historical_observations": [],
+      "consumers": [
+        "Target repositories (AgentEscala, InterLeitos)"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Strict disjointness: v1 and v2 artifacts, envelopes, and gates are never mixed in a single run."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-EXACT-SUBJECT",
+      "title": "AgentReview v2 Exact Subject & Trusted Object Authority",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/checkpoints/AGENT_REVIEW_V2_200G1_EXECUTED_SOURCE_IDENTITY.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/git_commit_subject_v2.py",
+        "app/agent_review/trusted_object_authority_v2.py",
+        "app/agent_review/commit_derived_execution_identity_v2.py",
+        "app/agent_review/bounded_git_v2.py",
+        "app/agent_review/external_path_ingress_v2.py"
+      ],
+      "tests": [
+        "tests/agent_review/test_trusted_object_authority_v2.py",
+        "tests/agent_review/test_commit_derived_execution_identity_v2.py",
+        "tests/agent_review/test_bounded_git_v2.py"
+      ],
+      "historical_observations": [
+        "reports/agent-review-v2-200-adversarial-audit-followup-receipt.json"
+      ],
+      "consumers": [
+        "app/agent_review/diff_acquisition_v2.py",
+        "app/agent_review/run_assembly_v2.py"
+      ],
+      "lifecycle": "shadow",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Requires exact 40-hex lowercase commit SHA; no-follow descent across all components."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-CONTENT-EXTRACTION",
+      "title": "AgentReview v2 Hunk Content Extraction, Redaction, and Declarative DLP",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/diff_acquisition_v2.py",
+        "app/agent_review/review_content_v2.py",
+        "app/agent_review/review_content_extraction_v2.py",
+        "app/agent_review/dlp_v2.py",
+        "schemas/agent-review/v2/agent-review.review-content.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.dlp-policy.v1.schema.json"
+      ],
+      "tests": [
+        "tests/agent_review/test_diff_acquisition_v2.py",
+        "tests/agent_review/test_review_content_v2.py",
+        "tests/agent_review/test_review_content_extraction_v2.py",
+        "tests/agent_review/test_dlp_v2.py"
+      ],
+      "historical_observations": [
+        "reports/agent-review-v2-200b-extraction-receipt.json"
+      ],
+      "consumers": [
+        "app/agent_review/payload_builder_v2.py"
+      ],
+      "lifecycle": "shadow",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Lossless windowing for reviewed hunks; fail-closed on secret/DLP violation."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-PAYLOAD-ASSEMBLY",
+      "title": "AgentReview v2 Manifest, Chunk Payloads, Semantic Grouping, and Hash Binding",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_CONTRACT_TOPOLOGY.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/manifest_v2.py",
+        "app/agent_review/payload_set_v2.py",
+        "app/agent_review/payload_builder_v2.py",
+        "app/agent_review/payload_references_v2.py",
+        "app/agent_review/payload_set_emission_v2.py",
+        "app/agent_review/semantic_grouping_policy_v2.py",
+        "app/agent_review/contracts_v2.py",
+        "schemas/agent-review/v2/agent-review.manifest.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.chunk-payload.v2.schema.json"
+      ],
+      "tests": [
+        "tests/agent_review/test_manifest_v2.py",
+        "tests/agent_review/test_payload_set_v2.py",
+        "tests/agent_review/test_payload_builder_v2.py",
+        "tests/agent_review/test_semantic_grouping_policy_v2.py"
+      ],
+      "historical_observations": [
+        "reports/agent-review-v2-200a-contract-receipt.json"
+      ],
+      "consumers": [
+        "app/agent_review/review_transport_v2.py",
+        "app/agent_review/synthesis_v2.py"
+      ],
+      "lifecycle": "shadow",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Payload hash binding verifies payload and response integrity against manifest."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-TRUSTED-CHECKS",
+      "title": "AgentReview v2 Trusted Checks, Isolated Executor, and Provenance Bridge",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/trusted_checks_v2.py",
+        "app/agent_review/trusted_check_supervisor_v2.py",
+        "app/agent_review/trusted_check_simulator_v2.py",
+        "app/agent_review/trusted_check_broker_v2.py",
+        "app/agent_review/trusted_check_authority_v2.py",
+        "app/agent_review/isolated_executor_v2.py",
+        "app/agent_review/authoritative_check_policy_v2.py",
+        "app/agent_review/authoritative_ci_snapshot_v2.py",
+        "app/agent_review/authoritative_producer_evidence_v2.py",
+        "app/agent_review/required_check_provenance_v2.py",
+        "app/agent_review/required_check_readiness_v2.py",
+        "schemas/agent-review/v2/agent-review.trusted-check-plan.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.trusted-check-result.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.authoritative-check-policy.v2.schema.json"
+      ],
+      "tests": [
+        "tests/agent_review/test_trusted_checks_v2.py",
+        "tests/agent_review/test_trusted_check_broker_v2.py",
+        "tests/agent_review/test_isolated_executor_v2.py",
+        "tests/agent_review/test_required_check_provenance_v2.py"
+      ],
+      "historical_observations": [
+        "reports/agent-review-v2-201a-trusted-check-contracts-receipt.json",
+        "reports/agent-review-v2-201b1-simulator-receipt.json",
+        "reports/agent-review-v2-201c-readiness-wiring-receipt.json"
+      ],
+      "consumers": [
+        "app/agent_review/readiness_decision_v2.py"
+      ],
+      "lifecycle": "shadow",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Isolated host-controlled execution; checks must provide tamper-evident provenance."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-READINESS-DECISION",
+      "title": "AgentReview v2 Canonical Readiness Decision Authority",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_READINESS_DECISION.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "app/agent_review/readiness_decision_v2.py",
+        "app/agent_review/review_readiness_emission_v2.py",
+        "app/agent_review/lifecycle_v2.py",
+        "schemas/agent-review/v2/agent-review.review-readiness.v2.schema.json"
+      ],
+      "tests": [
+        "tests/agent_review/test_readiness_decision_v2.py",
+        "tests/agent_review/test_review_readiness_emission_v2.py",
+        "tests/agent_review/test_lifecycle_v2.py"
+      ],
+      "historical_observations": [],
+      "consumers": [
+        "Target repositories consuming v2 pipeline",
+        "scripts/aiops-review-quality-gate-v2.py"
+      ],
+      "lifecycle": "shadow",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Sole canonical authority in v2; external advisory observations (e.g. Codex) are non-blocking."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-TARGET-PACK",
+      "title": "AgentReview v2 Portable Target Pack & Topology Packaging",
+      "project": "agentreview_v2",
+      "semantic_role": "product_contract",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_TARGET_PACK.md",
+      "generated_views": [
+        "docs/generated/target-pack-runtime-authority.v1.json"
+      ],
+      "implementation_carriers": [
+        "app/agent_review/target_pack_manifest_v2.py",
+        "app/agent_review/target_pack_operation_v2.py",
+        "app/agent_review/target_pack_plan_v2.py",
+        "app/agent_review/target_pack_build_v2.py",
+        "app/agent_review/target_pack_install_v2.py",
+        "app/agent_review/target_pack_apply_v2.py",
+        "app/agent_review/target_pack_doctor_v2.py",
+        "app/agent_review/target_pack_validate_v2.py",
+        "app/agent_review/target_pack_epoch_v2.py",
+        "app/agent_review/target_pack_runtime_authority_v2.py",
+        "schemas/agent-review/v2/agent-review.target-pack-manifest.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.target-pack-operation-plan.v2.schema.json"
+      ],
+      "tests": [
+        "tests/agent_review/test_target_pack_validate_v2.py",
+        "tests/agent_review/test_target_pack_epoch_topology_v2.py"
+      ],
+      "historical_observations": [],
+      "consumers": [
+        "AgentEscala, InterLeitos (#203, #204, #205)"
+      ],
+      "lifecycle": "planned",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Current implemented commands: init, doctor. validate/apply/rollback remain under implementation."
+      ]
+    },
+    {
+      "knowledge_id": "K-AGENTREVIEW-V2-BENCHMARK-HARNESS",
+      "title": "AgentReview v2 Dual-Target Benchmark Corpus & Evaluation Harness",
+      "project": "agentreview_v2",
+      "semantic_role": "evidence",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/AGENT_REVIEW_V2_BENCHMARK.md",
+      "generated_views": [
+        "evals/agent_review_v2/reviewable_corpus/"
+      ],
+      "implementation_carriers": [
+        "evals/agent_review_v2/harness.py",
+        "evals/agent_review_v2/corpus_safety.py",
+        "evals/agent_review_v2/observation.py",
+        "scripts/run-agent-review-v2-evals.py",
+        "scripts/materialize-benchmark-case.py",
+        "scripts/generate-benchmark-corpus-manifest.py",
+        "scripts/generate-benchmark-report.py"
+      ],
+      "tests": [
+        "tests/evals/test_agent_review_v2_evals.py"
+      ],
+      "historical_observations": [
+        "reports/agent-review-v2-benchmark-summary.json",
+        "reports/agent-review-v2-eval-summary.json"
+      ],
+      "consumers": [
+        ".github/workflows/ci.yml",
+        "scripts/ci_validate.sh"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Offline synthetic benchmark; provides regression witness across 9 cases, not runtime proof."
+      ]
+    },
+    {
+      "knowledge_id": "K-METHOD-AUTHORITY-FIRST-CONVERGENCE",
+      "title": "Authority-First Convergence Review & Mandatory STOP/REDESIGN Protocol",
+      "project": "repository_governance",
+      "semantic_role": "normative_source",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md",
+      "generated_views": [],
+      "implementation_carriers": [],
+      "tests": [
+        "scripts/ci_validate.sh"
+      ],
+      "historical_observations": [
+        "docs/engineering/AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md"
+      ],
+      "consumers": [
+        "All structural PRs and preflight reviews"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Sole authority on STOP/REDESIGN thresholds and architectural recurrence gates."
+      ]
+    },
+    {
+      "knowledge_id": "K-GOVERNANCE-CANONICAL-LEDGER",
+      "title": "Canonical Backlog Reconciliation Ledger & Invariant Linter",
+      "project": "repository_governance",
+      "semantic_role": "checkpoint",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/checkpoints/AGENT_REVIEW_CANONICAL_BACKLOG_AND_CAEM_REUSE_LEDGER.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "scripts/lint-canonical-ledger.py (candidate in PR #327)"
+      ],
+      "tests": [
+        "tests/test_canonical_ledger_lint.py (candidate in PR #327)"
+      ],
+      "historical_observations": [],
+      "consumers": [
+        "PR #327 evaluation"
+      ],
+      "lifecycle": "proposed",
+      "current_decision_relevance": "conditional",
+      "limitations": [
+        "Document is canonical backlog snapshot (commit 280a736); linter implementation is unmerged draft in PR #327."
+      ]
+    },
+    {
+      "knowledge_id": "K-GOVERNANCE-ROADMAP-AUTHORITY",
+      "title": "Repository Roadmap Authority (Issue #46 Sole Authority)",
+      "project": "repository_governance",
+      "semantic_role": "roadmap",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "https://github.com/mglpsw/aiops-orchestrator/issues/46",
+      "generated_views": [],
+      "implementation_carriers": [],
+      "tests": [],
+      "historical_observations": [
+        "docs/AGENT_REVIEW_V2_ROADMAP.md (SUPERSEDED)",
+        "docs/aiops-v1-plan.md (SUPERSEDED)"
+      ],
+      "consumers": [
+        "All planning sessions"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "No file in git tree is normative roadmap; in-tree roadmap documents are historical snapshots."
+      ]
+    },
+    {
+      "knowledge_id": "K-AIOPS-BLUEGREEN-DEPLOY",
+      "title": "AIOps Blue/Green Deployment & Container Lifecycle",
+      "project": "aiops",
+      "semantic_role": "runbook",
+      "semantic_owner": "mglpsw/aiops-orchestrator",
+      "normative_source": "docs/bluegreen-deployment.md",
+      "generated_views": [],
+      "implementation_carriers": [
+        "deploy/docker-compose.bluegreen.yml",
+        "deploy/docker-compose.yml",
+        "deploy/Dockerfile"
+      ],
+      "tests": [
+        ".github/workflows/ci.yml"
+      ],
+      "historical_observations": [
+        "docs/aiops-bluegreen-operations.md",
+        "docs/CT102_BACKUP_ROLLBACK_V019.md"
+      ],
+      "consumers": [
+        "CT102 deployment operations"
+      ],
+      "lifecycle": "active",
+      "current_decision_relevance": "yes",
+      "limitations": [
+        "Deployment requires explicit human grant; no automatic deploy or auto-healing."
+      ]
+    }
+  ]
+}
