@@ -12,7 +12,7 @@
         {
           "subsystem": "HTTP API & Middlewares",
           "paths": ["app/api/", "app/main.py"],
-          "contracts": ["/health", "/ready", "/metrics", "/api/v1/diagnostic", "/api/v1/chat", "/api/v1/approvals", "/api/v1/history"]
+          "contracts": ["/health", "/ready", "/metrics", "/v1/chat", "/v1/tasks", "/v1/approvals", "/v1/providers/status", "/v1/aiops/diagnose", "/v1/aiops/actions/catalog", "/v1/aiops/actions/plan", "/v1/aiops/actions/approvals", "/v1/aiops/actions/run", "/v1/aiops/runs/recent", "/v1/aiops/audit/recent"]
         },
         {
           "subsystem": "Action Execution & Safety Catalog",

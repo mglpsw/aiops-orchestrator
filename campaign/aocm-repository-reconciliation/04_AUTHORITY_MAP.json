@@ -20,7 +20,8 @@
       "normative_expression": [
         "docs/ARCHITECTURE.md",
         "docs/engineering/PROJECT_OVERLAY.md",
-        "config/actions.yaml"
+        "config/actions.yaml",
+        "config/routes.yml"
       ],
       "delegation_limits": "No external provider or consumer can modify action boundaries without code merge."
     },
@@ -80,7 +81,7 @@
       "scope": "LLM inference gateway endpoints, routing models, and provider interfaces",
       "normative_expression": [
         "docs/HANDOFF_AGENT_ROUTER_API.md",
-        "config/routes.yml"
+        "app/agent_router/client.py"
       ],
       "delegation_limits": "Inference transport only; does not authorize filesystem, network, or execution."
     },

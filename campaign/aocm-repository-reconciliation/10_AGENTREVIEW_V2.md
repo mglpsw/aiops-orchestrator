@@ -45,7 +45,7 @@ O AgentReview v2 foi projetado para resolver os limites arquiteturais do v1:
 ### 2.5 Síntese e Decisão de Prontidão
 - `synthesis_v2.py`: Sintetiza achados e riscos normalizados com rastreabilidade de passagens.
 - `readiness_decision_v2.py`: Emite `ReviewReadinessV2` com invariantes estritos (ex: P3-only findings nunca bloqueiam `ready`).
-- `lifecycle_v2.py`: Gerencia o ciclo de vida dos achados (`NEW`, `CONFIRMED`, `RESOLVED`, `STALE`).
+- `lifecycle_v2.py`: Gerencia o ciclo de vida estrito dos achados conforme `FindingDispositionV2` (`new`, `confirmed`, `fixed`, `dismissed`, `superseded`, `stale`; o estado `RESOLVED` não existe no schema).
 
 ### 2.6 Target Pack e Distribuição Multi-target
 - `target_pack_*.py`: Empacota o AgentReview v2 para instalação limpa em repositórios-alvo (`AgentEscala`, `InterLeitos`).

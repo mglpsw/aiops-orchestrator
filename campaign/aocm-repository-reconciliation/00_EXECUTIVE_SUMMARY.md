@@ -31,10 +31,10 @@
 **19 de 19 (100%)** possuem proprietário semântico e fonte normativa claramente determinados no [`04_AUTHORITY_MAP.json`](04_AUTHORITY_MAP.json). Nenhum conceito material permaneceu sob propriedade anônima ou inventada.
 
 ### 4. Quantos têm lifecycle claro?
-**19 de 19 (100%)** foram mapeados em estados formais de ciclo de vida:
-- `active`: 11 identidades
-- `shadow`: 4 identidades (componentes do AgentReview v2)
-- `legacy_supported`: 2 identidades (AgentReview v1 e Projeções CAEM 2.1)
+**19 de 19 (100%)** foram mapeados em estados formais de ciclo de vida (conforme agregados de `03_KNOWLEDGE_REGISTRY.json`):
+- `active`: 9 identidades
+- `shadow`: 5 identidades (componentes do AgentReview v2)
+- `legacy_supported`: 3 identidades (AgentReview v1, Projeções CAEM 2.1 e Adapters Legados de Execução)
 - `planned`: 1 identidade (Target Pack v2)
 - `proposed`: 1 identidade (Linter do Canonical Ledger)
 
@@ -46,17 +46,17 @@ No censo de arquivos físicos, **29 arquivos** são estritamente históricos (ch
 
 ### 7. Quantos apresentam duplicate semantic ownership?
 Foram identificadas **2 colisões críticas**:
-1. `docs/engineering/CURRENT_CHECKPOINT.md`: Documento temporal datado de 2026-08-16 que declara ser "CURRENT", importado diretamente no `CLAUDE.md`, gerando drift de 5 semanas no contexto dos agentes.
+1. `docs/engineering/CURRENT_CHECKPOINT.md`: Documento temporal datado de 2026-08-16 que declara ser "CURRENT", cujo cabeçalho formal já declara `Status: HISTORICAL_SNAPSHOT (2026-08-16)`. Importado pelas 4 projeções CAEM 2.1 mantidas intocadas (`CLAUDE.md`, `AGENTS.md`, etc.), com extensões de contexto vivo supridas via `GEMINI.md` / Issue #46.
 2. `docs/AGENT_REVIEW_V2_ROADMAP.md`: Permanece na árvore física embora seja expressamente `SUPERSEDED` pela issue #46 no GitHub.
 
 ### 8. Quantos possuem consumer vivo apesar de parecerem superseded?
-**1 caso crítico**: `docs/engineering/CURRENT_CHECKPOINT.md` (consumido ativamente pelo `CLAUDE.md` em toda nova sessão).  
-**1 caso secundário**: `app/adapters/` (adapters legados de execução, consumidos apenas por testes de quarentena).
+**1 caso crítico**: `docs/engineering/CURRENT_CHECKPOINT.md` (consumido pelas projeções de agente históricas como âncora temporal, explicitamente demarcado como snapshot).  
+**1 caso secundário**: `app/adapters/` (adapters legados de execução: consumidos por `app/api/routes.py` via `Orchestrator`, onde `ProviderRegistry` seleciona `LocalExecutor` por padrão em CT102; constitui superfície viva de execução para rotas legadas autenticadas, não apenas testes de quarentena).
 
 ### 9. Qual é a separação real entre AgentReview v1, v2 e shared AIOps?
 - **AgentReview v1**: Pipeline determinístico offline congelado para features (baseline `v0.22.0`), consumido pelo AgentEscala, cuja autoridade única pós-síntese é `review-quality-gate.json`.
 - **AgentReview v2**: Linha sucessora em desenvolvimento em modo shadow/opt-in; opera com autoridade de objeto confiável (`trusted_object_authority_v2`), extração de hunks com DLP, trusted checks em executor isolado, schemas JSON versionados e autoridade única `ReviewReadinessV2`. Os envelopes de v1 e v2 são **estritamente disjuntos** e nunca se misturam em uma execução.
-- **Shared AIOps**: Serviço de runtime HTTP para CT102 (`app/main.py`), catálogo de ações homelab (`config/actions.yaml`), cliente do Agent Router (`app/agent_router/`), sanitização de segredos (`redaction.py`) e infraestrutura Docker blue/green.
+- **Shared AIOps**: Serviço de runtime HTTP para CT102 (`app/main.py`), catálogo de ações homelab (`config/actions.yaml`), roteamento local de provedores e executores (`config/routes.yml`), cliente do Agent Router (`app/agent_router/`), sanitização de segredos em chat (`app/utils/secrets.py`) e infraestrutura Docker blue/green.
 
 ### 10. Quais conceitos locais são pre-AOCM?
 Os seguintes princípios centrais nasceram no AIOps antes da formalização do AOCM-MPACK e foram incorporados pelo método:

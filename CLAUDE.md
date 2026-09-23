@@ -18,8 +18,7 @@ authority_effect=none: see .caem/quarantine/caem-2.1/.
 
 @docs/engineering/CAEM_CORE.md
 @docs/engineering/PROJECT_OVERLAY.md
-<!-- Boundary: historical/snapshot carrier != live-state authority (see Issue #46 and forge) -->
-<!-- docs/engineering/CURRENT_CHECKPOINT.md is a 2026-08-16 snapshot; not imported as live state -->
+@docs/engineering/CURRENT_CHECKPOINT.md
 
 ## Preflight obrigatório
 

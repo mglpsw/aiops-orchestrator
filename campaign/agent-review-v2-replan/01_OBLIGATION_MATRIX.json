@@ -10,17 +10,17 @@
       "obligation_id": "OBL-C0-01",
       "claim": "C0",
       "proposition": "AgentReview generic engine is owned exclusively by aiops-orchestrator/toolrepo; targets specialize configuration without owning engine forks.",
-      "truth_maker": "app/agent_review/ core modules with dependency injection of target policies; zero target repo-name branches in engine.",
+      "truth_maker": "app/agent_review/ core modules with dependency injection of target policies; zero target repo-name branches, string literals, or imports in engine.",
       "owner": "mglpsw/aiops-orchestrator",
       "applicability": "core_engine_and_distribution",
       "producer": "agent_review_v2_team",
       "carrier": "#199",
       "consumer": "target_repositories",
-      "closure_predicate": "Multi-target test proves identical engine byte-distribution runs AgentEscala and InterLeitos profiles.",
+      "closure_predicate": "Static ast/forbidden-symbol check proves zero target-specific literals or imports in generic engine codebase, and dual-target plus synthetic third-profile blind execution succeeds with byte-identical distribution.",
       "evidence_class": "deterministic_test_suite",
       "countermodels": [
-        "CM-C0-1: Engine imports target-specific python modules directly.",
-        "CM-C0-2: Forked copy of engine maintained in target repository."
+        "CM-C0-01: Engine imports target-specific python modules directly or branches on repo names.",
+        "CM-C0-02: Forked copy of engine maintained in target repository."
       ],
       "positive_controls": [
         "Unit tests verifying generic profile schema loading and target config parsing."
@@ -43,8 +43,8 @@
       "closure_predicate": "Mutation of any subject field (e.g. altering base_oid or head_oid) produces immediate validation failure.",
       "evidence_class": "mutation_discrimination",
       "countermodels": [
-        "CM-C1-1: Subject OIDs read from mutable HEAD instead of pinned PR event.",
-        "CM-C1-2: Report generated without toolrepo commit OID binding."
+        "CM-C1-01: Subject OIDs read from mutable HEAD instead of pinned PR event.",
+        "CM-C1-02: Report generated without toolrepo commit OID binding."
       ],
       "positive_controls": [
         "Round-trip test serializing and deserializing ReviewSubjectIdentityV2."
@@ -67,8 +67,8 @@
       "closure_predicate": "Host trust boundary rejects repos or worktrees outside authorized root paths or containing unverified commondir pointers.",
       "evidence_class": "adversarial_negative_witnesses",
       "countermodels": [
-        "CM-C2-1: External repo path outside authorized boundary accepted because path contains no '..'.",
-        "CM-C2-2: Linked worktree commondir pointing to arbitrary host filesystem location is traversed."
+        "CM-C2-01: External repo path outside authorized boundary accepted because path contains no '..'.",
+        "CM-C2-02: Linked worktree commondir pointing to arbitrary host filesystem location is traversed."
       ],
       "positive_controls": [
         "Valid in-tree repository and declared external path within authorized boundary pass validation."
@@ -91,8 +91,8 @@
       "closure_predicate": "Materialized files on disk exactly match Git tree blob OIDs; symlinks, case-folding, and Unicode normalizations cannot escape root.",
       "evidence_class": "hash_identity_verification",
       "countermodels": [
-        "CM-C3-1: Symlink in tree overwrites parent directory file during extraction.",
-        "CM-C3-2: Case-insensitive filesystem overwrites distinct Git tree entries."
+        "CM-C3-01: Concurrent host-side symlink swap between path resolution and write breaks sandbox boundary.",
+        "CM-C3-02: Case-insensitive filesystem overwrites distinct Git tree entries."
       ],
       "positive_controls": [
         "Extraction of standard benchmark repo produces exact blob hash parity."
@@ -115,8 +115,8 @@
       "closure_predicate": "Code execution occurs in dedicated subprocess with scrubbed environment and python sys.path containing only authorized paths.",
       "evidence_class": "isolation_and_containment_tests",
       "countermodels": [
-        "CM-C4-1: Check imports unauthenticated package from parent process cwd.",
-        "CM-C4-2: Subprocess inherits hostile environment variables (PYTHONPATH, LD_PRELOAD)."
+        "CM-C4-01: Check imports unauthenticated package from parent process cwd.",
+        "CM-C4-02: Subprocess inherits hostile environment variables (PYTHONPATH, LD_PRELOAD)."
       ],
       "positive_controls": [
         "Trusted check runs clean and returns signed execution attestation."
@@ -139,8 +139,8 @@
       "closure_predicate": "Reading FIFO, device node, or symlink-to-special raises error; subclassed str trust anchor is rejected.",
       "evidence_class": "regression_witness_tests",
       "countermodels": [
-        "CM-C4-3: Reading /dev/zero hangs reader.",
-        "CM-C4-4: str subclass bypassing type equality check."
+        "CM-C4-01: Check imports unauthenticated package from parent process cwd.",
+        "CM-C4-02: Subprocess inherits hostile environment variables (PYTHONPATH, LD_PRELOAD)."
       ],
       "positive_controls": [
         "Exact built-in str passes type check; regular files read normally."
@@ -163,8 +163,8 @@
       "closure_predicate": "Total authoritative diff hunks == sum(reviewed_fragments) + sum(explicitly_omitted_fragments); zero unaccounted diff bytes.",
       "evidence_class": "conservation_law_check",
       "countermodels": [
-        "CM-C5-1: Chunking truncates hunk without emitting truncation metadata.",
-        "CM-C5-2: Binary diff dropped silently without record."
+        "CM-C5-01: Chunking truncates hunk without emitting truncation metadata.",
+        "CM-C5-02: Binary diff dropped silently without record."
       ],
       "positive_controls": [
         "Complete diff reconstruction from generated fragments."
@@ -178,17 +178,17 @@
       "obligation_id": "OBL-C6-01",
       "claim": "C6",
       "proposition": "No raw source code, internal host filesystem path, or unvetted literal outside declared outbound contract reaches semantic transport.",
-      "truth_maker": "app/agent_review/sanitization_v2.py and dlp_v2.py.",
+      "truth_maker": "Closed outbound projection schema (app/agent_review/outbound_representation_v2.py / RedactedReviewObservationV2) that structurally excludes raw source literals, unredacted hunk fragments, and sensitive credentials with no structural slot for raw literals (per #299/#314).",
       "owner": "agent_review_v2_dlp",
       "applicability": "outbound_payloads",
       "producer": "payload_sanitizer",
       "carrier": "#314",
       "consumer": "agent_router_client",
-      "closure_predicate": "Payload scanner verifies zero raw paths, zero unredacted secrets, and complete schema conformance before HTTP dispatch.",
+      "closure_predicate": "Static schema verification proves zero structural slots exist for raw literals in outbound envelope, and deterministic scanner runs as defense-in-depth across credential test battery.",
       "evidence_class": "synthetic_secret_injection_tests",
       "countermodels": [
-        "CM-C6-1: Private SSH key or API token included in review prompt.",
-        "CM-C6-2: Host root absolute path (e.g. /home/user/...) leaked in prompt context."
+        "CM-C6-01: Private SSH key or API token included in review prompt due to open structural slot.",
+        "CM-C6-02: Host root absolute path (e.g. /home/user/...) leaked in prompt context."
       ],
       "positive_controls": [
         "Sanitized change prompt successfully delivered with relative paths only."
@@ -211,8 +211,8 @@
       "closure_predicate": "Receipt validation enforces exact match on nonce, run_id, and SHA-256 payload digest.",
       "evidence_class": "tamper_rejection_tests",
       "countermodels": [
-        "CM-C7-1: Response for run A injected into evaluation for run B.",
-        "CM-C7-2: Replayed model response with mismatched fragment IDs accepted."
+        "CM-C7-01: Response for run A injected into evaluation for run B.",
+        "CM-C7-02: Replayed model response with mismatched fragment IDs accepted."
       ],
       "positive_controls": [
         "Matching receipt validates successfully."
@@ -235,8 +235,8 @@
       "closure_predicate": "Given identical observations, check receipts, and policy profile, readiness output is 100% byte-reproducible.",
       "evidence_class": "pure_function_property_tests",
       "countermodels": [
-        "CM-C8-1: LLM judgment overrides failing deterministic check.",
-        "CM-C8-2: Readiness depends on non-deterministic external clock or network state."
+        "CM-C8-01: LLM judgment overrides failing deterministic check.",
+        "CM-C8-02: Readiness depends on non-deterministic external clock or network state."
       ],
       "positive_controls": [
         "Fixed fixture evaluation returns identical readiness status across 1000 iterations."
@@ -250,17 +250,17 @@
       "obligation_id": "OBL-C9-01",
       "claim": "C9",
       "proposition": "Required-check evidence used for readiness is produced by host-controlled execution and cannot be fabricated by PR subject.",
-      "truth_maker": "app/agent_review/trusted_checks_v2.py attestation.",
+      "truth_maker": "app/agent_review/trusted_checks_v2.py, trusted_check_supervisor_v2.py, and trusted_check_broker_v2.py; commands and policy are anchored in immutable base-branch policy or toolrepo manifest, executed in host-controlled namespaces.",
       "owner": "agent_review_v2_checks",
       "applicability": "required_checks",
       "producer": "host_check_runner",
       "carrier": "#201",
       "consumer": "readiness_gate",
-      "closure_predicate": "Check results lacking valid host attestation signature are treated as unexecuted / failed.",
+      "closure_predicate": "Required checks require both valid host attestation signature AND execution against base-branch immutable policy/manifest; subject-authored modifications to check commands, Makefiles, or test harnesses cannot fabricate or falsify check evidence.",
       "evidence_class": "forgery_rejection_tests",
       "countermodels": [
-        "CM-C9-1: PR commits fake check-result.json to repo root and readiness accepts it.",
-        "CM-C9-2: Malicious Makefile in PR echoes SUCCESS without running tests."
+        "CM-C9-01: PR commits fake check-result.json to repo root and readiness accepts it.",
+        "CM-C9-02: Malicious Makefile or test harness in PR returns exit code 0 without executing real check suite, producing a signed false success."
       ],
       "positive_controls": [
         "Host runner executes test suite and signs output manifest."
@@ -273,18 +273,18 @@
     {
       "obligation_id": "OBL-C10-01",
       "claim": "C10",
-      "proposition": "Git, API, raw-diff, unified-diff, manifest, publisher representations preserve one unambiguous canonical path identity.",
-      "truth_maker": "app/agent_review/path_identity_v2.py.",
+      "proposition": "Git, API, raw-diff, unified-diff, manifest, publisher representations preserve one unambiguous canonical path identity without collapsing distinct tracked tree entries.",
+      "truth_maker": "app/agent_review/diff_acquisition_v2.py, external_path_ingress_v2.py, and manifest_v2.py; authoritative unquoted raw-diff stream (-z) as primary identity anchor, preserving byte-distinct entries.",
       "owner": "agent_review_v2_paths",
       "applicability": "all_path_handling",
       "producer": "path_normalizer",
       "carrier": "#202",
       "consumer": "all_pipeline_components",
-      "closure_predicate": "Paths with Unicode NFC/NFD variations, git octal c-quotes, or mixed slashes resolve to identical CanonicalPath instances.",
+      "closure_predicate": "Only alternate encodings of the same Git pathname (e.g. Git octal C-quoting) converge to their canonical byte sequence; distinct tracked files (such as NFC vs NFD or literal backslashes on case-sensitive POSIX systems) remain strictly distinct or fail closed when unrepresentable on target filesystem.",
       "evidence_class": "comprehensive_path_matrix_tests",
       "countermodels": [
-        "CM-C10-1: File with Portuguese accents in filename treated as different file in diff vs git tree.",
-        "CM-C10-2: Git C-quoted path containing spaces fails to match materialization path."
+        "CM-C10-01: File with Portuguese accents in filename treated as different file in diff vs git tree due to quoting mismatch.",
+        "CM-C10-02: Distinct POSIX tree entries (NFC vs NFD or backslash) improperly collapsed into single path, aliasing hunks."
       ],
       "positive_controls": [
         "Exotic filename test suite verifies parity across git, diff, and disk."
@@ -307,8 +307,8 @@
       "closure_predicate": "End-to-end integration test executes full path from repository input to readiness verdict with zero intermediate mock substitution.",
       "evidence_class": "end_to_end_integration_run",
       "countermodels": [
-        "CM-C11-1: Unit tests pass on isolated components but end-to-end flow fails on type mismatch.",
-        "CM-C11-2: Intermediate stage substitutes simulated authority instead of passing real token."
+        "CM-C11-01: Unit tests pass on isolated components but end-to-end flow fails on type mismatch.",
+        "CM-C11-02: Intermediate stage substitutes simulated authority instead of passing real token."
       ],
       "positive_controls": [
         "Full run against sample repository produces valid ReviewReadinessV2 artifact."
@@ -331,8 +331,8 @@
       "closure_predicate": "Target pack installer executes in fresh target checkout, passes verify, and supports clean uninstall/rollback.",
       "evidence_class": "distribution_lifecycle_tests",
       "countermodels": [
-        "CM-C12-1: Target pack overwrites target git config without rollback record.",
-        "CM-C12-2: Upgrade breaks backward compatibility with existing target profile."
+        "CM-C12-01: Target pack overwrites target git config without rollback record.",
+        "CM-C12-02: Upgrade breaks backward compatibility with existing target profile."
       ],
       "positive_controls": [
         "Pack installation, verification, and removal on sample repo succeed."
@@ -355,8 +355,8 @@
       "closure_predicate": "Dual-target test runs identical engine binaries against AgentEscala and InterLeitos benchmark cases; both produce valid conformant readiness outputs.",
       "evidence_class": "conformance_benchmark_eval",
       "countermodels": [
-        "CM-C13-1: InterLeitos policy requires modifying core engine parser.",
-        "CM-C13-2: AgentEscala DLP rules conflict with engine-level sanitization."
+        "CM-C13-01: InterLeitos policy requires modifying core engine parser.",
+        "CM-C13-02: AgentEscala DLP rules conflict with engine-level sanitization."
       ],
       "positive_controls": [
         "Dual conformance test suite passes 100% on committed test cases."
@@ -379,8 +379,8 @@
       "closure_predicate": "Release candidate build is bit-identical across independent builds; all 14 preceding claims are verifiably closed.",
       "evidence_class": "release_gate_verification",
       "countermodels": [
-        "CM-C14-1: Release tagged while open critical obligations remain in DAG.",
-        "CM-C14-2: Qualification evidence not bound to exact release commit SHA."
+        "CM-C14-01: Release tagged while open critical obligations remain in DAG.",
+        "CM-C14-02: Qualification evidence not bound to exact release commit SHA."
       ],
       "positive_controls": [
         "Release gate scripts pass on tagged commit."

@@ -136,7 +136,7 @@
           "outcome": "MERGED locally: .aocm/ADOPTION.md, repository-profile.json (ADOPTED_BY_MAINTAINER), GEMINI.md"
         }
       ],
-      "current_integrated_state": "Active in local worktree branch feat/adopt-aocm-mpack; upstream PR pending"
+      "current_integrated_state": "Merged into master via PR #344 at commit 9dd69b9; active in production master branch"
     }
   ]
 }
