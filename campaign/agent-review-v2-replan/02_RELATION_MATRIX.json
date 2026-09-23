@@ -1,0 +1,100 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "status": "PROPOSED_AOCM_REPLAN",
+  "schema_version": 1,
+  "campaign": "agent-review-v2-replan",
+  "generated_at": "2026-09-23T14:58:00-03:00",
+  "relations": [
+    {
+      "relation_id": "REL-01",
+      "from": "OBL-C2-01",
+      "to": "OBL-C3-01",
+      "type": "SECURITY_BOUNDARY_ENABLER",
+      "rationale": "Git tree materialization (C3) must only unpack commits originating from authorized storage boundaries (C2). Unauthenticated storage must never be materialized."
+    },
+    {
+      "relation_id": "REL-02",
+      "from": "OBL-C3-01",
+      "to": "OBL-C4-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Execution isolation (C4) requires faithful, uncontaminated materialization on disk (C3) before running any subprocess."
+    },
+    {
+      "relation_id": "REL-03",
+      "from": "OBL-C4-02",
+      "to": "OBL-C4-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Trust anchor provenance (#319/#322) and hostile-read boundary (#321) are necessary preconditions for safe execution provenance (#301)."
+    },
+    {
+      "relation_id": "REL-04",
+      "from": "OBL-C4-01",
+      "to": "OBL-C5-01",
+      "type": "DATAFLOW_PRODUCER_CONSUMER",
+      "rationale": "Authoritative diff parsing and fragment chunking (C5) rely on authenticated tree OIDs and safe git acquisition (C4/C3)."
+    },
+    {
+      "relation_id": "REL-05",
+      "from": "OBL-C5-01",
+      "to": "OBL-C6-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Outbound DLP sanitization (C6) requires complete and bounded fragment accounting (C5) so all outbound hunks are vetted."
+    },
+    {
+      "relation_id": "REL-06",
+      "from": "OBL-C6-01",
+      "to": "OBL-C7-01",
+      "type": "DATAFLOW_PRODUCER_CONSUMER",
+      "rationale": "Router receipt validation (C7) binds to the payload digest and request token produced by sanitized outbound dispatch (C6)."
+    },
+    {
+      "relation_id": "REL-07",
+      "from": "OBL-C7-01",
+      "to": "OBL-C8-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Deterministic readiness (C8) can only evaluate verified model observation receipts (C7)."
+    },
+    {
+      "relation_id": "REL-08",
+      "from": "OBL-C8-01",
+      "to": "OBL-C11-01",
+      "type": "COMPOSITION_INTEGRATOR",
+      "rationale": "Gate G5 operational composition (C11) integrates all pipeline primitives (C1 through C8) into an unbroken end-to-end flow."
+    },
+    {
+      "relation_id": "REL-09",
+      "from": "OBL-C9-01",
+      "to": "OBL-C11-01",
+      "type": "INDEPENDENT_PARALLEL_LANE",
+      "rationale": "Trusted required checks (#201) touches the host test execution harness and can advance independently of core diff chunking until G5 composition."
+    },
+    {
+      "relation_id": "REL-10",
+      "from": "OBL-C10-01",
+      "to": "OBL-C11-01",
+      "type": "INDEPENDENT_PARALLEL_LANE",
+      "rationale": "Canonical path normalization (#202) defines universal path primitives and can advance in parallel without write collisions."
+    },
+    {
+      "relation_id": "REL-11",
+      "from": "OBL-C11-01",
+      "to": "OBL-C12-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Target-pack packaging (#203) packages the engine only after G5 operational composition is proven intact."
+    },
+    {
+      "relation_id": "REL-12",
+      "from": "OBL-C12-01",
+      "to": "OBL-C13-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Dual-target conformance (#204) verifies distribution packs across AgentEscala and InterLeitos."
+    },
+    {
+      "relation_id": "REL-13",
+      "from": "OBL-C13-01",
+      "to": "OBL-C14-01",
+      "type": "STRICT_PRECONDITION",
+      "rationale": "Pinable release candidate (#205) is produced only when dual-target conformance and all preceding claims are closed."
+    }
+  ]
+}

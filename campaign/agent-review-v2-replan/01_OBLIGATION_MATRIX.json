@@ -1,0 +1,394 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "status": "PROPOSED_AOCM_REPLAN",
+  "schema_version": 1,
+  "campaign": "agent-review-v2-replan",
+  "generated_at": "2026-09-23T14:57:00-03:00",
+  "roadmap_authority": "https://github.com/mglpsw/aiops-orchestrator/issues/46",
+  "obligations": [
+    {
+      "obligation_id": "OBL-C0-01",
+      "claim": "C0",
+      "proposition": "AgentReview generic engine is owned exclusively by aiops-orchestrator/toolrepo; targets specialize configuration without owning engine forks.",
+      "truth_maker": "app/agent_review/ core modules with dependency injection of target policies; zero target repo-name branches in engine.",
+      "owner": "mglpsw/aiops-orchestrator",
+      "applicability": "core_engine_and_distribution",
+      "producer": "agent_review_v2_team",
+      "carrier": "#199",
+      "consumer": "target_repositories",
+      "closure_predicate": "Multi-target test proves identical engine byte-distribution runs AgentEscala and InterLeitos profiles.",
+      "evidence_class": "deterministic_test_suite",
+      "countermodels": [
+        "CM-C0-1: Engine imports target-specific python modules directly.",
+        "CM-C0-2: Forked copy of engine maintained in target repository."
+      ],
+      "positive_controls": [
+        "Unit tests verifying generic profile schema loading and target config parsing."
+      ],
+      "known_limitations": "Requires target repositories to implement compliant config manifests.",
+      "invalidation": "Any target-specific conditional check added to app/agent_review/ engine modules.",
+      "current_issue_carrier": "#199",
+      "current_status": "in_progress"
+    },
+    {
+      "obligation_id": "OBL-C1-01",
+      "claim": "C1",
+      "proposition": "Every review result, gate evaluation, and report binds cryptographically and structurally to exact repo, PR, base OID, head OID, diff hash, toolrepo OID, profile digest, run ID.",
+      "truth_maker": "ReviewSubjectIdentityV2 schema and provenance attestation in app/agent_review/models_v2.py.",
+      "owner": "agent_review_v2_core",
+      "applicability": "all_reviews",
+      "producer": "subject_attestation_engine",
+      "carrier": "#298, #304",
+      "consumer": "readiness_gate_and_publisher",
+      "closure_predicate": "Mutation of any subject field (e.g. altering base_oid or head_oid) produces immediate validation failure.",
+      "evidence_class": "mutation_discrimination",
+      "countermodels": [
+        "CM-C1-1: Subject OIDs read from mutable HEAD instead of pinned PR event.",
+        "CM-C1-2: Report generated without toolrepo commit OID binding."
+      ],
+      "positive_controls": [
+        "Round-trip test serializing and deserializing ReviewSubjectIdentityV2."
+      ],
+      "known_limitations": "Requires host to supply authoritative base and head OIDs.",
+      "invalidation": "Unauthenticated subject identity accepted by readiness evaluator.",
+      "current_issue_carrier": "#298",
+      "current_status": "in_progress"
+    },
+    {
+      "obligation_id": "OBL-C2-01",
+      "claim": "C2",
+      "proposition": "Git objects used as review authority originate exclusively from storage explicitly authorized by host trust model (SafePath != AuthorizedStorage).",
+      "truth_maker": "app/agent_review/trusted_object_authority_v2.py and external_path_ingress_v2.py.",
+      "owner": "agent_review_v2_security",
+      "applicability": "git_object_acquisition",
+      "producer": "trusted_object_authority",
+      "carrier": "#331-B",
+      "consumer": "materialization_and_diff_engine",
+      "closure_predicate": "Host trust boundary rejects repos or worktrees outside authorized root paths or containing unverified commondir pointers.",
+      "evidence_class": "adversarial_negative_witnesses",
+      "countermodels": [
+        "CM-C2-1: External repo path outside authorized boundary accepted because path contains no '..'.",
+        "CM-C2-2: Linked worktree commondir pointing to arbitrary host filesystem location is traversed."
+      ],
+      "positive_controls": [
+        "Valid in-tree repository and declared external path within authorized boundary pass validation."
+      ],
+      "known_limitations": "Host must configure explicit authorized storage roots.",
+      "invalidation": "Storage path accepted solely based on lexical safety pattern without root verification.",
+      "current_issue_carrier": "#331-B",
+      "current_status": "selected_first_slice"
+    },
+    {
+      "obligation_id": "OBL-C3-01",
+      "claim": "C3",
+      "proposition": "Admitted commit is materialized into isolated subject faithful to declared Git tree representation without filesystem path reinterpretation changing identity.",
+      "truth_maker": "app/agent_review/materialize_v2.py and benchmark corpus materializer.",
+      "owner": "agent_review_v2_materializer",
+      "applicability": "commit_materialization",
+      "producer": "tree_extractor",
+      "carrier": "#304",
+      "consumer": "analysis_and_check_runners",
+      "closure_predicate": "Materialized files on disk exactly match Git tree blob OIDs; symlinks, case-folding, and Unicode normalizations cannot escape root.",
+      "evidence_class": "hash_identity_verification",
+      "countermodels": [
+        "CM-C3-1: Symlink in tree overwrites parent directory file during extraction.",
+        "CM-C3-2: Case-insensitive filesystem overwrites distinct Git tree entries."
+      ],
+      "positive_controls": [
+        "Extraction of standard benchmark repo produces exact blob hash parity."
+      ],
+      "known_limitations": "Filesystem characteristics (case-sensitivity) may require explicit emulation on non-POSIX hosts.",
+      "invalidation": "Materialized disk content diverges from git cat-file blob output.",
+      "current_issue_carrier": "#304",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C4-01",
+      "claim": "C4",
+      "proposition": "Application code and checks executed by review process derive exclusively from authenticated subject, after authentication, under fresh-process binding.",
+      "truth_maker": "app/agent_review/trusted_checks_v2.py isolated subprocess runner.",
+      "owner": "agent_review_v2_runner",
+      "applicability": "check_execution",
+      "producer": "trusted_check_runner",
+      "carrier": "#301",
+      "consumer": "readiness_gate",
+      "closure_predicate": "Code execution occurs in dedicated subprocess with scrubbed environment and python sys.path containing only authorized paths.",
+      "evidence_class": "isolation_and_containment_tests",
+      "countermodels": [
+        "CM-C4-1: Check imports unauthenticated package from parent process cwd.",
+        "CM-C4-2: Subprocess inherits hostile environment variables (PYTHONPATH, LD_PRELOAD)."
+      ],
+      "positive_controls": [
+        "Trusted check runs clean and returns signed execution attestation."
+      ],
+      "known_limitations": "Subprocess overhead per check invocation.",
+      "invalidation": "Check process executes unauthenticated bytes or inherits host parent environment.",
+      "current_issue_carrier": "#301",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C4-02",
+      "claim": "C4",
+      "proposition": "Hostile read boundary blocks special files; trust anchor enforces exact built-in str type gate.",
+      "truth_maker": "app/agent_review/trusted_object_authority_v2.py (PR #312, #322).",
+      "owner": "agent_review_v2_security",
+      "applicability": "file_acquisition",
+      "producer": "file_reader_boundary",
+      "carrier": "#319, #321, #322, #333",
+      "consumer": "diff_and_content_loader",
+      "closure_predicate": "Reading FIFO, device node, or symlink-to-special raises error; subclassed str trust anchor is rejected.",
+      "evidence_class": "regression_witness_tests",
+      "countermodels": [
+        "CM-C4-3: Reading /dev/zero hangs reader.",
+        "CM-C4-4: str subclass bypassing type equality check."
+      ],
+      "positive_controls": [
+        "Exact built-in str passes type check; regular files read normally."
+      ],
+      "known_limitations": "Bounded read timeout required as defense in depth.",
+      "invalidation": "Special file causes infinite loop or denial of service.",
+      "current_issue_carrier": "#322",
+      "current_status": "closed_in_main"
+    },
+    {
+      "obligation_id": "OBL-C5-01",
+      "claim": "C5",
+      "proposition": "Every material must_review obligation is covered by authoritative fragment identity or explicitly recorded as not covered / blocked.",
+      "truth_maker": "app/agent_review/diff_authority_v2.py hunk chunker and manifest_v2.py.",
+      "owner": "agent_review_v2_diff",
+      "applicability": "diff_processing",
+      "producer": "fragment_generator",
+      "carrier": "#298",
+      "consumer": "router_payload_builder",
+      "closure_predicate": "Total authoritative diff hunks == sum(reviewed_fragments) + sum(explicitly_omitted_fragments); zero unaccounted diff bytes.",
+      "evidence_class": "conservation_law_check",
+      "countermodels": [
+        "CM-C5-1: Chunking truncates hunk without emitting truncation metadata.",
+        "CM-C5-2: Binary diff dropped silently without record."
+      ],
+      "positive_controls": [
+        "Complete diff reconstruction from generated fragments."
+      ],
+      "known_limitations": "Token limits may cause large diffs to omit low-priority files with explicit logging.",
+      "invalidation": "Hunk present in git diff is neither sent to router nor logged in omission manifest.",
+      "current_issue_carrier": "#298",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C6-01",
+      "claim": "C6",
+      "proposition": "No raw source code, internal host filesystem path, or unvetted literal outside declared outbound contract reaches semantic transport.",
+      "truth_maker": "app/agent_review/sanitization_v2.py and dlp_v2.py.",
+      "owner": "agent_review_v2_dlp",
+      "applicability": "outbound_payloads",
+      "producer": "payload_sanitizer",
+      "carrier": "#314",
+      "consumer": "agent_router_client",
+      "closure_predicate": "Payload scanner verifies zero raw paths, zero unredacted secrets, and complete schema conformance before HTTP dispatch.",
+      "evidence_class": "synthetic_secret_injection_tests",
+      "countermodels": [
+        "CM-C6-1: Private SSH key or API token included in review prompt.",
+        "CM-C6-2: Host root absolute path (e.g. /home/user/...) leaked in prompt context."
+      ],
+      "positive_controls": [
+        "Sanitized change prompt successfully delivered with relative paths only."
+      ],
+      "known_limitations": "Heuristic entropy scanners may trigger false positives on dense hashes.",
+      "invalidation": "Any unredacted high-entropy secret detected in outbound request log.",
+      "current_issue_carrier": "#314",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C7-01",
+      "claim": "C7",
+      "proposition": "Response is accepted only for exact request, run, payload, fragments, subject, target that produced it.",
+      "truth_maker": "app/agent_review/router_receipt_v2.py.",
+      "owner": "agent_review_v2_transport",
+      "applicability": "router_responses",
+      "producer": "receipt_validator",
+      "carrier": "#320",
+      "consumer": "readiness_gate",
+      "closure_predicate": "Receipt validation enforces exact match on nonce, run_id, and SHA-256 payload digest.",
+      "evidence_class": "tamper_rejection_tests",
+      "countermodels": [
+        "CM-C7-1: Response for run A injected into evaluation for run B.",
+        "CM-C7-2: Replayed model response with mismatched fragment IDs accepted."
+      ],
+      "positive_controls": [
+        "Matching receipt validates successfully."
+      ],
+      "known_limitations": "Requires router service to echo receipt tokens faithfully.",
+      "invalidation": "Receipt with modified payload hash passes validation.",
+      "current_issue_carrier": "#320",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C8-01",
+      "claim": "C8",
+      "proposition": "Model output is non-authoritative observation; deterministic contract-bound gate owns consumable readiness.",
+      "truth_maker": "app/agent_review/readiness_v2.py ReviewReadinessV2.",
+      "owner": "agent_review_v2_readiness",
+      "applicability": "readiness_decision",
+      "producer": "readiness_engine",
+      "carrier": "#320, #323",
+      "consumer": "ci_gates_and_publishers",
+      "closure_predicate": "Given identical observations, check receipts, and policy profile, readiness output is 100% byte-reproducible.",
+      "evidence_class": "pure_function_property_tests",
+      "countermodels": [
+        "CM-C8-1: LLM judgment overrides failing deterministic check.",
+        "CM-C8-2: Readiness depends on non-deterministic external clock or network state."
+      ],
+      "positive_controls": [
+        "Fixed fixture evaluation returns identical readiness status across 1000 iterations."
+      ],
+      "known_limitations": "Model findings categorized strictly as advisory observations.",
+      "invalidation": "Readiness decision changes without change in inputs or policy.",
+      "current_issue_carrier": "#323",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C9-01",
+      "claim": "C9",
+      "proposition": "Required-check evidence used for readiness is produced by host-controlled execution and cannot be fabricated by PR subject.",
+      "truth_maker": "app/agent_review/trusted_checks_v2.py attestation.",
+      "owner": "agent_review_v2_checks",
+      "applicability": "required_checks",
+      "producer": "host_check_runner",
+      "carrier": "#201",
+      "consumer": "readiness_gate",
+      "closure_predicate": "Check results lacking valid host attestation signature are treated as unexecuted / failed.",
+      "evidence_class": "forgery_rejection_tests",
+      "countermodels": [
+        "CM-C9-1: PR commits fake check-result.json to repo root and readiness accepts it.",
+        "CM-C9-2: Malicious Makefile in PR echoes SUCCESS without running tests."
+      ],
+      "positive_controls": [
+        "Host runner executes test suite and signs output manifest."
+      ],
+      "known_limitations": "Requires host runner infrastructure.",
+      "invalidation": "Unsigned or untrusted check result advances readiness gate.",
+      "current_issue_carrier": "#201",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C10-01",
+      "claim": "C10",
+      "proposition": "Git, API, raw-diff, unified-diff, manifest, publisher representations preserve one unambiguous canonical path identity.",
+      "truth_maker": "app/agent_review/path_identity_v2.py.",
+      "owner": "agent_review_v2_paths",
+      "applicability": "all_path_handling",
+      "producer": "path_normalizer",
+      "carrier": "#202",
+      "consumer": "all_pipeline_components",
+      "closure_predicate": "Paths with Unicode NFC/NFD variations, git octal c-quotes, or mixed slashes resolve to identical CanonicalPath instances.",
+      "evidence_class": "comprehensive_path_matrix_tests",
+      "countermodels": [
+        "CM-C10-1: File with Portuguese accents in filename treated as different file in diff vs git tree.",
+        "CM-C10-2: Git C-quoted path containing spaces fails to match materialization path."
+      ],
+      "positive_controls": [
+        "Exotic filename test suite verifies parity across git, diff, and disk."
+      ],
+      "known_limitations": "OS-level filesystem limitations (Windows max path, reserved names).",
+      "invalidation": "Diff hunk maps to non-existent path due to quote-parsing discrepancy.",
+      "current_issue_carrier": "#202",
+      "current_status": "open"
+    },
+    {
+      "obligation_id": "OBL-C11-01",
+      "claim": "C11",
+      "proposition": "All qualified primitives compose without subject, authority, or evidence substitution between boundaries.",
+      "truth_maker": "Gate G5 integration test harness in tests/agent_review_v2/test_composition_g5.py.",
+      "owner": "agent_review_v2_integration",
+      "applicability": "end_to_end_pipeline",
+      "producer": "pipeline_composer",
+      "carrier": "G5, #326, #332",
+      "consumer": "release_qualification",
+      "closure_predicate": "End-to-end integration test executes full path from repository input to readiness verdict with zero intermediate mock substitution.",
+      "evidence_class": "end_to_end_integration_run",
+      "countermodels": [
+        "CM-C11-1: Unit tests pass on isolated components but end-to-end flow fails on type mismatch.",
+        "CM-C11-2: Intermediate stage substitutes simulated authority instead of passing real token."
+      ],
+      "positive_controls": [
+        "Full run against sample repository produces valid ReviewReadinessV2 artifact."
+      ],
+      "known_limitations": "Requires integration environment with mock or test router endpoint.",
+      "invalidation": "Composition fails or requires monkey-patching between stage boundaries.",
+      "current_issue_carrier": "#326, #332",
+      "current_status": "blocked_by_preconditions"
+    },
+    {
+      "obligation_id": "OBL-C12-01",
+      "claim": "C12",
+      "proposition": "Target pack installs, validates, upgrades, and rolls back the same engine without repo-name branches or copied engine forks.",
+      "truth_maker": "app/agent_review/packaging/ and target pack verification scripts.",
+      "owner": "agent_review_v2_packaging",
+      "applicability": "target_distribution",
+      "producer": "pack_generator",
+      "carrier": "#203",
+      "consumer": "target_repos",
+      "closure_predicate": "Target pack installer executes in fresh target checkout, passes verify, and supports clean uninstall/rollback.",
+      "evidence_class": "distribution_lifecycle_tests",
+      "countermodels": [
+        "CM-C12-1: Target pack overwrites target git config without rollback record.",
+        "CM-C12-2: Upgrade breaks backward compatibility with existing target profile."
+      ],
+      "positive_controls": [
+        "Pack installation, verification, and removal on sample repo succeed."
+      ],
+      "known_limitations": "Target environment must supply compatible Python runtime.",
+      "invalidation": "Target pack installer leaves dangling changes upon failed verification.",
+      "current_issue_carrier": "#203",
+      "current_status": "planned"
+    },
+    {
+      "obligation_id": "OBL-C13-01",
+      "claim": "C13",
+      "proposition": "The same engine/pack works for AgentEscala and InterLeitos while only target-owned policy/profile/DLP differs.",
+      "truth_maker": "evals/agent_review_v2/test_dual_target_conformance.py.",
+      "owner": "agent_review_v2_conformance",
+      "applicability": "multi_target",
+      "producer": "conformance_suite",
+      "carrier": "#204",
+      "consumer": "agent_escala_and_interleitos",
+      "closure_predicate": "Dual-target test runs identical engine binaries against AgentEscala and InterLeitos benchmark cases; both produce valid conformant readiness outputs.",
+      "evidence_class": "conformance_benchmark_eval",
+      "countermodels": [
+        "CM-C13-1: InterLeitos policy requires modifying core engine parser.",
+        "CM-C13-2: AgentEscala DLP rules conflict with engine-level sanitization."
+      ],
+      "positive_controls": [
+        "Dual conformance test suite passes 100% on committed test cases."
+      ],
+      "known_limitations": "Targets must provide representative test cases for CI matrix.",
+      "invalidation": "Engine divergence required to support second target.",
+      "current_issue_carrier": "#204",
+      "current_status": "planned"
+    },
+    {
+      "obligation_id": "OBL-C14-01",
+      "claim": "C14",
+      "proposition": "Reproducible, immutable, rollback-capable AgentReview v2 release candidate exists with qualification evidence bound to exact source/artifacts.",
+      "truth_maker": "Release manifest, git tag, frozen benchmark reports, and CI release gates.",
+      "owner": "agent_review_v2_release",
+      "applicability": "release_candidate",
+      "producer": "release_orchestrator",
+      "carrier": "#205",
+      "consumer": "operators_and_auditors",
+      "closure_predicate": "Release candidate build is bit-identical across independent builds; all 14 preceding claims are verifiably closed.",
+      "evidence_class": "release_gate_verification",
+      "countermodels": [
+        "CM-C14-1: Release tagged while open critical obligations remain in DAG.",
+        "CM-C14-2: Qualification evidence not bound to exact release commit SHA."
+      ],
+      "positive_controls": [
+        "Release gate scripts pass on tagged commit."
+      ],
+      "known_limitations": "First release candidate does not retire v1 or auto-promote to default.",
+      "invalidation": "Any unclosed critical obligation found in release candidate audit.",
+      "current_issue_carrier": "#205",
+      "current_status": "planned"
+    }
+  ]
+}

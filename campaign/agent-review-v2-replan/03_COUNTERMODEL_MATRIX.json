@@ -1,0 +1,135 @@
+{
+  "artifact_type": "NON_NORMATIVE_RECONCILIATION_ARTIFACT",
+  "status": "PROPOSED_AOCM_REPLAN",
+  "schema_version": 1,
+  "campaign": "agent-review-v2-replan",
+  "generated_at": "2026-09-23T14:59:00-03:00",
+  "countermodels": [
+    {
+      "countermodel_id": "CM-C0-01",
+      "claim": "C0",
+      "target_proposition": "Engine is generic; target repo does not maintain engine fork.",
+      "defect_scenario": "Target repository copies app/agent_review/ and modifies prompts or thresholds directly in a vendor branch.",
+      "failure_of_surface_check": "Unit tests in target pass because copied code behaves identically, but maintenance cost and bug divergence split the engine.",
+      "discriminator": "Packaging manifest checksum comparison and upstream release pin verification.",
+      "mitigation": "Target-pack model (#203) where target imports engine as an immutable wheel or distribution bundle."
+    },
+    {
+      "countermodel_id": "CM-C1-01",
+      "claim": "C1",
+      "target_proposition": "Every review binds to exact base and head OIDs.",
+      "defect_scenario": "Review runner reads 'HEAD' from the local git working tree, which has moved forward since PR was submitted.",
+      "failure_of_surface_check": "Git commands succeed, diff looks plausible, but review was conducted on unreviewed new commits.",
+      "discriminator": "Assertion that git rev-parse HEAD == PR.head_sha provided by caller attestation.",
+      "mitigation": "ReviewSubjectIdentityV2 validates pinned hex SHAs, refusing symbolic refs."
+    },
+    {
+      "countermodel_id": "CM-C2-01",
+      "claim": "C2",
+      "target_proposition": "Git objects originate only from authorized storage (SafePath != AuthorizedStorage).",
+      "defect_scenario": "Host accepts repository path '/tmp/attacker_repo' because it contains no '..' traversal segments, but the storage is untrusted.",
+      "failure_of_surface_check": "Lexical path validator checks relative-path safety and succeeds; attacker controls repo hooks and objects.",
+      "discriminator": "Negative witness test supplying lexically clean path outside authorized root whitelist.",
+      "mitigation": "Storage authorization gate verifies canonical path against explicit allowed storage boundary."
+    },
+    {
+      "countermodel_id": "CM-C2-02",
+      "claim": "C2",
+      "target_proposition": "Worktree commondir pointers cannot reference unauthorized storage.",
+      "defect_scenario": "A .git file in an authorized folder points 'commondir: /etc/forbidden' or '/var/untrusted'.",
+      "failure_of_surface_check": "Worktree path is authorized, but object lookup traverses commondir to untrusted disk.",
+      "discriminator": "Linked-worktree resolution test checking both worktree path and target commondir against authorized boundaries.",
+      "mitigation": "trusted_object_authority_v2 resolves and verifies all commondir and gitdir references recursively."
+    },
+    {
+      "countermodel_id": "CM-C3-01",
+      "claim": "C3",
+      "target_proposition": "Materialization faithful to Git tree without filesystem aliasing.",
+      "defect_scenario": "Git commit contains symlink 'app -> /etc' followed by 'app/passwd'. Extraction writes outside target sandbox.",
+      "failure_of_surface_check": "Extraction loop extracts files sequentially; OS follows symlink created in earlier step.",
+      "discriminator": "Adversarial git tree fixture with escaping symlinks fails extraction with PathTraversalSecurityError.",
+      "mitigation": "Pure Python tree materializer verifies canonical resolved destination remains within sandbox root before writing."
+    },
+    {
+      "countermodel_id": "CM-C4-01",
+      "claim": "C4",
+      "target_proposition": "Executed code derives only from authenticated subject under fresh process.",
+      "defect_scenario": "Check runner uses subprocess.Popen without scrubbed env, inheriting PYTHONPATH that loads malicious modules from /tmp.",
+      "failure_of_surface_check": "Check runs, produces expected output format, but executes arbitrary attacker code.",
+      "discriminator": "Subprocess isolation test verifying env does not contain parent PYTHONPATH and current directory is clean sandbox.",
+      "mitigation": "trusted_checks_v2.py scrubs all environment variables and restricts sys.path explicitly."
+    },
+    {
+      "countermodel_id": "CM-C4-02",
+      "claim": "C4",
+      "target_proposition": "Special file acquisition blocked; trust anchor enforces exact built-in str.",
+      "defect_scenario": "Hostile PR contains FIFO /dev/zero or subclassed str with overridden __eq__ bypassing trust checks.",
+      "failure_of_surface_check": "isinstance(x, str) is True for str subclasses; open() hangs forever on FIFO.",
+      "discriminator": "Regression witness tests from PR #312 and #322 proving exact str type equality and O_NONBLOCK/stat verification.",
+      "mitigation": "type(anchor) is str assertion and bounded special-file acquisition guard."
+    },
+    {
+      "countermodel_id": "CM-C5-01",
+      "claim": "C5",
+      "target_proposition": "Every must_review obligation covered or explicitly accounted.",
+      "defect_scenario": "Large diff exceeds token budget; tokenizer silently drops files 15 through 20 without warning or recording omission.",
+      "failure_of_surface_check": "Review completes green, model review looks polished, but 5 files were never reviewed.",
+      "discriminator": "Conservation check: total changed files in diff == reviewed files + recorded omitted files.",
+      "mitigation": "diff_authority_v2 outputs structured CoverageAccounting manifest evaluated by readiness gate."
+    },
+    {
+      "countermodel_id": "CM-C6-01",
+      "claim": "C6",
+      "target_proposition": "No raw secrets or internal paths reach outbound transport.",
+      "defect_scenario": "Review prompt embeds config/secrets.env containing AWS keys or full file path '/home/user/repo/...'.",
+      "failure_of_surface_check": "Model reviews the prompt normally, but secret is leaked to external LLM provider logs.",
+      "discriminator": "Synthetic secret injection test ensuring high-entropy strings and absolute paths are redacted or blocked.",
+      "mitigation": "DLP pipeline redacts detected credentials and enforces relative path mapping before dispatch."
+    },
+    {
+      "countermodel_id": "CM-C7-01",
+      "claim": "C7",
+      "target_proposition": "Router response accepted only for matching run token and payload digest.",
+      "defect_scenario": "Network glitch or malicious replay returns response from run #12 to review request for run #13.",
+      "failure_of_surface_check": "Response parses as valid JSON schema and appears relevant to codebase.",
+      "discriminator": "Receipt validator checks receipt.nonce == request.nonce and receipt.payload_sha256 == hash(sent_payload).",
+      "mitigation": "RouterReceiptV2 cryptographic binding."
+    },
+    {
+      "countermodel_id": "CM-C8-01",
+      "claim": "C8",
+      "target_proposition": "Readiness gate is deterministic pure function; model output is advisory observation.",
+      "defect_scenario": "LLM review concludes 'This PR looks safe to merge despite failing test' and readiness reports READY.",
+      "failure_of_surface_check": "Output is structurally valid, but deterministic policy gate was overridden by model text.",
+      "discriminator": "Test case with failing required check + positive LLM review must evaluate to NOT_READY.",
+      "mitigation": "ReviewReadinessV2 gate treats model output strictly as observation; required check failure is non-overridable."
+    },
+    {
+      "countermodel_id": "CM-C9-01",
+      "claim": "C9",
+      "target_proposition": "Required check evidence cannot be forged by PR subject.",
+      "defect_scenario": "Attacker commits a falsified 'test-results.json' claiming 100% test pass into PR repository.",
+      "failure_of_surface_check": "Readiness gate reads test-results.json from repo root and approves PR.",
+      "discriminator": "Forgery test where untrusted repo artifact claims check success; gate must reject for lack of host attestation.",
+      "mitigation": "Host runner generates attestation signature out-of-band in host-controlled scratch storage."
+    },
+    {
+      "countermodel_id": "CM-C10-01",
+      "claim": "C10",
+      "target_proposition": "Canonical path identity preserved across encodings.",
+      "defect_scenario": "File 'relatório.py' written in NFD in git tree and NFC in diff; system fails to match hunks to file.",
+      "failure_of_surface_check": "System silently reports 'new file' or drops hunks because string equality fails.",
+      "discriminator": "Test suite with Unicode NFD/NFC, octal C-quoted names ('\\303\\241'), and backslashes.",
+      "mitigation": "CanonicalPath class normalizes all paths to Unicode NFC POSIX format."
+    },
+    {
+      "countermodel_id": "CM-C11-01",
+      "claim": "C11",
+      "target_proposition": "Operational composition preserves integrity without mock substitution.",
+      "defect_scenario": "All units pass independently with mocks, but real runtime encounters parameter name mismatch between diff and router.",
+      "failure_of_surface_check": "Unit test suites 100% green; system crashes on first real integration run.",
+      "discriminator": "Gate G5 end-to-end integration test with real data structures and real component wiring.",
+      "mitigation": "G5 composition suite runs as mandatory release gate."
+    }
+  ]
+}
