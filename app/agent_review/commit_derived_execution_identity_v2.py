@@ -770,14 +770,7 @@ def verify_executed_source_identity_v2(
                 if entry.mode == GITLINK_MODE_V2:
                     raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
             
-            for entry in entries:
-                if getattr(entry, "object_type", "") == "tree":
-                    actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
-                    if actual_path.is_symlink():
-                        raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-                    if not actual_path.is_dir():
-                        raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-                    continue
+
 
             try:
                 expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
@@ -792,6 +785,11 @@ def verify_executed_source_identity_v2(
 
     for entry in entries:
         if getattr(entry, "object_type", "") == "tree":
+            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
+            if actual_path.is_symlink():
+                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+            if not actual_path.is_dir():
+                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
             continue
         if entry.mode == GITLINK_MODE_V2:
             # Defensive only: the early loop above already refuses any

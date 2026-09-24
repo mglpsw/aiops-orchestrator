@@ -267,7 +267,7 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_pa
                         current.children[part] = _TrieNode(node_type='tree', mode=entry.mode, object_id=entry.object_id, explicit=True)
                     elif entry.mode == SYMLINK_MODE_V2:
                         target_bytes = content_by_path.get(entry.path)
-                        if target_bytes and b"\x00" in target_bytes:
+                        if not target_bytes or b"\x00" in target_bytes:
                             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
                         current.children[part] = _TrieNode(node_type='symlink', mode=entry.mode, object_id=entry.object_id, explicit=True)
                     elif entry.mode == GITLINK_MODE_V2:
@@ -485,25 +485,29 @@ def materialise_commit_subject_v2(
             stat_fd = _os.fstat(root_fd)
             if stat_dest2.st_dev != stat_fd.st_dev or stat_dest2.st_ino != stat_fd.st_ino:
                 raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
-        except SubjectMaterialisationError as exc:
-            if exc.reason_code != SUBJECT_PATH_COLLISION_REASON_V2:
+        except Exception as exc:
+            if not isinstance(exc, SubjectMaterialisationError) or exc.reason_code != SUBJECT_PATH_COLLISION_REASON_V2:
                 # We failed, but destination hasn't been proven swapped YET.
                 # Prove it still matches root_fd before deleting!
                 try:
+                    current_fd = None
                     if dest_path.is_absolute():
                         current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
                     else:
                         current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
-                    for part in parts:
-                        next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
-                        _os.close(current_fd)
-                        current_fd = next_fd
-                    stat_dest2 = _os.fstat(current_fd)
-                    _os.close(current_fd)
-                    
-                    stat_fd = _os.fstat(root_fd)
-                    if stat_dest2.st_dev == stat_fd.st_dev and stat_dest2.st_ino == stat_fd.st_ino:
-                        shutil.rmtree(destination, ignore_errors=True)
+                    try:
+                        for part in parts:
+                            next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
+                            _os.close(current_fd)
+                            current_fd = next_fd
+                        stat_dest2 = _os.fstat(current_fd)
+                        
+                        stat_fd = _os.fstat(root_fd)
+                        if stat_dest2.st_dev == stat_fd.st_dev and stat_dest2.st_ino == stat_fd.st_ino:
+                            shutil.rmtree(destination, ignore_errors=True)
+                    finally:
+                        if current_fd is not None:
+                            _os.close(current_fd)
                 except OSError:
                     pass
             raise
