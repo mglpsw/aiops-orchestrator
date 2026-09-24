@@ -5,8 +5,15 @@ from app.agent_review.git_commit_subject_v2 import (
     MaterialisationWorkspaceCapabilityV2,
     MaterialisedCommitSubjectCapabilityV2,
     acquire_materialised_commit_subject_v2,
+    materialise_commit_subject_v2,
     SubjectMaterialisationError,
     SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2,
+    SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+    SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
+    _get_process_umask_non_mutating,
+    _translate_destination_permissions_descriptor_relative,
+    MAX_EXPANDED_ENTRIES_V2,
+    MAX_EXPANDED_BYTES_V2,
 )
 from tests.agent_review.test_git_commit_subject_v2 import _init_repo, _commit_all
 
@@ -1053,16 +1060,16 @@ def test_legacy_materialise_failure_atomic_rollback(tmp_path: Path):
     orig_rename = os.rename
     call_count = [0]
 
-    def failing_rename(src, dst):
+    def failing_rename(src, dst, *args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 2:
             raise OSError(18, "EXDEV")
-        return orig_rename(src, dst)
+        return orig_rename(src, dst, *args, **kwargs)
 
-    def failing_move(src, dst):
+    def failing_copy(name, src_dir_fd, dst_dir_fd):
         raise OSError(5, "EIO")
 
-    with patch("os.rename", side_effect=failing_rename), patch("shutil.move", side_effect=failing_move):
+    with patch("os.rename", side_effect=failing_rename), patch("app.agent_review.git_commit_subject_v2._copy_entry_descriptor_relative", side_effect=failing_copy):
         with pytest.raises(SubjectMaterialisationError) as exc:
             materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
         assert exc.value.reason_code == SUBJECT_MATERIALISATION_RACE_REASON_V2
@@ -1084,16 +1091,16 @@ def test_legacy_materialise_failure_atomic_existing_empty_destination(tmp_path: 
     orig_rename = os.rename
     call_count = [0]
 
-    def failing_rename(src, dst):
+    def failing_rename(src, dst, *args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 2:
             raise OSError(18, "EXDEV")
-        return orig_rename(src, dst)
+        return orig_rename(src, dst, *args, **kwargs)
 
-    def failing_move(src, dst):
+    def failing_copy(name, src_dir_fd, dst_dir_fd):
         raise OSError(5, "EIO")
 
-    with patch("os.rename", side_effect=failing_rename), patch("shutil.move", side_effect=failing_move):
+    with patch("os.rename", side_effect=failing_rename), patch("app.agent_review.git_commit_subject_v2._copy_entry_descriptor_relative", side_effect=failing_copy):
         with pytest.raises(SubjectMaterialisationError) as exc:
             materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
         assert exc.value.reason_code == SUBJECT_MATERIALISATION_RACE_REASON_V2
@@ -1487,3 +1494,449 @@ def test_c3_unrepresentable_tree_component_exceeding_name_max(tmp_path: Path):
 
     workspace.close()
     assert count_open_fds() == initial_fds
+
+
+def test_cm_c3_r_prospective_child_depth_boundary(tmp_path: Path):
+    """C3-R: prospective child depth validation admits depth <= 100 and refuses depth 101 with zero writes."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    empty_tree_sha = subprocess.run(
+        ["git", "mktree"], cwd=repo, input=b"", capture_output=True, check=True
+    ).stdout.strip().decode()
+
+    # 1. Depth 100 explicit empty tree (d1/.../d100)
+    cur = empty_tree_sha
+    for i in range(100, 0, -1):
+        entry = f"040000 tree {cur}\td{i}\n".encode()
+        cur = subprocess.run(
+            ["git", "mktree"], cwd=repo, input=entry, capture_output=True, check=True
+        ).stdout.strip().decode()
+    commit_100_empty = subprocess.run(
+        ["git", "commit-tree", cur, "-m", "100-level empty tree"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    # 2. Depth 101 tree (d1/.../d101)
+    cur = empty_tree_sha
+    for i in range(101, 0, -1):
+        entry = f"040000 tree {cur}\td{i}\n".encode()
+        cur = subprocess.run(
+            ["git", "mktree"], cwd=repo, input=entry, capture_output=True, check=True
+        ).stdout.strip().decode()
+    commit_101_tree = subprocess.run(
+        ["git", "commit-tree", cur, "-m", "101-level tree"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    # 3. Depth 100 regular leaf (99 dirs + 1 blob = 100 components)
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"leaf content",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    leaf_tree = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input=f"100644 blob {blob_sha}\tfile.txt\n".encode(),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    cur = leaf_tree
+    for i in range(99, 0, -1):
+        entry = f"040000 tree {cur}\td{i}\n".encode()
+        cur = subprocess.run(
+            ["git", "mktree"], cwd=repo, input=entry, capture_output=True, check=True
+        ).stdout.strip().decode()
+    commit_100_leaf = subprocess.run(
+        ["git", "commit-tree", cur, "-m", "100-level leaf"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    # 4. Depth 101 regular leaf (100 dirs + 1 blob = 101 components)
+    cur = leaf_tree
+    for i in range(100, 0, -1):
+        entry = f"040000 tree {cur}\td{i}\n".encode()
+        cur = subprocess.run(
+            ["git", "mktree"], cwd=repo, input=entry, capture_output=True, check=True
+        ).stdout.strip().decode()
+    commit_101_leaf = subprocess.run(
+        ["git", "commit-tree", cur, "-m", "101-level leaf"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    pool = tmp_path / "pool"
+    pool.mkdir(mode=0o700)
+    caller_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, pool)
+    os.close(caller_fd)
+
+    # Validate Depth 100 empty tree succeeds
+    sub_100_empty = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=commit_100_empty, workspace=workspace
+    )
+    assert sub_100_empty.commit_sha == commit_100_empty
+    sub_100_empty.close()
+
+    # Validate Depth 100 leaf succeeds
+    sub_100_leaf = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=commit_100_leaf, workspace=workspace
+    )
+    assert sub_100_leaf.commit_sha == commit_100_leaf
+    sub_100_leaf.close()
+
+    # Validate Depth 101 empty tree fails with zero writes
+    with pytest.raises(SubjectMaterialisationError) as exc_tree:
+        acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_101_tree, workspace=workspace
+        )
+    assert exc_tree.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert list(pool.iterdir()) == [], "pool must have zero writes on depth 101 tree refusal"
+
+    # Validate Depth 101 leaf fails with zero writes
+    with pytest.raises(SubjectMaterialisationError) as exc_leaf:
+        acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_101_leaf, workspace=workspace
+        )
+    assert exc_leaf.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert list(pool.iterdir()) == [], "pool must have zero writes on depth 101 leaf refusal"
+
+    workspace.close()
+
+
+def test_cm_c3_b_tree_cache_deduplication(tmp_path: Path):
+    """C3-B: identical tree OIDs occurring multiple times in hierarchy are parsed at most once."""
+    import subprocess
+    import app.agent_review.git_commit_subject_v2 as mod
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"shared subtree content",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    shared_tree = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input=f"100644 blob {blob_sha}\tfile.txt\n".encode(),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    # Root tree references shared_tree 5 times under different child names
+    root_input = "".join([f"040000 tree {shared_tree}\tsub_{i}\n" for i in range(5)]).encode()
+    root_tree = subprocess.run(
+        ["git", "mktree"], cwd=repo, input=root_input, capture_output=True, check=True
+    ).stdout.strip().decode()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", root_tree, "-m", "repeated trees"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    pool = tmp_path / "pool"
+    pool.mkdir(mode=0o700)
+    caller_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, pool)
+    os.close(caller_fd)
+
+    orig_list = mod._list_single_tree_entries_v2
+    listed_oids: list[str] = []
+
+    def spy_list(repo_root, tree_oid):
+        listed_oids.append(tree_oid)
+        return orig_list(repo_root=repo_root, tree_oid=tree_oid)
+
+    with patch.object(mod, "_list_single_tree_entries_v2", side_effect=spy_list):
+        subject = acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, workspace=workspace
+        )
+        subject.close()
+
+    # The shared tree must only be parsed by git once despite being visited 5 times in the hierarchy
+    assert listed_oids.count(shared_tree) == 1
+    assert len(listed_oids) == 2  # root_tree once, shared_tree once
+    workspace.close()
+
+
+def test_cm_c3_b_entry_and_byte_budget_enforcement(tmp_path: Path):
+    """C3-B: logical expanded entry and byte budgets fail closed with zero disk writes."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"x" * 100,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    tree_input = (
+        f"100644 blob {blob_sha}\ta.txt\n"
+        f"100644 blob {blob_sha}\tb.txt\n"
+        f"100644 blob {blob_sha}\tc.txt\n"
+    ).encode()
+    tree_sha = subprocess.run(
+        ["git", "mktree"], cwd=repo, input=tree_input, capture_output=True, check=True
+    ).stdout.strip().decode()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-m", "multi-entry"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    pool = tmp_path / "pool"
+    pool.mkdir(mode=0o700)
+    caller_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, pool)
+    os.close(caller_fd)
+
+    # 1. Entry budget exceeded
+    with pytest.raises(SubjectMaterialisationError) as exc_entries:
+        acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, workspace=workspace, max_expanded_entries=2
+        )
+    assert exc_entries.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert list(pool.iterdir()) == [], "pool must remain empty when entry budget exceeded"
+
+    # 2. Byte budget exceeded
+    with pytest.raises(SubjectMaterialisationError) as exc_bytes:
+        acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, workspace=workspace, max_expanded_bytes=150
+        )
+    assert exc_bytes.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert list(pool.iterdir()) == [], "pool must remain empty when byte budget exceeded"
+
+    workspace.close()
+
+
+def test_cm_c3_x_destination_admission_matrix(tmp_path: Path):
+    """C3-X: legacy projection no-follow destination admission refuses all symlink forms and occupied paths."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"content",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    tree_sha = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input=f"100644 blob {blob_sha}\tfile.txt\n".encode(),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-m", "legacy commit"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    # 1. Dangling symlink destination
+    dangling_symlink = tmp_path / "dangling_dest"
+    os.symlink(tmp_path / "nonexistent_target", dangling_symlink)
+    with pytest.raises(SubjectMaterialisationError) as exc_dangling:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=dangling_symlink
+        )
+    assert exc_dangling.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 2. Symlink to empty directory
+    real_empty_dir = tmp_path / "real_empty_dir"
+    real_empty_dir.mkdir()
+    symlink_to_empty = tmp_path / "symlink_to_empty"
+    os.symlink(real_empty_dir, symlink_to_empty)
+    with pytest.raises(SubjectMaterialisationError) as exc_sym_empty:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=symlink_to_empty
+        )
+    assert exc_sym_empty.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 3. Symlink to non-empty directory
+    real_nonempty_dir = tmp_path / "real_nonempty_dir"
+    real_nonempty_dir.mkdir()
+    (real_nonempty_dir / "child.txt").write_text("child")
+    symlink_to_nonempty = tmp_path / "symlink_to_nonempty"
+    os.symlink(real_nonempty_dir, symlink_to_nonempty)
+    with pytest.raises(SubjectMaterialisationError) as exc_sym_nonempty:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=symlink_to_nonempty
+        )
+    assert exc_sym_nonempty.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 4. Symlink to regular file
+    real_file = tmp_path / "real_file.txt"
+    real_file.write_text("file")
+    symlink_to_file = tmp_path / "symlink_to_file"
+    os.symlink(real_file, symlink_to_file)
+    with pytest.raises(SubjectMaterialisationError) as exc_sym_file:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=symlink_to_file
+        )
+    assert exc_sym_file.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 5. Existing occupied directory
+    with pytest.raises(SubjectMaterialisationError) as exc_occupied:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=real_nonempty_dir
+        )
+    assert exc_occupied.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 6. Existing regular file
+    with pytest.raises(SubjectMaterialisationError) as exc_reg_file:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, destination=real_file
+        )
+    assert exc_reg_file.value.reason_code == SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2
+
+    # 7. Existing empty directory admitted
+    res_empty = materialise_commit_subject_v2(
+        repo_root=repo, ref=commit_sha, destination=real_empty_dir
+    )
+    assert res_empty.root == real_empty_dir
+    assert (real_empty_dir / "file.txt").read_text() == "content"
+
+    # 8. Nonexistent path admitted
+    nonexistent_dest = tmp_path / "new_dest"
+    res_nonexistent = materialise_commit_subject_v2(
+        repo_root=repo, ref=commit_sha, destination=nonexistent_dest
+    )
+    assert res_nonexistent.root == nonexistent_dest
+    assert (nonexistent_dest / "file.txt").read_text() == "content"
+
+
+def test_cm_c3_x_dangling_symlink_rollback_on_failure(tmp_path: Path):
+    """C3-X: failure during projection cleans up dangling symlinks moved to destination."""
+    import subprocess
+    from unittest.mock import patch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    b_link = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"unresolvable_nonexistent_target",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    b_file = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"valid file",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    tree_sha = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input=f"120000 blob {b_link}\t01_symlink\n100644 blob {b_file}\t02_file.txt\n".encode(),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-m", "symlink rollback test"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    destination = tmp_path / "dest"
+    destination.mkdir()
+
+    orig_rename = os.rename
+
+    def failing_rename(src, dst, *args, **kwargs):
+        if "02_file.txt" in str(src):
+            raise OSError("Simulated projection failure")
+        return orig_rename(src, dst, *args, **kwargs)
+
+    with patch("os.rename", side_effect=failing_rename):
+        with pytest.raises(SubjectMaterialisationError):
+            materialise_commit_subject_v2(
+                repo_root=repo, ref=commit_sha, destination=destination
+            )
+
+    # Destination directory must have had the dangling symlink cleanly unlinked during rollback
+    assert list(destination.iterdir()) == []
+
+
+def test_cm_c3_x_non_mutating_umask_and_permission_translation(tmp_path: Path):
+    """C3-P -> C3-X: non-mutating umask observation and descriptor-relative mode translation."""
+    umask_proc = _get_process_umask_non_mutating()
+    assert 0 <= umask_proc <= 0o777
+
+    # Verify calling _get_process_umask_non_mutating does not mutate process umask
+    current_umask = os.umask(0o022)
+    os.umask(current_umask)
+    assert umask_proc == current_umask
+
+    # Test descriptor-relative permission translation with a restrictive umask (0o027)
+    dest_dir = tmp_path / "perm_dest"
+    dest_dir.mkdir(mode=0o700)
+    dfd = os.open(dest_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    # Create a regular non-exec file (mode 0o600)
+    f_reg = os.open("regular.txt", os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+    os.fchmod(f_reg, 0o600)
+    os.close(f_reg)
+
+    # Create an executable file (mode 0o700)
+    f_exec = os.open("script.sh", os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o700, dir_fd=dfd)
+    os.fchmod(f_exec, 0o755)
+    os.close(f_exec)
+
+    # Create a subdirectory (mode 0o700)
+    os.mkdir("sub", mode=0o700, dir_fd=dfd)
+
+    # Translate with umask 0o027
+    _translate_destination_permissions_descriptor_relative(dfd, 0o027)
+
+    # Recheck permissions
+    st_reg = os.stat("regular.txt", dir_fd=dfd)
+    assert (st_reg.st_mode & 0o777) == 0o640
+
+    st_exec = os.stat("script.sh", dir_fd=dfd)
+    assert (st_exec.st_mode & 0o777) == 0o751
+
+    st_sub = os.stat("sub", dir_fd=dfd)
+    assert (st_sub.st_mode & 0o777) == 0o750
+
+    st_dest = os.fstat(dfd)
+    assert (st_dest.st_mode & 0o777) == 0o750
+
+    os.close(dfd)

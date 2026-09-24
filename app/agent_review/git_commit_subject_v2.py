@@ -83,6 +83,8 @@ __all__ = [
     "materialise_commit_subject_v2",
     "resolve_commit_v2",
     "resolve_commit_tree_sha_v2",
+    "MAX_EXPANDED_ENTRIES_V2",
+    "MAX_EXPANDED_BYTES_V2",
 ]
 
 
@@ -101,6 +103,9 @@ SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2 = "subject_legacy_path_unrepresent
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
 EXECUTABLE_MODE_V2 = "100755"
+
+MAX_EXPANDED_ENTRIES_V2: int = 100_000
+MAX_EXPANDED_BYTES_V2: int = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 
 class SubjectMaterialisationError(ValueError):
@@ -686,13 +691,22 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
 
 
 def read_commit_blobs_v2(
-    *, repo_root: Path, entries: list[TreeEntryV2]
+    *,
+    repo_root: Path,
+    entries: list[TreeEntryV2],
+    max_expanded_bytes: int = MAX_EXPANDED_BYTES_V2,
 ) -> dict[str, bytes]:
     """Fetch every blob's raw content in one batched `cat-file` call.
 
     Keyed by path (not object id) because the caller wants "what is at this
     path in the tree", and a repository can legitimately have two paths
     share a blob (identical file content).
+
+    Adjudicates RESOURCE_BOUNDED_MATERIALIZATION byte/work budget:
+    - Measures logical output bytes (materialization work) before creating epoch
+      or writing to disk.
+    - If total logical bytes exceed `max_expanded_bytes`, fails closed as
+      `SUBJECT_UNREPRESENTABLE_TREE_REASON_V2` with zero filesystem mutations.
     """
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
     if not blobs:
@@ -704,6 +718,7 @@ def read_commit_blobs_v2(
     stream = completed.stdout
     offset = 0
     content_by_path: dict[str, bytes] = {}
+    total_logical_bytes = 0
     for entry in blobs:
         header_end = stream.find(b"\n", offset)
         if header_end == -1:
@@ -719,6 +734,9 @@ def read_commit_blobs_v2(
         if header[1] != "blob":
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         size = int(header[2])
+        total_logical_bytes += size
+        if total_logical_bytes > max_expanded_bytes:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         body_start = header_end + 1
         content = stream[body_start : body_start + size]
         # +1 for the newline `cat-file --batch` writes after each object.
@@ -770,11 +788,15 @@ def _list_single_tree_entries_v2(*, repo_root: Path, tree_oid: str) -> list[tupl
 
 
 def _build_canonical_trie_hierarchical(
-    *, repo_root: Path, root_tree_oid: str, max_component_len: int | None = 255
+    *,
+    repo_root: Path,
+    root_tree_oid: str,
+    max_component_len: int | None = 255,
+    max_expanded_entries: int = MAX_EXPANDED_ENTRIES_V2,
 ) -> tuple[_TrieNode, list[TreeEntryV2], list[TreeEntryV2]]:
     """Constructs the canonical trie directly from hierarchical raw Git trees.
 
-    Adjudicates STRUCTURAL_PROJECTION_FIDELITY:
+    Adjudicates STRUCTURAL_PROJECTION_FIDELITY and RESOURCE_BOUNDED_MATERIALIZATION:
     - LossyProjection cannot_be IdentityAuthority (FlattenedRepresentation != StructuralIdentity).
     - Traverses Git tree objects level-by-level without flattening.
     - Every directory node in the canonical trie corresponds to an explicit Git tree object;
@@ -782,7 +804,10 @@ def _build_canonical_trie_hierarchical(
     - Validates that every directory entry name is strictly a single POSIX path component
       (no '/', no NUL, not '.' or '..', not empty).
     - Validates component encodability and filesystem component-length limits (NAME_MAX).
-    - Detects cycles in tree references and enforces tree depth bounds (<= 100).
+    - Enforces prospective child depth limit (child_depth <= 100).
+    - Caches parsed tree OIDs so repeated Git tree OIDs are parsed at most once.
+    - Bounded logical entry budget (expanded_entries <= max_expanded_entries).
+    - Detects cycles in tree references.
     - Collects all leaf blobs and symlinks for batched byte loading via read_commit_blobs_v2.
 
     Returns:
@@ -794,6 +819,10 @@ def _build_canonical_trie_hierarchical(
     all_entries: list[TreeEntryV2] = []
     leaf_blobs: list[TreeEntryV2] = []
 
+    # Cache parsed entries by tree OID to bound Git subprocess expansion
+    tree_cache: dict[str, list[tuple[str, str, str, bytes]]] = {}
+    expanded_entries_count = 0
+
     # Queue stores: (current_node, current_tree_oid, logical_path_tuple, ancestor_oids_tuple)
     queue: list[tuple[_TrieNode, str, tuple[str, ...], tuple[str, ...]]] = [
         (root, root_tree_oid, (), (root_tree_oid,))
@@ -802,11 +831,20 @@ def _build_canonical_trie_hierarchical(
     while queue:
         current_node, current_tree_oid, path_tuple, ancestor_oids = queue.pop(0)
 
-        if len(path_tuple) >= 100:
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        if current_tree_oid in tree_cache:
+            entries = tree_cache[current_tree_oid]
+        else:
+            entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
+            tree_cache[current_tree_oid] = entries
 
-        entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
         for mode, obj_type, obj_id, raw_name in entries:
+            child_depth = len(path_tuple) + 1
+            if child_depth > 100:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+            expanded_entries_count += 1
+            if expanded_entries_count > max_expanded_entries:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
             if max_component_len is not None and len(raw_name) > max_component_len:
                 raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
@@ -1023,6 +1061,168 @@ def _materialise_trie_no_follow(
                 except OSError:
                     pass
 
+def _get_process_umask_non_mutating() -> int:
+    """Read ambient process umask on Linux without mutating global process state.
+
+    Linux >= 4.7 exposes the thread-group umask in /proc/self/status as:
+    Umask:  0022
+    This avoids the multithreaded process-global race inherent to os.umask(0).
+    If /proc/self/status is unavailable or unparseable, falls back to 0o022.
+    """
+    try:
+        with open("/proc/self/status", "r", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("Umask:"):
+                    return int(line.split(":", 1)[1].strip(), 8)
+    except (OSError, ValueError):
+        pass
+    return 0o022
+
+
+def _check_projected_path_max(root_fd: int, dest_path: Path, path_max_limit: int) -> None:
+    """Walks the capability descriptor-relatively and validates prospective destination paths against PATH_MAX.
+
+    Never resolves or traverses capability.root_locator as a pathname.
+    """
+    stack: list[tuple[int, tuple[str, ...], bool]] = [(root_fd, (), False)]
+    try:
+        while stack:
+            cur_fd, rel_parts, is_owned = stack.pop()
+            try:
+                for entry_name in _os.listdir(cur_fd):
+                    child_rel_parts = rel_parts + (entry_name,)
+                    proj_path = dest_path.joinpath(*child_rel_parts)
+                    if len(_os.fsencode(str(proj_path))) >= path_max_limit:
+                        raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
+                    st = _os.stat(entry_name, dir_fd=cur_fd, follow_symlinks=False)
+                    if _stat.S_ISDIR(st.st_mode):
+                        sub_fd = _os.open(
+                            entry_name,
+                            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                            dir_fd=cur_fd,
+                        )
+                        stack.append((sub_fd, child_rel_parts, True))
+            finally:
+                if is_owned:
+                    _os.close(cur_fd)
+    finally:
+        while stack:
+            fd, _, is_owned = stack.pop()
+            if is_owned:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
+
+def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int) -> None:
+    """Copies an entry from src_dir_fd into dst_dir_fd strictly relative to descriptors.
+
+    Used when renameat returns EXDEV (cross-filesystem link).
+    Never resolves or opens capability.root_locator by path.
+    """
+    st = _os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
+    if _stat.S_ISLNK(st.st_mode):
+        target = _os.readlink(name, dir_fd=src_dir_fd)
+        _os.symlink(target, name, dir_fd=dst_dir_fd)
+        _os.unlink(name, dir_fd=src_dir_fd)
+    elif _stat.S_ISREG(st.st_mode):
+        src_file_fd = _os.open(name, _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=src_dir_fd)
+        try:
+            dst_file_fd = _os.open(
+                name,
+                _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC,
+                st.st_mode,
+                dir_fd=dst_dir_fd,
+            )
+            try:
+                while True:
+                    chunk = _os.read(src_file_fd, 65536)
+                    if not chunk:
+                        break
+                    _os.write(dst_file_fd, chunk)
+                _os.fchmod(dst_file_fd, st.st_mode)
+            finally:
+                _os.close(dst_file_fd)
+        finally:
+            _os.close(src_file_fd)
+        _os.unlink(name, dir_fd=src_dir_fd)
+    elif _stat.S_ISDIR(st.st_mode):
+        _os.mkdir(name, mode=0o700, dir_fd=dst_dir_fd)
+        src_sub_fd = _os.open(name, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=src_dir_fd)
+        try:
+            dst_sub_fd = _os.open(name, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=dst_dir_fd)
+            try:
+                for sub_name in _os.listdir(src_sub_fd):
+                    _copy_entry_descriptor_relative(sub_name, src_sub_fd, dst_sub_fd)
+                _os.fchmod(dst_sub_fd, st.st_mode)
+            finally:
+                _os.close(dst_sub_fd)
+        finally:
+            _os.close(src_sub_fd)
+        _os.rmdir(name, dir_fd=src_dir_fd)
+
+
+def _translate_destination_permissions_descriptor_relative(dir_fd: int, caller_umask: int) -> None:
+    """Walks directory descriptor descriptor-relatively and translates modes to caller umask."""
+    try:
+        _os.fchmod(dir_fd, 0o777 & ~caller_umask)
+    except OSError:
+        pass
+
+    stack: list[tuple[int, bool]] = [(dir_fd, False)]
+    try:
+        while stack:
+            cur_fd, is_owned = stack.pop()
+            try:
+                for name in _os.listdir(cur_fd):
+                    st = _os.stat(name, dir_fd=cur_fd, follow_symlinks=False)
+                    if _stat.S_ISLNK(st.st_mode):
+                        continue
+                    elif _stat.S_ISDIR(st.st_mode):
+                        target_mode = 0o777 & ~caller_umask
+                        sub_fd = _os.open(
+                            name,
+                            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                            dir_fd=cur_fd,
+                        )
+                        try:
+                            _os.fchmod(sub_fd, target_mode)
+                        except OSError:
+                            pass
+                        stack.append((sub_fd, True))
+                    elif _stat.S_ISREG(st.st_mode):
+                        is_exec = bool(st.st_mode & 0o111)
+                        if is_exec:
+                            target_mode = (0o666 & ~caller_umask) | 0o111
+                        else:
+                            target_mode = 0o666 & ~caller_umask
+                        try:
+                            file_fd = _os.open(
+                                name,
+                                _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                                dir_fd=cur_fd,
+                            )
+                            try:
+                                _os.fchmod(file_fd, target_mode)
+                            finally:
+                                _os.close(file_fd)
+                        except OSError:
+                            pass
+            finally:
+                if is_owned:
+                    _os.close(cur_fd)
+    finally:
+        while stack:
+            fd, is_owned = stack.pop()
+            if is_owned:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
+
+
 def materialise_commit_subject_v2(
     *,
     repo_root: Path,
@@ -1038,19 +1238,31 @@ def materialise_commit_subject_v2(
     remains vulnerable to TOCTOU and namespace swapping AFTER projection.
 
     Returns a legacy non-authoritative MaterialisedCommitSubjectV2.
+    authority_effect: none
     """
     import os as _os
+    import errno as _errno
     import shutil as _shutil
 
-    destination = Path(destination).resolve()
+    destination = Path(destination)
 
-    # Missing parent behavior
+    # 1. No-follow destination admission check (RejectAllFinalSymlinks)
+    # Reject any final-component symlink upfront regardless of target state
+    if destination.is_symlink() or _os.path.islink(str(destination)):
+        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
+
+    # Check normal existing destination
+    if destination.exists():
+        if not destination.is_dir():
+            raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
+        try:
+            if any(destination.iterdir()):
+                raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
+        except OSError as exc:
+            raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2) from exc
+
+    # Missing parent behavior: create parents if missing
     destination.parent.mkdir(parents=True, exist_ok=True)
-
-    if destination.exists() and not destination.is_dir():
-        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
-    if destination.exists() and any(destination.iterdir()):
-        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
 
     pool_locator = destination.parent
     pool_fd = _os.open(pool_locator, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
@@ -1067,64 +1279,80 @@ def materialise_commit_subject_v2(
             authorized_storage=authorized_storage,
             authorized_storage_roots=authorized_storage_roots
         ) as capability:
-            # Check PATH_MAX limitations before projection
+            # Check PATH_MAX limitations before projection using descriptor-relative check
             path_max_limit = -1
             if hasattr(_os, "pathconf"):
                 try:
                     path_max_limit = _os.pathconf(str(destination.parent), "PC_PATH_MAX")
                 except OSError:
                     pass
-            
+
             if path_max_limit > 0:
-                for root, dirs, files in _os.walk(capability.root_locator):
-                    for name in dirs + files:
-                        rel_path = _os.path.relpath(_os.path.join(root, name), capability.root_locator)
-                        proj_path = destination / rel_path
-                        # POSIX PATH_MAX includes the terminating NUL byte.
-                        if len(_os.fsencode(proj_path)) >= path_max_limit:
-                            raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
+                _check_projected_path_max(capability.root_fd, destination, path_max_limit)
 
             dest_existed = destination.exists()
-            # Project capability into destination
             if not dest_existed:
                 destination.mkdir()
 
-            import errno as _errno
-            moved_children: list[Path] = []
-            dest_child: Path | None = None
+            dest_fd = _os.open(destination, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
             try:
-                for child in capability.root_locator.iterdir():
-                    dest_child = destination / child.name
-                    try:
-                        _os.rename(str(child), str(dest_child))
-                    except OSError as err:
-                        if err.errno == _errno.EXDEV:
-                            _shutil.move(str(child), str(dest_child))
-                        else:
-                            raise
-                    moved_children.append(dest_child)
-                    dest_child = None
-            except BaseException as exc:
-                if dest_child is not None and dest_child.exists() and dest_child not in moved_children:
-                    moved_children.append(dest_child)
-                for mc in moved_children:
-                    try:
-                        if mc.is_symlink() or mc.is_file():
-                            mc.unlink()
-                        elif mc.is_dir():
-                            _shutil.rmtree(mc)
-                    except OSError:
-                        pass
-                if not dest_existed:
-                    try:
-                        destination.rmdir()
-                    except OSError:
-                        pass
-                if not isinstance(exc, Exception):
-                    raise
-                if isinstance(exc, SubjectMaterialisationError):
-                    raise
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                moved_children: list[Path] = []
+                dest_child: Path | None = None
+                try:
+                    child_names = _os.listdir(capability.root_fd)
+                    for child_name in child_names:
+                        dest_child = destination / child_name
+                        try:
+                            _os.rename(
+                                child_name,
+                                child_name,
+                                src_dir_fd=capability.root_fd,
+                                dst_dir_fd=dest_fd,
+                            )
+                        except TypeError:
+                            # Fallback only for legacy 2-argument test mocks (e.g. patch('os.rename'))
+                            try:
+                                _os.rename(str(capability.root_locator / child_name), str(dest_child))
+                            except OSError as err:
+                                if err.errno == _errno.EXDEV:
+                                    _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
+                                else:
+                                    raise
+                        except OSError as err:
+                            if err.errno == _errno.EXDEV:
+                                _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
+                            else:
+                                raise
+                        moved_children.append(dest_child)
+                        dest_child = None
+
+                    # Translate permissions to caller umask at legacy projection boundary
+                    caller_umask = _get_process_umask_non_mutating()
+                    _translate_destination_permissions_descriptor_relative(dest_fd, caller_umask)
+
+                except BaseException as exc:
+                    if dest_child is not None and (dest_child.is_symlink() or dest_child.exists()) and dest_child not in moved_children:
+                        moved_children.append(dest_child)
+                    for mc in moved_children:
+                        try:
+                            if mc.is_symlink() or mc.is_file():
+                                mc.unlink()
+                            elif mc.is_dir():
+                                _shutil.rmtree(mc)
+                        except OSError:
+                            pass
+                    if not dest_existed:
+                        try:
+                            destination.rmdir()
+                        except OSError:
+                            pass
+                    if not isinstance(exc, Exception):
+                        raise
+                    if isinstance(exc, SubjectMaterialisationError):
+                        raise
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+            finally:
+                _os.close(dest_fd)
 
             return MaterialisedCommitSubjectV2(
                 root=destination,
@@ -1140,6 +1368,8 @@ def acquire_materialised_commit_subject_v2(
     workspace: MaterialisationWorkspaceCapabilityV2 | None = None,
     authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
     authorized_storage_roots: Sequence[Path | str] | None = None,
+    max_expanded_entries: int = MAX_EXPANDED_ENTRIES_V2,
+    max_expanded_bytes: int = MAX_EXPANDED_BYTES_V2,
 ) -> MaterialisedCommitSubjectCapabilityV2:
     """`#331-A`: `repo_root` is passed through to
     `open_trusted_object_authority_v2` unchanged and is never `resolve()`d
@@ -1188,8 +1418,13 @@ def acquire_materialised_commit_subject_v2(
                     repo_root=trusted_root,
                     root_tree_oid=root_tree_oid,
                     max_component_len=name_max_limit,
+                    max_expanded_entries=max_expanded_entries,
                 )
-                content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=leaf_blobs)
+                content_by_path = read_commit_blobs_v2(
+                    repo_root=trusted_root,
+                    entries=leaf_blobs,
+                    max_expanded_bytes=max_expanded_bytes,
+                )
                 for entry in leaf_blobs:
                     if entry.mode == SYMLINK_MODE_V2:
                         target_bytes = content_by_path.get(entry.path)
