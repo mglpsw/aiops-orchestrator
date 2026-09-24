@@ -792,25 +792,17 @@ def test_completeness_traversal_error_is_refused_not_silently_swallowed(
     unreadable_dir = subject_root / "app_agent_review"
     real_scandir = os.scandir
 
-    fd_to_path = {}
-    real_open = os.open
-    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
-        fd = real_open(path, flags, mode, dir_fd=dir_fd)
-        if isinstance(path, (str, os.PathLike)):
-            if dir_fd is not None and dir_fd in fd_to_path:
-                fd_to_path[fd] = Path(fd_to_path[dir_fd]) / path
-            else:
-                fd_to_path[fd] = Path(path)
-        return fd
-        
     def fake_scandir(path="."):
-        if isinstance(path, int) and path in fd_to_path and fd_to_path[path].resolve() == unreadable_dir.resolve():
-            raise PermissionError(f"simulated unreadable directory: {path}")
-        if isinstance(path, (str, os.PathLike)) and Path(path).resolve() == unreadable_dir.resolve():
+        # `path` is not always a str/Path here: `#200-G1C`'s trusted object
+        # authority is torn down via `shutil.rmtree`, whose safe fd-based
+        # walker calls `os.scandir` with a raw directory file descriptor
+        # (an `int`) for entries below the top -- unrelated to this
+        # fixture's `subject_root`-scoped simulation, and never
+        # constructible as a `Path`. Anything not path-like is passed
+        # through untouched.
+        if isinstance(path, (str, os.PathLike)) and Path(path) == unreadable_dir:
             raise PermissionError(f"simulated unreadable directory: {path}")
         return real_scandir(path)
-        
-    monkeypatch.setattr(os, "open", fake_open)
 
     monkeypatch.setattr(os, "scandir", fake_scandir)
 
@@ -897,26 +889,12 @@ def test_completeness_traversal_classification_error_is_refused_not_silently_tre
         def __exit__(self, *exc_info: object) -> None:
             return None
 
-    fd_to_path = {}
-    real_open = os.open
-    def fake_open(path, flags, mode=0o777, *, dir_fd=None):
-        fd = real_open(path, flags, mode, dir_fd=dir_fd)
-        if isinstance(path, (str, os.PathLike)):
-            if dir_fd is not None and dir_fd in fd_to_path:
-                fd_to_path[fd] = Path(fd_to_path[dir_fd]) / path
-            else:
-                fd_to_path[fd] = Path(path)
-        return fd
-
     def fake_scandir(path="."):
-        if isinstance(path, int) and path in fd_to_path and fd_to_path[path].resolve() == subject_root.resolve():
-            return _ScandirResultProxy(
-                [
-                    _ClassificationFailureEntry(entry) if entry.name == unreadable_dir_name else entry
-                    for entry in real_scandir(path)
-                ]
-            )
-        if isinstance(path, (str, os.PathLike)) and Path(path).resolve() == subject_root.resolve():
+        # See the sibling test above: `path` can be a raw fd (`int`) from
+        # `#200-G1C`'s trusted-object-authority teardown (`shutil.rmtree`'s
+        # fd-based safe walker), never constructible as a `Path`, and
+        # unrelated to this fixture's `subject_root`-scoped simulation.
+        if isinstance(path, (str, os.PathLike)) and Path(path) == subject_root:
             return _ScandirResultProxy(
                 [
                     _ClassificationFailureEntry(entry) if entry.name == unreadable_dir_name else entry
@@ -924,8 +902,6 @@ def test_completeness_traversal_classification_error_is_refused_not_silently_tre
                 ]
             )
         return real_scandir(path)
-        
-    monkeypatch.setattr(os, "open", fake_open)
 
     monkeypatch.setattr(os, "scandir", fake_scandir)
 

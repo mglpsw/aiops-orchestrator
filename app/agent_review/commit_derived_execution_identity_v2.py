@@ -528,70 +528,34 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
 
     leaf_paths: list[str] = []
 
-    try:
-        root_fd = os.open(subject_root, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError as exc:
-        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-        
-    stack = []
-    try:
+    def _walk(directory: Path) -> None:
         try:
-            root_entries = list(os.scandir(root_fd))
+            entries = list(os.scandir(directory))
         except OSError as exc:
             raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-            
-        stack.append((root_fd, "", root_entries))
-        
-        while stack:
-            if len(stack) > 101:
-                raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2)
-                
-            current_fd, current_rel, entries = stack[-1]
-            if not entries:
-                stack.pop()
-                if current_fd != root_fd:
-                    os.close(current_fd)
-                continue
-                
-            entry = entries.pop()
-            
+        for entry in entries:
             try:
+                # `is_dir()` follows symlinks by default, matching what
+                # `os.walk` itself classifies as a directory entry (a
+                # symlink-to-directory is still sorted into `dirnames`,
+                # just not recursed into when `followlinks=False`) --
+                # `is_symlink()` is checked separately so a symlinked
+                # directory is refused outright rather than given a
+                # traversal policy to disagree about (see this function's
+                # docstring above).
                 is_symlink = entry.is_symlink()
                 is_dir = entry.is_dir()
             except OSError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-                
-            entry_rel = f"{current_rel}/{entry.name}" if current_rel else entry.name
-            
+            entry_path = Path(entry.path)
             if is_dir:
                 if is_symlink:
                     raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-                try:
-                    child_fd = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
-                except OSError as exc:
-                    raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-                
-                try:
-                    child_entries = list(os.scandir(child_fd))
-                    stack.append((child_fd, entry_rel, child_entries))
-                except OSError as exc:
-                    os.close(child_fd)
-                    raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-                except Exception:
-                    os.close(child_fd)
-                    raise
+                _walk(entry_path)
             else:
-                leaf_paths.append(entry_rel)
-                
-    finally:
-        for fd, _, _ in stack:
-            if fd != root_fd:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.close(root_fd)
-        
+                leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
+
+    _walk(subject_root)
     return frozenset(leaf_paths)
 
 
@@ -813,8 +777,6 @@ def verify_executed_source_identity_v2(
             for entry in entries:
                 if entry.mode == GITLINK_MODE_V2:
                     raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
-            
-
 
             try:
                 expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
@@ -825,16 +787,9 @@ def verify_executed_source_identity_v2(
     except TrustedObjectAuthorityError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-    expected_paths = {entry.path: entry for entry in entries if getattr(entry, "object_type", "") != "tree"}
+    expected_paths = {entry.path: entry for entry in entries}
 
     for entry in entries:
-        if getattr(entry, "object_type", "") == "tree":
-            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
-            if actual_path.is_symlink():
-                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-            if not actual_path.is_dir():
-                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-            continue
         if entry.mode == GITLINK_MODE_V2:
             # Defensive only: the early loop above already refuses any
             # commit whose tree contains a gitlink, so this is never reached
