@@ -358,7 +358,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                     while written_bytes < len(content):
                         chunk = _os.write(fd, content[written_bytes:])
                         if chunk == 0:
-                            raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
+                            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                         written_bytes += chunk
                         
                     if child.mode == EXECUTABLE_MODE_V2:
