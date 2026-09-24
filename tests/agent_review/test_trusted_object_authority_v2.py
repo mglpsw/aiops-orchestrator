@@ -78,6 +78,8 @@ def _init_repo(repo: Path, *, branch: str = "main") -> None:
     subprocess.run(["git", "init", "--quiet", "-b", branch, "."], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "gc.auto", "0"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=repo, check=True)
 
 
 def _commit_all(repo: Path, message: str) -> str:
@@ -487,7 +489,7 @@ def test_symlinked_objects_pack_root_is_refused(tmp_path: Path) -> None:
     (outside / "sneaky_file.txt").write_text("host bytes\n")
 
     pack_dir = repo / ".git" / "objects" / "pack"
-    pack_dir.rmdir()
+    import shutil; shutil.rmtree(pack_dir)
     pack_dir.symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(TrustedObjectAuthorityError) as excinfo:

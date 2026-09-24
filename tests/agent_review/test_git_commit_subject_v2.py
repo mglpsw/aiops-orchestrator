@@ -36,11 +36,13 @@ from app.agent_review.git_commit_subject_v2 import (
 )
 
 
-def _init_repo(repo: Path) -> None:
+def _init_repo(repo: Path, *, branch: str = "main") -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=repo, check=True)
+    subprocess.run(["git", "init", "--quiet", "-b", branch, "."], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "gc.auto", "0"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=repo, check=True)
 
 
 def _commit_all(repo: Path, message: str) -> str:

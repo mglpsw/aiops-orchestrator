@@ -88,6 +88,7 @@ SUBJECT_PATH_COLLISION_REASON_V2 = "subject_path_collision"
 SUBJECT_UNREPRESENTABLE_TREE_REASON_V2 = "subject_unrepresentable_tree"
 SUBJECT_MATERIALISATION_RACE_REASON_V2 = "subject_materialisation_race"
 SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2 = "subject_workspace_authority_required"
+SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2 = "subject_workspace_authority_closed"
 SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2 = "subject_legacy_path_unrepresentable"
 
 GITLINK_MODE_V2 = "160000"
@@ -151,20 +152,25 @@ class MaterialisedCommitSubjectCapabilityV2:
         import os as _os
         if not self._closed:
             self._closed = True
+            root_fd = self.root_fd
+            self.root_fd = -1
+            pool_fd = self.pool_fd
+            self.pool_fd = -1
+
             try:
-                if self.root_fd != -1:
-                    _fd_rmtree(self.root_fd)
-                    _os.close(self.root_fd)
+                if root_fd != -1:
+                    _fd_rmtree(root_fd)
+                    _os.close(root_fd)
             except OSError:
                 pass
             try:
-                if self.pool_fd != -1 and self.root_name:
-                    _os.rmdir(self.root_name, dir_fd=self.pool_fd)
+                if pool_fd != -1 and self.root_name:
+                    _os.rmdir(self.root_name, dir_fd=pool_fd)
             except OSError:
                 pass
-            if getattr(self, "_owned_pool", False) and self.pool_fd != -1:
+            if pool_fd != -1:
                 try:
-                    _os.close(self.pool_fd)
+                    _os.close(pool_fd)
                 except OSError:
                     pass
 
@@ -607,15 +613,17 @@ def acquire_materialised_commit_subject_v2(
     if workspace is None:
         raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2)
 
+    pool_fd = workspace.require_open_fd()
+
     import uuid as _uuid
     try:
         root_name = f"c3_{_uuid.uuid4().hex}"
-        _os.mkdir(root_name, 0o700, dir_fd=workspace.pool_fd)
+        _os.mkdir(root_name, 0o700, dir_fd=pool_fd)
         dest_path = workspace.pool_locator / root_name
         root_fd = _os.open(
             root_name,
             _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
-            dir_fd=workspace.pool_fd
+            dir_fd=pool_fd
         )
     except OSError as exc:
         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
@@ -630,7 +638,7 @@ def acquire_materialised_commit_subject_v2(
             pass
         _os.close(root_fd)
         try:
-            _os.rmdir(root_name, dir_fd=workspace.pool_fd)
+            _os.rmdir(root_name, dir_fd=pool_fd)
         except OSError:
             pass
 
@@ -643,7 +651,7 @@ def acquire_materialised_commit_subject_v2(
         root_locator=dest_path,
         commit_sha=commit_sha,
         file_count=written[0],
-        pool_fd=workspace.pool_fd,
+        pool_fd=pool_fd,
         root_name=root_name
     )
 
@@ -767,12 +775,19 @@ class MaterialisationWorkspaceCapabilityV2:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def require_open_fd(self) -> int:
+        if self._closed or self.pool_fd < 0:
+            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+        return self.pool_fd
+
     def close(self):
         import os as _os
         if not self._closed:
             self._closed = True
-            if self.pool_fd != -1:
+            fd = self.pool_fd
+            self.pool_fd = -1
+            if fd != -1:
                 try:
-                    _os.close(self.pool_fd)
+                    _os.close(fd)
                 except OSError:
                     pass
