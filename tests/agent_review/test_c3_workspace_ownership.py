@@ -457,3 +457,59 @@ def test_legacy_materialise_destination_default_permissions(tmp_path: Path):
 
     actual_mode = stat.S_IMODE(os.stat(dest).st_mode)
     assert actual_mode == expected_mode
+
+
+def test_legacy_materialise_leaf_permissions_preserve_umask(tmp_path: Path):
+    """Verify legacy materialise preserves leaf permissions under caller's umask."""
+    import subprocess
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "regular.txt").write_text("hello regular")
+
+    exec_file = repo / "script.sh"
+    exec_file.write_text("#!/bin/sh\necho hi")
+    exec_file.chmod(0o755)
+
+    subprocess.run(["git", "add", "regular.txt", "script.sh"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add files"], cwd=repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+
+    # 1. Permissive umask 0002 (group writable)
+    orig_umask = os.umask(0o002)
+    try:
+        dest = tmp_path / "umask_dest"
+        dest.mkdir(mode=0o775)
+
+        materialise_commit_subject_v2(
+            repo_root=repo,
+            ref=head,
+            destination=dest,
+        )
+
+        reg_mode = stat.S_IMODE(os.stat(dest / "regular.txt").st_mode)
+        assert reg_mode == (0o666 & ~0o002)  # 0664
+
+        exec_mode = stat.S_IMODE(os.stat(dest / "script.sh").st_mode)
+        assert exec_mode == (0o777 & ~0o002)  # 0775
+    finally:
+        os.umask(orig_umask)
+
+    # 2. Restrictive umask 0077 (private)
+    orig_umask = os.umask(0o077)
+    try:
+        dest2 = tmp_path / "restrictive_dest"
+        dest2.mkdir(mode=0o700)
+
+        materialise_commit_subject_v2(
+            repo_root=repo,
+            ref=head,
+            destination=dest2,
+        )
+
+        reg_mode2 = stat.S_IMODE(os.stat(dest2 / "regular.txt").st_mode)
+        assert reg_mode2 == (0o666 & ~0o077)  # 0600
+
+        exec_mode2 = stat.S_IMODE(os.stat(dest2 / "script.sh").st_mode)
+        assert exec_mode2 == (0o777 & ~0o077)  # 0700
+    finally:
+        os.umask(orig_umask)

@@ -765,9 +765,9 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
             elif child.node_type == 'blob':
                 content = content_by_path[child_path]
                 flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
-                mode = 0o644
+                mode = 0o666
                 if child.mode == EXECUTABLE_MODE_V2:
-                    mode = 0o755
+                    mode = 0o777
                 try:
                     fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
                 except FileExistsError as exc:
@@ -782,9 +782,6 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                         if chunk == 0:
                             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                         written_bytes += chunk
-
-                    if child.mode == EXECUTABLE_MODE_V2:
-                        _os.fchmod(fd, 0o755)
 
                     # Revalidate after writing
                     stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
