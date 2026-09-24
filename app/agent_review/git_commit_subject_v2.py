@@ -428,18 +428,19 @@ def materialise_commit_subject_v2(
             blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
             content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
     except TrustedObjectAuthorityError as exc:
-        # Mirrors the write loop's own failure-cleanup contract below: a
-        # caller must never be left holding a destination that looks like
-        # it might hold a valid subject. Nothing has been written into it
-        # yet at this point -- the authority build/read failed before the
-        # write loop started -- so this is always safe to discard.
-        shutil.rmtree(destination, ignore_errors=True)
+        try:
+            _os.rmdir(destination)
+        except OSError:
+            pass
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
     try:
         trie = _build_and_validate_canonical_trie(entries, content_by_path)
     except SubjectMaterialisationError:
-        shutil.rmtree(destination, ignore_errors=True)
+        try:
+            _os.rmdir(destination)
+        except OSError:
+            pass
         raise
 
     written = [0]
@@ -484,13 +485,37 @@ def materialise_commit_subject_v2(
             stat_fd = _os.fstat(root_fd)
             if stat_dest2.st_dev != stat_fd.st_dev or stat_dest2.st_ino != stat_fd.st_ino:
                 raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
+        except SubjectMaterialisationError as exc:
+            if exc.reason_code != SUBJECT_PATH_COLLISION_REASON_V2:
+                # We failed, but destination hasn't been proven swapped YET.
+                # Prove it still matches root_fd before deleting!
+                try:
+                    if dest_path.is_absolute():
+                        current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
+                    else:
+                        current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
+                    for part in parts:
+                        next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
+                        _os.close(current_fd)
+                        current_fd = next_fd
+                    stat_dest2 = _os.fstat(current_fd)
+                    _os.close(current_fd)
+                    
+                    stat_fd = _os.fstat(root_fd)
+                    if stat_dest2.st_dev == stat_fd.st_dev and stat_dest2.st_ino == stat_fd.st_ino:
+                        shutil.rmtree(destination, ignore_errors=True)
+                except OSError:
+                    pass
+            raise
         finally:
             _os.close(root_fd)
-    except SubjectMaterialisationError:
-        shutil.rmtree(destination, ignore_errors=True)
+    except SubjectMaterialisationError as exc:
         raise
     except OSError as exc:
-        shutil.rmtree(destination, ignore_errors=True)
+        try:
+            _os.rmdir(destination)
+        except OSError:
+            pass
         raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
 
     return MaterialisedCommitSubjectV2(root=destination, commit_sha=commit_sha, file_count=written[0])
