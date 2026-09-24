@@ -330,7 +330,12 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 
                 # Revalidate symlink
                 stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
-                # Just checking it hasn't been replaced by a directory etc.
+                import stat as _stat
+                if not _stat.S_ISLNK(stat_name.st_mode):
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                actual_target = _os.readlink(name_bytes, dir_fd=dir_fd)
+                if actual_target != content:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                 count[0] += 1
                 
             elif child.node_type == 'blob':
@@ -461,9 +466,23 @@ def materialise_commit_subject_v2(
         try:
             _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
             
-            stat_dest = _os.stat(_os.fsencode(destination), follow_symlinks=False)
+            # Re-verify the path component-by-component to ensure no parent was swapped for a symlink
+            if dest_path.is_absolute():
+                current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
+            else:
+                current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
+            try:
+                for part in parts:
+                    next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
+                    _os.close(current_fd)
+                    current_fd = next_fd
+                stat_dest2 = _os.fstat(current_fd)
+            finally:
+                if current_fd is not None:
+                    _os.close(current_fd)
+            
             stat_fd = _os.fstat(root_fd)
-            if stat_dest.st_dev != stat_fd.st_dev or stat_dest.st_ino != stat_fd.st_ino:
+            if stat_dest2.st_dev != stat_fd.st_dev or stat_dest2.st_ino != stat_fd.st_ino:
                 raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
         finally:
             _os.close(root_fd)

@@ -528,21 +528,15 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
 
     leaf_paths: list[str] = []
 
-    def _walk(directory: Path) -> None:
+    stack = [subject_root]
+    while stack:
+        directory = stack.pop()
         try:
             entries = list(os.scandir(directory))
         except OSError as exc:
             raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
         for entry in entries:
             try:
-                # `is_dir()` follows symlinks by default, matching what
-                # `os.walk` itself classifies as a directory entry (a
-                # symlink-to-directory is still sorted into `dirnames`,
-                # just not recursed into when `followlinks=False`) --
-                # `is_symlink()` is checked separately so a symlinked
-                # directory is refused outright rather than given a
-                # traversal policy to disagree about (see this function's
-                # docstring above).
                 is_symlink = entry.is_symlink()
                 is_dir = entry.is_dir()
             except OSError as exc:
@@ -551,11 +545,9 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
             if is_dir:
                 if is_symlink:
                     raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-                _walk(entry_path)
+                stack.append(entry_path)
             else:
                 leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
-
-    _walk(subject_root)
     return frozenset(leaf_paths)
 
 
@@ -775,10 +767,17 @@ def verify_executed_source_identity_v2(
                 raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
             for entry in entries:
-                if getattr(entry, "object_type", "") == "tree":
-                    continue
                 if entry.mode == GITLINK_MODE_V2:
                     raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
+            
+            for entry in entries:
+                if getattr(entry, "object_type", "") == "tree":
+                    actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
+                    if actual_path.is_symlink():
+                        raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+                    if not actual_path.is_dir():
+                        raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
+                    continue
 
             try:
                 expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
@@ -793,11 +792,6 @@ def verify_executed_source_identity_v2(
 
     for entry in entries:
         if getattr(entry, "object_type", "") == "tree":
-            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
-            if actual_path.is_symlink():
-                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-            if not actual_path.is_dir():
-                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
             continue
         if entry.mode == GITLINK_MODE_V2:
             # Defensive only: the early loop above already refuses any
