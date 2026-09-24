@@ -87,6 +87,8 @@ SUBJECT_BLOB_MISSING_REASON_V2 = "subject_blob_missing"
 SUBJECT_PATH_COLLISION_REASON_V2 = "subject_path_collision"
 SUBJECT_UNREPRESENTABLE_TREE_REASON_V2 = "subject_unrepresentable_tree"
 SUBJECT_MATERIALISATION_RACE_REASON_V2 = "subject_materialisation_race"
+SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2 = "subject_workspace_authority_required"
+SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2 = "subject_legacy_path_unrepresentable"
 
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
@@ -129,13 +131,14 @@ class MaterialisedCommitSubjectCapabilityV2:
         pool_fd: int,
         root_name: str
     ):
+        import os as _os
         self.root_fd = root_fd
         self.root_locator = root_locator
         self.commit_sha = commit_sha
         self.file_count = file_count
-        self.pool_fd = pool_fd
+        self.pool_fd = _os.dup(pool_fd)
+        _os.set_inheritable(self.pool_fd, False)
         self.root_name = root_name
-        self._owned_pool = False
         self._closed = False
 
     def __enter__(self):
@@ -515,8 +518,12 @@ def materialise_commit_subject_v2(
 
     pool_locator = destination.parent
     pool_fd = _os.open(pool_locator, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
+    try:
+        workspace = MaterialisationWorkspaceCapabilityV2(pool_fd, pool_locator)
+    finally:
+        _os.close(pool_fd)
 
-    with MaterialisationWorkspaceCapabilityV2(pool_fd, pool_locator, owns_pool=True) as workspace:
+    with workspace:
         with acquire_materialised_commit_subject_v2(
             repo_root=repo_root,
             ref=ref,
@@ -525,14 +532,21 @@ def materialise_commit_subject_v2(
             authorized_storage_roots=authorized_storage_roots
         ) as capability:
             # Check PATH_MAX limitations before projection
-            MAX_PATH = _os.pathconf(str(destination.parent), "PC_PATH_MAX") if hasattr(_os, "pathconf") else 4096
-            # Use a quick os.walk on root_locator to determine max length
-            for root, dirs, files in _os.walk(capability.root_locator):
-                for name in dirs + files:
-                    rel_path = _os.path.relpath(_os.path.join(root, name), capability.root_locator)
-                    proj_path = destination / rel_path
-                    if len(str(proj_path).encode('utf-8', errors='surrogateescape')) >= MAX_PATH:
-                        raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
+            path_max_limit = -1
+            if hasattr(_os, "pathconf"):
+                try:
+                    path_max_limit = _os.pathconf(str(destination.parent), "PC_PATH_MAX")
+                except OSError:
+                    pass
+            
+            if path_max_limit > 0:
+                for root, dirs, files in _os.walk(capability.root_locator):
+                    for name in dirs + files:
+                        rel_path = _os.path.relpath(_os.path.join(root, name), capability.root_locator)
+                        proj_path = destination / rel_path
+                        # POSIX PATH_MAX includes the terminating NUL byte.
+                        if len(_os.fsencode(proj_path)) >= path_max_limit:
+                            raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
 
             # Project capability into destination
             if not destination.exists():
@@ -590,25 +604,13 @@ def acquire_materialised_commit_subject_v2(
             raise
         raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
 
-    owned_workspace = False
     if workspace is None:
-        pool_locator = Path(_tempfile.gettempdir())
-        pool_locator.mkdir(parents=True, exist_ok=True)
-        pool_fd = _os.open(pool_locator, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
-        workspace = MaterialisationWorkspaceCapabilityV2(pool_fd, pool_locator, owns_pool=True)
-        owned_workspace = True
+        raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2)
 
+    import uuid as _uuid
     try:
-        for _ in range(100):
-            root_name = f"subject-{_secrets.token_hex(8)}"
-            try:
-                _os.mkdir(root_name, 0o700, dir_fd=workspace.pool_fd)
-                break
-            except FileExistsError:
-                continue
-        else:
-            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
-
+        root_name = f"c3_{_uuid.uuid4().hex}"
+        _os.mkdir(root_name, 0o700, dir_fd=workspace.pool_fd)
         dest_path = workspace.pool_locator / root_name
         root_fd = _os.open(
             root_name,
@@ -616,8 +618,6 @@ def acquire_materialised_commit_subject_v2(
             dir_fd=workspace.pool_fd
         )
     except OSError as exc:
-        if owned_workspace:
-            workspace.close()
         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
     written = [0]
@@ -634,9 +634,6 @@ def acquire_materialised_commit_subject_v2(
         except OSError:
             pass
 
-        if owned_workspace:
-            workspace.close()
-
         if isinstance(exc, SubjectMaterialisationError):
             raise
         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
@@ -649,12 +646,6 @@ def acquire_materialised_commit_subject_v2(
         pool_fd=workspace.pool_fd,
         root_name=root_name
     )
-
-    if owned_workspace:
-        workspace.owns_pool = False
-        cap._owned_pool = True
-    else:
-        cap._owned_pool = False
 
     return cap
 
@@ -763,10 +754,11 @@ class MaterialisationWorkspaceCapabilityV2:
     epochs are constructed, ensuring the epoch parent relation is
     descriptor-bound and immune to pathname swapping.
     """
-    def __init__(self, pool_fd: int, pool_locator: Path, owns_pool: bool = True):
-        self.pool_fd = pool_fd
+    def __init__(self, pool_fd: int, pool_locator: Path):
+        import os as _os
+        self.pool_fd = _os.dup(pool_fd)
+        _os.set_inheritable(self.pool_fd, False)
         self.pool_locator = pool_locator
-        self.owns_pool = owns_pool
         self._closed = False
 
     def __enter__(self):
@@ -779,7 +771,7 @@ class MaterialisationWorkspaceCapabilityV2:
         import os as _os
         if not self._closed:
             self._closed = True
-            if self.owns_pool and self.pool_fd != -1:
+            if self.pool_fd != -1:
                 try:
                     _os.close(self.pool_fd)
                 except OSError:

@@ -26,6 +26,7 @@ def assert_no_writes():
 
 from app.agent_review.git_commit_subject_v2 import (
     acquire_materialised_commit_subject_v2,
+    MaterialisationWorkspaceCapabilityV2,
     SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
     SUBJECT_UNKNOWN_COMMIT_REASON_V2,
     SubjectMaterialisationError,
@@ -109,7 +110,11 @@ def test_materialise_writes_nested_directories_and_content(tmp_path: Path) -> No
     (repo / "pkg" / "mod.py").write_text("VALUE = 42\n")
     head = _commit_all(repo, "init")
 
-    with acquire_materialised_commit_subject_v2(repo_root=repo, ref=head, workspace=None) as capability:
+    import os as _os
+    pool_fd = _os.open(tmp_path, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(pool_fd, tmp_path)
+    _os.close(pool_fd)
+    with acquire_materialised_commit_subject_v2(repo_root=repo, ref=head, workspace=workspace) as capability:
         assert capability.commit_sha == head
         assert capability.file_count == 1
         assert (capability.root_locator / "pkg" / "mod.py").read_text() == "VALUE = 42\n"
@@ -403,6 +408,7 @@ def assert_no_writes():
 from pathlib import Path
 from app.agent_review.git_commit_subject_v2 import (
     acquire_materialised_commit_subject_v2,
+    MaterialisationWorkspaceCapabilityV2,
     materialise_commit_subject_v2,
     SubjectMaterialisationError,
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
