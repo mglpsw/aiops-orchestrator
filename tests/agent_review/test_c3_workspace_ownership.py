@@ -137,3 +137,93 @@ def test_subject_pool_fd_leak_stable_count(tmp_path: Path):
 
     workspace.close()
     assert count_open_fds() == initial_fds - 1
+
+
+from unittest.mock import patch
+from app.agent_review.git_commit_subject_v2 import (
+    OperationWorkspaceLeaseV2,
+    MaterialisationEpochV2,
+    SUBJECT_MATERIALISATION_RACE_REASON_V2,
+)
+
+def test_workspace_pinned_during_acquisition_immune_to_workspace_close(tmp_path: Path):
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    # Pin a lease for an operation
+    lease = workspace.pin()
+
+    # Close the workspace concurrently
+    workspace.close()
+
+    # The lease remains open and valid
+    epoch = MaterialisationEpochV2(lease)
+    root_fd, root_name, dest_path = epoch.create_epoch_root()
+    assert dest_path.exists()
+    assert root_fd >= 0
+
+    epoch.rollback()
+    assert not dest_path.exists()
+
+def test_mkdir_success_open_failure_rollback(tmp_path: Path):
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    lease = workspace.pin()
+    epoch = MaterialisationEpochV2(lease)
+
+    orig_open = os.open
+    def mock_open(*args, **kwargs):
+        if "c3_" in str(args[0]):
+            raise OSError("simulated EMFILE on open")
+        return orig_open(*args, **kwargs)
+
+    with patch("os.open", side_effect=mock_open):
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            epoch.create_epoch_root()
+        assert exc.value.args[0] == SUBJECT_MATERIALISATION_RACE_REASON_V2
+
+    epoch.rollback()
+    assert not any(tmp_path.glob("c3_*"))
+    workspace.close()
+
+def test_workspace_invalid_fails_before_git_access(tmp_path: Path):
+    non_existent_repo = tmp_path / "does_not_exist"
+
+    # Missing workspace
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        acquire_materialised_commit_subject_v2(repo_root=non_existent_repo, ref="HEAD", workspace=None)
+    assert exc.value.args[0] == SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2
+
+    # Closed workspace
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+    workspace.close()
+
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        acquire_materialised_commit_subject_v2(repo_root=non_existent_repo, ref="HEAD", workspace=workspace)
+    assert exc.value.args[0] == SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2
+
+def test_commit_failure_rolls_back_materialised_tree_and_fds(tmp_path: Path):
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    lease = workspace.pin()
+    epoch = MaterialisationEpochV2(lease)
+    root_fd, root_name, dest_path = epoch.create_epoch_root()
+
+    (dest_path / "payload.txt").write_text("uncommitted bytes")
+
+    with patch("app.agent_review.git_commit_subject_v2.MaterialisedCommitSubjectCapabilityV2", side_effect=RuntimeError("simulated constructor failure")):
+        with pytest.raises(RuntimeError, match="simulated constructor failure"):
+            epoch.commit(commit_sha="abcd", file_count=1, dest_path=dest_path)
+
+    assert not dest_path.exists()
+    assert epoch.root_fd == -1
+    assert lease.pool_fd == -1
+
+    workspace.close()

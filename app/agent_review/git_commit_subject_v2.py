@@ -61,13 +61,18 @@ from app.agent_review.trusted_object_authority_v2 import (
 __all__ = [
     "SUBJECT_BLOB_MISSING_REASON_V2",
     "SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2",
+    "SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2",
     "SUBJECT_PATH_COLLISION_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
+    "SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2",
+    "SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2",
     "MaterialisedCommitSubjectV2",
     "MaterialisationWorkspaceCapabilityV2",
     "MaterialisedCommitSubjectCapabilityV2",
+    "OperationWorkspaceLeaseV2",
+    "MaterialisationEpochV2",
     "acquire_materialised_commit_subject_v2",
     "SubjectMaterialisationError",
     "TreeEntryV2",
@@ -130,15 +135,20 @@ class MaterialisedCommitSubjectCapabilityV2:
         commit_sha: str,
         file_count: int,
         pool_fd: int,
-        root_name: str
+        root_name: str,
+        *,
+        owns_pool_fd: bool = True,
     ):
         import os as _os
         self.root_fd = root_fd
         self.root_locator = root_locator
         self.commit_sha = commit_sha
         self.file_count = file_count
-        self.pool_fd = _os.dup(pool_fd)
-        _os.set_inheritable(self.pool_fd, False)
+        if owns_pool_fd:
+            self.pool_fd = pool_fd
+        else:
+            self.pool_fd = _os.dup(pool_fd)
+            _os.set_inheritable(self.pool_fd, False)
         self.root_name = root_name
         self._closed = False
 
@@ -196,6 +206,186 @@ def _fd_rmtree(dir_fd: int):
                     os.unlink(entry.name, dir_fd=dir_fd)
     except OSError:
         pass
+
+
+class OperationWorkspaceLeaseV2:
+    """A private, operation-owned lease over a workspace capability.
+
+    Acquired via `workspace.pin()`. Owns a private duplicated file descriptor
+    to the workspace pool, ensuring authority continuity even if the underlying
+    WorkspaceCapability is closed or concurrent operations run.
+    """
+    def __init__(self, pool_fd: int, pool_locator: Path) -> None:
+        self.pool_fd = pool_fd
+        self.pool_locator = pool_locator
+        self._closed = False
+
+    def close(self) -> None:
+        import os as _os
+        if not self._closed:
+            self._closed = True
+            fd = self.pool_fd
+            self.pool_fd = -1
+            if fd != -1:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
+
+class MaterialisationEpochV2:
+    """Linearizable transaction managing a private epoch under an operation lease.
+
+    Maintains complete failure atomicity: either commits by transferring ownership
+    to MaterialisedCommitSubjectCapabilityV2, or rolls back all filesystem modifications
+    and descriptor handles.
+    """
+    def __init__(self, lease: OperationWorkspaceLeaseV2) -> None:
+        self.lease = lease
+        self.root_name: str | None = None
+        self.root_fd: int = -1
+        self._committed = False
+
+    def create_epoch_root(self) -> tuple[int, str, Path]:
+        import os as _os
+        import uuid as _uuid
+        root_name = f"c3_{_uuid.uuid4().hex}"
+        try:
+            _os.mkdir(root_name, 0o700, dir_fd=self.lease.pool_fd)
+        except OSError as exc:
+            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+        # Immediately register root_name for rollback in case open or subsequent steps fail
+        self.root_name = root_name
+        dest_path = self.lease.pool_locator / root_name
+
+        try:
+            root_fd = _os.open(
+                root_name,
+                _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                dir_fd=self.lease.pool_fd,
+            )
+        except OSError as exc:
+            # open failed after mkdir!
+            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+        self.root_fd = root_fd
+        return root_fd, root_name, dest_path
+
+    def rollback(self) -> None:
+        import os as _os
+        if self._committed:
+            return
+
+        # 1. Clean up and close root_fd if open
+        if self.root_fd != -1:
+            try:
+                _fd_rmtree(self.root_fd)
+            except OSError:
+                pass
+            try:
+                _os.close(self.root_fd)
+            except OSError:
+                pass
+            self.root_fd = -1
+
+        # 2. Clean up root directory if created
+        if self.root_name is not None and self.lease.pool_fd != -1:
+            try:
+                _os.rmdir(self.root_name, dir_fd=self.lease.pool_fd)
+            except OSError:
+                pass
+            self.root_name = None
+
+        # 3. Close the lease
+        self.lease.close()
+
+    def commit(
+        self,
+        *,
+        commit_sha: str,
+        file_count: int,
+        dest_path: Path,
+    ) -> MaterialisedCommitSubjectCapabilityV2:
+        if self._committed:
+            raise RuntimeError("Epoch already committed")
+
+        root_fd = self.root_fd
+        root_name = self.root_name
+        pool_fd = self.lease.pool_fd
+
+        try:
+            cap = MaterialisedCommitSubjectCapabilityV2(
+                root_fd=root_fd,
+                root_locator=dest_path,
+                commit_sha=commit_sha,
+                file_count=file_count,
+                pool_fd=pool_fd,
+                root_name=root_name,
+                owns_pool_fd=True,
+            )
+        except Exception:
+            self.rollback()
+            raise
+
+        # Ownership transferred successfully
+        self.root_fd = -1
+        self.root_name = None
+        self.lease.pool_fd = -1
+        self.lease._closed = True
+        self._committed = True
+        return cap
+
+
+class MaterialisationWorkspaceCapabilityV2:
+    """A host-owned workspace capability for private materialization.
+
+    This establishes the authority of the pool directory where private
+    epochs are constructed, ensuring the epoch parent relation is
+    descriptor-bound and immune to pathname swapping.
+    """
+    def __init__(self, pool_fd: int, pool_locator: Path):
+        import os as _os
+        self.pool_fd = _os.dup(pool_fd)
+        _os.set_inheritable(self.pool_fd, False)
+        self.pool_locator = pool_locator
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def require_open_fd(self) -> int:
+        if self._closed or self.pool_fd < 0:
+            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+        return self.pool_fd
+
+    def pin(self) -> OperationWorkspaceLeaseV2:
+        """Atomically duplicate and return a private, operation-owned lease over the workspace pool."""
+        import os as _os
+        if self._closed or self.pool_fd < 0:
+            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+        try:
+            pinned_fd = _os.dup(self.pool_fd)
+            _os.set_inheritable(pinned_fd, False)
+            return OperationWorkspaceLeaseV2(pinned_fd, self.pool_locator)
+        except OSError as exc:
+            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
+
+    def close(self):
+        import os as _os
+        if not self._closed:
+            self._closed = True
+            fd = self.pool_fd
+            self.pool_fd = -1
+            if fd != -1:
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
 
 @dataclass(frozen=True)
 class MaterialisedCommitSubjectV2:
@@ -585,77 +775,57 @@ def acquire_materialised_commit_subject_v2(
     Write `ref`'s resolved commit's committed bytes into an empty private
     authority-owned directory.
     """
-    import os as _os
-    import tempfile as _tempfile
-    import secrets as _secrets
-
-    try:
-        with open_trusted_object_authority_v2(
-            repo_root,
-            authorized_storage=authorized_storage,
-            authorized_storage_roots=authorized_storage_roots,
-        ) as authority:
-            trusted_root = authority.trusted_repo_root
-            commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
-            entries = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=commit_sha)
-            blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
-            content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
-    except TrustedObjectAuthorityError as exc:
-        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-
-    try:
-        trie = _build_and_validate_canonical_trie(entries, content_by_path)
-    except Exception as exc:
-        if isinstance(exc, SubjectMaterialisationError):
-            raise
-        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
-
     if workspace is None:
         raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2)
 
-    pool_fd = workspace.require_open_fd()
+    # 1. Pinned workspace authority as the FIRST prerequisite
+    lease = workspace.pin()
+    epoch = MaterialisationEpochV2(lease)
 
-    import uuid as _uuid
     try:
-        root_name = f"c3_{_uuid.uuid4().hex}"
-        _os.mkdir(root_name, 0o700, dir_fd=pool_fd)
-        dest_path = workspace.pool_locator / root_name
-        root_fd = _os.open(
-            root_name,
-            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
-            dir_fd=pool_fd
+        # 2. Trusted Git authority & canonical trie validation
+        try:
+            with open_trusted_object_authority_v2(
+                repo_root,
+                authorized_storage=authorized_storage,
+                authorized_storage_roots=authorized_storage_roots,
+            ) as authority:
+                trusted_root = authority.trusted_repo_root
+                commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
+                entries = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=commit_sha)
+                blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
+                content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
+        except TrustedObjectAuthorityError as exc:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+        try:
+            trie = _build_and_validate_canonical_trie(entries, content_by_path)
+        except Exception as exc:
+            if isinstance(exc, SubjectMaterialisationError):
+                raise
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
+
+        # 3. Create epoch root relative to pinned lease
+        root_fd, root_name, dest_path = epoch.create_epoch_root()
+
+        # 4. Materialise canonical trie
+        written = [0]
+        try:
+            _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
+        except Exception as exc:
+            if isinstance(exc, SubjectMaterialisationError):
+                raise
+            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+        # 5. Exactly-once ownership transfer commit
+        return epoch.commit(
+            commit_sha=commit_sha,
+            file_count=written[0],
+            dest_path=dest_path,
         )
-    except OSError as exc:
-        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-
-    written = [0]
-    try:
-        _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
-    except Exception as exc:
-        try:
-            _fd_rmtree(root_fd)
-        except OSError:
-            pass
-        _os.close(root_fd)
-        try:
-            _os.rmdir(root_name, dir_fd=pool_fd)
-        except OSError:
-            pass
-
-        if isinstance(exc, SubjectMaterialisationError):
-            raise
-        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-
-    cap = MaterialisedCommitSubjectCapabilityV2(
-        root_fd=root_fd,
-        root_locator=dest_path,
-        commit_sha=commit_sha,
-        file_count=written[0],
-        pool_fd=pool_fd,
-        root_name=root_name
-    )
-
-    return cap
+    except Exception:
+        epoch.rollback()
+        raise
 
 
 
@@ -754,40 +924,3 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
 
     entries = [record for _key, record in sorted(keyed_entries)]
     return hashlib.sha256(b"\n".join(entries)).hexdigest()
-
-class MaterialisationWorkspaceCapabilityV2:
-    """A host-owned workspace capability for private materialization.
-
-    This establishes the authority of the pool directory where private
-    epochs are constructed, ensuring the epoch parent relation is
-    descriptor-bound and immune to pathname swapping.
-    """
-    def __init__(self, pool_fd: int, pool_locator: Path):
-        import os as _os
-        self.pool_fd = _os.dup(pool_fd)
-        _os.set_inheritable(self.pool_fd, False)
-        self.pool_locator = pool_locator
-        self._closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    def require_open_fd(self) -> int:
-        if self._closed or self.pool_fd < 0:
-            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
-        return self.pool_fd
-
-    def close(self):
-        import os as _os
-        if not self._closed:
-            self._closed = True
-            fd = self.pool_fd
-            self.pool_fd = -1
-            if fd != -1:
-                try:
-                    _os.close(fd)
-                except OSError:
-                    pass
