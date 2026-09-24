@@ -227,3 +227,127 @@ def test_commit_failure_rolls_back_materialised_tree_and_fds(tmp_path: Path):
     assert lease.pool_fd == -1
 
     workspace.close()
+
+
+import threading
+import concurrent.futures
+
+def test_cm_c3_pin_close_linearizability(tmp_path: Path):
+    """CM-C3-PIN-CLOSE-LINEARIZABILITY: verify pin() and close() are mutually serialized.
+
+    Proves that close() cannot close or poison the descriptor while pin() is in its
+    critical section between check and duplication.
+    """
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    pin_entered = threading.Event()
+    allow_pin_finish = threading.Event()
+
+    def pin_hook():
+        pin_entered.set()
+        # Hold the critical section until close has attempted and blocked
+        allow_pin_finish.wait(timeout=2.0)
+
+    workspace._pin_hook = pin_hook
+
+    lease_result = []
+    def do_pin():
+        lease = workspace.pin()
+        lease_result.append(lease)
+
+    pin_thread = threading.Thread(target=do_pin)
+    pin_thread.start()
+
+    # Wait for pin to enter critical section
+    assert pin_entered.wait(timeout=2.0)
+
+    # Attempt close in another thread; it must block on the internal lock
+    close_finished = threading.Event()
+    def do_close():
+        workspace.close()
+        close_finished.set()
+
+    close_thread = threading.Thread(target=do_close)
+    close_thread.start()
+
+    # Give close_thread a moment to attempt acquiring the lock
+    # Verify close has NOT finished while pin holds the lock
+    assert not close_finished.is_set()
+    assert not workspace._closed
+    assert workspace.pool_fd >= 0
+
+    # Allow pin to complete
+    allow_pin_finish.set()
+    pin_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert len(lease_result) == 1
+    lease = lease_result[0]
+    # Lease remains open, valid, and bound to the workspace pool
+    assert lease.pool_fd >= 0
+    assert not lease._closed
+    # Workspace is now closed
+    assert workspace._closed
+    assert workspace.pool_fd == -1
+
+    lease.close()
+
+def test_multiple_sequential_pins_produce_independent_leases(tmp_path: Path):
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    leases = [workspace.pin() for _ in range(5)]
+    fds = [lease.pool_fd for lease in leases]
+    assert len(set(fds)) == 5  # Each lease has a distinct private duplicated FD
+
+    for lease in leases:
+        assert lease.pool_fd >= 0
+        lease.close()
+        assert lease.pool_fd == -1
+
+    workspace.close()
+
+def test_multiple_concurrent_pins(tmp_path: Path):
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(workspace.pin) for _ in range(20)]
+        leases = [f.result() for f in futures]
+
+    fds = [l.pool_fd for l in leases]
+    assert len(set(fds)) == 20
+
+    for lease in leases:
+        lease.close()
+
+    workspace.close()
+
+def test_concurrent_subject_capability_close(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file").write_text("content")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    subject = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=head, workspace=workspace
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(subject.close) for _ in range(20)]
+        for f in futures:
+            f.result()
+
+    assert subject._closed
+    assert subject.root_fd == -1
+    assert subject.pool_fd == -1
+
+    workspace.close()

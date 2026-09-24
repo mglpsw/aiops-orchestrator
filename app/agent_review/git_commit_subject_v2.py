@@ -140,6 +140,8 @@ class MaterialisedCommitSubjectCapabilityV2:
         owns_pool_fd: bool = True,
     ):
         import os as _os
+        import threading as _threading
+        self._lock = _threading.Lock()
         self.root_fd = root_fd
         self.root_locator = root_locator
         self.commit_sha = commit_sha
@@ -159,8 +161,17 @@ class MaterialisedCommitSubjectCapabilityV2:
         self.close()
 
     def close(self):
+        """Close and clean up the materialised subject capability.
+
+        Linearization point: protected by self._lock. Multiple concurrent calls
+        are serialized; exactly the first caller executes the filesystem cleanup
+        and descriptor closures. Subsequent calls immediately see self._closed is True
+        and return as a no-op.
+        """
         import os as _os
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
             root_fd = self.root_fd
             self.root_fd = -1
@@ -346,10 +357,13 @@ class MaterialisationWorkspaceCapabilityV2:
     """
     def __init__(self, pool_fd: int, pool_locator: Path):
         import os as _os
+        import threading as _threading
+        self._lock = _threading.Lock()
         self.pool_fd = _os.dup(pool_fd)
         _os.set_inheritable(self.pool_fd, False)
         self.pool_locator = pool_locator
         self._closed = False
+        self._pin_hook = None
 
     def __enter__(self):
         return self
@@ -358,25 +372,51 @@ class MaterialisationWorkspaceCapabilityV2:
         self.close()
 
     def require_open_fd(self) -> int:
-        if self._closed or self.pool_fd < 0:
-            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
-        return self.pool_fd
+        with self._lock:
+            if self._closed or self.pool_fd < 0:
+                raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+            return self.pool_fd
 
     def pin(self) -> OperationWorkspaceLeaseV2:
-        """Atomically duplicate and return a private, operation-owned lease over the workspace pool."""
+        """Atomically duplicate and return a private, operation-owned lease over the workspace pool.
+
+        Linearization point: inside self._lock, atomic verification of open state followed immediately
+        by descriptor duplication. Mutually excludes close() so no handle reuse or stale duplication
+        can ever occur.
+        """
         import os as _os
-        if self._closed or self.pool_fd < 0:
-            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
-        try:
-            pinned_fd = _os.dup(self.pool_fd)
-            _os.set_inheritable(pinned_fd, False)
-            return OperationWorkspaceLeaseV2(pinned_fd, self.pool_locator)
-        except OSError as exc:
-            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
+        with self._lock:
+            if self._pin_hook is not None:
+                self._pin_hook()
+            if self._closed or self.pool_fd < 0:
+                raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+            try:
+                pinned_fd = _os.dup(self.pool_fd)
+            except OSError as exc:
+                raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
+
+            try:
+                _os.set_inheritable(pinned_fd, False)
+                return OperationWorkspaceLeaseV2(pinned_fd, self.pool_locator)
+            except Exception as exc:
+                try:
+                    _os.close(pinned_fd)
+                except OSError:
+                    pass
+                if isinstance(exc, SubjectMaterialisationError):
+                    raise
+                raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
 
     def close(self):
+        """Linearly invalidate and close the workspace authority handle.
+
+        Linearization point: inside self._lock, transitions _closed to True, captures the kernel FD,
+        poisons pool_fd to -1, and closes the kernel descriptor before releasing the lock.
+        """
         import os as _os
-        if not self._closed:
+        with self._lock:
+            if self._closed:
+                return
             self._closed = True
             fd = self.pool_fd
             self.pool_fd = -1
