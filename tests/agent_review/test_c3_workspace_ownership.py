@@ -4,14 +4,19 @@ from pathlib import Path
 from app.agent_review.git_commit_subject_v2 import (
     MaterialisationWorkspaceCapabilityV2,
     MaterialisedCommitSubjectCapabilityV2,
+    OperationWorkspaceLeaseV2,
     acquire_materialised_commit_subject_v2,
     materialise_commit_subject_v2,
+    read_commit_blobs_v2,
     SubjectMaterialisationError,
     SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2,
+    SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2,
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
     SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
     _get_process_umask_non_mutating,
     _translate_destination_permissions_descriptor_relative,
+    _copy_entry_descriptor_relative,
+    _check_projected_path_max,
     MAX_EXPANDED_ENTRIES_V2,
     MAX_EXPANDED_BYTES_V2,
 )
@@ -1940,3 +1945,191 @@ def test_cm_c3_x_non_mutating_umask_and_permission_translation(tmp_path: Path):
     assert (st_dest.st_mode & 0o777) == 0o750
 
     os.close(dfd)
+
+
+def test_read_commit_blobs_enforces_byte_budget_before_cat_file_batch(tmp_path: Path, monkeypatch):
+    """P1: Verifies read_commit_blobs_v2 checks byte budget with cat-file --batch-check
+
+    and fails closed without invoking cat-file --batch when budget is exceeded.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob_content = b"x" * 2000
+    (repo / "large.bin").write_bytes(blob_content)
+    commit = _commit_all(repo, "commit with large blob")
+
+    from app.agent_review.git_commit_subject_v2 import list_commit_tree_structure_v2
+    entries = list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit)
+
+    import app.agent_review.git_commit_subject_v2 as gcs
+    original_run_bounded = gcs.run_bounded_git_v2
+    cat_file_commands = []
+
+    def spy_run_bounded(argv, **kwargs):
+        if "cat-file" in argv:
+            cat_file_commands.append(argv)
+        return original_run_bounded(argv, **kwargs)
+
+    monkeypatch.setattr(gcs, "run_bounded_git_v2", spy_run_bounded)
+
+    # Calling read_commit_blobs_v2 with max_expanded_bytes=1000 (< 2000)
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        read_commit_blobs_v2(
+            repo_root=repo,
+            entries=entries,
+            max_expanded_bytes=1000,
+        )
+
+    assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    # Verify cat-file --batch-check was called
+    assert any("cat-file" in cmd and "--batch-check" in cmd for cmd in cat_file_commands)
+    # CRITICAL: Verify cat-file --batch was NEVER called!
+    assert not any("cat-file" in cmd and "--batch" in cmd and "--batch-check" not in cmd for cmd in cat_file_commands)
+
+
+def test_copy_entry_descriptor_relative_completes_short_writes(tmp_path: Path, monkeypatch):
+    """P2: Verifies _copy_entry_descriptor_relative loops on partial os.write chunks."""
+    src_dir = tmp_path / "src"
+    dst_dir = tmp_path / "dst"
+    src_dir.mkdir()
+    dst_dir.mkdir()
+
+    content = b"abcdefghijklmnopqrstuvwxyz" * 100  # 2600 bytes
+    (src_dir / "test.txt").write_bytes(content)
+
+    src_fd = os.open(src_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(dst_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    import app.agent_review.git_commit_subject_v2 as gcs
+    original_write = gcs._os.write
+
+    def partial_write(fd, data):
+        slice_len = min(17, len(data))
+        return original_write(fd, data[:slice_len])
+
+    monkeypatch.setattr(gcs._os, "write", partial_write)
+
+    try:
+        _copy_entry_descriptor_relative("test.txt", src_fd, dst_fd)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (dst_dir / "test.txt").read_bytes() == content
+    assert not (src_dir / "test.txt").exists()
+
+
+def test_translate_destination_permissions_restrictive_umask_0700_post_order(tmp_path: Path):
+    """P2: Verifies post-order translation does not fail with EACCES under umask 0700."""
+    dest = tmp_path / "dest_0700"
+    dest.mkdir(mode=0o700)
+    dest_fd = os.open(dest, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    os.mkdir("sub", mode=0o700, dir_fd=dest_fd)
+    sub_fd = os.open("sub", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=dest_fd)
+    os.mkdir("nested", mode=0o700, dir_fd=sub_fd)
+    nested_fd = os.open("nested", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=sub_fd)
+
+    f = os.open("file.txt", os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600, dir_fd=nested_fd)
+    os.write(f, b"hello")
+    os.close(f)
+    os.close(nested_fd)
+    os.close(sub_fd)
+
+    _translate_destination_permissions_descriptor_relative(dest_fd, 0o700, translate_root=True)
+
+    st_root = os.fstat(dest_fd)
+    assert (st_root.st_mode & 0o777) == 0o077
+
+    os.fchmod(dest_fd, 0o700)
+    st_sub = os.stat("sub", dir_fd=dest_fd, follow_symlinks=False)
+    assert (st_sub.st_mode & 0o777) == 0o077
+
+    os.chmod("sub", 0o700, dir_fd=dest_fd)
+    sub_fd = os.open("sub", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=dest_fd)
+    st_nested = os.stat("nested", dir_fd=sub_fd, follow_symlinks=False)
+    assert (st_nested.st_mode & 0o777) == 0o077
+
+    os.chmod("nested", 0o700, dir_fd=sub_fd)
+    nested_fd = os.open("nested", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=sub_fd)
+    st_file = os.stat("file.txt", dir_fd=nested_fd, follow_symlinks=False)
+    assert (st_file.st_mode & 0o777) == 0o066
+
+    os.close(nested_fd)
+    os.close(sub_fd)
+    os.close(dest_fd)
+
+
+def test_legacy_materialise_preserves_existing_destination_mode(tmp_path: Path):
+    """P2: Verifies materialise_commit_subject_v2 preserves mode on existing empty destination."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello")
+    head = _commit_all(repo, "initial")
+
+    existing_dest = tmp_path / "existing_dest"
+    existing_dest.mkdir(mode=0o770)
+    try:
+        os.chmod(existing_dest, 0o2770)
+    except PermissionError:
+        os.chmod(existing_dest, 0o770)
+
+    expected_mode = existing_dest.stat().st_mode & 0o7777
+
+    materialise_commit_subject_v2(
+        repo_root=repo,
+        ref=head,
+        destination=existing_dest,
+    )
+
+    actual_mode = existing_dest.stat().st_mode & 0o7777
+    assert actual_mode == expected_mode
+
+
+def test_check_projected_path_max_descriptor_bounded(tmp_path: Path):
+    """P2: Verifies _check_projected_path_max traverses wide sibling trees with O(1) descriptors."""
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+    test_dir = tmp_path / "wide_tree"
+    test_dir.mkdir()
+    for i in range(60):
+        (test_dir / f"subdir_{i:03d}").mkdir()
+
+    root_fd = os.open(test_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (30, hard))
+        try:
+            _check_projected_path_max(root_fd, Path("/dummy/dest"), path_max_limit=4096)
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    finally:
+        os.close(root_fd)
+
+
+def test_require_open_fd_returns_owned_lease_immune_to_workspace_close(tmp_path: Path):
+    """P2: Verifies require_open_fd returns an OperationWorkspaceLeaseV2 immune to workspace close."""
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    lease = workspace.require_open_fd()
+    assert isinstance(lease, OperationWorkspaceLeaseV2)
+    assert lease.fileno() >= 0
+    assert int(lease) == lease.fileno()
+    assert lease.__index__() == lease.fileno()
+
+    workspace.close()
+
+    test_sub = "test_lease_sub"
+    os.mkdir(test_sub, 0o700, dir_fd=lease)
+    assert (tmp_path / test_sub).is_dir()
+
+    lease.close()
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        lease.fileno()
+    assert exc_info.value.reason_code == SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2
+
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        workspace.require_open_fd()
+    assert exc_info.value.reason_code == SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2

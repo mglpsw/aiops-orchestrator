@@ -327,14 +327,34 @@ def _fd_rmtree(dir_fd: int) -> None:
 class OperationWorkspaceLeaseV2:
     """A private, operation-owned lease over a workspace capability.
 
-    Acquired via `workspace.pin()`. Owns a private duplicated file descriptor
-    to the workspace pool, ensuring authority continuity even if the underlying
+    Acquired via `workspace.pin()` or `workspace.require_open_fd()`.
+    Owns a private duplicated file descriptor to the workspace pool,
+    ensuring authority continuity even if the underlying
     WorkspaceCapability is closed or concurrent operations run.
+    Implements `fileno()` and `__index__()` so it can be passed directly
+    where an integer `dir_fd` is expected.
     """
     def __init__(self, pool_fd: int, pool_locator: Path) -> None:
         self.pool_fd = pool_fd
         self.pool_locator = pool_locator
         self._closed = False
+
+    def fileno(self) -> int:
+        if self._closed or self.pool_fd < 0:
+            raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
+        return self.pool_fd
+
+    def __index__(self) -> int:
+        return self.fileno()
+
+    def __int__(self) -> int:
+        return self.fileno()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def close(self) -> None:
         import os as _os
@@ -529,11 +549,14 @@ class MaterialisationWorkspaceCapabilityV2:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    def require_open_fd(self) -> int:
-        with self._lock:
-            if self._closed or self.pool_fd < 0:
-                raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2)
-            return self.pool_fd
+    def require_open_fd(self) -> OperationWorkspaceLeaseV2:
+        """Return an independently owned lease over the workspace pool descriptor.
+
+        Never exposes the workspace's closable handle as a raw integer, preventing
+        descriptor reuse races where concurrent close() could close the integer
+        and allow another thread to reuse it before caller uses it.
+        """
+        return self.pin()
 
     def pin(self) -> OperationWorkspaceLeaseV2:
         """Atomically duplicate and return a private, operation-owned lease over the workspace pool.
@@ -704,42 +727,78 @@ def read_commit_blobs_v2(
 
     Adjudicates RESOURCE_BOUNDED_MATERIALIZATION byte/work budget:
     - Measures logical output bytes (materialization work) before creating epoch
-      or writing to disk.
+      or writing to disk using `cat-file --batch-check`.
     - If total logical bytes exceed `max_expanded_bytes`, fails closed as
-      `SUBJECT_UNREPRESENTABLE_TREE_REASON_V2` with zero filesystem mutations.
+      `SUBJECT_UNREPRESENTABLE_TREE_REASON_V2` with zero filesystem mutations
+      and without buffering large blob bodies into process memory.
     """
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
     if not blobs:
         return {}
     batch_request = "".join(f"{entry.object_id}\n" for entry in blobs)
-    completed = run_bounded_git_v2(
-        ["cat-file", "--batch"], cwd=repo_root, input_bytes=batch_request.encode("utf-8")
-    )
+
+    # Preflight: query object metadata/sizes via `cat-file --batch-check` to enforce
+    # byte budget in O(entries) memory BEFORE buffering blob bodies into memory.
+    try:
+        check_completed = run_bounded_git_v2(
+            ["cat-file", "--batch-check"],
+            cwd=repo_root,
+            input_bytes=batch_request.encode("utf-8"),
+        )
+    except BoundedGitError as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+    check_lines = check_completed.stdout.splitlines()
+    if len(check_lines) != len(blobs):
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+
+    total_logical_bytes = 0
+    for line in check_lines:
+        parts = line.decode("utf-8", "replace").split(" ")
+        if len(parts) == 2 and parts[1] == "missing":
+            raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
+        if len(parts) != 3:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        if parts[1] != "blob":
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        try:
+            size = int(parts[2])
+        except ValueError:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        total_logical_bytes += size
+        if size > max_expanded_bytes or total_logical_bytes > max_expanded_bytes:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+    try:
+        completed = run_bounded_git_v2(
+            ["cat-file", "--batch"],
+            cwd=repo_root,
+            input_bytes=batch_request.encode("utf-8"),
+        )
+    except BoundedGitError as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
     stream = completed.stdout
     offset = 0
     content_by_path: dict[str, bytes] = {}
-    total_logical_bytes = 0
+    verified_bytes = 0
     for entry in blobs:
         header_end = stream.find(b"\n", offset)
         if header_end == -1:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         header = stream[offset:header_end].decode("utf-8", "replace").split(" ")
         if len(header) == 2 and header[1] == "missing":
-            # `cat-file --batch` reports an object it cannot find as
-            # `<sha> missing` -- the tree named a blob the object store does
-            # not have. Distinct from a malformed/unparseable stream.
             raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
         if len(header) != 3:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         if header[1] != "blob":
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         size = int(header[2])
-        total_logical_bytes += size
-        if total_logical_bytes > max_expanded_bytes:
+        verified_bytes += size
+        if verified_bytes > max_expanded_bytes:
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         body_start = header_end + 1
         content = stream[body_start : body_start + size]
-        # +1 for the newline `cat-file --batch` writes after each object.
         offset = body_start + size + 1
         content_by_path[entry.path] = content
     return content_by_path
@@ -1083,34 +1142,38 @@ def _check_projected_path_max(root_fd: int, dest_path: Path, path_max_limit: int
     """Walks the capability descriptor-relatively and validates prospective destination paths against PATH_MAX.
 
     Never resolves or traverses capability.root_locator as a pathname.
+    Maintains O(1) live file descriptors by storing logical path tuples on the stack
+    and closing directory descriptors immediately after reading directory entries.
     """
-    stack: list[tuple[int, tuple[str, ...], bool]] = [(root_fd, (), False)]
-    try:
-        while stack:
-            cur_fd, rel_parts, is_owned = stack.pop()
-            try:
-                for entry_name in _os.listdir(cur_fd):
-                    child_rel_parts = rel_parts + (entry_name,)
-                    proj_path = dest_path.joinpath(*child_rel_parts)
-                    if len(_os.fsencode(str(proj_path))) >= path_max_limit:
-                        raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
-                    st = _os.stat(entry_name, dir_fd=cur_fd, follow_symlinks=False)
-                    if _stat.S_ISDIR(st.st_mode):
-                        sub_fd = _os.open(
-                            entry_name,
-                            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
-                            dir_fd=cur_fd,
-                        )
-                        stack.append((sub_fd, child_rel_parts, True))
-            finally:
-                if is_owned:
-                    _os.close(cur_fd)
-    finally:
-        while stack:
-            fd, _, is_owned = stack.pop()
-            if is_owned:
+    stack: list[tuple[str, ...]] = [()]
+    while stack:
+        rel_parts = stack.pop()
+        cur_fd = root_fd
+        owned_cur: int | None = None
+        try:
+            for part in rel_parts:
+                next_fd = _os.open(
+                    part,
+                    _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                    dir_fd=cur_fd,
+                )
+                if owned_cur is not None:
+                    _os.close(owned_cur)
+                cur_fd = next_fd
+                owned_cur = next_fd
+
+            for entry_name in _os.listdir(cur_fd):
+                child_rel_parts = rel_parts + (entry_name,)
+                proj_path = dest_path.joinpath(*child_rel_parts)
+                if len(_os.fsencode(str(proj_path))) >= path_max_limit:
+                    raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
+                st = _os.stat(entry_name, dir_fd=cur_fd, follow_symlinks=False)
+                if _stat.S_ISDIR(st.st_mode):
+                    stack.append(child_rel_parts)
+        finally:
+            if owned_cur is not None:
                 try:
-                    _os.close(fd)
+                    _os.close(owned_cur)
                 except OSError:
                     pass
 
@@ -1140,7 +1203,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                     chunk = _os.read(src_file_fd, 65536)
                     if not chunk:
                         break
-                    _os.write(dst_file_fd, chunk)
+                    written = 0
+                    while written < len(chunk):
+                        n = _os.write(dst_file_fd, chunk[written:])
+                        if n == 0:
+                            raise OSError("write returned 0 bytes")
+                        written += n
                 _os.fchmod(dst_file_fd, st.st_mode)
             finally:
                 _os.close(dst_file_fd)
@@ -1163,63 +1231,109 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
         _os.rmdir(name, dir_fd=src_dir_fd)
 
 
-def _translate_destination_permissions_descriptor_relative(dir_fd: int, caller_umask: int) -> None:
-    """Walks directory descriptor descriptor-relatively and translates modes to caller umask."""
-    try:
-        _os.fchmod(dir_fd, 0o777 & ~caller_umask)
-    except OSError:
-        pass
+def _translate_destination_permissions_descriptor_relative(
+    dir_fd: int,
+    caller_umask: int,
+    *,
+    translate_root: bool = True,
+) -> None:
+    """Walks destination directory descriptor-relatively and translates modes to caller umask.
 
-    stack: list[tuple[int, bool]] = [(dir_fd, False)]
-    try:
-        while stack:
-            cur_fd, is_owned = stack.pop()
-            try:
-                for name in _os.listdir(cur_fd):
-                    st = _os.stat(name, dir_fd=cur_fd, follow_symlinks=False)
-                    if _stat.S_ISLNK(st.st_mode):
-                        continue
-                    elif _stat.S_ISDIR(st.st_mode):
-                        target_mode = 0o777 & ~caller_umask
-                        sub_fd = _os.open(
+    Adjudicates resource-bounded translation:
+    - Traversal is post-order for directory modes so parent directories retain search (execute)
+      permissions while subdirectories and files are traversed and chmodded, preventing EACCES
+      under restrictive umasks like 0700.
+    - Uses O(1) live descriptors by closing directory descriptors during step-down traversal.
+    - If translate_root is False (e.g. destination directory already existed with intentional
+      mode or special bits), dir_fd mode is strictly preserved.
+    """
+    # 1. Traverse all directories and regular files, translating regular file permissions.
+    # Collect discovered subdirectories in top-down order.
+    dirs_to_visit: list[tuple[str, ...]] = [()]
+    all_subdirs: list[tuple[str, ...]] = []
+
+    while dirs_to_visit:
+        rel_parts = dirs_to_visit.pop()
+        cur_fd = dir_fd
+        owned_cur: int | None = None
+        try:
+            for part in rel_parts:
+                next_fd = _os.open(
+                    part,
+                    _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                    dir_fd=cur_fd,
+                )
+                if owned_cur is not None:
+                    _os.close(owned_cur)
+                cur_fd = next_fd
+                owned_cur = next_fd
+
+            for name in _os.listdir(cur_fd):
+                st = _os.stat(name, dir_fd=cur_fd, follow_symlinks=False)
+                if _stat.S_ISLNK(st.st_mode):
+                    continue
+                elif _stat.S_ISDIR(st.st_mode):
+                    child_parts = rel_parts + (name,)
+                    dirs_to_visit.append(child_parts)
+                    all_subdirs.append(child_parts)
+                elif _stat.S_ISREG(st.st_mode):
+                    is_exec = bool(st.st_mode & 0o111)
+                    if is_exec:
+                        target_mode = (0o666 & ~caller_umask) | 0o111
+                    else:
+                        target_mode = 0o666 & ~caller_umask
+                    try:
+                        file_fd = _os.open(
                             name,
-                            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                            _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
                             dir_fd=cur_fd,
                         )
                         try:
-                            _os.fchmod(sub_fd, target_mode)
-                        except OSError:
-                            pass
-                        stack.append((sub_fd, True))
-                    elif _stat.S_ISREG(st.st_mode):
-                        is_exec = bool(st.st_mode & 0o111)
-                        if is_exec:
-                            target_mode = (0o666 & ~caller_umask) | 0o111
-                        else:
-                            target_mode = 0o666 & ~caller_umask
-                        try:
-                            file_fd = _os.open(
-                                name,
-                                _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
-                                dir_fd=cur_fd,
-                            )
-                            try:
-                                _os.fchmod(file_fd, target_mode)
-                            finally:
-                                _os.close(file_fd)
-                        except OSError:
-                            pass
-            finally:
-                if is_owned:
-                    _os.close(cur_fd)
-    finally:
-        while stack:
-            fd, is_owned = stack.pop()
-            if is_owned:
+                            _os.fchmod(file_fd, target_mode)
+                        finally:
+                            _os.close(file_fd)
+                    except OSError:
+                        pass
+        finally:
+            if owned_cur is not None:
                 try:
-                    _os.close(fd)
+                    _os.close(owned_cur)
                 except OSError:
                     pass
+
+    # 2. Translate directory permissions in reverse order (deepest directories first, parents last)
+    dir_target_mode = 0o777 & ~caller_umask
+    for sub_parts in reversed(all_subdirs):
+        cur_fd = dir_fd
+        owned_cur = None
+        try:
+            for part in sub_parts:
+                next_fd = _os.open(
+                    part,
+                    _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                    dir_fd=cur_fd,
+                )
+                if owned_cur is not None:
+                    _os.close(owned_cur)
+                cur_fd = next_fd
+                owned_cur = next_fd
+            try:
+                _os.fchmod(cur_fd, dir_target_mode)
+            except OSError:
+                pass
+        finally:
+            if owned_cur is not None:
+                try:
+                    _os.close(owned_cur)
+                except OSError:
+                    pass
+
+    # 3. Translate root directory last, only if translate_root is True
+    if translate_root:
+        try:
+            _os.fchmod(dir_fd, dir_target_mode)
+        except OSError:
+            pass
 
 
 
@@ -1328,7 +1442,9 @@ def materialise_commit_subject_v2(
 
                     # Translate permissions to caller umask at legacy projection boundary
                     caller_umask = _get_process_umask_non_mutating()
-                    _translate_destination_permissions_descriptor_relative(dest_fd, caller_umask)
+                    _translate_destination_permissions_descriptor_relative(
+                        dest_fd, caller_umask, translate_root=not dest_existed
+                    )
 
                 except BaseException as exc:
                     if dest_child is not None and (dest_child.is_symlink() or dest_child.exists()) and dest_child not in moved_children:
