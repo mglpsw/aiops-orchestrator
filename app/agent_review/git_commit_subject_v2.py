@@ -177,46 +177,123 @@ class MaterialisedCommitSubjectCapabilityV2:
             self.root_fd = -1
             pool_fd = self.pool_fd
             self.pool_fd = -1
+            root_name = self.root_name
+            self.root_name = None
 
             try:
                 if root_fd != -1:
-                    _fd_rmtree(root_fd)
-                    _os.close(root_fd)
-            except OSError:
-                pass
-            try:
-                if pool_fd != -1 and self.root_name:
-                    _os.rmdir(self.root_name, dir_fd=pool_fd)
-            except OSError:
-                pass
-            if pool_fd != -1:
+                    try:
+                        _fd_rmtree(root_fd)
+                    except Exception:
+                        pass
+            finally:
+                if root_fd != -1:
+                    try:
+                        _os.close(root_fd)
+                    except OSError:
+                        pass
                 try:
-                    _os.close(pool_fd)
+                    if pool_fd != -1 and root_name:
+                        try:
+                            _os.rmdir(root_name, dir_fd=pool_fd)
+                        except OSError:
+                            pass
+                finally:
+                    if pool_fd != -1:
+                        try:
+                            _os.close(pool_fd)
+                        except OSError:
+                            pass
+
+
+def _fd_rmtree(dir_fd: int) -> None:
+    """Removes all contents of the given directory file descriptor iteratively.
+
+    This is immune to CM-C3-CLEANUP-SWAP because it operates strictly relative
+    to file descriptors, never traversing the parent namespace.
+    Uses an explicit stack instead of recursion to prevent RecursionError on deep trees.
+    Guarantees no file descriptor leaks even on error.
+    """
+    import os as _os
+
+    # Stack item: [cur_fd, subdirs, name, parent_fd]
+    # For the root (level 0), name=None, parent_fd=None. Caller owns root dir_fd.
+    root_subdirs: list[str] = []
+    try:
+        with _os.scandir(dir_fd) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        root_subdirs.append(entry.name)
+                    else:
+                        _os.unlink(entry.name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    stack: list[list] = [[dir_fd, root_subdirs, None, None]]
+
+    try:
+        while stack:
+            cur_fd, subdirs, name, parent_fd = stack[-1]
+            if subdirs:
+                child_name = subdirs.pop()
+                try:
+                    child_fd = _os.open(
+                        child_name,
+                        _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                        dir_fd=cur_fd,
+                    )
+                except OSError:
+                    # Best effort removal if open failed
+                    try:
+                        _os.rmdir(child_name, dir_fd=cur_fd)
+                    except OSError:
+                        try:
+                            _os.unlink(child_name, dir_fd=cur_fd)
+                        except OSError:
+                            pass
+                    continue
+
+                child_subdirs: list[str] = []
+                try:
+                    with _os.scandir(child_fd) as it:
+                        for entry in it:
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    child_subdirs.append(entry.name)
+                                else:
+                                    _os.unlink(entry.name, dir_fd=child_fd)
+                            except OSError:
+                                pass
                 except OSError:
                     pass
 
-
-def _fd_rmtree(dir_fd: int):
-    """Recursively removes all contents of the given directory file descriptor.
-
-    This is immune to CM-C3-CLEANUP-SWAP because it operates strictly relative
-    to the descriptor, never traversing the parent namespace.
-    """
-    import os
-    try:
-        with os.scandir(dir_fd) as it:
-            for entry in it:
-                if entry.is_dir(follow_symlinks=False):
-                    child_fd = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+                stack.append([child_fd, child_subdirs, child_name, cur_fd])
+            else:
+                frame = stack.pop()
+                fd_to_close = frame[0]
+                frame[0] = -1
+                if frame[3] is not None:
                     try:
-                        _fd_rmtree(child_fd)
-                    finally:
-                        os.close(child_fd)
-                    os.rmdir(entry.name, dir_fd=dir_fd)
-                else:
-                    os.unlink(entry.name, dir_fd=dir_fd)
-    except OSError:
-        pass
+                        _os.close(fd_to_close)
+                    except OSError:
+                        pass
+                    try:
+                        _os.rmdir(frame[2], dir_fd=frame[3])
+                    except OSError:
+                        pass
+    finally:
+        # Guarantee no leaked descriptors if an unexpected error occurs
+        for frame in stack[1:]:
+            fd = frame[0]
+            if fd != -1:
+                frame[0] = -1
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
 
 
 class OperationWorkspaceLeaseV2:
@@ -288,28 +365,31 @@ class MaterialisationEpochV2:
         if self._committed:
             return
 
-        # 1. Clean up and close root_fd if open
-        if self.root_fd != -1:
-            try:
-                _fd_rmtree(self.root_fd)
-            except OSError:
-                pass
-            try:
-                _os.close(self.root_fd)
-            except OSError:
-                pass
-            self.root_fd = -1
+        root_fd = self.root_fd
+        self.root_fd = -1
+        root_name = self.root_name
+        self.root_name = None
 
-        # 2. Clean up root directory if created
-        if self.root_name is not None and self.lease.pool_fd != -1:
+        try:
+            if root_fd != -1:
+                try:
+                    _fd_rmtree(root_fd)
+                except Exception:
+                    pass
+        finally:
+            if root_fd != -1:
+                try:
+                    _os.close(root_fd)
+                except OSError:
+                    pass
             try:
-                _os.rmdir(self.root_name, dir_fd=self.lease.pool_fd)
-            except OSError:
-                pass
-            self.root_name = None
-
-        # 3. Close the lease
-        self.lease.close()
+                if root_name is not None and self.lease.pool_fd != -1:
+                    try:
+                        _os.rmdir(root_name, dir_fd=self.lease.pool_fd)
+                    except OSError:
+                        pass
+            finally:
+                self.lease.close()
 
     def commit(
         self,
@@ -786,7 +866,7 @@ def materialise_commit_subject_v2(
 
             # Project capability into destination
             if not destination.exists():
-                destination.mkdir(mode=0o700)
+                destination.mkdir()
 
             for child in capability.root_locator.iterdir():
                 _os.rename(str(child), str(destination / child.name))

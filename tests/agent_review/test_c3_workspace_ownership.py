@@ -351,3 +351,109 @@ def test_concurrent_subject_capability_close(tmp_path: Path):
     assert subject.pool_fd == -1
 
     workspace.close()
+
+
+import sys
+import stat
+from app.agent_review.git_commit_subject_v2 import (
+    materialise_commit_subject_v2,
+    _fd_rmtree,
+)
+
+def test_cm_c3_cleanup_deep_tree(tmp_path: Path):
+    """CM-C3-CLEANUP-DEEP-TREE: verify iterative _fd_rmtree does not raise RecursionError
+
+    Even when tree depth exceeds the Python recursion limit, iterative descriptor
+    cleanup succeeds completely and restores initial file descriptor count.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file").write_text("content")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    subject = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=head, workspace=workspace
+    )
+
+    # Artificially construct a nested directory tree deeper than a lowered recursion limit
+    curr = subject.root_locator
+    for i in range(120):
+        curr = curr / f"d{i}"
+        curr.mkdir()
+        (curr / "leaf.txt").write_text("deep")
+
+    orig_limit = sys.getrecursionlimit()
+    try:
+        sys.setrecursionlimit(50)  # Lower than tree depth (120 > 50)
+        subject.close()
+    finally:
+        sys.setrecursionlimit(orig_limit)
+
+    assert subject._closed
+    assert subject.root_fd == -1
+    assert subject.pool_fd == -1
+    assert not subject.root_locator.exists()
+    assert count_open_fds() == initial_fds
+
+    workspace.close()
+
+
+def test_cm_c3_cleanup_exception_does_not_leak_descriptors(tmp_path: Path):
+    """CM-C3-CLEANUP-FAILSAFE: verify descriptor closure is unconditional even if rmtree raises."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file").write_text("content")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    subject = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=head, workspace=workspace
+    )
+
+    with patch("app.agent_review.git_commit_subject_v2._fd_rmtree", side_effect=RuntimeError("simulated rmtree fault")):
+        subject.close()
+
+    assert subject._closed
+    assert subject.root_fd == -1
+    assert subject.pool_fd == -1
+    # Both descriptors must be closed despite the exception
+    assert count_open_fds() == initial_fds
+
+    workspace.close()
+
+
+def test_legacy_materialise_destination_default_permissions(tmp_path: Path):
+    """Verify legacy materialise_commit_subject_v2 creates destination using default umask."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    dest = tmp_path / "legacy_dest"
+    assert not dest.exists()
+
+    subject = materialise_commit_subject_v2(
+        repo_root=repo,
+        ref=head,
+        destination=dest,
+    )
+    assert subject.root.exists()
+
+    # Verify destination permissions match default mkdir (not forced 0700)
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    expected_mode = 0o777 & ~current_umask
+
+    actual_mode = stat.S_IMODE(os.stat(dest).st_mode)
+    assert actual_mode == expected_mode
