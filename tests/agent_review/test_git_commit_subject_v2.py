@@ -11,6 +11,19 @@ from pathlib import Path
 
 import pytest
 
+import contextlib
+from unittest.mock import patch
+
+@contextlib.contextmanager
+def assert_no_writes():
+    with patch('app.agent_review.git_commit_subject_v2._os.mkdir') as m_mkdir, \
+         patch('app.agent_review.git_commit_subject_v2._os.open') as m_open, \
+         patch('app.agent_review.git_commit_subject_v2._os.symlink') as m_symlink:
+        yield
+        m_mkdir.assert_not_called()
+        m_open.assert_not_called()
+        m_symlink.assert_not_called()
+
 from app.agent_review.git_commit_subject_v2 import (
     SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
     SUBJECT_UNKNOWN_COMMIT_REASON_V2,
@@ -372,3 +385,138 @@ def test_materialise_refuses_blob_subtree_name_collision_instead_of_crashing(
     # No partial write left behind for a caller to mistake for a valid
     # subject.
     assert not destination.exists() or not any(destination.iterdir())
+import subprocess
+import pytest
+
+import contextlib
+from unittest.mock import patch
+
+@contextlib.contextmanager
+def assert_no_writes():
+    with patch('app.agent_review.git_commit_subject_v2._os.mkdir') as m_mkdir, \
+         patch('app.agent_review.git_commit_subject_v2._os.open') as m_open, \
+         patch('app.agent_review.git_commit_subject_v2._os.symlink') as m_symlink:
+        yield
+        m_mkdir.assert_not_called()
+        m_open.assert_not_called()
+        m_symlink.assert_not_called()
+from pathlib import Path
+from app.agent_review.git_commit_subject_v2 import (
+    materialise_commit_subject_v2,
+    SubjectMaterialisationError,
+    SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+    SUBJECT_MATERIALISATION_RACE_REASON_V2,
+    SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2,
+    SUBJECT_PATH_COLLISION_REASON_V2
+)
+from tests.agent_review.test_git_commit_subject_v2 import _init_repo
+
+def run_git(args, cwd):
+    return subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+def hash_blob(repo, content):
+    return subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=content, check=True, capture_output=True, text=True).stdout.strip()
+
+def make_tree(repo, entries):
+    inp = "".join(f"{mode} {typ} {sha}\t{name}\n" for mode, typ, sha, name in entries)
+    return subprocess.run(["git", "mktree", "--missing"], cwd=repo, input=inp, check=True, capture_output=True, text=True).stdout.strip()
+
+def test_c3_duplicate_tree(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "1")
+    blob2 = hash_blob(repo, "2")
+    t1 = make_tree(repo, [("100644", "blob", blob1, "f")])
+    t2 = make_tree(repo, [("100644", "blob", blob2, "f")])
+    root_tree = make_tree(repo, [("040000", "tree", t1, "dir"), ("040000", "tree", t2, "dir")])
+    commit = run_git(["commit-tree", root_tree, "-m", "dup"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+    assert not (tmp_path / "dest").exists() or not any((tmp_path / "dest").iterdir())
+
+def test_c3_dot_alias(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "1")
+    t1 = make_tree(repo, [("100644", "blob", blob1, "a")])
+    root_tree = make_tree(repo, [("040000", "tree", t1, ".")])
+    commit = run_git(["commit-tree", root_tree, "-m", "dot"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+def test_c3_dotdot_alias(tmp_path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "1")
+    t1 = make_tree(repo, [("100644", "blob", blob1, "a")])
+    root_tree = make_tree(repo, [("040000", "tree", t1, "..")])
+    commit = run_git(["commit-tree", root_tree, "-m", "dotdot"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+def test_c3_symlink_ancestry(tmp_path):
+    # symlink can redirect a later write
+    # directory "a", symlink "b" -> "a"
+    # write to "b/file" -> should fail because "b" is a symlink, so it has descendants
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "content")
+    sym = hash_blob(repo, "a")
+    t_b = make_tree(repo, [("100644", "blob", blob1, "file")])
+    root_tree = make_tree(repo, [
+        ("040000", "tree", make_tree(repo, []), "a"),
+        ("120000", "blob", sym, "b"),
+        ("040000", "tree", t_b, "b")  # b is both a symlink and a tree!
+    ])
+    commit = run_git(["commit-tree", root_tree, "-m", "sym_anc"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+def test_c3_self_created_symlink_redirect(tmp_path):
+    # a -> e, e/file, z/../a/file
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "content")
+    sym = hash_blob(repo, "e")
+    t_e = make_tree(repo, [("100644", "blob", blob1, "file")])
+    t_z_dotdot = make_tree(repo, [
+        ("040000", "tree", make_tree(repo, [("100644", "blob", blob1, "file")]), "a")
+    ])
+    t_z = make_tree(repo, [("040000", "tree", t_z_dotdot, "..")])
+    root_tree = make_tree(repo, [
+        ("120000", "blob", sym, "a"),
+        ("040000", "tree", t_e, "e"),
+        ("040000", "tree", t_z, "z")
+    ])
+    commit = run_git(["commit-tree", root_tree, "-m", "self_created"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+def test_c3_orphan_redirect(tmp_path):
+    # a -> e, z/../a/file, no e/file
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "content")
+    sym = hash_blob(repo, "e")
+    t_z_dotdot = make_tree(repo, [
+        ("040000", "tree", make_tree(repo, [("100644", "blob", blob1, "file")]), "a")
+    ])
+    t_z = make_tree(repo, [("040000", "tree", t_z_dotdot, "..")])
+    root_tree = make_tree(repo, [
+        ("120000", "blob", sym, "a"),
+        ("040000", "tree", t_z, "z")
+    ])
+    commit = run_git(["commit-tree", root_tree, "-m", "orphan"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2

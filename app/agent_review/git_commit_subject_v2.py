@@ -81,6 +81,8 @@ SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2 = "subject_destination_not_empty"
 SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2 = "subject_path_escapes_subject"
 SUBJECT_BLOB_MISSING_REASON_V2 = "subject_blob_missing"
 SUBJECT_PATH_COLLISION_REASON_V2 = "subject_path_collision"
+SUBJECT_UNREPRESENTABLE_TREE_REASON_V2 = "subject_unrepresentable_tree"
+SUBJECT_MATERIALISATION_RACE_REASON_V2 = "subject_materialisation_race"
 
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
@@ -161,7 +163,7 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
     escapes them, and re-decoding that is an avoidable source of divergence
     between what git recorded and what is written out.
     """
-    completed = run_bounded_git_v2(["ls-tree", "-r", "-z", commit_sha], cwd=repo_root)
+    completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
     entries: list[TreeEntryV2] = []
     for record in completed.stdout.split(b"\0"):
         if not record:
@@ -194,7 +196,7 @@ def read_commit_blobs_v2(
     path in the tree", and a repository can legitimately have two paths
     share a blob (identical file content).
     """
-    blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
+    blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
     if not blobs:
         return {}
     batch_request = "".join(f"{entry.object_id}\n" for entry in blobs)
@@ -225,19 +227,106 @@ def read_commit_blobs_v2(
     return content_by_path
 
 
-def _safe_destination_v2(*, subject_root: Path, relative_path: str) -> Path:
-    """Reject any entry that would write outside the subject.
 
-    A path from a repository is untrusted input. `..` segments, or an
-    absolute path, would let materialisation write over the caller's
-    filesystem, so containment is checked after resolution rather than
-    assumed from the string.
-    """
-    candidate = (subject_root / relative_path).resolve()
-    if not candidate.is_relative_to(subject_root.resolve()):
-        raise SubjectMaterialisationError(SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2)
-    return candidate
+from dataclasses import dataclass, field
+import os as _os
+import stat as _stat
 
+@dataclass
+class _TrieNode:
+    node_type: str  # 'tree', 'blob', 'symlink'
+    mode: str
+    object_id: str
+    explicit: bool
+    children: dict[str, '_TrieNode'] = field(default_factory=dict)
+
+def _build_and_validate_canonical_trie(entries: list[TreeEntryV2]) -> _TrieNode:
+    root = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=True)
+    for entry in entries:
+        parts = entry.path.split('/')
+        if '.' in parts or '..' in parts:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        if not parts or any(not p for p in parts):
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+        current = root
+        for i, part in enumerate(parts):
+            is_leaf = (i == len(parts) - 1)
+            if is_leaf:
+                if part in current.children:
+                    existing = current.children[part]
+                    if existing.node_type != 'tree' or entry.object_type != 'tree':
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    if existing.explicit:
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    existing.mode = entry.mode
+                    existing.object_id = entry.object_id
+                    existing.explicit = True
+                else:
+                    if entry.object_type == 'tree':
+                        current.children[part] = _TrieNode(node_type='tree', mode=entry.mode, object_id=entry.object_id, explicit=True)
+                    elif entry.mode == SYMLINK_MODE_V2:
+                        current.children[part] = _TrieNode(node_type='symlink', mode=entry.mode, object_id=entry.object_id, explicit=True)
+                    elif entry.mode == GITLINK_MODE_V2:
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    else:
+                        current.children[part] = _TrieNode(node_type='blob', mode=entry.mode, object_id=entry.object_id, explicit=True)
+            else:
+                if part not in current.children:
+                    current.children[part] = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=False)
+                elif current.children[part].node_type != 'tree':
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                current = current.children[part]
+    return root
+
+def _materialise_trie_no_follow(node: _TrieNode, content_by_path: dict[str, bytes], dir_fd: int, current_path: str, count: list[int]) -> None:
+    for name, child in node.children.items():
+        name_bytes = _os.fsencode(name)
+        child_path = current_path + "/" + name if current_path else name
+
+        if child.node_type == 'tree':
+            try:
+                _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
+            except FileExistsError as exc:
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+            try:
+                child_fd = _os.open(name_bytes, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=dir_fd)
+            except OSError as exc:
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+            try:
+                _materialise_trie_no_follow(child, content_by_path, child_fd, child_path, count)
+            finally:
+                _os.close(child_fd)
+
+        elif child.node_type == 'symlink':
+            content = content_by_path[child_path]
+            target = content.decode("utf-8", "surrogateescape")
+            try:
+                _os.symlink(target, name_bytes, dir_fd=dir_fd)
+            except FileExistsError as exc:
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+            count[0] += 1
+
+        elif child.node_type == 'blob':
+            content = content_by_path[child_path]
+            flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
+            mode = 0o644
+            if child.mode == EXECUTABLE_MODE_V2:
+                mode = 0o755
+            try:
+                fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
+            except FileExistsError as exc:
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+            except OSError as exc:
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+            try:
+                _os.write(fd, content)
+            finally:
+                _os.close(fd)
+            count[0] += 1
 
 def materialise_commit_subject_v2(
     *,
@@ -285,7 +374,7 @@ def materialise_commit_subject_v2(
             trusted_root = authority.trusted_repo_root
             commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
             entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=commit_sha)
-            blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
+            blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
             content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
     except TrustedObjectAuthorityError as exc:
         # Mirrors the write loop's own failure-cleanup contract below: a
@@ -296,45 +385,27 @@ def materialise_commit_subject_v2(
         shutil.rmtree(destination, ignore_errors=True)
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
-    written = 0
     try:
-        for entry in blobs:
-            content = content_by_path[entry.path]
-            target = _safe_destination_v2(subject_root=destination, relative_path=entry.path)
-            # `mkdir(parents=True, exist_ok=True)` can still raise
-            # `FileExistsError`: git's own tree-sort comparator treats a
-            # subdirectory entry as if it had a trailing "/", so a blob and
-            # a tree can share the exact same one-byte name in a single
-            # tree object without git considering that a duplicate (proven
-            # with real `git mktree` plumbing, not a hypothetical). If the
-            # canonically-sorted blob entry is written first, the later
-            # entry nested under a tree of the same name collides with it.
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if entry.mode == SYMLINK_MODE_V2:
-                # A symlink blob's content is its target path. Recreated as a
-                # link so the subject is byte-faithful; the digest below hashes
-                # link targets as text rather than following them.
-                target.symlink_to(content.decode("utf-8", "surrogateescape"))
-            else:
-                target.write_bytes(content)
-                if entry.mode == EXECUTABLE_MODE_V2:
-                    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            written += 1
+        trie = _build_and_validate_canonical_trie(entries)
     except SubjectMaterialisationError:
-        # e.g. `_safe_destination_v2`'s path-escape refusal, raised partway
-        # through the loop. Already typed -- clean up and propagate as-is.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+    written = [0]
+    try:
+        root_fd = _os.open(_os.fsencode(destination), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW)
+        try:
+            _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
+        finally:
+            _os.close(root_fd)
+    except SubjectMaterialisationError:
         shutil.rmtree(destination, ignore_errors=True)
         raise
     except OSError as exc:
-        # Destination is known to have been empty before this call started
-        # (checked above), so everything under it at this point was written
-        # by this call and is safe to discard -- a caller must never be
-        # left holding a partially-materialised subject that looks like it
-        # might be valid.
         shutil.rmtree(destination, ignore_errors=True)
         raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
 
-    return MaterialisedCommitSubjectV2(root=destination, commit_sha=commit_sha, file_count=written)
+    return MaterialisedCommitSubjectV2(root=destination, commit_sha=commit_sha, file_count=written[0])
 
 
 def compute_subject_digest_v2(subject_root: Path) -> str:

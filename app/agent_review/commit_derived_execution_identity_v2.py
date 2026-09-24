@@ -775,6 +775,8 @@ def verify_executed_source_identity_v2(
                 raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
             for entry in entries:
+                if getattr(entry, "object_type", "") == "tree":
+                    continue
                 if entry.mode == GITLINK_MODE_V2:
                     raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
 
@@ -790,6 +792,8 @@ def verify_executed_source_identity_v2(
     expected_paths = {entry.path: entry for entry in entries}
 
     for entry in entries:
+        if getattr(entry, "object_type", "") == "tree":
+            continue
         if entry.mode == GITLINK_MODE_V2:
             # Defensive only: the early loop above already refuses any
             # commit whose tree contains a gitlink, so this is never reached
