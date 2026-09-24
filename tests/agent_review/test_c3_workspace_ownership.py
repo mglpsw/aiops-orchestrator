@@ -1212,3 +1212,75 @@ def test_c3_hardened_umask_restores_owner_directory_access(tmp_path: Path):
 
     assert not any(tmp_path.glob("c3_*"))
     workspace.close()
+
+
+def test_c3_bounded_materialization_descriptors_independent_of_depth(tmp_path: Path):
+    """Verify that materializing deeply nested trees does not accumulate open directory
+    descriptors across the traversal stack, maintaining O(1) live handles under low RLIMIT_NOFILE.
+
+    Countermodel CM-C3-BOUNDED-MATERIALIZATION-FD-DEPTH:
+    If each frame of tree materialization retained an open dir_fd, a tree with depth 35
+    would exhaust file descriptors and raise EMFILE if RLIMIT_NOFILE is constrained below
+    depth. With descriptor-bounded traversal, live handles remain O(1) (peak delta <= 2).
+    """
+    import resource
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    lease = workspace.pin()
+    epoch = MaterialisationEpochV2(lease)
+    root_fd, root_name, dest_path = epoch.create_epoch_root()
+
+    from app.agent_review.git_commit_subject_v2 import _TrieNode, _materialise_trie_no_follow
+
+    curr = _TrieNode(node_type="tree", mode="040000", object_id="root_tree", explicit=True)
+    root_node = curr
+    content = {}
+    path_accum = ""
+    for i in range(35):
+        comp = f"d{i}"
+        child = _TrieNode(node_type="tree", mode="040000", object_id=f"tree_{i}", explicit=True)
+        curr.children[comp] = child
+        curr = child
+        path_accum = path_accum + "/" + comp if path_accum else comp
+    curr.children["leaf.txt"] = _TrieNode(
+        node_type="blob", mode="100644", object_id="blob_leaf", explicit=True
+    )
+    content[path_accum + "/leaf.txt"] = b"deep leaf content"
+
+    proc_fds = len(os.listdir("/proc/self/fd"))
+    orig_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    # Constrain RLIMIT_NOFILE to slightly above current open FDs (proc_fds + 8)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (proc_fds + 8, orig_limit[1]))
+    try:
+        count = [0]
+        _materialise_trie_no_follow(root_node, content, root_fd, "", count)
+        assert count[0] == 1
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, orig_limit)
+        epoch.rollback()
+        lease.close()
+        workspace.close()
+
+
+def test_c3_chmod_nofollow_refusal_translated_to_typed_error(tmp_path: Path):
+    """Verify that platform refusals on no-follow chmod (ValueError on Linux when dir_fd and
+    follow_symlinks=False encounter a symlink) are translated into typed
+    SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2).
+    """
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    with patch("os.chmod", side_effect=ValueError("chmod: cannot use dir_fd and follow_symlinks together")):
+        lease = workspace.pin()
+        epoch = MaterialisationEpochV2(lease)
+        try:
+            with pytest.raises(SubjectMaterialisationError) as exc:
+                epoch.create_epoch_root()
+            assert exc.value.reason_code == SUBJECT_MATERIALISATION_RACE_REASON_V2
+        finally:
+            epoch.rollback()
+            lease.close()
+            workspace.close()

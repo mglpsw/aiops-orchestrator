@@ -381,7 +381,7 @@ class MaterialisationEpochV2:
             # Ensure private epoch root has owner read/write/execute access (0o700)
             # regardless of caller's ambient umask before opening or populating.
             _os.chmod(root_name, 0o700, dir_fd=self.lease.pool_fd, follow_symlinks=False)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
         try:
@@ -866,27 +866,51 @@ def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[T
     )
     return all_entries
 
-def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str, bytes], initial_dir_fd: int, initial_path: str, count: list[int]) -> None:
+def _materialise_trie_no_follow(
+    root_node: _TrieNode,
+    content_by_path: dict[str, bytes],
+    initial_dir_fd: int,
+    initial_path: str,
+    count: list[int],
+) -> None:
     import stat as _stat
-    # Use an explicit stack to prevent RecursionError on deeply nested trees.
-    # Stack items: (node, dir_fd, current_path, list_of_children)
-    # We must dup the dir_fd so we can close it when we pop it from the stack,
-    # except for the initial_dir_fd which the caller owns (we will dup it for the root).
 
-    stack = [(root_node, _os.dup(initial_dir_fd), initial_path, list(root_node.children.items()))]
+    def _open_rel(components: tuple[str, ...]) -> int:
+        cur = _os.dup(initial_dir_fd)
+        _os.set_inheritable(cur, False)
+        for comp in components:
+            try:
+                nxt = _os.open(
+                    comp,
+                    _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                    dir_fd=cur,
+                )
+            finally:
+                _os.close(cur)
+            cur = nxt
+        return cur
 
-    try:
-        while stack:
-            node, dir_fd, current_path, children_items = stack[-1]
-            if not children_items:
-                stack.pop()
-                _os.close(dir_fd)
-                continue
+    # Traversal frame: (node, components_tuple, current_path, unvisited_children_list)
+    # The stack holds logical path component tuples on heap, NOT open file descriptors.
+    # Simultaneously-live authority handles during materialization are O(1) and
+    # strictly bounded independently of tree depth (peak live FD delta <= 2).
+    stack: list[tuple[_TrieNode, tuple[str, ...], str, list[tuple[str, _TrieNode]]]] = [
+        (root_node, (), initial_path, list(root_node.children.items()))
+    ]
 
-            name, child = children_items.pop()
-            name_bytes = _os.fsencode(name)
-            child_path = current_path + "/" + name if current_path else name
+    while stack:
+        node, comps, current_path, children_items = stack[-1]
+        if not children_items:
+            stack.pop()
+            continue
 
+        name, child = children_items.pop()
+        name_bytes = _os.fsencode(name)
+        child_path = current_path + "/" + name if current_path else name
+        child_comps = comps + (name,)
+
+        dir_fd = initial_dir_fd if comps == () else _open_rel(comps)
+        try:
             if child.node_type == 'tree':
                 try:
                     _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
@@ -904,25 +928,26 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                             dir_fd=dir_fd,
                             follow_symlinks=False,
                         )
-                except OSError as exc:
+                except (OSError, ValueError) as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
                 try:
-                    child_fd = _os.open(name_bytes, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=dir_fd)
+                    child_fd = _os.open(
+                        name_bytes,
+                        _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                        dir_fd=dir_fd,
+                    )
                 except OSError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
-                transferred = False
                 try:
                     # Bind created directories: ensure it is completely empty
                     if _os.listdir(child_fd):
                         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
-
-                    stack.append((child, child_fd, child_path, list(child.children.items())))
-                    transferred = True
                 finally:
-                    if not transferred:
-                        _os.close(child_fd)
+                    _os.close(child_fd)
+
+                stack.append((child, child_comps, child_path, list(child.children.items())))
 
             elif child.node_type == 'symlink':
                 content = content_by_path[child_path]
@@ -943,7 +968,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
 
             elif child.node_type == 'blob':
                 content = content_by_path[child_path]
-                flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
+                flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW | _os.O_CLOEXEC
                 mode = 0o666
                 try:
                     fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
@@ -978,14 +1003,12 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 finally:
                     _os.close(fd)
                 count[0] += 1
-    except BaseException:
-        # Clean up any remaining fds in stack
-        for _, fd, _, _ in stack:
-            try:
-                _os.close(fd)
-            except OSError:
-                pass
-        raise
+        finally:
+            if dir_fd != initial_dir_fd:
+                try:
+                    _os.close(dir_fd)
+                except OSError:
+                    pass
 
 def materialise_commit_subject_v2(
     *,
