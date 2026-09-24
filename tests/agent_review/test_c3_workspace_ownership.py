@@ -674,10 +674,18 @@ def test_cm_c3_cleanup_hostile_mutation_descriptor_release(tmp_path: Path):
     (sub / "unremovable.txt").write_text("locked")
     sub.chmod(0o500)
 
+    orig_unlink = os.unlink
+    def injected_unlink(name, *, dir_fd=None):
+        if name == "unremovable.txt":
+            raise PermissionError("EACCES")
+        return orig_unlink(name, dir_fd=dir_fd)
+
     try:
-        subject.close()
+        with patch("os.unlink", side_effect=injected_unlink):
+            subject.close()
     finally:
-        sub.chmod(0o700)
+        if sub.exists():
+            sub.chmod(0o700)
 
     assert subject._closed
     assert subject.root_fd == -1
@@ -686,3 +694,73 @@ def test_cm_c3_cleanup_hostile_mutation_descriptor_release(tmp_path: Path):
     assert count_open_fds() == initial_fds
 
     workspace.close()
+
+
+def test_legacy_materialise_destination_cross_filesystem_exdev(tmp_path: Path):
+    """Verify legacy materialise_commit_subject_v2 supports destinations mounted across filesystems (EXDEV)."""
+    import errno
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello cross-fs")
+    head = _commit_all(repo, "commit")
+
+    dest = tmp_path / "cross_fs_dest"
+    dest.mkdir()
+
+    simulated_exdev = False
+
+    def exdev_rename(src, dst):
+        nonlocal simulated_exdev
+        simulated_exdev = True
+        err = OSError("Invalid cross-device link")
+        err.errno = errno.EXDEV
+        raise err
+
+    with patch("os.rename", side_effect=exdev_rename):
+        subject = materialise_commit_subject_v2(
+            repo_root=repo,
+            ref=head,
+            destination=dest,
+        )
+
+    assert simulated_exdev
+    assert subject.root == dest
+    assert (dest / "file.txt").read_text() == "hello cross-fs"
+
+
+def test_reject_non_blob_object_for_blob_entry(tmp_path: Path):
+    """Verify read_commit_blobs_v2 rejects non-blob objects behind blob-mode entries."""
+    import subprocess
+    import pytest
+    from app.agent_review.git_commit_subject_v2 import (
+        read_commit_blobs_v2,
+        TreeEntryV2,
+        SubjectMaterialisationError,
+        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+    )
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    subdir = repo / "subdir"
+    subdir.mkdir()
+    (subdir / "inner.txt").write_text("inner")
+    head = _commit_all(repo, "commit")
+
+    tree_sha = subprocess.run(
+        ["git", "rev-parse", f"{head}:subdir"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    malformed_entry = TreeEntryV2(
+        mode="100644",
+        object_type="blob",
+        object_id=tree_sha,
+        path="bogus_file.txt",
+    )
+
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        read_commit_blobs_v2(repo_root=repo, entries=[malformed_entry])
+
+    assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2

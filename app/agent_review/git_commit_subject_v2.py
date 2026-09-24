@@ -649,6 +649,8 @@ def read_commit_blobs_v2(
             raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
         if len(header) != 3:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        if header[1] != "blob":
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         size = int(header[2])
         body_start = header_end + 1
         content = stream[body_start : body_start + size]
@@ -882,8 +884,16 @@ def materialise_commit_subject_v2(
             if not destination.exists():
                 destination.mkdir()
 
+            import errno as _errno
             for child in capability.root_locator.iterdir():
-                _os.rename(str(child), str(destination / child.name))
+                dest_child = destination / child.name
+                try:
+                    _os.rename(str(child), str(dest_child))
+                except OSError as err:
+                    if err.errno == _errno.EXDEV:
+                        _shutil.move(str(child), str(dest_child))
+                    else:
+                        raise
 
             return MaterialisedCommitSubjectV2(
                 root=destination,
