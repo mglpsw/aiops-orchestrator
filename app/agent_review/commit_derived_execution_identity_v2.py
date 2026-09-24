@@ -789,10 +789,15 @@ def verify_executed_source_identity_v2(
     except TrustedObjectAuthorityError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-    expected_paths = {entry.path: entry for entry in entries}
+    expected_paths = {entry.path: entry for entry in entries if getattr(entry, "object_type", "") != "tree"}
 
     for entry in entries:
         if getattr(entry, "object_type", "") == "tree":
+            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
+            if actual_path.is_symlink():
+                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+            if not actual_path.is_dir():
+                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
             continue
         if entry.mode == GITLINK_MODE_V2:
             # Defensive only: the early loop above already refuses any

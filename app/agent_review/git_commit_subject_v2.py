@@ -240,7 +240,7 @@ class _TrieNode:
     explicit: bool
     children: dict[str, '_TrieNode'] = field(default_factory=dict)
 
-def _build_and_validate_canonical_trie(entries: list[TreeEntryV2]) -> _TrieNode:
+def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_path: dict[str, bytes]) -> _TrieNode:
     root = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=True)
     for entry in entries:
         parts = entry.path.split('/')
@@ -266,6 +266,9 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2]) -> _TrieNode:
                     if entry.object_type == 'tree':
                         current.children[part] = _TrieNode(node_type='tree', mode=entry.mode, object_id=entry.object_id, explicit=True)
                     elif entry.mode == SYMLINK_MODE_V2:
+                        target_bytes = content_by_path.get(entry.path)
+                        if target_bytes and b"\x00" in target_bytes:
+                            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
                         current.children[part] = _TrieNode(node_type='symlink', mode=entry.mode, object_id=entry.object_id, explicit=True)
                     elif entry.mode == GITLINK_MODE_V2:
                         raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
@@ -279,54 +282,97 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2]) -> _TrieNode:
                 current = current.children[part]
     return root
 
-def _materialise_trie_no_follow(node: _TrieNode, content_by_path: dict[str, bytes], dir_fd: int, current_path: str, count: list[int]) -> None:
-    for name, child in node.children.items():
-        name_bytes = _os.fsencode(name)
-        child_path = current_path + "/" + name if current_path else name
-
-        if child.node_type == 'tree':
+def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str, bytes], initial_dir_fd: int, initial_path: str, count: list[int]) -> None:
+    # Use an explicit stack to prevent RecursionError on deeply nested trees.
+    # Stack items: (node, dir_fd, current_path, list_of_children)
+    # We must dup the dir_fd so we can close it when we pop it from the stack, 
+    # except for the initial_dir_fd which the caller owns (we will dup it for the root).
+    
+    stack = [(root_node, _os.dup(initial_dir_fd), initial_path, list(root_node.children.items()))]
+    
+    try:
+        while stack:
+            node, dir_fd, current_path, children_items = stack[-1]
+            if not children_items:
+                stack.pop()
+                _os.close(dir_fd)
+                continue
+                
+            name, child = children_items.pop()
+            name_bytes = _os.fsencode(name)
+            child_path = current_path + "/" + name if current_path else name
+            
+            if child.node_type == 'tree':
+                try:
+                    _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
+                except FileExistsError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                    
+                try:
+                    child_fd = _os.open(name_bytes, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=dir_fd)
+                except OSError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                    
+                # Bind created directories: ensure it is completely empty
+                if _os.listdir(child_fd):
+                    _os.close(child_fd)
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                
+                stack.append((child, child_fd, child_path, list(child.children.items())))
+                
+            elif child.node_type == 'symlink':
+                content = content_by_path[child_path]
+                target = content.decode("utf-8", "surrogateescape")
+                try:
+                    _os.symlink(target, name_bytes, dir_fd=dir_fd)
+                except FileExistsError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                
+                # Revalidate symlink
+                stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
+                # Just checking it hasn't been replaced by a directory etc.
+                count[0] += 1
+                
+            elif child.node_type == 'blob':
+                content = content_by_path[child_path]
+                flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
+                mode = 0o644
+                if child.mode == EXECUTABLE_MODE_V2:
+                    mode = 0o755
+                try:
+                    fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
+                except FileExistsError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                except OSError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                
+                try:
+                    written_bytes = 0
+                    while written_bytes < len(content):
+                        chunk = _os.write(fd, content[written_bytes:])
+                        if chunk == 0:
+                            raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
+                        written_bytes += chunk
+                        
+                    if child.mode == EXECUTABLE_MODE_V2:
+                        _os.fchmod(fd, 0o755)
+                        
+                    # Revalidate after writing
+                    stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
+                    stat_fd = _os.fstat(fd)
+                    if stat_name.st_dev != stat_fd.st_dev or stat_name.st_ino != stat_fd.st_ino:
+                        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                finally:
+                    _os.close(fd)
+                count[0] += 1
+    except Exception:
+        # Clean up any remaining fds in stack
+        for _, fd, _, _ in stack:
             try:
-                _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
-            except FileExistsError as exc:
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-
-            try:
-                child_fd = _os.open(name_bytes, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=dir_fd)
-            except OSError as exc:
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-
-            try:
-                _materialise_trie_no_follow(child, content_by_path, child_fd, child_path, count)
-            finally:
-                _os.close(child_fd)
-
-        elif child.node_type == 'symlink':
-            content = content_by_path[child_path]
-            target = content.decode("utf-8", "surrogateescape")
-            try:
-                _os.symlink(target, name_bytes, dir_fd=dir_fd)
-            except FileExistsError as exc:
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-            count[0] += 1
-
-        elif child.node_type == 'blob':
-            content = content_by_path[child_path]
-            flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
-            mode = 0o644
-            if child.mode == EXECUTABLE_MODE_V2:
-                mode = 0o755
-            try:
-                fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
-            except FileExistsError as exc:
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-            except OSError as exc:
-                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-
-            try:
-                _os.write(fd, content)
-            finally:
                 _os.close(fd)
-            count[0] += 1
+            except OSError:
+                pass
+        raise
 
 def materialise_commit_subject_v2(
     *,
@@ -386,16 +432,39 @@ def materialise_commit_subject_v2(
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
     try:
-        trie = _build_and_validate_canonical_trie(entries)
+        trie = _build_and_validate_canonical_trie(entries, content_by_path)
     except SubjectMaterialisationError:
         shutil.rmtree(destination, ignore_errors=True)
         raise
 
     written = [0]
     try:
-        root_fd = _os.open(_os.fsencode(destination), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW)
+        dest_path = Path(destination)
+        if dest_path.is_absolute():
+            current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
+            parts = dest_path.parts[1:]
+        else:
+            current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
+            parts = dest_path.parts
+            
+        try:
+            for part in parts:
+                next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
+                _os.close(current_fd)
+                current_fd = next_fd
+            root_fd = current_fd
+            current_fd = None
+        finally:
+            if current_fd is not None:
+                _os.close(current_fd)
+                
         try:
             _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
+            
+            stat_dest = _os.stat(_os.fsencode(destination), follow_symlinks=False)
+            stat_fd = _os.fstat(root_fd)
+            if stat_dest.st_dev != stat_fd.st_dev or stat_dest.st_ino != stat_fd.st_ino:
+                raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
         finally:
             _os.close(root_fd)
     except SubjectMaterialisationError:
