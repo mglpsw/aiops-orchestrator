@@ -244,6 +244,8 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_pa
     root = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=True)
     for entry in entries:
         parts = entry.path.split('/')
+        if len(parts) > 100:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         if '.' in parts or '..' in parts:
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         if not parts or any(not p for p in parts):

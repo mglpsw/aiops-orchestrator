@@ -528,26 +528,69 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
 
     leaf_paths: list[str] = []
 
-    stack = [subject_root]
-    while stack:
-        directory = stack.pop()
+    try:
+        root_fd = os.open(subject_root, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+        
+    try:
         try:
-            entries = list(os.scandir(directory))
+            root_entries = list(os.scandir(root_fd))
         except OSError as exc:
             raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-        for entry in entries:
+            
+        stack = [(root_fd, "", root_entries)]
+        
+        while stack:
+            if len(stack) > 100:
+                raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2)
+                
+            current_fd, current_rel, entries = stack[-1]
+            if not entries:
+                stack.pop()
+                if current_fd != root_fd:
+                    os.close(current_fd)
+                continue
+                
+            entry = entries.pop()
+            
             try:
                 is_symlink = entry.is_symlink()
                 is_dir = entry.is_dir()
             except OSError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-            entry_path = Path(entry.path)
+                
+            entry_rel = f"{current_rel}/{entry.name}" if current_rel else entry.name
+            
             if is_dir:
                 if is_symlink:
                     raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-                stack.append(entry_path)
+                try:
+                    child_fd = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
+                except OSError as exc:
+                    raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+                
+                try:
+                    child_entries = list(os.scandir(child_fd))
+                    stack.append((child_fd, entry_rel, child_entries))
+                except OSError as exc:
+                    os.close(child_fd)
+                    raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+                except Exception:
+                    os.close(child_fd)
+                    raise
             else:
-                leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
+                leaf_paths.append(entry_rel)
+                
+    finally:
+        for fd, _, _ in stack:
+            if fd != root_fd:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        os.close(root_fd)
+        
     return frozenset(leaf_paths)
 
 
