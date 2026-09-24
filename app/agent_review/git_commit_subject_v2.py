@@ -539,7 +539,7 @@ def materialise_commit_subject_v2(
                 destination.mkdir(mode=0o700)
 
             for child in capability.root_locator.iterdir():
-                _shutil.move(str(child), str(destination / child.name))
+                _os.rename(str(child), str(destination / child.name))
 
             return MaterialisedCommitSubjectV2(
                 root=destination,
