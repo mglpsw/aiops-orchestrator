@@ -770,7 +770,7 @@ def _list_single_tree_entries_v2(*, repo_root: Path, tree_oid: str) -> list[tupl
 
 
 def _build_canonical_trie_hierarchical(
-    *, repo_root: Path, root_tree_oid: str
+    *, repo_root: Path, root_tree_oid: str, max_component_len: int | None = 255
 ) -> tuple[_TrieNode, list[TreeEntryV2], list[TreeEntryV2]]:
     """Constructs the canonical trie directly from hierarchical raw Git trees.
 
@@ -781,6 +781,7 @@ def _build_canonical_trie_hierarchical(
       no implicit tree ancestors are ever synthesized.
     - Validates that every directory entry name is strictly a single POSIX path component
       (no '/', no NUL, not '.' or '..', not empty).
+    - Validates component encodability and filesystem component-length limits (NAME_MAX).
     - Detects cycles in tree references and enforces tree depth bounds (<= 100).
     - Collects all leaf blobs and symlinks for batched byte loading via read_commit_blobs_v2.
 
@@ -806,7 +807,18 @@ def _build_canonical_trie_hierarchical(
 
         entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
         for mode, obj_type, obj_id, raw_name in entries:
-            name = raw_name.decode("utf-8", errors="surrogateescape")
+            if max_component_len is not None and len(raw_name) > max_component_len:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+            try:
+                name = raw_name.decode("utf-8", errors="surrogateescape")
+                fsencoded = _os.fsencode(name)
+            except (UnicodeError, ValueError) as exc:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
+
+            if max_component_len is not None and len(fsencoded) > max_component_len:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
             if "/" in name or "\0" in name or name in (".", "..", ""):
                 raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
@@ -985,15 +997,16 @@ def _materialise_trie_no_follow(
                             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                         written_bytes += chunk
 
+                    stat_before = _os.fstat(fd)
+                    target_mode = stat_before.st_mode | _stat.S_IRUSR | _stat.S_IWUSR
                     if child.mode == EXECUTABLE_MODE_V2:
-                        stat_before = _os.fstat(fd)
-                        _os.fchmod(
-                            fd,
-                            stat_before.st_mode
-                            | _stat.S_IXUSR
+                        target_mode |= (
+                            _stat.S_IXUSR
                             | _stat.S_IXGRP
-                            | _stat.S_IXOTH,
+                            | _stat.S_IXOTH
                         )
+                    if target_mode != stat_before.st_mode:
+                        _os.fchmod(fd, target_mode)
 
                     # Revalidate after writing
                     stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
@@ -1142,11 +1155,25 @@ def acquire_materialised_commit_subject_v2(
 
     # 1. Pinned workspace authority as the FIRST prerequisite
     lease = workspace.pin()
-    epoch = MaterialisationEpochV2(lease)
-
+    epoch: MaterialisationEpochV2 | None = None
     cap: MaterialisedCommitSubjectCapabilityV2 | None = None
     transferred_to_caller = False
     try:
+        # Determine workspace filesystem NAME_MAX limit before creating epoch
+        name_max_limit = -1
+        if hasattr(_os, "fpathconf"):
+            try:
+                name_max_limit = _os.fpathconf(lease.pool_fd, "PC_NAME_MAX")
+            except OSError:
+                pass
+        if name_max_limit <= 0 and hasattr(_os, "pathconf"):
+            try:
+                name_max_limit = _os.pathconf(str(workspace.pool_locator), "PC_NAME_MAX")
+            except OSError:
+                pass
+        if name_max_limit <= 0:
+            name_max_limit = 255
+
         # 2. Trusted Git authority & canonical trie validation
         try:
             with open_trusted_object_authority_v2(
@@ -1158,7 +1185,9 @@ def acquire_materialised_commit_subject_v2(
                 commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
                 root_tree_oid = resolve_commit_tree_sha_v2(repo_root=trusted_root, commit_sha=commit_sha)
                 trie, _all_entries, leaf_blobs = _build_canonical_trie_hierarchical(
-                    repo_root=trusted_root, root_tree_oid=root_tree_oid
+                    repo_root=trusted_root,
+                    root_tree_oid=root_tree_oid,
+                    max_component_len=name_max_limit,
                 )
                 content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=leaf_blobs)
                 for entry in leaf_blobs:
@@ -1172,6 +1201,7 @@ def acquire_materialised_commit_subject_v2(
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
         # 3. Create epoch root relative to pinned lease
+        epoch = MaterialisationEpochV2(lease)
         root_fd, root_name, dest_path = epoch.create_epoch_root()
 
         # 4. Materialise canonical trie
@@ -1198,8 +1228,10 @@ def acquire_materialised_commit_subject_v2(
                     cap.close()
                 except BaseException:
                     pass
-            else:
+            elif epoch is not None:
                 epoch.rollback()
+            else:
+                lease.close()
 
 
 

@@ -1336,3 +1336,154 @@ def test_c3_chmod_nofollow_refusal_translated_to_typed_error(tmp_path: Path):
             epoch.rollback()
             lease.close()
             workspace.close()
+
+
+def test_c3_hardened_umask_restores_owner_leaf_access(tmp_path: Path):
+    """Verify that authoritative acquisition under hardened umasks (e.g. 0700, 0177)
+    restores owner read and write permissions (S_IRUSR | S_IWUSR) on canonical leaf files,
+    allowing the non-root owner to reopen and read regular files and execute scripts.
+    """
+    import subprocess
+    from app.agent_review.git_commit_subject_v2 import _materialise_trie_no_follow
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "regular.txt").write_text("regular content")
+
+    script = repo / "script.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o755)
+
+    subprocess.run(["git", "add", "regular.txt", "script.sh"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add files"], cwd=repo, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    orig_mat = _materialise_trie_no_follow
+
+    def mat_under_0700(root_node, content_by_path, initial_dir_fd, initial_path, count):
+        prev = os.umask(0o700)
+        try:
+            return orig_mat(root_node, content_by_path, initial_dir_fd, initial_path, count)
+        finally:
+            os.umask(prev)
+
+    def mat_under_0177(root_node, content_by_path, initial_dir_fd, initial_path, count):
+        prev = os.umask(0o177)
+        try:
+            return orig_mat(root_node, content_by_path, initial_dir_fd, initial_path, count)
+        finally:
+            os.umask(prev)
+
+    # 1. Test under umask 0700 (masks all owner permissions)
+    pool = tmp_path / "pool_0700"
+    pool.mkdir(mode=0o700)
+    caller_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, pool)
+    os.close(caller_fd)
+
+    with patch("app.agent_review.git_commit_subject_v2._materialise_trie_no_follow", mat_under_0700):
+        subject = acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=head, workspace=workspace
+        )
+        try:
+            reg_st = os.stat(subject.root_locator / "regular.txt")
+            assert reg_st.st_mode & stat.S_IRUSR != 0, "owner read must be restored on regular file"
+            assert reg_st.st_mode & stat.S_IWUSR != 0, "owner write must be restored on regular file"
+            assert (subject.root_locator / "regular.txt").read_text() == "regular content"
+
+            script_st = os.stat(subject.root_locator / "script.sh")
+            assert script_st.st_mode & stat.S_IRUSR != 0, "owner read must be restored on script"
+            assert script_st.st_mode & stat.S_IXUSR != 0, "owner execute must be restored on script"
+            assert (subject.root_locator / "script.sh").read_text() == "#!/bin/sh\necho hi\n"
+        finally:
+            subject.close()
+    workspace.close()
+
+    # 2. Test under umask 0177
+    pool2 = tmp_path / "pool_0177"
+    pool2.mkdir(mode=0o700)
+    caller_fd2 = os.open(pool2, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace2 = MaterialisationWorkspaceCapabilityV2(caller_fd2, pool2)
+    os.close(caller_fd2)
+
+    with patch("app.agent_review.git_commit_subject_v2._materialise_trie_no_follow", mat_under_0177):
+        subject2 = acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=head, workspace=workspace2
+        )
+        try:
+            reg_st2 = os.stat(subject2.root_locator / "regular.txt")
+            assert reg_st2.st_mode & stat.S_IRUSR != 0
+            assert (subject2.root_locator / "regular.txt").read_text() == "regular content"
+
+            script_st2 = os.stat(subject2.root_locator / "script.sh")
+            assert script_st2.st_mode & stat.S_IRUSR != 0
+            assert script_st2.st_mode & stat.S_IXUSR != 0
+            assert (subject2.root_locator / "script.sh").read_text() == "#!/bin/sh\necho hi\n"
+        finally:
+            subject2.close()
+    workspace2.close()
+
+
+def test_c3_unrepresentable_tree_component_exceeding_name_max(tmp_path: Path):
+    """Verify that a hostile git tree containing a component exceeding the filesystem's NAME_MAX
+    is rejected during in-memory pre-write validation as subject_unrepresentable_tree,
+    writing zero bytes to the pool directory.
+    """
+    import subprocess
+    from app.agent_review.git_commit_subject_v2 import (
+        list_commit_tree_structure_v2,
+        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+    )
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    # Hash normal blob and create tree with a 256-byte component name
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"leaf content",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    long_name = "a" * 256
+    mktree_input = f"100644 blob {blob_sha}\tnormal.txt\n100644 blob {blob_sha}\t{long_name}\n".encode()
+    tree_sha = subprocess.run(
+        ["git", "mktree"], cwd=repo, input=mktree_input, capture_output=True, check=True
+    ).stdout.strip().decode()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-m", "tree with name exceeding NAME_MAX"],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+
+    pool = tmp_path / "pool"
+    pool.mkdir(mode=0o700)
+
+    initial_fds = count_open_fds()
+
+    caller_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, pool)
+    os.close(caller_fd)
+
+    # Pre-write validation in acquire_materialised_commit_subject_v2 must reject before creating epoch
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit_sha, workspace=workspace
+        )
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+    # Verify ZERO disk mutations: pool directory must remain completely empty
+    assert list(pool.iterdir()) == [], "pool directory must have zero entries created"
+
+    # Verify list_commit_tree_structure_v2 also rejects the unrepresentable tree
+    with pytest.raises(SubjectMaterialisationError) as exc2:
+        list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit_sha)
+    assert exc2.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+    workspace.close()
+    assert count_open_fds() == initial_fds
