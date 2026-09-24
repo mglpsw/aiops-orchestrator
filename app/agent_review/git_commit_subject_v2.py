@@ -48,7 +48,7 @@ from __future__ import annotations
 import shutil
 import stat
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
@@ -66,6 +66,7 @@ __all__ = [
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
+    "SUBJECT_UNREPRESENTABLE_TREE_REASON_V2",
     "SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2",
     "SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2",
     "MaterialisedCommitSubjectV2",
@@ -81,6 +82,7 @@ __all__ = [
     "list_commit_tree_structure_v2",
     "materialise_commit_subject_v2",
     "resolve_commit_v2",
+    "resolve_commit_tree_sha_v2",
 ]
 
 
@@ -428,21 +430,25 @@ class MaterialisationEpochV2:
         if self._committed:
             raise RuntimeError("Epoch already committed")
 
-        # 1. Detach descriptors from epoch and lease BEFORE constructing capability.
-        # This guarantees epoch and lease no longer own these descriptors, preventing
-        # any subsequent rollback() or close() on the epoch/lease from touching them.
+        # Snapshot descriptor values before entering try block
         root_fd = self.root_fd
-        self.root_fd = -1
         root_name = self.root_name
-        self.root_name = None
         pool_fd = self.lease.pool_fd
-        self.lease.pool_fd = -1
-        self.lease._closed = True
-        self._committed = True
 
         import os as _os
         cap: MaterialisedCommitSubjectCapabilityV2 | None = None
+        # Enter unconditional rollback guard BEFORE detaching descriptors.
+        # If an asynchronous BaseException arrives before try, the caller's finally
+        # invokes epoch.rollback() which still owns root_fd and pool_fd.
+        # Once inside try, any interruption is caught here: epoch descriptors are poisoned,
+        # and cleanup is executed exactly once on the detached descriptors.
         try:
+            self.root_fd = -1
+            self.root_name = None
+            self.lease.pool_fd = -1
+            self.lease._closed = True
+            self._committed = True
+
             cap = MaterialisedCommitSubjectCapabilityV2(
                 root_fd=root_fd,
                 root_locator=dest_path,
@@ -629,6 +635,20 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
     return resolved
 
 
+def resolve_commit_tree_sha_v2(*, repo_root: Path, commit_sha: str) -> str:
+    """Resolve the root tree object ID of a commit."""
+    try:
+        completed = run_bounded_git_v2(
+            ["rev-parse", "--verify", "--quiet", f"{commit_sha}^{{tree}}"], cwd=repo_root
+        )
+    except BoundedGitError as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+    resolved = completed.stdout.decode("utf-8", errors="surrogateescape").strip()
+    if (len(resolved) not in (40, 64)) or any(c not in "0123456789abcdef" for c in resolved):
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+    return resolved
+
+
 def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
     """Predecessor leaf-oriented semantics.
     Does not include trees. Only blobs and gitlinks.
@@ -653,28 +673,6 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
         )
     return entries
 
-
-def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
-    """C3-owned structural enumeration using -r -t -z."""
-    completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
-    entries: list[TreeEntryV2] = []
-    for record in completed.stdout.split(b"\0"):
-        if not record:
-            continue
-        try:
-            metadata, raw_path = record.split(b"\t", 1)
-            mode, object_type, object_id = metadata.decode("utf-8").split(" ", 2)
-        except ValueError as exc:
-            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-        entries.append(
-            TreeEntryV2(
-                mode=mode,
-                object_type=object_type,
-                object_id=object_id,
-                path=raw_path.decode("utf-8", errors="surrogateescape"),
-            )
-        )
-    return entries
 
 
 
@@ -734,49 +732,131 @@ class _TrieNode:
     explicit: bool
     children: dict[str, '_TrieNode'] = field(default_factory=dict)
 
-def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_path: dict[str, bytes]) -> _TrieNode:
-    root = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=True)
-    for entry in entries:
-        parts = entry.path.split('/')
-        if len(parts) > 100:
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-        if '.' in parts or '..' in parts:
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-        if not parts or any(not p for p in parts):
+def _list_single_tree_entries_v2(*, repo_root: Path, tree_oid: str) -> list[tuple[str, str, str, bytes]]:
+    """Enumerate immediate children of a single git tree object using 'ls-tree -z <tree_oid>'.
+
+    Returns tuples of (mode, object_type, object_id, raw_name_bytes).
+    Does not recurse or flatten hierarchy.
+    """
+    try:
+        completed = run_bounded_git_v2(["ls-tree", "-z", tree_oid], cwd=repo_root)
+    except BoundedGitError as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+    entries: list[tuple[str, str, str, bytes]] = []
+    for record in completed.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_name = record.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("utf-8").split(" ", 2)
+        except ValueError as exc:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+        # Invariant: Single directory entry must not contain path separators or NUL bytes
+        if b"/" in raw_name or b"\0" in raw_name or raw_name in (b".", b"..", b""):
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
-        current = root
-        for i, part in enumerate(parts):
-            is_leaf = (i == len(parts) - 1)
-            if is_leaf:
-                if part in current.children:
-                    existing = current.children[part]
-                    if existing.node_type != 'tree' or entry.object_type != 'tree':
-                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                    if existing.explicit:
-                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                    existing.mode = entry.mode
-                    existing.object_id = entry.object_id
-                    existing.explicit = True
-                else:
-                    if entry.object_type == 'tree':
-                        current.children[part] = _TrieNode(node_type='tree', mode=entry.mode, object_id=entry.object_id, explicit=True)
-                    elif entry.mode == SYMLINK_MODE_V2:
-                        target_bytes = content_by_path.get(entry.path)
-                        if not target_bytes or b"\x00" in target_bytes:
-                            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                        current.children[part] = _TrieNode(node_type='symlink', mode=entry.mode, object_id=entry.object_id, explicit=True)
-                    elif entry.mode == GITLINK_MODE_V2:
-                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                    else:
-                        current.children[part] = _TrieNode(node_type='blob', mode=entry.mode, object_id=entry.object_id, explicit=True)
-            else:
-                if part not in current.children:
-                    current.children[part] = _TrieNode(node_type='tree', mode='040000', object_id='', explicit=False)
-                elif current.children[part].node_type != 'tree':
+        entries.append((mode, object_type, object_id, raw_name))
+    return entries
+
+
+def _build_canonical_trie_hierarchical(
+    *, repo_root: Path, root_tree_oid: str
+) -> tuple[_TrieNode, list[TreeEntryV2], list[TreeEntryV2]]:
+    """Constructs the canonical trie directly from hierarchical raw Git trees.
+
+    Adjudicates STRUCTURAL_PROJECTION_FIDELITY:
+    - LossyProjection cannot_be IdentityAuthority (FlattenedRepresentation != StructuralIdentity).
+    - Traverses Git tree objects level-by-level without flattening.
+    - Every directory node in the canonical trie corresponds to an explicit Git tree object;
+      no implicit tree ancestors are ever synthesized.
+    - Validates that every directory entry name is strictly a single POSIX path component
+      (no '/', no NUL, not '.' or '..', not empty).
+    - Detects cycles in tree references and enforces tree depth bounds (<= 100).
+    - Collects all leaf blobs and symlinks for batched byte loading via read_commit_blobs_v2.
+
+    Returns:
+    - root: The root _TrieNode
+    - all_entries: Full structural entries (trees, blobs, symlinks) in hierarchical traversal order
+    - leaf_blobs: Leaf blob and symlink entries for content loading
+    """
+    root = _TrieNode(node_type='tree', mode='040000', object_id=root_tree_oid, explicit=True)
+    all_entries: list[TreeEntryV2] = []
+    leaf_blobs: list[TreeEntryV2] = []
+
+    # Queue stores: (current_node, current_tree_oid, logical_path_tuple, ancestor_oids_tuple)
+    queue: list[tuple[_TrieNode, str, tuple[str, ...], tuple[str, ...]]] = [
+        (root, root_tree_oid, (), (root_tree_oid,))
+    ]
+
+    while queue:
+        current_node, current_tree_oid, path_tuple, ancestor_oids = queue.pop(0)
+
+        if len(path_tuple) >= 100:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+        entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
+        for mode, obj_type, obj_id, raw_name in entries:
+            name = raw_name.decode("utf-8", errors="surrogateescape")
+            if "/" in name or "\0" in name or name in (".", "..", ""):
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+            if name in current_node.children:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+            child_path_tuple = path_tuple + (name,)
+            child_rel_path = "/".join(child_path_tuple)
+
+            if obj_type == "tree":
+                if mode not in ("040000", "40000"):
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                current = current.children[part]
-    return root
+                if obj_id in ancestor_oids:
+                    # Cycle detected in Git tree hierarchy
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                child_node = _TrieNode(node_type='tree', mode=mode, object_id=obj_id, explicit=True)
+                current_node.children[name] = child_node
+                all_entries.append(
+                    TreeEntryV2(
+                        mode=mode,
+                        object_type="tree",
+                        object_id=obj_id,
+                        path=child_rel_path,
+                    )
+                )
+                queue.append((child_node, obj_id, child_path_tuple, ancestor_oids + (obj_id,)))
+            elif obj_type == "blob":
+                if mode == GITLINK_MODE_V2:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                elif mode == SYMLINK_MODE_V2:
+                    child_node = _TrieNode(node_type='symlink', mode=mode, object_id=obj_id, explicit=True)
+                elif mode in ("100644", "100755"):
+                    child_node = _TrieNode(node_type='blob', mode=mode, object_id=obj_id, explicit=True)
+                else:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                current_node.children[name] = child_node
+                entry = TreeEntryV2(
+                    mode=mode,
+                    object_type="blob",
+                    object_id=obj_id,
+                    path=child_rel_path,
+                )
+                all_entries.append(entry)
+                leaf_blobs.append(entry)
+            else:
+                # Submodule commits, tags in tree, or unknown types
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+    return root, all_entries, leaf_blobs
+
+
+def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
+    """C3-owned structural enumeration via hierarchical raw Git tree traversal."""
+    root_tree_oid = resolve_commit_tree_sha_v2(repo_root=repo_root, commit_sha=commit_sha)
+    _trie, all_entries, _leaf_blobs = _build_canonical_trie_hierarchical(
+        repo_root=repo_root, root_tree_oid=root_tree_oid
+    )
+    return all_entries
 
 def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str, bytes], initial_dir_fd: int, initial_path: str, count: list[int]) -> None:
     import stat as _stat
@@ -946,20 +1026,45 @@ def materialise_commit_subject_v2(
                         if len(_os.fsencode(proj_path)) >= path_max_limit:
                             raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
 
+            dest_existed = destination.exists()
             # Project capability into destination
-            if not destination.exists():
+            if not dest_existed:
                 destination.mkdir()
 
             import errno as _errno
-            for child in capability.root_locator.iterdir():
-                dest_child = destination / child.name
-                try:
-                    _os.rename(str(child), str(dest_child))
-                except OSError as err:
-                    if err.errno == _errno.EXDEV:
-                        _shutil.move(str(child), str(dest_child))
-                    else:
-                        raise
+            moved_children: list[Path] = []
+            dest_child: Path | None = None
+            try:
+                for child in capability.root_locator.iterdir():
+                    dest_child = destination / child.name
+                    try:
+                        _os.rename(str(child), str(dest_child))
+                    except OSError as err:
+                        if err.errno == _errno.EXDEV:
+                            _shutil.move(str(child), str(dest_child))
+                        else:
+                            raise
+                    moved_children.append(dest_child)
+                    dest_child = None
+            except BaseException as exc:
+                if dest_child is not None and dest_child.exists() and dest_child not in moved_children:
+                    moved_children.append(dest_child)
+                for mc in moved_children:
+                    try:
+                        if mc.is_symlink() or mc.is_file():
+                            mc.unlink()
+                        elif mc.is_dir():
+                            _shutil.rmtree(mc)
+                    except OSError:
+                        pass
+                if not dest_existed:
+                    try:
+                        destination.rmdir()
+                    except OSError:
+                        pass
+                if isinstance(exc, SubjectMaterialisationError):
+                    raise
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
             return MaterialisedCommitSubjectV2(
                 root=destination,
@@ -1004,18 +1109,20 @@ def acquire_materialised_commit_subject_v2(
             ) as authority:
                 trusted_root = authority.trusted_repo_root
                 commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
-                entries = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=commit_sha)
-                blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
-                content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
+                root_tree_oid = resolve_commit_tree_sha_v2(repo_root=trusted_root, commit_sha=commit_sha)
+                trie, _all_entries, leaf_blobs = _build_canonical_trie_hierarchical(
+                    repo_root=trusted_root, root_tree_oid=root_tree_oid
+                )
+                content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=leaf_blobs)
+                for entry in leaf_blobs:
+                    if entry.mode == SYMLINK_MODE_V2:
+                        target_bytes = content_by_path.get(entry.path)
+                        if not target_bytes or b"\x00" in target_bytes:
+                            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         except TrustedObjectAuthorityError as exc:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-
-        try:
-            trie = _build_and_validate_canonical_trie(entries, content_by_path)
-        except Exception as exc:
-            if isinstance(exc, SubjectMaterialisationError):
-                raise
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
+        except BoundedGitError as exc:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
         # 3. Create epoch root relative to pinned lease
         root_fd, root_name, dest_path = epoch.create_epoch_root()

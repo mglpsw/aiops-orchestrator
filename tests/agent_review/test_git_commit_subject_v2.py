@@ -412,6 +412,7 @@ from app.agent_review.git_commit_subject_v2 import (
     acquire_materialised_commit_subject_v2,
     MaterialisationWorkspaceCapabilityV2,
     materialise_commit_subject_v2,
+    list_commit_tree_structure_v2,
     SubjectMaterialisationError,
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
     SUBJECT_MATERIALISATION_RACE_REASON_V2,
@@ -526,6 +527,75 @@ def test_c3_orphan_redirect(tmp_path):
         ("040000", "tree", t_z, "z")
     ])
     commit = run_git(["commit-tree", root_tree, "-m", "orphan"], cwd=repo)
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_c3_structural_fidelity_rejects_entry_name_with_embedded_slash(tmp_path):
+    """STRUCTURAL_PROJECTION_FIDELITY: LossyProjection cannot_be IdentityAuthority.
+
+    A malformed or crafted git tree with an entry name containing a slash ('a/b')
+    must be rejected at the structural boundary, rather than flattening and synthesizing
+    intermediate parent directories.
+    """
+    import binascii
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob_sha = hash_blob(repo, "hello")
+    bin_sha = binascii.unhexlify(blob_sha)
+    tree_content = b"100644 a/b\0" + bin_sha
+    tree_sha = subprocess.run(
+        ["git", "hash-object", "--literally", "-w", "-t", "tree", "--stdin"],
+        input=tree_content,
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout.decode().strip()
+    commit = run_git(["commit-tree", tree_sha, "-m", "embedded_slash"], cwd=repo)
+
+    with pytest.raises(SubjectMaterialisationError) as exc:
+        materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+    assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+    with pytest.raises(SubjectMaterialisationError) as exc_struct:
+        list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit)
+    assert exc_struct.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_c3_structural_fidelity_rejects_tree_cycle(tmp_path):
+    """STRUCTURAL_PROJECTION_FIDELITY: Detects and rejects cycles in git tree hierarchies."""
+    from unittest.mock import patch
+    from app.agent_review import git_commit_subject_v2
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "content")
+    root_tree = make_tree(repo, [("100644", "blob", blob1, "f.txt")])
+    commit = run_git(["commit-tree", root_tree, "-m", "cycle_test"], cwd=repo)
+
+    # Mock _list_single_tree_entries_v2 so that root_tree returns a child tree pointing back to root_tree
+    orig_list = git_commit_subject_v2._list_single_tree_entries_v2
+    def cyclic_list(*, repo_root, tree_oid):
+        if tree_oid == root_tree:
+            return [("040000", "tree", root_tree, b"cyclic_child")]
+        return orig_list(repo_root=repo_root, tree_oid=tree_oid)
+
+    with patch.object(git_commit_subject_v2, "_list_single_tree_entries_v2", side_effect=cyclic_list):
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
+        assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_c3_structural_fidelity_rejects_excessive_tree_depth(tmp_path):
+    """STRUCTURAL_PROJECTION_FIDELITY: Enforces hard limit on tree nesting depth (<= 100)."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob1 = hash_blob(repo, "deep content")
+    curr_tree = make_tree(repo, [("100644", "blob", blob1, "leaf.txt")])
+    for i in range(105):
+        curr_tree = make_tree(repo, [("040000", "tree", curr_tree, f"d{i}")])
+    commit = run_git(["commit-tree", curr_tree, "-m", "105_deep"], cwd=repo)
+
     with pytest.raises(SubjectMaterialisationError) as exc:
         materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
     assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2

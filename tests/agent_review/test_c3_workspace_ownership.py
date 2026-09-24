@@ -1037,3 +1037,94 @@ def test_cm_c3_epoch_detached_descriptors_no_double_close(tmp_path: Path):
     epoch.rollback()
 
     workspace.close()
+
+
+def test_legacy_materialise_failure_atomic_rollback(tmp_path: Path):
+    """Verify that if legacy projection fails mid-way, all partially moved children are rolled back
+    and a newly created destination directory is removed.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f1.txt").write_text("one")
+    (repo / "f2.txt").write_text("two")
+    head = _commit_all(repo, "two files")
+
+    dest = tmp_path / "dest"
+    orig_rename = os.rename
+    call_count = [0]
+
+    def failing_rename(src, dst):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise OSError(18, "EXDEV")
+        return orig_rename(src, dst)
+
+    def failing_move(src, dst):
+        raise OSError(5, "EIO")
+
+    with patch("os.rename", side_effect=failing_rename), patch("shutil.move", side_effect=failing_move):
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
+        assert exc.value.reason_code == SUBJECT_MATERIALISATION_RACE_REASON_V2
+        assert not dest.exists(), "newly created destination must be removed on failure"
+
+
+def test_legacy_materialise_failure_atomic_existing_empty_destination(tmp_path: Path):
+    """Verify that if legacy projection fails mid-way into an existing empty directory,
+    the destination directory is preserved and restored to an empty state.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f1.txt").write_text("one")
+    (repo / "f2.txt").write_text("two")
+    head = _commit_all(repo, "two files")
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    orig_rename = os.rename
+    call_count = [0]
+
+    def failing_rename(src, dst):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise OSError(18, "EXDEV")
+        return orig_rename(src, dst)
+
+    def failing_move(src, dst):
+        raise OSError(5, "EIO")
+
+    with patch("os.rename", side_effect=failing_rename), patch("shutil.move", side_effect=failing_move):
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
+        assert exc.value.reason_code == SUBJECT_MATERIALISATION_RACE_REASON_V2
+        assert dest.exists(), "pre-existing destination directory must be preserved"
+        assert list(dest.iterdir()) == [], "pre-existing destination must be restored to empty"
+
+
+def test_cm_c3_interruption_during_detachment_rollback_safe(tmp_path: Path):
+    """Verify that if KeyboardInterrupt strikes inside commit()'s try block, descriptors
+    are released, workspace directory is cleaned up, and caller's finally does not leak.
+    """
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("content")
+    head = _commit_all(repo, "commit")
+
+    initial_fds = count_open_fds()
+
+    with patch(
+        "app.agent_review.git_commit_subject_v2.MaterialisedCommitSubjectCapabilityV2.__init__",
+        side_effect=KeyboardInterrupt("simulated interruption"),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+    workspace.close()
