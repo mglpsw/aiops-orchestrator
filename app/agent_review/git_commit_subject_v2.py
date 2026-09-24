@@ -525,13 +525,13 @@ def materialise_commit_subject_v2(
             authorized_storage_roots=authorized_storage_roots
         ) as capability:
             # Check PATH_MAX limitations before projection
-            MAX_PATH = 4096
+            MAX_PATH = _os.pathconf(str(destination.parent), "PC_PATH_MAX") if hasattr(_os, "pathconf") else 4096
             # Use a quick os.walk on root_locator to determine max length
             for root, dirs, files in _os.walk(capability.root_locator):
                 for name in dirs + files:
                     rel_path = _os.path.relpath(_os.path.join(root, name), capability.root_locator)
                     proj_path = destination / rel_path
-                    if len(str(proj_path).encode('utf-8', errors='surrogateescape')) > MAX_PATH:
+                    if len(str(proj_path).encode('utf-8', errors='surrogateescape')) >= MAX_PATH:
                         raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
 
             # Project capability into destination
