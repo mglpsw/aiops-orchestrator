@@ -207,93 +207,102 @@ class MaterialisedCommitSubjectCapabilityV2:
 
 
 def _fd_rmtree(dir_fd: int) -> None:
-    """Removes all contents of the given directory file descriptor iteratively.
+    """Removes all contents of the given directory file descriptor.
 
-    This is immune to CM-C3-CLEANUP-SWAP because it operates strictly relative
-    to file descriptors, never traversing the parent namespace.
-    Uses an explicit stack instead of recursion to prevent RecursionError on deep trees.
-    Guarantees no file descriptor leaks even on error.
+    Adjudicates RESOURCE_BOUNDED_AUTHORITY_CLOSURE:
+    - Simultaneously-live authority handles (file descriptors) during cleanup are O(1)
+      and strictly bounded independently of tree depth (peak live FD delta is constant).
+    - Avoids accumulating open ancestor descriptors in kernel tables, preventing EMFILE
+      under constrained descriptor limits (countermodel CM-C3-CLEANUP-FD-DEPTH).
+    - Traversal state is stored as logical component paths in heap memory, reacquiring
+      directory descriptors descriptor-relatively with O_NOFOLLOW | O_CLOEXEC and closing
+      intermediate handles promptly.
+    - Immune to symlink redirection, parent namespace substitution, and descriptor leaks:
+      all descriptors are closed in try...finally blocks immediately.
+    - Preserves canonical C3 cleanup contract: complete epoch removal for canonical
+      unmodified trees; best-effort removal for namespaces mutated post-handoff by
+      equivalent host authority; mandatory descriptor release in all cases.
     """
     import os as _os
 
-    # Stack item: [cur_fd, subdirs, name, parent_fd]
-    # For the root (level 0), name=None, parent_fd=None. Caller owns root dir_fd.
-    root_subdirs: list[str] = []
-    try:
-        with _os.scandir(dir_fd) as it:
-            for entry in it:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        root_subdirs.append(entry.name)
-                    else:
-                        _os.unlink(entry.name, dir_fd=dir_fd)
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    def _open_rel(components: tuple[str, ...]) -> int:
+        cur = _os.dup(dir_fd)
+        for comp in components:
+            try:
+                nxt = _os.open(
+                    comp,
+                    _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                    dir_fd=cur,
+                )
+            finally:
+                _os.close(cur)
+            cur = nxt
+        return cur
 
-    stack: list[list] = [[dir_fd, root_subdirs, None, None]]
+    # Traversal frame: (components_tuple, unvisited_subdirs_or_None)
+    # The stack holds heap-allocated logical path tuples, NOT open kernel file descriptors.
+    stack: list[tuple[tuple[str, ...], list[str] | None]] = [((), None)]
 
-    try:
-        while stack:
-            cur_fd, subdirs, name, parent_fd = stack[-1]
-            if subdirs:
-                child_name = subdirs.pop()
-                try:
-                    child_fd = _os.open(
-                        child_name,
-                        _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
-                        dir_fd=cur_fd,
-                    )
-                except OSError:
-                    # Best effort removal if open failed
-                    try:
-                        _os.rmdir(child_name, dir_fd=cur_fd)
-                    except OSError:
+    while stack:
+        comps, subdirs = stack[-1]
+        if subdirs is None:
+            # First visit: scan directory and unlink non-directories immediately
+            try:
+                cur_fd = dir_fd if comps == () else _open_rel(comps)
+            except OSError:
+                # Directory cannot be opened (e.g. removed or became a symlink)
+                stack.pop()
+                continue
+
+            found_subdirs: list[str] = []
+            try:
+                with _os.scandir(cur_fd) as it:
+                    for entry in it:
                         try:
-                            _os.unlink(child_name, dir_fd=cur_fd)
+                            if entry.is_dir(follow_symlinks=False):
+                                found_subdirs.append(entry.name)
+                            else:
+                                _os.unlink(entry.name, dir_fd=cur_fd)
                         except OSError:
                             pass
-                    continue
+            except OSError:
+                pass
+            finally:
+                if cur_fd != dir_fd:
+                    try:
+                        _os.close(cur_fd)
+                    except OSError:
+                        pass
 
-                child_subdirs: list[str] = []
+            stack[-1] = (comps, found_subdirs)
+        elif subdirs:
+            child_name = subdirs.pop()
+            stack.append((comps + (child_name,), None))
+        else:
+            # Post-order: all subdirs of comps have been processed
+            stack.pop()
+            if comps:
+                parent_comps = comps[:-1]
+                child_name = comps[-1]
                 try:
-                    with _os.scandir(child_fd) as it:
-                        for entry in it:
+                    p_fd = dir_fd if parent_comps == () else _open_rel(parent_comps)
+                except OSError:
+                    p_fd = None
+
+                if p_fd is not None:
+                    try:
+                        _os.rmdir(child_name, dir_fd=p_fd)
+                    except OSError:
+                        try:
+                            _os.unlink(child_name, dir_fd=p_fd)
+                        except OSError:
+                            pass
+                    finally:
+                        if p_fd != dir_fd:
                             try:
-                                if entry.is_dir(follow_symlinks=False):
-                                    child_subdirs.append(entry.name)
-                                else:
-                                    _os.unlink(entry.name, dir_fd=child_fd)
+                                _os.close(p_fd)
                             except OSError:
                                 pass
-                except OSError:
-                    pass
-
-                stack.append([child_fd, child_subdirs, child_name, cur_fd])
-            else:
-                frame = stack.pop()
-                fd_to_close = frame[0]
-                frame[0] = -1
-                if frame[3] is not None:
-                    try:
-                        _os.close(fd_to_close)
-                    except OSError:
-                        pass
-                    try:
-                        _os.rmdir(frame[2], dir_fd=frame[3])
-                    except OSError:
-                        pass
-    finally:
-        # Guarantee no leaked descriptors if an unexpected error occurs
-        for frame in stack[1:]:
-            fd = frame[0]
-            if fd != -1:
-                frame[0] = -1
-                try:
-                    _os.close(fd)
-                except OSError:
-                    pass
 
 
 class OperationWorkspaceLeaseV2:
