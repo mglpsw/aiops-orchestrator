@@ -533,16 +533,17 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     except OSError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
         
+    stack = []
     try:
         try:
             root_entries = list(os.scandir(root_fd))
         except OSError as exc:
             raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
             
-        stack = [(root_fd, "", root_entries)]
+        stack.append((root_fd, "", root_entries))
         
         while stack:
-            if len(stack) > 100:
+            if len(stack) > 101:
                 raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2)
                 
             current_fd, current_rel, entries = stack[-1]
