@@ -1128,3 +1128,87 @@ def test_cm_c3_interruption_during_detachment_rollback_safe(tmp_path: Path):
     assert count_open_fds() == initial_fds
     assert not any(tmp_path.glob("c3_*"))
     workspace.close()
+
+
+def test_c3_hardened_umask_restores_owner_directory_access(tmp_path: Path):
+    """Verify that private epoch root and child directories restore owner traversal
+    and read/write permissions regardless of ambient umask masking owner bits (e.g. 0177).
+
+    Countermodel CM-C3-HARDENED-UMASK-DIRECTORY-ACCESS:
+    A worker process with a hardened umask (e.g. 0177) masks owner execute bit.
+    Without explicit chmod restoring S_IRWXU:
+    1. mkdir(root_name, 0700) creates the directory as 0600.
+    2. open(root_name, O_DIRECTORY) fails with EACCES (PermissionError).
+    3. Child directory mkdir creates subdirectories as 0600.
+    4. Opening child_fd fails with EACCES, reporting an erroneous materialisation race.
+    With the fix, owner access is restored immediately before opening descriptors.
+    """
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    # 1. Test direct MaterialisationEpochV2.create_epoch_root under hardened umasks
+    for mask in [0o177, 0o700, 0o377]:
+        old_umask = os.umask(mask)
+        try:
+            lease = workspace.pin()
+            epoch = MaterialisationEpochV2(lease)
+            root_fd, root_name, dest_path = epoch.create_epoch_root()
+            try:
+                st = os.fstat(root_fd)
+                assert (st.st_mode & stat.S_IRWXU) == stat.S_IRWXU, (
+                    f"Epoch root mode {oct(st.st_mode)} missing S_IRWXU under umask {oct(mask)}"
+                )
+                assert stat.S_IMODE(st.st_mode) == 0o700
+            finally:
+                epoch.rollback()
+                lease.close()
+        finally:
+            os.umask(old_umask)
+
+    # 2. Test full acquire_materialised_commit_subject_v2 with umask 0177 on materialization
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "dirA" / "subB").mkdir(parents=True)
+    (repo / "dirA" / "subB" / "file.txt").write_text("hello deep")
+    (repo / "dirA" / "script.sh").write_text("#!/bin/sh\nexit 0")
+    (repo / "dirA" / "script.sh").chmod(0o755)
+    (repo / "top.txt").write_text("top content")
+    head = _commit_all(repo, "commit with nested tree")
+
+    import app.agent_review.git_commit_subject_v2 as gcs
+    orig_create = MaterialisationEpochV2.create_epoch_root
+    orig_mat = gcs._materialise_trie_no_follow
+
+    def create_under_0177(self):
+        prev = os.umask(0o177)
+        try:
+            return orig_create(self)
+        finally:
+            os.umask(prev)
+
+    def mat_under_0177(root_node, content_by_path, initial_dir_fd, initial_path, count):
+        prev = os.umask(0o177)
+        try:
+            return orig_mat(root_node, content_by_path, initial_dir_fd, initial_path, count)
+        finally:
+            os.umask(prev)
+
+    with patch.object(MaterialisationEpochV2, "create_epoch_root", create_under_0177), \
+         patch("app.agent_review.git_commit_subject_v2._materialise_trie_no_follow", mat_under_0177):
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=head, workspace=workspace
+        ) as cap:
+            root_path = cap.root_locator
+            assert (root_path / "top.txt").read_text() == "top content"
+            assert (root_path / "dirA" / "subB" / "file.txt").read_text() == "hello deep"
+            assert (root_path / "dirA" / "script.sh").exists()
+            st_root = os.stat(root_path)
+            assert (st_root.st_mode & stat.S_IRWXU) == stat.S_IRWXU
+            st_dir = os.stat(root_path / "dirA")
+            assert (st_dir.st_mode & stat.S_IRWXU) == stat.S_IRWXU
+            st_sub = os.stat(root_path / "dirA" / "subB")
+            assert (st_sub.st_mode & stat.S_IRWXU) == stat.S_IRWXU
+
+    assert not any(tmp_path.glob("c3_*"))
+    workspace.close()

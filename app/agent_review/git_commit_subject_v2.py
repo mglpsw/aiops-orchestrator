@@ -365,6 +365,7 @@ class MaterialisationEpochV2:
 
     def create_epoch_root(self) -> tuple[int, str, Path]:
         import os as _os
+        import stat as _stat
         import uuid as _uuid
         root_name = f"c3_{_uuid.uuid4().hex}"
         try:
@@ -375,6 +376,13 @@ class MaterialisationEpochV2:
         # Immediately register root_name for rollback in case open or subsequent steps fail
         self.root_name = root_name
         dest_path = self.lease.pool_locator / root_name
+
+        try:
+            # Ensure private epoch root has owner read/write/execute access (0o700)
+            # regardless of caller's ambient umask before opening or populating.
+            _os.chmod(root_name, 0o700, dir_fd=self.lease.pool_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
         try:
             root_fd = _os.open(
@@ -883,6 +891,20 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 try:
                     _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
                 except FileExistsError as exc:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+                try:
+                    # Ensure child directory has owner read/write/execute access (0o700)
+                    # regardless of ambient umask before opening or populating.
+                    stat_before = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
+                    if (stat_before.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+                        _os.chmod(
+                            name_bytes,
+                            stat_before.st_mode | _stat.S_IRWXU,
+                            dir_fd=dir_fd,
+                            follow_symlinks=False,
+                        )
+                except OSError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
                 try:
