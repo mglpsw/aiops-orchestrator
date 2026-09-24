@@ -31,7 +31,7 @@
       "name": "PR #341: Component-wise no-follow ingress for caller repo_root",
       "commit": "68eebb5",
       "obligations_affected": [
-        "OBL-C2-01",
+        "OBL-C2A-01",
         "OBL-C4-02"
       ],
       "status": "MERGED_IN_MASTER",
@@ -60,18 +60,33 @@
     },
     {
       "slice_id": "SLICE-OPEN-01",
-      "name": "C2 / #331-B: Authorized external Git storage transitions",
+      "name": "C2_A / #331-B: Authorized external Git storage transitions",
       "issue": "#331-B",
+      "pr": "348",
       "obligations_affected": [
-        "OBL-C2-01"
+        "OBL-C2A-01"
+      ],
+      "status": "IMPLEMENTED_PENDING_EXACT_HEAD_REVIEW",
+      "files_in_scope": [
+        "app/agent_review/trusted_object_authority_v2.py",
+        "app/agent_review/git_commit_subject_v2.py",
+        "app/agent_review/commit_derived_execution_identity_v2.py",
+        "tests/agent_review/test_trusted_object_authority_v2.py"
+      ],
+      "description": "AuthorizedGitStorageSetV2 capability and descriptor-anchored containment enforcement (SafePath != AuthorizedStorage, DescriptorIdentity != ReResolvedPathIdentity)."
+    },
+    {
+      "slice_id": "SLICE-OPEN-01B",
+      "name": "C2_B / #331-B: Host authorization policy and consumer binding",
+      "issue": "#331-B / #46",
+      "obligations_affected": [
+        "OBL-C2B-01"
       ],
       "status": "READY_TO_IMPLEMENT",
       "files_in_scope": [
-        "app/agent_review/trusted_object_authority_v2.py",
-        "app/agent_review/external_path_ingress_v2.py",
-        "tests/agent_review_v2/test_trusted_object_authority_v2.py"
+        "app/agent_review/"
       ],
-      "description": "Structural boundary enforcing SafePath != AuthorizedStorage for external repos and worktrees."
+      "description": "Operational orchestrator wiring binding host-authenticated storage capability to the real review acquisition consumer."
     },
     {
       "slice_id": "SLICE-OPEN-02",

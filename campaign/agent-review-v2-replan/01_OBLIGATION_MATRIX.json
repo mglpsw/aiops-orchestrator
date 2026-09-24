@@ -55,28 +55,52 @@
       "current_status": "in_progress"
     },
     {
-      "obligation_id": "OBL-C2-01",
-      "claim": "C2",
-      "proposition": "Git objects used as review authority originate exclusively from storage explicitly authorized by host trust model (SafePath != AuthorizedStorage).",
-      "truth_maker": "app/agent_review/trusted_object_authority_v2.py and external_path_ingress_v2.py.",
+      "obligation_id": "OBL-C2A-01",
+      "claim": "C2_A",
+      "proposition": "Open descriptors, derived pointers, and alternates are verified and contained within retained AuthorizedGitStorageSetV2 capability descriptors (SafePath != AuthorizedStorage, DescriptorIdentity != ReResolvedPathIdentity).",
+      "truth_maker": "app/agent_review/trusted_object_authority_v2.py (AuthorizedGitStorageSetV2, descriptor containment).",
       "owner": "agent_review_v2_security",
       "applicability": "git_object_acquisition",
       "producer": "trusted_object_authority",
-      "carrier": "#331-B",
+      "carrier": "#331-B (PR #348)",
       "consumer": "materialization_and_diff_engine",
-      "closure_predicate": "Host trust boundary rejects repos or worktrees outside authorized root paths or containing unverified commondir pointers.",
+      "closure_predicate": "Storage capability verifier rejects unauthorized repo roots, escapes outside retained descriptors, and TOCTOU pathname retargeting.",
       "evidence_class": "adversarial_negative_witnesses",
       "countermodels": [
         "CM-C2-01: External repo path outside authorized boundary accepted because path contains no '..'.",
-        "CM-C2-02: Linked worktree commondir pointing to arbitrary host filesystem location is traversed."
+        "CM-C2-02: Linked worktree commondir pointing to arbitrary host filesystem location is traversed.",
+        "CM-C2-F2: Swapped directory at authorized pathname accepted after descriptor acquisition."
       ],
       "positive_controls": [
-        "Valid in-tree repository and declared external path within authorized boundary pass validation."
+        "Valid in-tree repository and declared external storage within authorized capability pass validation."
       ],
-      "known_limitations": "Host must configure explicit authorized storage roots.",
-      "invalidation": "Storage path accepted solely based on lexical safety pattern without root verification.",
+      "known_limitations": "Enforces roots provided to capability; does not prove caller authorization to supply roots.",
+      "invalidation": "Storage path accepted solely based on lexical safety pattern or pathname re-resolution without descriptor containment.",
       "current_issue_carrier": "#331-B",
-      "current_status": "selected_first_slice"
+      "current_status": "implemented_pending_exact_head_qualification"
+    },
+    {
+      "obligation_id": "OBL-C2B-01",
+      "claim": "C2_B",
+      "proposition": "The capability consumed by the operational AgentReview acquisition path originates from a host/base-owned trust decision and the real consumer is required to traverse it.",
+      "truth_maker": "Operational orchestration wiring binding host trust policy to acquisition pipeline consumers.",
+      "owner": "agent_review_v2_security",
+      "applicability": "orchestrator_acquisition_wiring",
+      "producer": "host_trust_policy",
+      "carrier": "#331-B / #46",
+      "consumer": "materialise_commit_subject_v2 and operational runner",
+      "closure_predicate": "Operational review acquisition pipeline cannot be invoked without a host-qualified storage capability.",
+      "evidence_class": "integration_contracts",
+      "countermodels": [
+        "CM-C2-03: Operational review consumer runs against caller-supplied path without host capability verification."
+      ],
+      "positive_controls": [
+        "End-to-end review acquisition runs exclusively with host-authenticated storage capability."
+      ],
+      "known_limitations": "Host trust policy generation requires runner host integration.",
+      "invalidation": "Operational consumer defaults to unconstrained self-contained mode or unauthenticated path inputs.",
+      "current_issue_carrier": "#331-B",
+      "current_status": "open"
     },
     {
       "obligation_id": "OBL-C3-01",

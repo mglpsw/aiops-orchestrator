@@ -31,7 +31,7 @@ DEFAULT REVIEW ENGINE (v2 authoritative, v1 preserved as fallback)
 **Objective:** Validate that all primitive components (C1 through C8) function with full adversarial isolation before attempting integrated end-to-end execution.
 
 **Gate Criteria (All Must Be Satisfied):**
-1. **C2 Storage Boundary Closed (#331-B):** Host authorized-storage verifier rejects all unauthorized repo roots and worktree commondir paths.
+1. **C2_A Storage Capability Closed (#331-B, PR #348):** Descriptor-anchored capability verifier rejects all unauthorized repo roots, escapes outside retained descriptors, and pathname re-binding.
 2. **C3 Tree Materialization Closed (#304):** Commit extraction into isolated sandbox byte-matches git tree OIDs with zero path escapes.
 3. **C4 Execution Provenance Closed (#301, #333):** Subprocess test execution runs in clean, scrubbed environment with verified bytecode.
 4. **C5 Semantic Coverage Closed (#298):** Authoritative diff chunker accounts for 100% of hunks without silent drops.
@@ -49,6 +49,7 @@ DEFAULT REVIEW ENGINE (v2 authoritative, v1 preserved as fallback)
 2. Complete dataflow from raw Git repository input to consumable `ReviewReadinessV2` output.
 3. Rejection of replayed, forged, or unauthenticated intermediate tokens.
 4. Deterministic byte-reproducibility across repeated runs on identical subjects.
+5. **C2_B Host Authorization & Consumer Binding (#331-B / #46):** Operational review acquisition pipeline originates from a host/base-owned trust decision and the real consumer is required to traverse it (`C2 = C2_A ∧ C2_B` fully closed).
 
 ---
 

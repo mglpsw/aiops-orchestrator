@@ -15,11 +15,12 @@
 ```mermaid
 flowchart TD
     %% Base Anchors
-    M0["AOCM Adoption & Reconciliation Freeze<br/>(PR #344, PR #345 @ master@c58eecd)"] --> C2
-    
     %% Critical Path Chain
-    C2["C2 / #331-B<br/>Authorized Git Storage Transitions<br/>(SafePath != AuthorizedStorage)"]
-    C2 --> C3["C3 / #304<br/>Canonical Tree Materialization<br/>(Blob-faithful sandbox extraction)"]
+    M0["AOCM Adoption & Reconciliation Freeze<br/>(PR #344, PR #345 @ master@c58eecd)"] --> C2A
+    C2A["C2_A / #331-B<br/>Storage Capability Enforcement (PR #348)<br/>(DescriptorIdentity != ReResolvedPathIdentity)"]
+    C2A --> C3["C3 / #304<br/>Canonical Tree Materialization<br/>(Blob-faithful sandbox extraction)"]
+    C2A -.-> C2B["C2_B / #331-B, #46<br/>Host Policy & Consumer Binding<br/>(Operational Provenance)"]
+    C2B -.-> G5
     
     subgraph C4_Preconditions ["C4 Preconditions (Closed in Master)"]
         direction TB
@@ -60,8 +61,8 @@ flowchart TD
     classDef blocked fill:#e2e3e5,stroke:#6c757d,stroke-width:1px;
     
     class M0,P321,P319,P341 closed;
-    class C2,C9,C10 ready;
-    class C3,C4,C5,C6,C78,G5,C12,C13,C14 blocked;
+    class C2A,C9,C10 ready;
+    class C2B,C3,C4,C5,C6,C78,G5,C12,C13,C14 blocked;
 ```
 
 ---
@@ -73,7 +74,7 @@ The primary critical path consists of strictly dependent transformations:
 ```text
 Knowledge / Claim Freeze (PR #344, PR #345)
   ↓
-C2: Authorized Git Storage Transitions (#331-B)  <-- FIRST UNCLOSED CRITICAL OBLIGATION
+C2_A: Storage Capability Enforcement (#331-B, PR #348)  <-- IMPLEMENTED, PENDING EXACT-HEAD REVIEW
   ↓
 C3: Canonical Tree Materialization (#304)
   ↓

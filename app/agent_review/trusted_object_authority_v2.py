@@ -203,12 +203,13 @@ import errno
 import fcntl
 import hashlib
 import os
+import threading
 import secrets
 import shutil
 import stat
 import tempfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -216,6 +217,7 @@ from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 
 __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_ANCESTRY_UNDETERMINED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2",
@@ -223,17 +225,25 @@ __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
+    "AuthorizedGitStorageSetV2",
     "TrustedObjectAuthorityError",
     "TrustedObjectAuthorityV2",
     "open_trusted_object_authority_v2",
 ]
 
 
+TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2 = (
+    "trusted_object_authority_storage_unauthorized"
+)
 TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2 = "trusted_object_authority_repository_unusable"
 TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2 = "trusted_object_authority_acquisition_failed"
+TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2 = "trusted_object_authority_conflicting_policies"
 TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2 = "trusted_object_authority_budget_exceeded"
 TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2 = "trusted_object_authority_forged_capability"
 TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2 = "trusted_object_authority_object_collision"
@@ -617,7 +627,49 @@ def _close_ignoring_errors_v2(fd: int) -> None:
         pass
 
 
-def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) -> int:
+def _is_fd_within_authorized_roots(
+    fd: int,
+    *,
+    logical_path: Path,
+    authorized_roots: tuple[Path, ...],
+) -> bool:
+    """Validate that the directory reached at `fd` (and resolved along
+    `logical_path` via component-by-component no-follow opens) is within
+    at least one of the caller/host-authorized storage roots.
+
+    NOFOLLOW_SAFE_PATH != AUTHORIZED_STORAGE (#331-B):
+    Prevent hostile checkouts from pointing gitdir:, commondir, or
+    objects/info/alternates to arbitrary readable host storage.
+
+    Authorized roots are pre-bound at call entry without subsequent
+    pathname re-resolution, closing TOCTOU retargeting across policy checks.
+    """
+    # 1. Check using Linux procfs dentry tracking if available
+    try:
+        proc_link = os.readlink(f"/proc/self/fd/{fd}")
+        proc_path = Path(proc_link)
+        for bound_root in authorized_roots:
+            if proc_path == bound_root or proc_path.is_relative_to(bound_root):
+                return True
+    except (OSError, ValueError):
+        pass
+
+    # 2. Check using tracked logical path from no-follow component traversal
+    for bound_root in authorized_roots:
+        if logical_path == bound_root or logical_path.is_relative_to(bound_root):
+            return True
+
+    return False
+
+
+def _open_dir_by_segments_no_follow_v2(
+    *,
+    base_fd: int | None,
+    path_str: str,
+    base_path: Path | None = None,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
+    authorized_roots: tuple[Path, ...] | None = None,
+) -> int:
     """Resolve `path_str` (absolute or relative, possibly multi-segment --
     e.g. a `commondir` file's `../..`, or a `gitdir:` pointer's absolute
     target) ONE COMPONENT AT A TIME, each opened no-follow relative to the
@@ -643,6 +695,10 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     (git's own `commondir`/`gitdir:` conventions legitimately use `..` to
     walk up from a private worktree gitdir to the shared one).
 
+    If `authorized_roots` is supplied (#331-B), the resulting directory fd
+    is checked against those roots; an escape beyond the authorized roots
+    raises `TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2`.
+
     Fd bookkeeping (fixed after independent review found a real defect in
     an earlier version of this function): `open_fds` always contains
     EXACTLY the fd(s) this function is currently responsible for closing.
@@ -665,6 +721,7 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     if path.is_absolute():
         first_fd = _open_dir_no_follow_v2(None, "/")
         remaining = parts[1:]
+        current_logical = Path("/")
     else:
         if base_fd is None:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
@@ -673,6 +730,12 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
         except OSError as exc:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
         remaining = parts
+        if base_path is None:
+            try:
+                base_path = Path(os.readlink(f"/proc/self/fd/{base_fd}"))
+            except (OSError, ValueError):
+                base_path = Path(".")
+        current_logical = base_path
 
     if len(remaining) > _DEFAULT_MAX_PATH_SEGMENTS_V2:
         _close_ignoring_errors_v2(first_fd)
@@ -684,6 +747,10 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
             next_fd = _open_dir_no_follow_v2(open_fds[-1], segment)
             open_fds.append(next_fd)
             stale_fd = open_fds.pop(0)
+            if segment == "..":
+                current_logical = current_logical.parent
+            elif segment != ".":
+                current_logical = current_logical / segment
             try:
                 os.close(stale_fd)
             except OSError as exc:
@@ -694,7 +761,26 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
         for fd in open_fds:
             _close_ignoring_errors_v2(fd)
         raise
-    return open_fds[0]
+
+    final_fd = open_fds[0]
+    if authorized_storage is not None:
+        if not authorized_storage.contains_fd(
+            final_fd, logical_path=current_logical
+        ):
+            _close_ignoring_errors_v2(final_fd)
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+            )
+    elif authorized_roots is not None:
+        if not _is_fd_within_authorized_roots(
+            final_fd, logical_path=current_logical, authorized_roots=authorized_roots
+        ):
+            _close_ignoring_errors_v2(final_fd)
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+            )
+
+    return final_fd
 
 
 def _verify_loose_object_hash_v2(*, expected_sha_hex: str, compressed: bytes) -> None:
@@ -790,7 +876,256 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
     return _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
 
 
-def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
+class AuthorizedGitStorageSetV2:
+    """Storage capability enforcement for AgentReview v2 (#331-B, C2_A).
+
+    Encapsulates a bounded set of storage roots from which Git objects,
+    worktree gitdirs, commondirs, and alternates may be acquired.
+
+    ASSURANCE & PROVENANCE BOUNDARY (AOCM-M1):
+    StorageCapabilityEnforcement != StorageCapabilityProvenance
+    MechanismQualified != ProducerBindingProven
+
+    `AuthorizedGitStorageSetV2` strictly ENFORCES the roots it was given;
+    qualification of WHO possesses authority to supply those roots is a separate
+    relation (C2_B, operational host-policy / consumer binding). Passing a raw
+    `Sequence[Path | str]` to `from_roots()` does not intrinsically make the
+    roots host-qualified: a raw sequence can serve as a trusted-boundary
+    factory input ONLY when its caller is already the named authority for that
+    decision.
+
+    CONTRACT & INVARIANTS:
+    1. Descriptor-anchoring: Every root is opened component-by-component no-follow
+       at construction time, capturing the kernel dentry path and (dev, ino).
+       Retained descriptors pin the authorized roots against filesystem mutation.
+    2. DescriptorIdentity != ReResolvedPathIdentity: Pathnames are never
+       re-evaluated via `.resolve()` during policy checks, eliminating TOCTOU
+       boundary retargeting (#348, discussion #4086282895).
+    3. Non-Self-Authorization (CM-C2-01): A caller-selected repository locator
+       (repo_root) does NOT automatically authorize itself. It must be proven
+       contained within this authorized storage set.
+    """
+
+    def __init__(
+        self,
+        *,
+        root_fds: Sequence[int],
+        bound_paths: Sequence[Path],
+        bound_dev_ino: Sequence[tuple[int, int]],
+        owns_fds: bool = True,
+    ) -> None:
+        self._root_fds: tuple[int, ...] = tuple(root_fds)
+        self._bound_paths: tuple[Path, ...] = tuple(bound_paths)
+        self._bound_dev_ino: tuple[tuple[int, int], ...] = tuple(bound_dev_ino)
+        self._owns_fds = owns_fds
+        self._closed = False
+        self._lock = threading.Lock()
+
+    @property
+    def bound_paths(self) -> tuple[Path, ...]:
+        return self._bound_paths
+
+    @property
+    def root_fds(self) -> tuple[int, ...]:
+        return self._root_fds
+
+    @classmethod
+    def from_roots(
+        cls,
+        roots: Sequence[Path | str],
+    ) -> AuthorizedGitStorageSetV2:
+        """Construct an authorized storage capability from a sequence of root locators.
+
+        PROVENANCE NOTE: This factory validates and opens the provided root
+        locators component-by-component no-follow, retaining open descriptors.
+        It enforces the roots it was given; it does not authenticate that the
+        caller had authority to declare them. Producer qualification is the
+        responsibility of C2_B.
+        """
+        validated_paths: list[Path] = []
+        open_fds: list[int] = []
+        dev_inos: list[tuple[int, int]] = []
+        try:
+            for item in roots:
+                captured = os.fspath(item)
+                if type(captured) is not str:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+                    )
+                locator = PurePosixPath(captured)
+                if not locator.is_absolute():
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+                    )
+                if ".." in locator.parts:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2
+                    )
+                if len(locator.parts) > _DEFAULT_MAX_PATH_SEGMENTS_V2:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2
+                    )
+                root_fd = _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
+                open_fds.append(root_fd)
+                try:
+                    stat_res = os.fstat(root_fd)
+                    dev_inos.append((stat_res.st_dev, stat_res.st_ino))
+                except OSError as exc:
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+                    ) from exc
+                try:
+                    bound_path = Path(os.readlink(f"/proc/self/fd/{root_fd}"))
+                except (OSError, ValueError):
+                    bound_path = Path(captured)
+                validated_paths.append(bound_path)
+                logical_bound = Path(captured)
+                if logical_bound != bound_path:
+                    validated_paths.append(logical_bound)
+        except BaseException:
+            for fd in open_fds:
+                _close_ignoring_errors_v2(fd)
+            raise
+
+        return cls(
+            root_fds=open_fds,
+            bound_paths=validated_paths,
+            bound_dev_ino=dev_inos,
+            owns_fds=True,
+        )
+
+    @classmethod
+    def from_repository_fd(
+        cls,
+        repo_fd: int,
+        *,
+        logical_path: Path | None = None,
+    ) -> AuthorizedGitStorageSetV2:
+        """Construct a self-contained capability anchored strictly to an already-open repository descriptor."""
+        try:
+            stat_res = os.fstat(repo_fd)
+            dev_ino = (stat_res.st_dev, stat_res.st_ino)
+        except OSError as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+            ) from exc
+        try:
+            proc_path = Path(os.readlink(f"/proc/self/fd/{repo_fd}"))
+        except (OSError, ValueError):
+            proc_path = logical_path if logical_path is not None else Path(".")
+        paths = [proc_path]
+        if logical_path is not None and logical_path != proc_path:
+            paths.append(logical_path)
+        try:
+            dup_fd = os.dup(repo_fd)
+        except OSError as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+            ) from exc
+        return cls(
+            root_fds=[dup_fd],
+            bound_paths=paths,
+            bound_dev_ino=[dev_ino],
+            owns_fds=True,
+        )
+
+    def contains_fd(
+        self,
+        fd: int,
+        *,
+        logical_path: Path | None = None,
+    ) -> bool:
+        """Check whether `fd` is within this authorized storage set.
+
+        INVARIANT: DescriptorIdentity != ReResolvedPathIdentity.
+        Authority is anchored to retained open descriptors and kernel inode
+        identities, never mutable pathnames on disk.
+        """
+        with self._lock:
+            if self._closed:
+                return False
+            private_fds = []
+            try:
+                for root_fd in self._root_fds:
+                    private_fds.append(os.dup(root_fd))
+            except OSError:
+                for pfd in private_fds:
+                    _close_ignoring_errors_v2(pfd)
+                return False
+
+        try:
+            try:
+                target_stat = os.fstat(fd)
+                target_dev_ino = (target_stat.st_dev, target_stat.st_ino)
+            except OSError:
+                return False
+
+            # 1. Direct match (optimization)
+            if target_dev_ino in self._bound_dev_ino:
+                return True
+
+            # 2. Kernel VFS parent traversal via `..` directory descriptors
+            for pfd in private_fds:
+                try:
+                    root_stat = os.fstat(pfd)
+                    root_dev_ino = (root_stat.st_dev, root_stat.st_ino)
+
+                    curr_fd = os.dup(fd)
+                    try:
+                        while True:
+                            parent_fd = os.open("..", os.O_RDONLY | os.O_DIRECTORY, dir_fd=curr_fd)
+                            try:
+                                parent_stat = os.fstat(parent_fd)
+                                parent_dev_ino = (parent_stat.st_dev, parent_stat.st_ino)
+                                if parent_dev_ino == root_dev_ino:
+                                    return True
+
+                                curr_stat = os.fstat(curr_fd)
+                                curr_dev_ino = (curr_stat.st_dev, curr_stat.st_ino)
+                                if parent_dev_ino == curr_dev_ino:
+                                    break
+                            finally:
+                                os.close(curr_fd)
+                                curr_fd = parent_fd
+                    finally:
+                        os.close(curr_fd)
+                except OSError:
+                    continue
+
+            return False
+        finally:
+            for pfd in private_fds:
+                _close_ignoring_errors_v2(pfd)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._owns_fds:
+                for fd in self._root_fds:
+                    _close_ignoring_errors_v2(fd)
+            # Nullify root_fds so any rogue accesses fail visibly rather than reusing
+            self._root_fds = ()
+
+    def __enter__(self) -> AuthorizedGitStorageSetV2:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
+
+def _resolve_git_directories_fd_v2(
+    *,
+    repo_root_fd: int,
+    repo_root_path: Path | None = None,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
+    authorized_roots: tuple[Path, ...] | None = None,
+) -> _GitDirectoriesV2:
     """Resolve both the worktree-private and shared git directories,
     worktree-aware, ENTIRELY via descriptor-anchored opens -- never a git
     invocation (a hostile/malformed live `config` cannot make this fail,
@@ -808,21 +1143,16 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
 
     Refs #331.
     """
-    # `.git` is legitimately EITHER a directory (ordinary repo) OR a
-    # regular file (a `gitdir:` pointer, linked worktree) -- both
-    # expected, common shapes, neither one hostile by itself. `open(...,
-    # O_DIRECTORY | O_NOFOLLOW)` cannot itself distinguish "wrong type
-    # because it's a symlink" from "wrong type because it's an ordinary
-    # regular file" (both raise `ENOTDIR`) -- so which atomic open to
-    # attempt is decided by a preliminary, NON-AUTHORITATIVE
-    # `fstatat`-equivalent classification (`os.stat(..., dir_fd=...,
-    # follow_symlinks=False)`, itself fd-relative, not a re-resolved
-    # absolute pathname). This classification is a HINT only: whichever
-    # branch it selects still goes through the same atomic, no-follow
-    # open as every other path in this module, which is what actually
-    # decides trust -- a symlink planted between the stat and the open
-    # still fails closed (`ELOOP`) at the open, regardless of what the
-    # stat guessed.
+    if repo_root_path is None:
+        try:
+            repo_root_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}"))
+        except (OSError, ValueError) as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+            ) from exc
+    if authorized_roots is None:
+        authorized_roots = (repo_root_path,)
+
     try:
         dotgit_kind = os.stat(".git", dir_fd=repo_root_fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -832,6 +1162,7 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
 
     if dotgit_kind is not None and stat.S_ISDIR(dotgit_kind.st_mode):
         git_dir_fd = _open_dir_no_follow_v2(repo_root_fd, ".git")
+        git_dir_path = repo_root_path / ".git"
     elif dotgit_kind is not None and stat.S_ISREG(dotgit_kind.st_mode):
         dotgit_file_fd = _try_open_file_no_follow_v2(repo_root_fd, ".git")
         if dotgit_file_fd is None:
@@ -850,7 +1181,17 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
         if not first_line.startswith(prefix):
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
         pointed = first_line[len(prefix) :].strip()
-        git_dir_fd = _open_dir_by_segments_no_follow_v2(base_fd=repo_root_fd, path_str=pointed)
+        git_dir_fd = _open_dir_by_segments_no_follow_v2(
+            base_fd=repo_root_fd,
+            path_str=pointed,
+            base_path=repo_root_path,
+            authorized_storage=authorized_storage,
+            authorized_roots=authorized_roots,
+        )
+        try:
+            git_dir_path = Path(os.readlink(f"/proc/self/fd/{git_dir_fd}"))
+        except (OSError, ValueError):
+            git_dir_path = repo_root_path / pointed
     elif dotgit_kind is not None:
         # Exists, but is neither a directory nor a regular file --
         # a symlink or something exotic. Refused loudly.
@@ -864,6 +1205,7 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
             os.close(head_fd)
             os.close(objects_probe_fd)
             git_dir_fd = os.dup(repo_root_fd)
+            git_dir_path = repo_root_path
         else:
             if head_fd is not None:
                 os.close(head_fd)
@@ -878,7 +1220,13 @@ def _resolve_git_directories_fd_v2(*, repo_root_fd: int) -> _GitDirectoriesV2:
                 commondir_file_fd, _ObjectCopyBudgetTrackerV2(_ObjectCopyBudgetV2(1024 * 1024, 1, 0))
             )
             raw_text = raw.decode("utf-8", "surrogateescape").strip()
-            common_dir_fd = _open_dir_by_segments_no_follow_v2(base_fd=git_dir_fd, path_str=raw_text)
+            common_dir_fd = _open_dir_by_segments_no_follow_v2(
+                base_fd=git_dir_fd,
+                path_str=raw_text,
+                base_path=git_dir_path,
+                authorized_storage=authorized_storage,
+                authorized_roots=authorized_roots,
+            )
         else:
             common_dir_fd = os.dup(git_dir_fd)
     except BaseException:
@@ -939,37 +1287,66 @@ def _copy_named_file_fd_v2(source_fd: int, dest: Path, tracker: _ObjectCopyBudge
 
 def _looks_like_git_objects_directory_fd_v2(objects_fd: int) -> bool:
     """Minimal structural sanity check for an ALTERNATE objects directory
-    (never applied to the primary/top-level source). Real git always
-    keeps `objects/` as a direct sibling of `HEAD`, in both a bare
-    repository root and a non-bare `.git` directory alike -- checked here
-    by opening `..` relative to the already-open `objects_fd` (a plain,
-    ordinary directory entry, not a symlink-resolution risk) and then
-    `HEAD` relative to THAT, no-follow, atomically -- never a separate
-    `is_symlink()` observation followed by a later reopen.
+    (never applied to the primary/top-level source).
 
-    Explicitly NOT claimed (inherited from `#200-G1C`): that this proves
-    the directory is a genuine, legitimately-related git repository --
-    only that it is not the much lower-effort degenerate case of an
-    alternates entry pointing at an ordinary, unrelated host directory.
-    Every object actually admitted from a passing alternate is still
-    subject to the identical loose-object hash verification as
-    everything else -- this check is defense in depth layered in front of
-    that verification, never a substitute for it.
+    Standard Git repositories keep `objects/` as a direct sibling of `HEAD`
+    (in both bare and non-bare repositories) -- checked here by opening `..`
+    relative to the already-open `objects_fd` and then `HEAD` relative to that,
+    no-follow, atomically.
+
+    Alternatively (#331-C), Git alternate object stores can legitimately be
+    standalone shared object pools (e.g., /path/to/shared/objects) without a
+    sibling `HEAD`. In that case, `objects_fd` itself must contain structural
+    Git object-store elements: `pack/`, `info/`, or at least one two-hex-prefix
+    fanout directory ('00'..'ff').
+
+    Explicitly NOT claimed: that this proves the directory is a genuine,
+    legitimately-related git repository -- only that it is not the much
+    lower-effort degenerate case of an alternates entry pointing at an
+    ordinary, unrelated host directory. Every object actually admitted from
+    a passing alternate is still subject to the identical loose-object hash
+    verification as everything else -- this check is defense in depth layered
+    in front of that verification, never a substitute for it.
     """
+    # Check 1: Sibling HEAD (typical repo layout: .git/objects or bare/objects)
     try:
         parent_fd = os.open("..", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=objects_fd)
     except OSError:
-        return False
-    try:
-        head_fd = _try_open_file_no_follow_v2(parent_fd, "HEAD")
-        if head_fd is None:
-            return False
-        os.close(head_fd)
+        parent_fd = None
+
+    if parent_fd is not None:
+        try:
+            head_fd = _try_open_file_no_follow_v2(parent_fd, "HEAD")
+            if head_fd is not None:
+                os.close(head_fd)
+                return True
+        except TrustedObjectAuthorityError:
+            pass
+        finally:
+            os.close(parent_fd)
+
+    # Check 2 (#331-C): Standalone object database (shared object pool)
+    # Must contain 'pack' directory, 'info' directory, or at least one 2-hex fanout directory.
+    pack_probe = _try_open_dir_no_follow_v2(objects_fd, "pack")
+    if pack_probe is not None:
+        os.close(pack_probe)
         return True
-    except TrustedObjectAuthorityError:
+
+    info_probe = _try_open_dir_no_follow_v2(objects_fd, "info")
+    if info_probe is not None:
+        os.close(info_probe)
+        return True
+
+    try:
+        with os.scandir(objects_fd) as it:
+            for entry in it:
+                if len(entry.name) == 2 and all(c in "0123456789abcdef" for c in entry.name):
+                    if entry.is_dir(follow_symlinks=False):
+                        return True
+    except OSError:
         return False
-    finally:
-        os.close(parent_fd)
+
+    return False
 
 
 def _parse_alternates_v2(raw: bytes, *, owning_objects_fd: int) -> list[tuple[int | None, str]]:
@@ -1000,6 +1377,8 @@ def _copy_objects_dir_fd_v2(
     visited_dev_ino: set[tuple[int, int]],
     depth: int,
     budget: _ObjectCopyBudgetV2,
+    authorized_storage: AuthorizedGitStorageSetV2 | None = None,
+    authorized_roots: tuple[Path, ...] | None = None,
 ) -> None:
     """Copy every object physically present under one ALREADY-OPEN,
     no-follow `objects/` descriptor, then recursively flatten any
@@ -1096,8 +1475,20 @@ def _copy_objects_dir_fd_v2(
                 alternates_fd = _try_open_file_no_follow_v2(info_fd, "alternates")
                 if alternates_fd is not None:
                     raw = _read_and_close_fd_charged_v2(alternates_fd, tracker)
+                    try:
+                        source_objects_path = Path(
+                            os.readlink(f"/proc/self/fd/{source_objects_fd}")
+                        )
+                    except (OSError, ValueError):
+                        source_objects_path = None
                     for alt_base_fd, alt_path_str in _parse_alternates_v2(raw, owning_objects_fd=source_objects_fd):
-                        alt_fd = _open_dir_by_segments_no_follow_v2(base_fd=alt_base_fd, path_str=alt_path_str)
+                        alt_fd = _open_dir_by_segments_no_follow_v2(
+                            base_fd=alt_base_fd,
+                            path_str=alt_path_str,
+                            base_path=source_objects_path,
+                            authorized_storage=authorized_storage,
+                            authorized_roots=authorized_roots,
+                        )
                         _copy_objects_dir_fd_v2(
                             source_objects_fd=alt_fd,
                             dest_objects_dir=dest_objects_dir,
@@ -1105,6 +1496,8 @@ def _copy_objects_dir_fd_v2(
                             visited_dev_ino=visited_dev_ino,
                             depth=depth + 1,
                             budget=budget,
+                            authorized_storage=authorized_storage,
+                            authorized_roots=authorized_roots,
                         )
             finally:
                 os.close(info_fd)
@@ -1341,8 +1734,10 @@ class TrustedObjectAuthorityV2:
 
 @contextlib.contextmanager
 def open_trusted_object_authority_v2(
-    repo_root: Path,
+    repo_root: Path | str,
     *,
+    authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
     max_total_bytes: int = _DEFAULT_MAX_TOTAL_BYTES_V2,
     max_object_count: int = _DEFAULT_MAX_OBJECT_COUNT_V2,
     max_alternate_depth: int = _DEFAULT_MAX_ALTERNATE_DEPTH_V2,
@@ -1380,103 +1775,180 @@ def open_trusted_object_authority_v2(
     CALLER-SUPPLIED locator only -- `..` remains legal in pointers derived
     from repository content, where git requires it.
 
-    WHAT THIS DOES NOT ESTABLISH. Per-component `O_NOFOLLOW` prevents a
-    symlink component from being FOLLOWED at its authoritative open. It does
-    not make the multi-step walk atomic: a component NOT YET opened can be
-    renamed or replaced concurrently, within one walk as well as between two.
-    A descriptor already retained stays bound to the object it opened even if
-    that directory is later renamed; the limitation concerns components not
-    yet reached.
+    OPERATING MODES & ASSURANCE LEVELS (#331-B, C2):
+    This entrypoint operates in two materially distinct modes with different
+    epistemological assurance levels:
 
-    Two shapes of that limitation, both disclosed rather than implied:
+    * MODE A — SELF_CONTAINED_MODE (No external storage capability provided):
+      When `authorized_storage` and `authorized_storage_roots` are None, the
+      repository descriptor itself becomes the sole bounded storage capability
+      (`AuthorizedGitStorageSetV2.from_repository_fd`). All external storage
+      transitions (`gitdir:`, `commondir`, `objects/info/alternates`) fail
+      closed with `STORAGE_UNAUTHORIZED`.
+      Assurance level: Self-contained repository descriptor confinement.
+      Invariant: `SelfContainedRepositoryConfinement != HostAuthorizedStorage`.
 
-    * An absolute DERIVED pointer restarts the walk from `/`
-      (`_open_dir_by_segments_no_follow_v2` discards `base_fd`), so a linked
-      worktree performs a second, independent pathname walk over components it
-      may share with `repo_root`.
-    * Descending component by component means each intermediate directory is
-      genuinely opened rather than merely traversed, so the walk is observable
-      to a watcher and spans several syscalls instead of one kernel path
-      resolution. An adversary who can already rename ancestor directories can
-      use that to make a rename race more reliable than against a single
-      whole-pathname `os.open`. This cost is accepted because a symlinked
-      ancestor was otherwise followed unconditionally, a strictly easier
-      attack.
+    * MODE B — HOST_AUTHORIZED_MODE (Storage capability provided):
+      When an `AuthorizedGitStorageSetV2` or root sequence is supplied, the
+      caller-selected `repo_root` itself MUST be proven contained within that
+      capability (non-self-authorization, CM-C2-01). External storage
+      transitions succeed only if they remain strictly within that capability.
+      Assurance level: Storage capability enforcement (`C2_A`).
 
-    A stronger kernel primitive -- plausibly `openat2` with appropriate
-    resolution flags -- deserves separate investigation. This module does NOT
-    demonstrate that such a primitive would close every rename race, and makes
-    no claim to that effect. `#331-B` owns external-storage authorization and
-    can avoid part of this class by supplying pre-authorized capabilities
-    instead of rediscovering storage by pathname.
+    CLAIM DECOMPOSITION (C2 = C2_A ∧ C2_B):
+    - C2_A (Storage Capability Enforcement): Enforced by this module via
+      `AuthorizedGitStorageSetV2` and descriptor/inode/VFS containment.
+    - C2_B (Host Authorization & Consumer Binding): The relation establishing
+      that the capability consumed by the operational AgentReview acquisition
+      pipeline originates from a host/base-owned trust decision and the real
+      consumer is required to traverse it. C2_B is an open obligation wired
+      in the orchestration layer.
 
-    The third public consumer, `git_commit_subject_v2.materialise_commit_
-    subject_v2`, passes `repo_root` through unchanged and is bound by this
-    same contract.
+    NON-SELF-AUTHORIZATION (CM-C2-01, #348 F1):
+    RepoRootLocator != RepoRootAuthorization
+    CallerSelectedRepository != HostAuthorizedStorage
+    When host-authorized storage is supplied, `repo_root` does NOT automatically
+    authorize itself: it must be contained within the host-authorized capability.
+
+    DESCRIPTOR-BOUND (NO PATH RE-RESOLUTION, #348 F2):
+    DescriptorIdentity != ReResolvedPathIdentity
+    Once opened, repository and storage identity are derived from the open
+    descriptors and kernel VFS dentries, never re-resolved by pathname lookup.
     """
-    repo_root_fd = _open_repo_root_fd_v2(repo_root)
-    try:
-        git_dirs = _resolve_git_directories_fd_v2(repo_root_fd=repo_root_fd)
-    finally:
-        # `_close_ignoring_errors_v2`, not a bare `os.close`: a raising close
-        # here would escape this module's typed-error contract and strand the
-        # descriptors `_resolve_git_directories_fd_v2` just returned.
-        _close_ignoring_errors_v2(repo_root_fd)
-    budget = _ObjectCopyBudgetV2(
-        max_total_bytes=max_total_bytes,
-        max_object_count=max_object_count,
-        max_alternate_depth=max_alternate_depth,
-    )
-    tracker = _ObjectCopyBudgetTrackerV2(budget)
-
-    cas_dir = Path(tempfile.mkdtemp(prefix="agent_review_g1c_cas_v2_"))
-    try:
-        objects_fd = _try_open_dir_no_follow_v2(git_dirs.common_dir_fd, "objects")
-        try:
-            _write_minimal_bare_skeleton_v2(cas_dir)
-            if objects_fd is not None:
-                # `_copy_objects_dir_fd_v2` takes ownership of and closes
-                # `objects_fd` (and every fd it opens) on every exit path,
-                # success OR exception -- so ownership is transferred (and
-                # the outer `finally` told not to double-close) BEFORE the
-                # call, not after: if the call raises, control never
-                # reaches a line placed after it.
-                transferred_fd, objects_fd = objects_fd, None
-                _copy_objects_dir_fd_v2(
-                    source_objects_fd=transferred_fd,
-                    dest_objects_dir=cas_dir / "objects",
-                    tracker=tracker,
-                    visited_dev_ino=set(),
-                    depth=0,
-                    budget=budget,
-                )
-            _copy_refs_fd_v2(
-                common_dir_fd=git_dirs.common_dir_fd,
-                git_dir_fd=git_dirs.git_dir_fd,
-                dest_git_dir=cas_dir,
-                tracker=tracker,
-            )
-        finally:
-            if objects_fd is not None:
-                os.close(objects_fd)
-            os.close(git_dirs.common_dir_fd)
-            os.close(git_dirs.git_dir_fd)
-
-        _verify_pack_integrity_v2(cas_dir)
-
-        marker = secrets.token_bytes(32)
-        (cas_dir / _MARKER_FILENAME_V2).write_bytes(marker)
-
-        try:
-            run_bounded_git_v2(["rev-parse", "--git-dir"], cwd=cas_dir)
-        except BoundedGitError as exc:
-            raise TrustedObjectAuthorityError(
-                TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
-            ) from exc
-
-        authority = TrustedObjectAuthorityV2(
-            cas_root=cas_dir, expected_marker=marker, _sentinel=_BUILD_SENTINEL_V2
+    if authorized_storage is not None and authorized_storage_roots is not None:
+        raise TrustedObjectAuthorityError(
+            TRUSTED_OBJECT_AUTHORITY_CONFLICTING_POLICIES_REASON_V2
         )
-        yield authority
+
+    if isinstance(authorized_storage, AuthorizedGitStorageSetV2):
+        storage_set = authorized_storage
+        owns_storage_set = False
+    elif authorized_storage is not None:
+        storage_set = AuthorizedGitStorageSetV2.from_roots(authorized_storage)
+        owns_storage_set = True
+    elif authorized_storage_roots is not None:
+        storage_set = AuthorizedGitStorageSetV2.from_roots(authorized_storage_roots)
+        owns_storage_set = True
+    else:
+        storage_set = None
+        owns_storage_set = False
+
+    repo_root_fd = None
+    try:
+        repo_root_fd = _open_repo_root_fd_v2(repo_root)
+        try:
+            try:
+                repo_root_proc_path = Path(os.readlink(f"/proc/self/fd/{repo_root_fd}"))
+            except (OSError, ValueError):
+                repo_root_proc_path = None
+
+            captured_root = os.fspath(repo_root)
+            if type(captured_root) is not str:
+                raise TrustedObjectAuthorityError(
+                    TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+                )
+            logical_repo_path = Path(captured_root)
+            if not logical_repo_path.is_absolute():
+                raise TrustedObjectAuthorityError(
+                    TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2
+                )
+
+            active_storage_set: AuthorizedGitStorageSetV2 | None = None
+            owns_active_storage_set = False
+
+            if storage_set is not None:
+                if not storage_set.contains_fd(repo_root_fd, logical_path=logical_repo_path):
+                    raise TrustedObjectAuthorityError(
+                        TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2
+                    )
+                active_storage_set = storage_set
+                owns_active_storage_set = owns_storage_set
+                # Transfer ownership so the outer try-finally doesn't double-close
+                owns_storage_set = False
+            else:
+                active_storage_set = AuthorizedGitStorageSetV2.from_repository_fd(
+                    repo_root_fd, logical_path=logical_repo_path
+                )
+                owns_active_storage_set = True
+
+            try:
+                repo_root_path = repo_root_proc_path if repo_root_proc_path is not None else logical_repo_path
+
+                git_dirs = _resolve_git_directories_fd_v2(
+                    repo_root_fd=repo_root_fd,
+                    repo_root_path=repo_root_path,
+                    authorized_storage=active_storage_set,
+                )
+                try:
+                    # repo_root_fd is no longer needed
+                    _close_ignoring_errors_v2(repo_root_fd)
+                    repo_root_fd = None
+
+                    budget = _ObjectCopyBudgetV2(
+                        max_total_bytes=max_total_bytes,
+                        max_object_count=max_object_count,
+                        max_alternate_depth=max_alternate_depth,
+                    )
+                    tracker = _ObjectCopyBudgetTrackerV2(budget)
+
+                    cas_dir = Path(tempfile.mkdtemp(prefix="agent_review_g1c_cas_v2_"))
+                    try:
+                        objects_fd = _try_open_dir_no_follow_v2(git_dirs.common_dir_fd, "objects")
+                        try:
+                            _write_minimal_bare_skeleton_v2(cas_dir)
+                            if objects_fd is not None:
+                                transferred_fd, objects_fd = objects_fd, None
+                                _copy_objects_dir_fd_v2(
+                                    source_objects_fd=transferred_fd,
+                                    dest_objects_dir=cas_dir / "objects",
+                                    tracker=tracker,
+                                    visited_dev_ino=set(),
+                                    depth=0,
+                                    budget=budget,
+                                    authorized_storage=active_storage_set,
+                                )
+                            _copy_refs_fd_v2(
+                                common_dir_fd=git_dirs.common_dir_fd,
+                                git_dir_fd=git_dirs.git_dir_fd,
+                                dest_git_dir=cas_dir,
+                                tracker=tracker,
+                            )
+                        finally:
+                            if objects_fd is not None:
+                                _close_ignoring_errors_v2(objects_fd)
+                                objects_fd = None
+
+                        _verify_pack_integrity_v2(cas_dir)
+                        marker = secrets.token_bytes(32)
+                        (cas_dir / _MARKER_FILENAME_V2).write_bytes(marker)
+                        try:
+                            run_bounded_git_v2(["rev-parse", "--git-dir"], cwd=cas_dir)
+                        except BoundedGitError as exc:
+                            raise TrustedObjectAuthorityError(
+                                TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+                            ) from exc
+
+                        authority = TrustedObjectAuthorityV2(
+                            cas_root=cas_dir, expected_marker=marker, _sentinel=_BUILD_SENTINEL_V2
+                        )
+                        yield authority
+                    finally:
+                        shutil.rmtree(cas_dir, ignore_errors=True)
+                finally:
+                    if git_dirs.common_dir_fd is not None:
+                        _close_ignoring_errors_v2(git_dirs.common_dir_fd)
+                    if git_dirs.git_dir_fd is not None:
+                        _close_ignoring_errors_v2(git_dirs.git_dir_fd)
+            finally:
+                if owns_active_storage_set and active_storage_set is not None:
+                    active_storage_set.close()
+                    owns_active_storage_set = False
+        finally:
+            if repo_root_fd is not None:
+                _close_ignoring_errors_v2(repo_root_fd)
+                repo_root_fd = None
     finally:
-        shutil.rmtree(cas_dir, ignore_errors=True)
+        if owns_storage_set and storage_set is not None:
+            storage_set.close()
+            owns_storage_set = False
+
