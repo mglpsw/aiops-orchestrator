@@ -510,6 +510,30 @@ def test_legacy_materialise_leaf_permissions_preserve_umask(tmp_path: Path):
         assert reg_mode2 == (0o666 & ~0o077)  # 0600
 
         exec_mode2 = stat.S_IMODE(os.stat(dest2 / "script.sh").st_mode)
-        assert exec_mode2 == (0o777 & ~0o077)  # 0700
+        assert exec_mode2 == (0o600 | 0o111)  # 0711
+    finally:
+        os.umask(orig_umask)
+
+    # 3. Execution-masking umask 0011 (execute bits explicitly restored)
+    orig_umask = os.umask(0o011)
+    try:
+        dest3 = tmp_path / "noexec_umask_dest"
+        dest3.mkdir(mode=0o777)
+
+        materialise_commit_subject_v2(
+            repo_root=repo,
+            ref=head,
+            destination=dest3,
+        )
+
+        # Regular file has no execute bits (0666)
+        reg_mode3 = stat.S_IMODE(os.stat(dest3 / "regular.txt").st_mode)
+        assert reg_mode3 == (0o666 & ~0o011)  # 0666
+        assert not os.access(dest3 / "regular.txt", os.X_OK)
+
+        # Executable file has execute bits explicitly restored
+        exec_mode3 = stat.S_IMODE(os.stat(dest3 / "script.sh").st_mode)
+        assert exec_mode3 == 0o777
+        assert os.access(dest3 / "script.sh", os.X_OK)
     finally:
         os.umask(orig_umask)

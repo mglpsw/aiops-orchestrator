@@ -707,6 +707,7 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_pa
     return root
 
 def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str, bytes], initial_dir_fd: int, initial_path: str, count: list[int]) -> None:
+    import stat as _stat
     # Use an explicit stack to prevent RecursionError on deeply nested trees.
     # Stack items: (node, dir_fd, current_path, list_of_children)
     # We must dup the dir_fd so we can close it when we pop it from the stack,
@@ -754,7 +755,6 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
 
                 # Revalidate symlink
                 stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
-                import stat as _stat
                 if not _stat.S_ISLNK(stat_name.st_mode):
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                 actual_target = _os.readlink(name_bytes, dir_fd=dir_fd)
@@ -766,8 +766,6 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 content = content_by_path[child_path]
                 flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
                 mode = 0o666
-                if child.mode == EXECUTABLE_MODE_V2:
-                    mode = 0o777
                 try:
                     fd = _os.open(name_bytes, flags, mode, dir_fd=dir_fd)
                 except FileExistsError as exc:
@@ -782,6 +780,16 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                         if chunk == 0:
                             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                         written_bytes += chunk
+
+                    if child.mode == EXECUTABLE_MODE_V2:
+                        stat_before = _os.fstat(fd)
+                        _os.fchmod(
+                            fd,
+                            stat_before.st_mode
+                            | _stat.S_IXUSR
+                            | _stat.S_IXGRP
+                            | _stat.S_IXOTH,
+                        )
 
                     # Revalidate after writing
                     stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
