@@ -109,7 +109,7 @@ def test_materialise_writes_nested_directories_and_content(tmp_path: Path) -> No
     (repo / "pkg" / "mod.py").write_text("VALUE = 42\n")
     head = _commit_all(repo, "init")
 
-    with acquire_materialised_commit_subject_v2(repo_root=repo, ref=head, workspace_pool=tmp_path) as capability:
+    with acquire_materialised_commit_subject_v2(repo_root=repo, ref=head, workspace=None) as capability:
         assert capability.commit_sha == head
         assert capability.file_count == 1
         assert (capability.root_locator / "pkg" / "mod.py").read_text() == "VALUE = 42\n"

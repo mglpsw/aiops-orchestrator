@@ -770,7 +770,7 @@ def verify_executed_source_identity_v2(
                 raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
             try:
-                entries = [e for e in list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit) if e.object_type != 'tree']
+                entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit)
             except SubjectMaterialisationError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 

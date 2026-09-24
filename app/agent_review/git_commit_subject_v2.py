@@ -66,12 +66,14 @@ __all__ = [
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
     "MaterialisedCommitSubjectV2",
+    "MaterialisationWorkspaceCapabilityV2",
     "MaterialisedCommitSubjectCapabilityV2",
     "acquire_materialised_commit_subject_v2",
     "SubjectMaterialisationError",
     "TreeEntryV2",
     "compute_subject_digest_v2",
     "list_commit_tree_entries_v2",
+    "list_commit_tree_structure_v2",
     "materialise_commit_subject_v2",
     "resolve_commit_v2",
 ]
@@ -111,45 +113,62 @@ import contextlib
 
 class MaterialisedCommitSubjectCapabilityV2:
     """A bounded capability object representing a canonical materialization epoch.
-    
+
     The capability must be used via a context manager to ensure deterministic lifecycle.
-    
+
     The `root_locator` is provided strictly for backwards-compatible diagnostics and
     logging. It is NON-AUTHORITATIVE. The exact identity of the materialized subject
-    is cryptographically bound to `root_fd` and not the mutable `root_locator` Path.
+    is descriptor-bound to `root_fd` and not the mutable `root_locator` Path.
     """
-    def __init__(self, root_fd: int, root_locator: Path, commit_sha: str, file_count: int):
+    def __init__(
+        self,
+        root_fd: int,
+        root_locator: Path,
+        commit_sha: str,
+        file_count: int,
+        pool_fd: int,
+        root_name: str
+    ):
         self.root_fd = root_fd
         self.root_locator = root_locator
         self.commit_sha = commit_sha
         self.file_count = file_count
+        self.pool_fd = pool_fd
+        self.root_name = root_name
+        self._owned_pool = False
         self._closed = False
-        
+
     def __enter__(self):
         return self
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-        
+
     def close(self):
-        import os
-        import shutil
+        import os as _os
         if not self._closed:
             self._closed = True
             try:
                 if self.root_fd != -1:
                     _fd_rmtree(self.root_fd)
-                    os.close(self.root_fd)
+                    _os.close(self.root_fd)
             except OSError:
                 pass
             try:
-                os.rmdir(self.root_locator)
+                if self.pool_fd != -1 and self.root_name:
+                    _os.rmdir(self.root_name, dir_fd=self.pool_fd)
             except OSError:
                 pass
+            if getattr(self, "_owned_pool", False) and self.pool_fd != -1:
+                try:
+                    _os.close(self.pool_fd)
+                except OSError:
+                    pass
+
 
 def _fd_rmtree(dir_fd: int):
     """Recursively removes all contents of the given directory file descriptor.
-    
+
     This is immune to CM-C3-CLEANUP-SWAP because it operates strictly relative
     to the descriptor, never traversing the parent namespace.
     """
@@ -212,7 +231,7 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
         if exc.reason_code == "bounded_git_command_failed":
             raise SubjectMaterialisationError(SUBJECT_UNKNOWN_COMMIT_REASON_V2) from None
         raise
-    resolved = completed.stdout.decode("utf-8").strip()
+    resolved = completed.stdout.decode("utf-8", errors="surrogateescape").strip()
     if len(resolved) != 40 or any(c not in "0123456789abcdef" for c in resolved):
         # Defensive: `rev-parse --verify ...^{commit}` should always return a
         # full 40-hex sha on success. If it ever doesn't, refuse rather than
@@ -222,12 +241,32 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
 
 
 def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
-    """List every blob and gitlink in `commit_sha`'s tree, straight from git.
-
-    `-z` because paths may contain newlines; the non-`-z` form quotes and
-    escapes them, and re-decoding that is an avoidable source of divergence
-    between what git recorded and what is written out.
+    """Predecessor leaf-oriented semantics.
+    Does not include trees. Only blobs and gitlinks.
     """
+    completed = run_bounded_git_v2(["ls-tree", "-r", "-z", commit_sha], cwd=repo_root)
+    entries: list[TreeEntryV2] = []
+    for record in completed.stdout.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            mode, object_type, object_id = metadata.decode("utf-8").split(" ", 2)
+        except ValueError as exc:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+        entries.append(
+            TreeEntryV2(
+                mode=mode,
+                object_type=object_type,
+                object_id=object_id,
+                path=raw_path.decode("utf-8", errors="surrogateescape"),
+            )
+        )
+    return entries
+
+
+def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
+    """C3-owned structural enumeration using -r -t -z."""
     completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
     entries: list[TreeEntryV2] = []
     for record in completed.stdout.split(b"\0"):
@@ -238,18 +277,17 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
             mode, object_type, object_id = metadata.decode("utf-8").split(" ", 2)
         except ValueError as exc:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-        # surrogateescape: git paths are bytes. Decoding strictly would refuse
-        # a legitimately non-UTF-8 path, which is a property of the commit's
-        # history, not an error on our side.
         entries.append(
             TreeEntryV2(
                 mode=mode,
                 object_type=object_type,
                 object_id=object_id,
-                path=raw_path.decode("utf-8", "surrogateescape"),
+                path=raw_path.decode("utf-8", errors="surrogateescape"),
             )
         )
     return entries
+
+
 
 
 def read_commit_blobs_v2(
@@ -352,11 +390,11 @@ def _build_and_validate_canonical_trie(entries: list[TreeEntryV2], content_by_pa
 def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str, bytes], initial_dir_fd: int, initial_path: str, count: list[int]) -> None:
     # Use an explicit stack to prevent RecursionError on deeply nested trees.
     # Stack items: (node, dir_fd, current_path, list_of_children)
-    # We must dup the dir_fd so we can close it when we pop it from the stack, 
+    # We must dup the dir_fd so we can close it when we pop it from the stack,
     # except for the initial_dir_fd which the caller owns (we will dup it for the root).
-    
+
     stack = [(root_node, _os.dup(initial_dir_fd), initial_path, list(root_node.children.items()))]
-    
+
     try:
         while stack:
             node, dir_fd, current_path, children_items = stack[-1]
@@ -364,29 +402,29 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 stack.pop()
                 _os.close(dir_fd)
                 continue
-                
+
             name, child = children_items.pop()
             name_bytes = _os.fsencode(name)
             child_path = current_path + "/" + name if current_path else name
-            
+
             if child.node_type == 'tree':
                 try:
                     _os.mkdir(name_bytes, mode=0o777, dir_fd=dir_fd)
                 except FileExistsError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-                    
+
                 try:
                     child_fd = _os.open(name_bytes, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=dir_fd)
                 except OSError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-                    
+
                 # Bind created directories: ensure it is completely empty
                 if _os.listdir(child_fd):
                     _os.close(child_fd)
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
-                
+
                 stack.append((child, child_fd, child_path, list(child.children.items())))
-                
+
             elif child.node_type == 'symlink':
                 content = content_by_path[child_path]
                 target = content.decode("utf-8", "surrogateescape")
@@ -394,7 +432,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                     _os.symlink(target, name_bytes, dir_fd=dir_fd)
                 except FileExistsError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-                
+
                 # Revalidate symlink
                 stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
                 import stat as _stat
@@ -404,7 +442,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 if actual_target != content:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                 count[0] += 1
-                
+
             elif child.node_type == 'blob':
                 content = content_by_path[child_path]
                 flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW
@@ -417,7 +455,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
                 except OSError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
-                
+
                 try:
                     written_bytes = 0
                     while written_bytes < len(content):
@@ -425,10 +463,10 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                         if chunk == 0:
                             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
                         written_bytes += chunk
-                        
+
                     if child.mode == EXECUTABLE_MODE_V2:
                         _os.fchmod(fd, 0o755)
-                        
+
                     # Revalidate after writing
                     stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
                     stat_fd = _os.fstat(fd)
@@ -455,50 +493,66 @@ def materialise_commit_subject_v2(
     authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> MaterialisedCommitSubjectV2:
     """Legacy compatibility wrapper. Do not use for new authoritative checks.
-    
-    This function delegates to `acquire_materialised_commit_subject_v2` and
-    leaves the capability open, shifting the TOCTOU risk and cleanup burden
-    onto the caller.
+
+    This function projects the canonical descriptor-bound subject into the
+    legacy Path destination. It preserves existing empty directories, but
+    remains vulnerable to TOCTOU and namespace swapping AFTER projection.
+
+    Returns a legacy non-authoritative MaterialisedCommitSubjectV2.
     """
     import os as _os
     import shutil as _shutil
-    
-    destination = Path(destination)
+
+    destination = Path(destination).resolve()
+
+    # Missing parent behavior
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
     if destination.exists() and not destination.is_dir():
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
     if destination.exists() and any(destination.iterdir()):
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
-    
-    workspace_pool = destination.parent
-    capability = acquire_materialised_commit_subject_v2(
-        repo_root=repo_root,
-        ref=ref,
-        workspace_pool=workspace_pool,
-        authorized_storage=authorized_storage,
-        authorized_storage_roots=authorized_storage_roots
-    )
-    
-    _os.close(capability.root_fd)
-    capability._closed = True
-    try:
-        if destination.exists():
-            _os.rmdir(destination)
-        _shutil.move(capability.root_locator, destination)
-    except Exception as exc:
-        _shutil.rmtree(capability.root_locator, ignore_errors=True)
-        raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
-    
-    return MaterialisedCommitSubjectV2(
-        root=destination,
-        commit_sha=capability.commit_sha,
-        file_count=capability.file_count
-    )
+
+    pool_locator = destination.parent
+    pool_fd = _os.open(pool_locator, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
+
+    with MaterialisationWorkspaceCapabilityV2(pool_fd, pool_locator, owns_pool=True) as workspace:
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo_root,
+            ref=ref,
+            workspace=workspace,
+            authorized_storage=authorized_storage,
+            authorized_storage_roots=authorized_storage_roots
+        ) as capability:
+            # Check PATH_MAX limitations before projection
+            MAX_PATH = 4096
+            # Use a quick os.walk on root_locator to determine max length
+            for root, dirs, files in _os.walk(capability.root_locator):
+                for name in dirs + files:
+                    rel_path = _os.path.relpath(_os.path.join(root, name), capability.root_locator)
+                    proj_path = destination / rel_path
+                    if len(str(proj_path).encode('utf-8', errors='surrogateescape')) > MAX_PATH:
+                        raise SubjectMaterialisationError(SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2)
+
+            # Project capability into destination
+            if not destination.exists():
+                destination.mkdir(mode=0o700)
+
+            for child in capability.root_locator.iterdir():
+                _shutil.move(str(child), str(destination / child.name))
+
+            return MaterialisedCommitSubjectV2(
+                root=destination,
+                commit_sha=capability.commit_sha,
+                file_count=capability.file_count
+            )
+
 
 def acquire_materialised_commit_subject_v2(
     *,
     repo_root: Path,
     ref: str,
-    workspace_pool: Path,
+    workspace: MaterialisationWorkspaceCapabilityV2 | None = None,
     authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
     authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> MaterialisedCommitSubjectCapabilityV2:
@@ -508,10 +562,12 @@ def acquire_materialised_commit_subject_v2(
     limitations. Refusals from it arrive as `SUBJECT_TREE_UNREADABLE_REASON_V2`
     with the specific code on `__cause__`.
 
-    Write `ref`'s resolved commit's committed bytes into an empty private directory.
+    Write `ref`'s resolved commit's committed bytes into an empty private
+    authority-owned directory.
     """
     import os as _os
     import tempfile as _tempfile
+    import secrets as _secrets
 
     try:
         with open_trusted_object_authority_v2(
@@ -521,7 +577,7 @@ def acquire_materialised_commit_subject_v2(
         ) as authority:
             trusted_root = authority.trusted_repo_root
             commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
-            entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=commit_sha)
+            entries = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=commit_sha)
             blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
             content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
     except TrustedObjectAuthorityError as exc:
@@ -534,14 +590,34 @@ def acquire_materialised_commit_subject_v2(
             raise
         raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
 
+    owned_workspace = False
+    if workspace is None:
+        pool_locator = Path(_tempfile.gettempdir())
+        pool_locator.mkdir(parents=True, exist_ok=True)
+        pool_fd = _os.open(pool_locator, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
+        workspace = MaterialisationWorkspaceCapabilityV2(pool_fd, pool_locator, owns_pool=True)
+        owned_workspace = True
+
     try:
-        dest_path = Path(_tempfile.mkdtemp(dir=workspace_pool))
-        root_fd = _os.open(dest_path, _os.O_RDONLY | _os.O_DIRECTORY)
+        for _ in range(100):
+            root_name = f"subject-{_secrets.token_hex(8)}"
+            try:
+                _os.mkdir(root_name, 0o700, dir_fd=workspace.pool_fd)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+
+        dest_path = workspace.pool_locator / root_name
+        root_fd = _os.open(
+            root_name,
+            _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+            dir_fd=workspace.pool_fd
+        )
     except OSError as exc:
-        try:
-            _os.rmdir(dest_path)
-        except Exception:
-            pass
+        if owned_workspace:
+            workspace.close()
         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
     written = [0]
@@ -554,17 +630,34 @@ def acquire_materialised_commit_subject_v2(
             pass
         _os.close(root_fd)
         try:
-            _os.rmdir(dest_path)
+            _os.rmdir(root_name, dir_fd=workspace.pool_fd)
         except OSError:
             pass
-        
+
+        if owned_workspace:
+            workspace.close()
+
         if isinstance(exc, SubjectMaterialisationError):
             raise
         raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
-    return MaterialisedCommitSubjectCapabilityV2(
-        root_fd=root_fd, root_locator=dest_path, commit_sha=commit_sha, file_count=written[0]
+    cap = MaterialisedCommitSubjectCapabilityV2(
+        root_fd=root_fd,
+        root_locator=dest_path,
+        commit_sha=commit_sha,
+        file_count=written[0],
+        pool_fd=workspace.pool_fd,
+        root_name=root_name
     )
+
+    if owned_workspace:
+        workspace.owns_pool = False
+        cap._owned_pool = True
+    else:
+        cap._owned_pool = False
+
+    return cap
+
 
 
 def compute_subject_digest_v2(subject_root: Path) -> str:
@@ -662,3 +755,32 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
 
     entries = [record for _key, record in sorted(keyed_entries)]
     return hashlib.sha256(b"\n".join(entries)).hexdigest()
+
+class MaterialisationWorkspaceCapabilityV2:
+    """A host-owned workspace capability for private materialization.
+
+    This establishes the authority of the pool directory where private
+    epochs are constructed, ensuring the epoch parent relation is
+    descriptor-bound and immune to pathname swapping.
+    """
+    def __init__(self, pool_fd: int, pool_locator: Path, owns_pool: bool = True):
+        self.pool_fd = pool_fd
+        self.pool_locator = pool_locator
+        self.owns_pool = owns_pool
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        import os as _os
+        if not self._closed:
+            self._closed = True
+            if self.owns_pool and self.pool_fd != -1:
+                try:
+                    _os.close(self.pool_fd)
+                except OSError:
+                    pass
