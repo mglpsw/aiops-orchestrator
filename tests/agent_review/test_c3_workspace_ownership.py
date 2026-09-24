@@ -764,3 +764,75 @@ def test_reject_non_blob_object_for_blob_entry(tmp_path: Path):
         read_commit_blobs_v2(repo_root=repo, entries=[malformed_entry])
 
     assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_reject_non_blob_object_for_symlink_entry(tmp_path: Path):
+    """Verify read_commit_blobs_v2 rejects non-blob objects behind symlink-mode (120000) entries."""
+    import subprocess
+    import pytest
+    from app.agent_review.git_commit_subject_v2 import (
+        read_commit_blobs_v2,
+        TreeEntryV2,
+        SubjectMaterialisationError,
+        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+    )
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    subdir = repo / "subdir"
+    subdir.mkdir()
+    (subdir / "inner.txt").write_text("inner")
+    head = _commit_all(repo, "commit")
+
+    tree_sha = subprocess.run(
+        ["git", "rev-parse", f"{head}:subdir"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    malformed_entry = TreeEntryV2(
+        mode="120000",
+        object_type="blob",
+        object_id=tree_sha,
+        path="bogus_symlink",
+    )
+
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        read_commit_blobs_v2(repo_root=repo, entries=[malformed_entry])
+
+    assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_cm_c3_listdir_failure_does_not_leak_child_fd(tmp_path: Path):
+    """Verify child_fd is closed immediately if os.listdir raises an exception during directory creation."""
+    import errno
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    subdir = repo / "subdir"
+    subdir.mkdir()
+    (subdir / "inner.txt").write_text("inner")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    orig_listdir = os.listdir
+    def failing_listdir(path):
+        if isinstance(path, int):
+            raise OSError(errno.EIO, "Simulated I/O error during listdir")
+        return orig_listdir(path)
+
+    with patch("os.listdir", side_effect=failing_listdir):
+        with pytest.raises(SubjectMaterialisationError):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    # All descriptors including the failed child_fd must be closed
+    assert count_open_fds() == initial_fds
+
+    workspace.close()

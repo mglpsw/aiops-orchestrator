@@ -749,12 +749,17 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 except OSError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
-                # Bind created directories: ensure it is completely empty
-                if _os.listdir(child_fd):
-                    _os.close(child_fd)
-                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                transferred = False
+                try:
+                    # Bind created directories: ensure it is completely empty
+                    if _os.listdir(child_fd):
+                        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
 
-                stack.append((child, child_fd, child_path, list(child.children.items())))
+                    stack.append((child, child_fd, child_path, list(child.children.items())))
+                    transferred = True
+                finally:
+                    if not transferred:
+                        _os.close(child_fd)
 
             elif child.node_type == 'symlink':
                 content = content_by_path[child_path]
