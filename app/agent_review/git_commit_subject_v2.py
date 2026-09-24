@@ -160,6 +160,12 @@ class MaterialisedCommitSubjectCapabilityV2:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    def __del__(self):
+        try:
+            self.close()
+        except BaseException:
+            pass
+
     def close(self):
         """Close and clean up the materialised subject capability.
 
@@ -329,6 +335,12 @@ class OperationWorkspaceLeaseV2:
                 except OSError:
                     pass
 
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
 
 class MaterialisationEpochV2:
     """Linearizable transaction managing a private epoch under an operation lease.
@@ -414,6 +426,7 @@ class MaterialisationEpochV2:
         root_name = self.root_name
         pool_fd = self.lease.pool_fd
 
+        cap: MaterialisedCommitSubjectCapabilityV2 | None = None
         try:
             cap = MaterialisedCommitSubjectCapabilityV2(
                 root_fd=root_fd,
@@ -424,17 +437,21 @@ class MaterialisationEpochV2:
                 root_name=root_name,
                 owns_pool_fd=True,
             )
+            # Ownership transferred successfully
+            self.root_fd = -1
+            self.root_name = None
+            self.lease.pool_fd = -1
+            self.lease._closed = True
+            self._committed = True
+            return cap
         except BaseException:
+            if cap is not None:
+                try:
+                    cap.close()
+                except BaseException:
+                    pass
             self.rollback()
             raise
-
-        # Ownership transferred successfully
-        self.root_fd = -1
-        self.root_name = None
-        self.lease.pool_fd = -1
-        self.lease._closed = True
-        self._committed = True
-        return cap
 
 
 class MaterialisationWorkspaceCapabilityV2:
@@ -519,6 +536,12 @@ class MaterialisationWorkspaceCapabilityV2:
                     _os.close(fd)
                 except OSError:
                     pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
 
 
 @dataclass(frozen=True)
@@ -936,7 +959,8 @@ def acquire_materialised_commit_subject_v2(
     lease = workspace.pin()
     epoch = MaterialisationEpochV2(lease)
 
-    committed = False
+    cap: MaterialisedCommitSubjectCapabilityV2 | None = None
+    transferred_to_caller = False
     try:
         # 2. Trusted Git authority & canonical trie validation
         try:
@@ -978,10 +1002,15 @@ def acquire_materialised_commit_subject_v2(
             file_count=written[0],
             dest_path=dest_path,
         )
-        committed = True
+        transferred_to_caller = True
         return cap
     finally:
-        if not committed:
+        if not transferred_to_caller:
+            if cap is not None:
+                try:
+                    cap.close()
+                except BaseException:
+                    pass
             epoch.rollback()
 
 

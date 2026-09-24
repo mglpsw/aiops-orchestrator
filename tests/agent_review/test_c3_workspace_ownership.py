@@ -913,3 +913,95 @@ def test_cm_c3_interruption_during_epoch_commit_rolls_back(tmp_path: Path):
     assert not any(tmp_path.glob("c3_*"))
 
     workspace.close()
+
+
+def test_cm_c3_interruption_during_commit_ownership_mutation_cleans_capability(tmp_path: Path):
+    """Verify BaseException during ownership mutation inside epoch.commit cleans capability and rolls back."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    orig_init = MaterialisedCommitSubjectCapabilityV2.__init__
+    def failing_mutation(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        raise KeyboardInterrupt("Simulated Ctrl+C right after capability creation")
+
+    with patch.object(MaterialisedCommitSubjectCapabilityV2, "__init__", failing_mutation):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    # Capability and epoch must be fully cleaned up
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
+
+
+def test_cm_c3_interruption_between_commit_and_caller_return_cleans_capability(tmp_path: Path):
+    """Verify BaseException after epoch.commit returns but before returning to caller cleans capability."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    from app.agent_review.git_commit_subject_v2 import MaterialisationEpochV2
+    orig_commit = MaterialisationEpochV2.commit
+    def interrupting_commit(self, *args, **kwargs):
+        orig_commit(self, *args, **kwargs)
+        raise KeyboardInterrupt("Simulated Ctrl+C before caller receives capability")
+
+    with patch.object(MaterialisationEpochV2, "commit", interrupting_commit):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
+
+
+def test_cm_c3_abandoned_capability_closed_by_finalizer(tmp_path: Path):
+    """Verify abandoned capability is cleaned up when collected by finalizer."""
+    import gc
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    cap = acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=head, workspace=workspace
+    )
+    assert count_open_fds() > initial_fds
+    assert any(tmp_path.glob("c3_*"))
+
+    # Abandon cap without calling cap.close()
+    del cap
+    gc.collect()
+
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
