@@ -66,6 +66,8 @@ __all__ = [
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
     "MaterialisedCommitSubjectV2",
+    "MaterialisedCommitSubjectCapabilityV2",
+    "acquire_materialised_commit_subject_v2",
     "SubjectMaterialisationError",
     "TreeEntryV2",
     "compute_subject_digest_v2",
@@ -105,8 +107,71 @@ class TreeEntryV2:
     path: str
 
 
+import contextlib
+
+class MaterialisedCommitSubjectCapabilityV2:
+    """A bounded capability object representing a canonical materialization epoch.
+    
+    The capability must be used via a context manager to ensure deterministic lifecycle.
+    
+    The `root_locator` is provided strictly for backwards-compatible diagnostics and
+    logging. It is NON-AUTHORITATIVE. The exact identity of the materialized subject
+    is cryptographically bound to `root_fd` and not the mutable `root_locator` Path.
+    """
+    def __init__(self, root_fd: int, root_locator: Path, commit_sha: str, file_count: int):
+        self.root_fd = root_fd
+        self.root_locator = root_locator
+        self.commit_sha = commit_sha
+        self.file_count = file_count
+        self._closed = False
+        
+    def __enter__(self):
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        
+    def close(self):
+        import os
+        import shutil
+        if not self._closed:
+            self._closed = True
+            try:
+                if self.root_fd != -1:
+                    _fd_rmtree(self.root_fd)
+                    os.close(self.root_fd)
+            except OSError:
+                pass
+            try:
+                os.rmdir(self.root_locator)
+            except OSError:
+                pass
+
+def _fd_rmtree(dir_fd: int):
+    """Recursively removes all contents of the given directory file descriptor.
+    
+    This is immune to CM-C3-CLEANUP-SWAP because it operates strictly relative
+    to the descriptor, never traversing the parent namespace.
+    """
+    import os
+    try:
+        with os.scandir(dir_fd) as it:
+            for entry in it:
+                if entry.is_dir(follow_symlinks=False):
+                    child_fd = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+                    try:
+                        _fd_rmtree(child_fd)
+                    finally:
+                        os.close(child_fd)
+                    os.rmdir(entry.name, dir_fd=dir_fd)
+                else:
+                    os.unlink(entry.name, dir_fd=dir_fd)
+    except OSError:
+        pass
+
 @dataclass(frozen=True)
 class MaterialisedCommitSubjectV2:
+
     """Bytes materialised from one commit's tree, severed from their source."""
 
     root: Path
@@ -389,34 +454,64 @@ def materialise_commit_subject_v2(
     authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
     authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> MaterialisedCommitSubjectV2:
+    """Legacy compatibility wrapper. Do not use for new authoritative checks.
+    
+    This function delegates to `acquire_materialised_commit_subject_v2` and
+    leaves the capability open, shifting the TOCTOU risk and cleanup burden
+    onto the caller.
+    """
+    import os as _os
+    import shutil as _shutil
+    
+    destination = Path(destination)
+    if destination.exists() and not destination.is_dir():
+        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
+    if destination.exists() and any(destination.iterdir()):
+        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
+    
+    workspace_pool = destination.parent
+    capability = acquire_materialised_commit_subject_v2(
+        repo_root=repo_root,
+        ref=ref,
+        workspace_pool=workspace_pool,
+        authorized_storage=authorized_storage,
+        authorized_storage_roots=authorized_storage_roots
+    )
+    
+    _os.close(capability.root_fd)
+    capability._closed = True
+    try:
+        if destination.exists():
+            _os.rmdir(destination)
+        _shutil.move(capability.root_locator, destination)
+    except Exception as exc:
+        _shutil.rmtree(capability.root_locator, ignore_errors=True)
+        raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
+    
+    return MaterialisedCommitSubjectV2(
+        root=destination,
+        commit_sha=capability.commit_sha,
+        file_count=capability.file_count
+    )
+
+def acquire_materialised_commit_subject_v2(
+    *,
+    repo_root: Path,
+    ref: str,
+    workspace_pool: Path,
+    authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
+    authorized_storage_roots: Sequence[Path | str] | None = None,
+) -> MaterialisedCommitSubjectCapabilityV2:
     """`#331-A`: `repo_root` is passed through to
     `open_trusted_object_authority_v2` unchanged and is never `resolve()`d
     here, so this function inherits that authority's locator contract and its
     limitations. Refusals from it arrive as `SUBJECT_TREE_UNREADABLE_REASON_V2`
     with the specific code on `__cause__`.
 
-    `#331-B`: external storage transitions (linked worktrees, alternates)
-    require caller-authorized storage passed in `authorized_storage`.
-
-    Write `ref`'s resolved commit's committed bytes into an empty directory.
-
-    The result is severed from `repo_root`: deleting or rewriting the
-    original checkout afterwards cannot change what was materialised.
-
-    #200-G1C: commit resolution, tree listing, and blob content are all
-    read from a private, remote-less trusted object authority built fresh
-    from `repo_root` (see `trusted_object_authority_v2.py`) -- never from
-    `repo_root` directly. `repo_root` is discovery input only; the object
-    bytes actually written below always come from the private copy. This
-    is unchanged from -- and does not fix or alter -- the write loop that
-    follows: any TOCTOU/symlink-write property of *that* loop belongs to
-    `#200-G1D` (issue #304), a separate, downstream layer this change does
-    not touch.
+    Write `ref`'s resolved commit's committed bytes into an empty private directory.
     """
-    destination = Path(destination)
-    if destination.exists() and any(destination.iterdir()):
-        raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
-    destination.mkdir(parents=True, exist_ok=True)
+    import os as _os
+    import tempfile as _tempfile
 
     try:
         with open_trusted_object_authority_v2(
@@ -430,101 +525,46 @@ def materialise_commit_subject_v2(
             blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
             content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
     except TrustedObjectAuthorityError as exc:
-        try:
-            _os.rmdir(destination)
-        except OSError:
-            pass
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
     try:
         trie = _build_and_validate_canonical_trie(entries, content_by_path)
-    except SubjectMaterialisationError:
+    except Exception as exc:
+        if isinstance(exc, SubjectMaterialisationError):
+            raise
+        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_REASON_V2) from exc
+
+    try:
+        dest_path = Path(_tempfile.mkdtemp(dir=workspace_pool))
+        root_fd = _os.open(dest_path, _os.O_RDONLY | _os.O_DIRECTORY)
+    except OSError as exc:
         try:
-            _os.rmdir(destination)
-        except OSError:
+            _os.rmdir(dest_path)
+        except Exception:
             pass
-        raise
+        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
     written = [0]
     try:
-        dest_path = Path(destination)
-        if dest_path.is_absolute():
-            current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
-            parts = dest_path.parts[1:]
-        else:
-            current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
-            parts = dest_path.parts
-            
+        _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
+    except Exception as exc:
         try:
-            for part in parts:
-                next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
-                _os.close(current_fd)
-                current_fd = next_fd
-            root_fd = current_fd
-            current_fd = None
-        finally:
-            if current_fd is not None:
-                _os.close(current_fd)
-                
-        try:
-            _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
-            
-            # Re-verify the path component-by-component to ensure no parent was swapped for a symlink
-            if dest_path.is_absolute():
-                current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
-            else:
-                current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
-            try:
-                for part in parts:
-                    next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
-                    _os.close(current_fd)
-                    current_fd = next_fd
-                stat_dest2 = _os.fstat(current_fd)
-            finally:
-                if current_fd is not None:
-                    _os.close(current_fd)
-            
-            stat_fd = _os.fstat(root_fd)
-            if stat_dest2.st_dev != stat_fd.st_dev or stat_dest2.st_ino != stat_fd.st_ino:
-                raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2)
-        except Exception as exc:
-            if not isinstance(exc, SubjectMaterialisationError) or exc.reason_code != SUBJECT_PATH_COLLISION_REASON_V2:
-                # We failed, but destination hasn't been proven swapped YET.
-                # Prove it still matches root_fd before deleting!
-                try:
-                    current_fd = None
-                    if dest_path.is_absolute():
-                        current_fd = _os.open(b"/", _os.O_RDONLY | _os.O_DIRECTORY)
-                    else:
-                        current_fd = _os.open(b".", _os.O_RDONLY | _os.O_DIRECTORY)
-                    try:
-                        for part in parts:
-                            next_fd = _os.open(_os.fsencode(part), _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW, dir_fd=current_fd)
-                            _os.close(current_fd)
-                            current_fd = next_fd
-                        stat_dest2 = _os.fstat(current_fd)
-                        
-                        stat_fd = _os.fstat(root_fd)
-                        if stat_dest2.st_dev == stat_fd.st_dev and stat_dest2.st_ino == stat_fd.st_ino:
-                            shutil.rmtree(destination, ignore_errors=True)
-                    finally:
-                        if current_fd is not None:
-                            _os.close(current_fd)
-                except OSError:
-                    pass
-            raise
-        finally:
-            _os.close(root_fd)
-    except SubjectMaterialisationError as exc:
-        raise
-    except OSError as exc:
-        try:
-            _os.rmdir(destination)
+            _fd_rmtree(root_fd)
         except OSError:
             pass
-        raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
+        _os.close(root_fd)
+        try:
+            _os.rmdir(dest_path)
+        except OSError:
+            pass
+        
+        if isinstance(exc, SubjectMaterialisationError):
+            raise
+        raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
-    return MaterialisedCommitSubjectV2(root=destination, commit_sha=commit_sha, file_count=written[0])
+    return MaterialisedCommitSubjectCapabilityV2(
+        root_fd=root_fd, root_locator=dest_path, commit_sha=commit_sha, file_count=written[0]
+    )
 
 
 def compute_subject_digest_v2(subject_root: Path) -> str:

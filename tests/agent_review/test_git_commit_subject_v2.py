@@ -25,6 +25,7 @@ def assert_no_writes():
         m_symlink.assert_not_called()
 
 from app.agent_review.git_commit_subject_v2 import (
+    acquire_materialised_commit_subject_v2,
     SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
     SUBJECT_UNKNOWN_COMMIT_REASON_V2,
     SubjectMaterialisationError,
@@ -108,11 +109,10 @@ def test_materialise_writes_nested_directories_and_content(tmp_path: Path) -> No
     (repo / "pkg" / "mod.py").write_text("VALUE = 42\n")
     head = _commit_all(repo, "init")
 
-    destination = tmp_path / "dest"
-    result = materialise_commit_subject_v2(repo_root=repo, ref=head, destination=destination)
-    assert result.commit_sha == head
-    assert result.file_count == 1
-    assert (destination / "pkg" / "mod.py").read_text() == "VALUE = 42\n"
+    with acquire_materialised_commit_subject_v2(repo_root=repo, ref=head, workspace_pool=tmp_path) as capability:
+        assert capability.commit_sha == head
+        assert capability.file_count == 1
+        assert (capability.root_locator / "pkg" / "mod.py").read_text() == "VALUE = 42\n"
 
 
 def test_digest_is_stable_across_directory_iteration_order(tmp_path: Path) -> None:
@@ -402,6 +402,7 @@ def assert_no_writes():
         m_symlink.assert_not_called()
 from pathlib import Path
 from app.agent_review.git_commit_subject_v2 import (
+    acquire_materialised_commit_subject_v2,
     materialise_commit_subject_v2,
     SubjectMaterialisationError,
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
