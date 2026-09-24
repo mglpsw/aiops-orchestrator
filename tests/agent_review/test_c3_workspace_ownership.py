@@ -1101,6 +1101,58 @@ def test_legacy_materialise_failure_atomic_existing_empty_destination(tmp_path: 
         assert list(dest.iterdir()) == [], "pre-existing destination must be restored to empty"
 
 
+def test_legacy_materialise_reraises_process_control_exception_after_cleanup(tmp_path: Path):
+    """Verify that when projection in materialise_commit_subject_v2 is interrupted by
+    KeyboardInterrupt or SystemExit, rollback cleanup is performed and the process-control
+    exception is re-raised transparently rather than converted to SubjectMaterialisationError.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f1.txt").write_text("one")
+    (repo / "f2.txt").write_text("two")
+    head = _commit_all(repo, "two files")
+
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    orig_rename = os.rename
+    call_count = [0]
+
+    def interrupting_rename(src, dst):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise KeyboardInterrupt("Simulated Ctrl+C during move")
+        return orig_rename(src, dst)
+
+    with patch("os.rename", side_effect=interrupting_rename):
+        with pytest.raises(KeyboardInterrupt):
+            materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
+        assert dest.exists(), "pre-existing destination directory must be preserved"
+        assert list(dest.iterdir()) == [], "pre-existing destination must be restored to empty after interruption"
+
+    # Test with SystemExit
+    call_count[0] = 0
+    def exiting_rename(src, dst):
+        call_count[0] += 1
+        if call_count[0] == 2:
+            raise SystemExit(42)
+        return orig_rename(src, dst)
+
+    with patch("os.rename", side_effect=exiting_rename):
+        with pytest.raises(SystemExit) as exc:
+            materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest)
+        assert exc.value.code == 42
+        assert dest.exists()
+        assert list(dest.iterdir()) == [], "destination must be clean after SystemExit"
+
+    # Test with newly created destination
+    call_count[0] = 0
+    dest_new = tmp_path / "dest_new"
+    with patch("os.rename", side_effect=interrupting_rename):
+        with pytest.raises(KeyboardInterrupt):
+            materialise_commit_subject_v2(repo_root=repo, ref=head, destination=dest_new)
+        assert not dest_new.exists(), "newly created destination must be removed on interruption"
+
+
 def test_cm_c3_interruption_during_detachment_rollback_safe(tmp_path: Path):
     """Verify that if KeyboardInterrupt strikes inside commit()'s try block, descriptors
     are released, workspace directory is cleaned up, and caller's finally does not leak.

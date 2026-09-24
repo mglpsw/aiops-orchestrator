@@ -1107,6 +1107,8 @@ def materialise_commit_subject_v2(
                         destination.rmdir()
                     except OSError:
                         pass
+                if not isinstance(exc, Exception):
+                    raise
                 if isinstance(exc, SubjectMaterialisationError):
                     raise
                 raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
