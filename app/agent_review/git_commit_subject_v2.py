@@ -424,7 +424,7 @@ class MaterialisationEpochV2:
                 root_name=root_name,
                 owns_pool_fd=True,
             )
-        except Exception:
+        except BaseException:
             self.rollback()
             raise
 
@@ -484,17 +484,22 @@ class MaterialisationWorkspaceCapabilityV2:
             except OSError as exc:
                 raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
 
+            lease_created = False
             try:
                 _os.set_inheritable(pinned_fd, False)
-                return OperationWorkspaceLeaseV2(pinned_fd, self.pool_locator)
+                lease = OperationWorkspaceLeaseV2(pinned_fd, self.pool_locator)
+                lease_created = True
+                return lease
             except Exception as exc:
-                try:
-                    _os.close(pinned_fd)
-                except OSError:
-                    pass
                 if isinstance(exc, SubjectMaterialisationError):
                     raise
                 raise SubjectMaterialisationError(SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2) from exc
+            finally:
+                if not lease_created:
+                    try:
+                        _os.close(pinned_fd)
+                    except OSError:
+                        pass
 
     def close(self):
         """Linearly invalidate and close the workspace authority handle.
@@ -815,7 +820,7 @@ def _materialise_trie_no_follow(root_node: _TrieNode, content_by_path: dict[str,
                 finally:
                     _os.close(fd)
                 count[0] += 1
-    except Exception:
+    except BaseException:
         # Clean up any remaining fds in stack
         for _, fd, _, _ in stack:
             try:
@@ -931,6 +936,7 @@ def acquire_materialised_commit_subject_v2(
     lease = workspace.pin()
     epoch = MaterialisationEpochV2(lease)
 
+    committed = False
     try:
         # 2. Trusted Git authority & canonical trie validation
         try:
@@ -967,14 +973,16 @@ def acquire_materialised_commit_subject_v2(
             raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
         # 5. Exactly-once ownership transfer commit
-        return epoch.commit(
+        cap = epoch.commit(
             commit_sha=commit_sha,
             file_count=written[0],
             dest_path=dest_path,
         )
-    except Exception:
-        epoch.rollback()
-        raise
+        committed = True
+        return cap
+    finally:
+        if not committed:
+            epoch.rollback()
 
 
 

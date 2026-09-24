@@ -836,3 +836,80 @@ def test_cm_c3_listdir_failure_does_not_leak_child_fd(tmp_path: Path):
     assert count_open_fds() == initial_fds
 
     workspace.close()
+
+
+def test_cm_c3_interruption_during_git_acquisition_rolls_back_and_releases_descriptors(tmp_path: Path):
+    """Verify KeyboardInterrupt (BaseException) during Git acquisition rolls back the operation lease and conserves FDs."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    with patch("app.agent_review.git_commit_subject_v2.resolve_commit_v2", side_effect=KeyboardInterrupt("Simulated Ctrl+C")):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    # Operation lease pool_fd must be closed, returning FD count to initial
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
+
+
+def test_cm_c3_interruption_during_materialisation_rolls_back_and_cleans_descriptors(tmp_path: Path):
+    """Verify KeyboardInterrupt (BaseException) during trie materialization cleans descriptors and removes directory."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    with patch("app.agent_review.git_commit_subject_v2._materialise_trie_no_follow", side_effect=KeyboardInterrupt("Simulated Ctrl+C")):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    # root_fd and lease pool_fd must be closed, and c3_* directory unlinked
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
+
+
+def test_cm_c3_interruption_during_epoch_commit_rolls_back(tmp_path: Path):
+    """Verify BaseException during epoch commit triggers rollback."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "file.txt").write_text("hello")
+    head = _commit_all(repo, "commit")
+
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    initial_fds = count_open_fds()
+
+    with patch("app.agent_review.git_commit_subject_v2.MaterialisedCommitSubjectCapabilityV2.__init__", side_effect=KeyboardInterrupt("Simulated Ctrl+C")):
+        with pytest.raises(KeyboardInterrupt):
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=head, workspace=workspace
+            )
+
+    assert count_open_fds() == initial_fds
+    assert not any(tmp_path.glob("c3_*"))
+
+    workspace.close()
