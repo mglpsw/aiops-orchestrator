@@ -1005,3 +1005,35 @@ def test_cm_c3_abandoned_capability_closed_by_finalizer(tmp_path: Path):
     assert not any(tmp_path.glob("c3_*"))
 
     workspace.close()
+
+
+def test_cm_c3_epoch_detached_descriptors_no_double_close(tmp_path: Path):
+    """Verify descriptors detached from epoch during commit cannot be double-closed by epoch.rollback."""
+    caller_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    workspace = MaterialisationWorkspaceCapabilityV2(caller_fd, tmp_path)
+    os.close(caller_fd)
+
+    lease = workspace.pin()
+    from app.agent_review.git_commit_subject_v2 import MaterialisationEpochV2
+    epoch = MaterialisationEpochV2(lease)
+    root_fd, root_name, dest_path = epoch.create_epoch_root()
+
+    # Commit transfers ownership to capability
+    cap = epoch.commit(
+        commit_sha="0" * 40,
+        file_count=0,
+        dest_path=dest_path,
+    )
+
+    # Calling epoch.rollback() after commit must NOT close cap descriptors
+    epoch.rollback()
+
+    # Capability must remain fully intact and operational
+    assert cap.root_fd >= 0 and not cap._closed
+    assert os.fstat(cap.root_fd).st_nlink >= 1
+
+    cap.close()
+    # Calling epoch.rollback() again must remain a safe no-op
+    epoch.rollback()
+
+    workspace.close()

@@ -142,17 +142,22 @@ class MaterialisedCommitSubjectCapabilityV2:
         import os as _os
         import threading as _threading
         self._lock = _threading.Lock()
-        self.root_fd = root_fd
+        self._initialized = False
+        self._closed = False
+        self.root_fd = -1
+        self.pool_fd = -1
         self.root_locator = root_locator
         self.commit_sha = commit_sha
         self.file_count = file_count
-        if owns_pool_fd:
-            self.pool_fd = pool_fd
-        else:
-            self.pool_fd = _os.dup(pool_fd)
-            _os.set_inheritable(self.pool_fd, False)
         self.root_name = root_name
-        self._closed = False
+        if owns_pool_fd:
+            assigned_pool_fd = pool_fd
+        else:
+            assigned_pool_fd = _os.dup(pool_fd)
+            _os.set_inheritable(assigned_pool_fd, False)
+        self.root_fd = root_fd
+        self.pool_fd = assigned_pool_fd
+        self._initialized = True
 
     def __enter__(self):
         return self
@@ -161,10 +166,11 @@ class MaterialisedCommitSubjectCapabilityV2:
         self.close()
 
     def __del__(self):
-        try:
-            self.close()
-        except BaseException:
-            pass
+        if getattr(self, "_initialized", False):
+            try:
+                self.close()
+            except BaseException:
+                pass
 
     def close(self):
         """Close and clean up the materialised subject capability.
@@ -422,10 +428,19 @@ class MaterialisationEpochV2:
         if self._committed:
             raise RuntimeError("Epoch already committed")
 
+        # 1. Detach descriptors from epoch and lease BEFORE constructing capability.
+        # This guarantees epoch and lease no longer own these descriptors, preventing
+        # any subsequent rollback() or close() on the epoch/lease from touching them.
         root_fd = self.root_fd
+        self.root_fd = -1
         root_name = self.root_name
+        self.root_name = None
         pool_fd = self.lease.pool_fd
+        self.lease.pool_fd = -1
+        self.lease._closed = True
+        self._committed = True
 
+        import os as _os
         cap: MaterialisedCommitSubjectCapabilityV2 | None = None
         try:
             cap = MaterialisedCommitSubjectCapabilityV2(
@@ -437,12 +452,6 @@ class MaterialisationEpochV2:
                 root_name=root_name,
                 owns_pool_fd=True,
             )
-            # Ownership transferred successfully
-            self.root_fd = -1
-            self.root_name = None
-            self.lease.pool_fd = -1
-            self.lease._closed = True
-            self._committed = True
             return cap
         except BaseException:
             if cap is not None:
@@ -450,7 +459,31 @@ class MaterialisationEpochV2:
                     cap.close()
                 except BaseException:
                     pass
-            self.rollback()
+            else:
+                try:
+                    if root_fd != -1:
+                        try:
+                            _fd_rmtree(root_fd)
+                        except Exception:
+                            pass
+                finally:
+                    if root_fd != -1:
+                        try:
+                            _os.close(root_fd)
+                        except OSError:
+                            pass
+                    try:
+                        if pool_fd != -1 and root_name:
+                            try:
+                                _os.rmdir(root_name, dir_fd=pool_fd)
+                            except OSError:
+                                pass
+                    finally:
+                        if pool_fd != -1:
+                            try:
+                                _os.close(pool_fd)
+                            except OSError:
+                                pass
             raise
 
 
@@ -1011,7 +1044,8 @@ def acquire_materialised_commit_subject_v2(
                     cap.close()
                 except BaseException:
                     pass
-            epoch.rollback()
+            else:
+                epoch.rollback()
 
 
 
