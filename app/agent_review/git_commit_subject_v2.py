@@ -45,13 +45,19 @@ decision.
 
 from __future__ import annotations
 
+import contextvars
 import shutil
 import stat
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import (
+    BoundedGitError,
+    open_bounded_git_subprocess_v2,
+    run_bounded_git_v2,
+)
 from app.agent_review.trusted_object_authority_v2 import (
     AuthorizedGitStorageSetV2,
     TrustedObjectAuthorityError,
@@ -770,37 +776,79 @@ def read_commit_blobs_v2(
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
     try:
-        completed = run_bounded_git_v2(
+        proc = open_bounded_git_subprocess_v2(
             ["cat-file", "--batch"],
             cwd=repo_root,
-            input_bytes=batch_request.encode("utf-8"),
         )
     except BoundedGitError as exc:
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
-    stream = completed.stdout
-    offset = 0
     content_by_path: dict[str, bytes] = {}
     verified_bytes = 0
-    for entry in blobs:
-        header_end = stream.find(b"\n", offset)
-        if header_end == -1:
-            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
-        header = stream[offset:header_end].decode("utf-8", "replace").split(" ")
-        if len(header) == 2 and header[1] == "missing":
-            raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
-        if len(header) != 3:
-            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
-        if header[1] != "blob":
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-        size = int(header[2])
-        verified_bytes += size
-        if verified_bytes > max_expanded_bytes:
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-        body_start = header_end + 1
-        content = stream[body_start : body_start + size]
-        offset = body_start + size + 1
-        content_by_path[entry.path] = content
+    try:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        for entry in blobs:
+            proc.stdin.write(f"{entry.object_id}\n".encode("utf-8"))
+            proc.stdin.flush()
+            header_line = proc.stdout.readline()
+            if not header_line:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            header = header_line.decode("utf-8", "replace").strip().split(" ")
+            if len(header) == 2 and header[1] == "missing":
+                raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
+            if len(header) != 3:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            if header[1] != "blob":
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+            try:
+                size = int(header[2])
+            except ValueError:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            verified_bytes += size
+            if size > max_expanded_bytes or verified_bytes > max_expanded_bytes:
+                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+            chunks: list[bytes] = []
+            remaining = size
+            while remaining > 0:
+                chunk = proc.stdout.read(min(remaining, 65536))
+                if not chunk:
+                    raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            trailing_nl = proc.stdout.read(1)
+            if trailing_nl != b"\n":
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            content_by_path[entry.path] = b"".join(chunks)
+    except (OSError, BoundedGitError) as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+    finally:
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        if proc.stderr:
+            try:
+                proc.stderr.close()
+            except OSError:
+                pass
+        try:
+            proc.terminate()
+            proc.wait(timeout=1)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+                proc.wait()
+            except OSError:
+                pass
+
     return content_by_path
 
 
@@ -817,33 +865,170 @@ class _TrieNode:
     explicit: bool
     children: dict[str, '_TrieNode'] = field(default_factory=dict)
 
-def _list_single_tree_entries_v2(*, repo_root: Path, tree_oid: str) -> list[tuple[str, str, str, bytes]]:
-    """Enumerate immediate children of a single git tree object using 'ls-tree -z <tree_oid>'.
+_ACTIVE_TREE_BATCH_SESSION: contextvars.ContextVar[subprocess.Popen[bytes] | None] = (
+    contextvars.ContextVar("_ACTIVE_TREE_BATCH_SESSION", default=None)
+)
+_ACTIVE_REMAINING_ENTRY_BUDGET: contextvars.ContextVar[int | None] = (
+    contextvars.ContextVar("_ACTIVE_REMAINING_ENTRY_BUDGET", default=None)
+)
 
-    Returns tuples of (mode, object_type, object_id, raw_name_bytes).
-    Does not recurse or flatten hierarchy.
-    """
-    try:
-        completed = run_bounded_git_v2(["ls-tree", "-z", tree_oid], cwd=repo_root)
-    except BoundedGitError as exc:
-        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
+def _parse_tree_data(
+    raw: bytes,
+    oid_len: int,
+    effective_max_entries: int,
+) -> list[tuple[str, str, str, bytes]]:
+    pos = 0
+    raw_len = len(raw)
     entries: list[tuple[str, str, str, bytes]] = []
-    for record in completed.stdout.split(b"\0"):
-        if not record:
-            continue
+
+    while pos < raw_len:
+        space_pos = raw.find(b" ", pos)
+        if space_pos == -1:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        mode_bytes = raw[pos:space_pos]
         try:
-            metadata, raw_name = record.split(b"\t", 1)
-            mode, object_type, object_id = metadata.decode("utf-8").split(" ", 2)
-        except ValueError as exc:
+            mode_str = mode_bytes.decode("ascii")
+        except UnicodeDecodeError as exc:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+        null_pos = raw.find(b"\x00", space_pos)
+        if null_pos == -1:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        raw_name = raw[space_pos + 1 : null_pos]
+
+        sha_end = null_pos + 1 + oid_len
+        if sha_end > raw_len:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        sha_bytes = raw[null_pos + 1 : sha_end]
+        obj_id = sha_bytes.hex()
+        pos = sha_end
 
         # Invariant: Single directory entry must not contain path separators or NUL bytes
         if b"/" in raw_name or b"\0" in raw_name or raw_name in (b".", b"..", b""):
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
-        entries.append((mode, object_type, object_id, raw_name))
+        if mode_str in ("40000", "040000"):
+            obj_type = "tree"
+            mode = "040000"
+        elif mode_str == "160000":
+            obj_type = "commit"
+            mode = mode_str
+        elif mode_str == "120000":
+            obj_type = "blob"
+            mode = mode_str
+        elif mode_str in ("100644", "100755"):
+            obj_type = "blob"
+            mode = mode_str
+        else:
+            obj_type = "unknown"
+            mode = mode_str
+
+        entries.append((mode, obj_type, obj_id, raw_name))
+        if len(entries) > effective_max_entries:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
     return entries
+
+
+def _list_single_tree_entries_v2(
+    *,
+    repo_root: Path,
+    tree_oid: str,
+    max_entries: int | None = None,
+) -> list[tuple[str, str, str, bytes]]:
+    """Enumerate immediate children of a single git tree object.
+
+    Returns tuples of (mode, object_type, object_id, raw_name_bytes).
+    Does not recurse or flatten hierarchy.
+    Adjudicates RESOURCE_BOUNDED_MATERIALIZATION:
+    - Bounded single-tree ingress: rejects oversized raw trees before allocation.
+    - Uses shared batch session when called within hierarchical traversal.
+    """
+    if (len(tree_oid) not in (40, 64)) or any(c not in "0123456789abcdef" for c in tree_oid):
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+    oid_len = len(tree_oid) // 2
+
+    if max_entries is not None:
+        effective_max_entries = max_entries
+    else:
+        ctx_budget = _ACTIVE_REMAINING_ENTRY_BUDGET.get()
+        effective_max_entries = ctx_budget if ctx_budget is not None else MAX_EXPANDED_ENTRIES_V2
+
+    if effective_max_entries < 0:
+        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+    batch_proc = _ACTIVE_TREE_BATCH_SESSION.get()
+    owns_proc = False
+    if batch_proc is None:
+        try:
+            batch_proc = open_bounded_git_subprocess_v2(["cat-file", "--batch"], cwd=repo_root)
+            owns_proc = True
+        except BoundedGitError as exc:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+
+    try:
+        assert batch_proc.stdin is not None
+        assert batch_proc.stdout is not None
+        batch_proc.stdin.write(f"{tree_oid}\n".encode("utf-8"))
+        batch_proc.stdin.flush()
+        header_line = batch_proc.stdout.readline()
+        if not header_line:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        header = header_line.decode("utf-8", "replace").strip().split(" ")
+        if len(header) == 2 and header[1] == "missing":
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        if len(header) != 3:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        if header[1] != "tree":
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        try:
+            size = int(header[2])
+        except ValueError:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+
+        # Mathematical lower bound: each entry is at most 295 bytes.
+        # If size // 295 > effective_max_entries, the tree mathematically cannot
+        # fit within the budget and is rejected immediately without allocating the body.
+        if size // 295 > effective_max_entries:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+        raw = batch_proc.stdout.read(size)
+        if len(raw) != size:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        trailing_nl = batch_proc.stdout.read(1)
+        if trailing_nl != b"\n":
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+
+        return _parse_tree_data(raw, oid_len, effective_max_entries)
+    except (OSError, BoundedGitError) as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+    finally:
+        if owns_proc and batch_proc is not None:
+            if batch_proc.stdin:
+                try:
+                    batch_proc.stdin.close()
+                except OSError:
+                    pass
+            if batch_proc.stdout:
+                try:
+                    batch_proc.stdout.close()
+                except OSError:
+                    pass
+            if batch_proc.stderr:
+                try:
+                    batch_proc.stderr.close()
+                except OSError:
+                    pass
+            try:
+                batch_proc.terminate()
+                batch_proc.wait(timeout=1)
+            except (subprocess.TimeoutExpired, OSError):
+                try:
+                    batch_proc.kill()
+                    batch_proc.wait()
+                except OSError:
+                    pass
 
 
 def _build_canonical_trie_hierarchical(
@@ -866,6 +1051,8 @@ def _build_canonical_trie_hierarchical(
     - Enforces prospective child depth limit (child_depth <= 100).
     - Caches parsed tree OIDs so repeated Git tree OIDs are parsed at most once.
     - Bounded logical entry budget (expanded_entries <= max_expanded_entries).
+    - Distinct-tree subprocess expansion bound: queries all tree objects through
+      one shared batch session (O(1) git subprocesses).
     - Detects cycles in tree references.
     - Collects all leaf blobs and symlinks for batched byte loading via read_commit_blobs_v2.
 
@@ -887,82 +1074,120 @@ def _build_canonical_trie_hierarchical(
         (root, root_tree_oid, (), (root_tree_oid,))
     ]
 
-    while queue:
-        current_node, current_tree_oid, path_tuple, ancestor_oids = queue.pop(0)
+    try:
+        batch_proc = open_bounded_git_subprocess_v2(["cat-file", "--batch"], cwd=repo_root)
+    except BoundedGitError as exc:
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
-        if current_tree_oid in tree_cache:
-            entries = tree_cache[current_tree_oid]
-        else:
-            entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
-            tree_cache[current_tree_oid] = entries
+    token_session = _ACTIVE_TREE_BATCH_SESSION.set(batch_proc)
+    try:
+        while queue:
+            current_node, current_tree_oid, path_tuple, ancestor_oids = queue.pop(0)
 
-        for mode, obj_type, obj_id, raw_name in entries:
-            child_depth = len(path_tuple) + 1
-            if child_depth > 100:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+            if current_tree_oid in tree_cache:
+                entries = tree_cache[current_tree_oid]
+            else:
+                rem_budget = max_expanded_entries - expanded_entries_count
+                token_budget = _ACTIVE_REMAINING_ENTRY_BUDGET.set(rem_budget)
+                try:
+                    entries = _list_single_tree_entries_v2(repo_root=repo_root, tree_oid=current_tree_oid)
+                finally:
+                    _ACTIVE_REMAINING_ENTRY_BUDGET.reset(token_budget)
+                tree_cache[current_tree_oid] = entries
 
-            expanded_entries_count += 1
-            if expanded_entries_count > max_expanded_entries:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-            if max_component_len is not None and len(raw_name) > max_component_len:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-
-            try:
-                name = raw_name.decode("utf-8", errors="surrogateescape")
-                fsencoded = _os.fsencode(name)
-            except (UnicodeError, ValueError) as exc:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
-
-            if max_component_len is not None and len(fsencoded) > max_component_len:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-
-            if "/" in name or "\0" in name or name in (".", "..", ""):
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-
-            if name in current_node.children:
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-
-            child_path_tuple = path_tuple + (name,)
-            child_rel_path = "/".join(child_path_tuple)
-
-            if obj_type == "tree":
-                if mode not in ("040000", "40000"):
+            for mode, obj_type, obj_id, raw_name in entries:
+                child_depth = len(path_tuple) + 1
+                if child_depth > 100:
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                if obj_id in ancestor_oids:
-                    # Cycle detected in Git tree hierarchy
+
+                expanded_entries_count += 1
+                if expanded_entries_count > max_expanded_entries:
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                child_node = _TrieNode(node_type='tree', mode=mode, object_id=obj_id, explicit=True)
-                current_node.children[name] = child_node
-                all_entries.append(
-                    TreeEntryV2(
+                if max_component_len is not None and len(raw_name) > max_component_len:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+                try:
+                    name = raw_name.decode("utf-8", errors="surrogateescape")
+                    fsencoded = _os.fsencode(name)
+                except (UnicodeError, ValueError) as exc:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
+
+                if max_component_len is not None and len(fsencoded) > max_component_len:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+                if "/" in name or "\0" in name or name in (".", "..", ""):
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+                if name in current_node.children:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+                child_path_tuple = path_tuple + (name,)
+                child_rel_path = "/".join(child_path_tuple)
+
+                if obj_type == "tree":
+                    if mode not in ("040000", "40000"):
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    if obj_id in ancestor_oids:
+                        # Cycle detected in Git tree hierarchy
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    child_node = _TrieNode(node_type='tree', mode=mode, object_id=obj_id, explicit=True)
+                    current_node.children[name] = child_node
+                    all_entries.append(
+                        TreeEntryV2(
+                            mode=mode,
+                            object_type="tree",
+                            object_id=obj_id,
+                            path=child_rel_path,
+                        )
+                    )
+                    queue.append((child_node, obj_id, child_path_tuple, ancestor_oids + (obj_id,)))
+                elif obj_type == "blob":
+                    if mode == GITLINK_MODE_V2:
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    elif mode == SYMLINK_MODE_V2:
+                        child_node = _TrieNode(node_type='symlink', mode=mode, object_id=obj_id, explicit=True)
+                    elif mode in ("100644", "100755"):
+                        child_node = _TrieNode(node_type='blob', mode=mode, object_id=obj_id, explicit=True)
+                    else:
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    current_node.children[name] = child_node
+                    entry = TreeEntryV2(
                         mode=mode,
-                        object_type="tree",
+                        object_type="blob",
                         object_id=obj_id,
                         path=child_rel_path,
                     )
-                )
-                queue.append((child_node, obj_id, child_path_tuple, ancestor_oids + (obj_id,)))
-            elif obj_type == "blob":
-                if mode == GITLINK_MODE_V2:
-                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                elif mode == SYMLINK_MODE_V2:
-                    child_node = _TrieNode(node_type='symlink', mode=mode, object_id=obj_id, explicit=True)
-                elif mode in ("100644", "100755"):
-                    child_node = _TrieNode(node_type='blob', mode=mode, object_id=obj_id, explicit=True)
+                    all_entries.append(entry)
+                    leaf_blobs.append(entry)
                 else:
+                    # Submodule commits, tags in tree, or unknown types
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
-                current_node.children[name] = child_node
-                entry = TreeEntryV2(
-                    mode=mode,
-                    object_type="blob",
-                    object_id=obj_id,
-                    path=child_rel_path,
-                )
-                all_entries.append(entry)
-                leaf_blobs.append(entry)
-            else:
-                # Submodule commits, tags in tree, or unknown types
-                raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+    finally:
+        _ACTIVE_TREE_BATCH_SESSION.reset(token_session)
+        if batch_proc.stdin:
+            try:
+                batch_proc.stdin.close()
+            except OSError:
+                pass
+        if batch_proc.stdout:
+            try:
+                batch_proc.stdout.close()
+            except OSError:
+                pass
+        if batch_proc.stderr:
+            try:
+                batch_proc.stderr.close()
+            except OSError:
+                pass
+        try:
+            batch_proc.terminate()
+            batch_proc.wait(timeout=1)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                batch_proc.kill()
+                batch_proc.wait()
+            except OSError:
+                pass
 
     return root, all_entries, leaf_blobs
 
@@ -1183,6 +1408,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
 
     Used when renameat returns EXDEV (cross-filesystem link).
     Never resolves or opens capability.root_locator by path.
+    Adjudicates RESOURCE_BOUNDED_AUTHORITY_CLOSURE:
+    - Simultaneously-live authority handles (file descriptors) are O(1) and strictly bounded
+      independently of tree depth (peak live FD count <= 6).
+    - Traversal state is stored as logical component paths in heap memory.
+    - Ensures newly created destination directories have owner read/write/execute permissions (0o700)
+      regardless of caller's ambient umask during copy, restoring exact source modes in post-order.
     """
     st = _os.stat(name, dir_fd=src_dir_fd, follow_symlinks=False)
     if _stat.S_ISLNK(st.st_mode):
@@ -1216,19 +1447,111 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
             _os.close(src_file_fd)
         _os.unlink(name, dir_fd=src_dir_fd)
     elif _stat.S_ISDIR(st.st_mode):
+        def _open_desc(base_fd: int, components: tuple[str, ...]) -> int:
+            cur = _os.dup(base_fd)
+            _os.set_inheritable(cur, False)
+            for comp in components:
+                try:
+                    nxt = _os.open(
+                        comp,
+                        _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                        dir_fd=cur,
+                    )
+                finally:
+                    _os.close(cur)
+                cur = nxt
+            return cur
+
         _os.mkdir(name, mode=0o700, dir_fd=dst_dir_fd)
-        src_sub_fd = _os.open(name, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=src_dir_fd)
-        try:
-            dst_sub_fd = _os.open(name, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=dst_dir_fd)
-            try:
-                for sub_name in _os.listdir(src_sub_fd):
-                    _copy_entry_descriptor_relative(sub_name, src_sub_fd, dst_sub_fd)
-                _os.fchmod(dst_sub_fd, st.st_mode)
-            finally:
-                _os.close(dst_sub_fd)
-        finally:
-            _os.close(src_sub_fd)
-        _os.rmdir(name, dir_fd=src_dir_fd)
+        st_root = _os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
+        if (st_root.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+            _os.chmod(name, st_root.st_mode | _stat.S_IRWXU, dir_fd=dst_dir_fd, follow_symlinks=False)
+
+        stack: list[tuple[tuple[str, ...], list[tuple[str, int]] | None, int]] = [
+            ((name,), None, st.st_mode)
+        ]
+
+        while stack:
+            comps, subdirs, orig_mode = stack[-1]
+            if subdirs is None:
+                src_cur_fd = _open_desc(src_dir_fd, comps)
+                try:
+                    dst_cur_fd = _open_desc(dst_dir_fd, comps)
+                    try:
+                        found_subdirs: list[tuple[str, int]] = []
+                        with _os.scandir(src_cur_fd) as it:
+                            for entry in it:
+                                sub_name = entry.name
+                                st_entry = _os.stat(sub_name, dir_fd=src_cur_fd, follow_symlinks=False)
+                                if _stat.S_ISLNK(st_entry.st_mode):
+                                    target = _os.readlink(sub_name, dir_fd=src_cur_fd)
+                                    _os.symlink(target, sub_name, dir_fd=dst_cur_fd)
+                                    _os.unlink(sub_name, dir_fd=src_cur_fd)
+                                elif _stat.S_ISREG(st_entry.st_mode):
+                                    s_file_fd = _os.open(
+                                        sub_name,
+                                        _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
+                                        dir_fd=src_cur_fd,
+                                    )
+                                    try:
+                                        d_file_fd = _os.open(
+                                            sub_name,
+                                            _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC,
+                                            st_entry.st_mode,
+                                            dir_fd=dst_cur_fd,
+                                        )
+                                        try:
+                                            while True:
+                                                chunk = _os.read(s_file_fd, 65536)
+                                                if not chunk:
+                                                    break
+                                                written = 0
+                                                while written < len(chunk):
+                                                    n = _os.write(d_file_fd, chunk[written:])
+                                                    if n == 0:
+                                                        raise OSError("write returned 0 bytes")
+                                                    written += n
+                                            _os.fchmod(d_file_fd, st_entry.st_mode)
+                                        finally:
+                                            _os.close(d_file_fd)
+                                    finally:
+                                        _os.close(s_file_fd)
+                                    _os.unlink(sub_name, dir_fd=src_cur_fd)
+                                elif _stat.S_ISDIR(st_entry.st_mode):
+                                    _os.mkdir(sub_name, mode=0o700, dir_fd=dst_cur_fd)
+                                    st_sub = _os.stat(sub_name, dir_fd=dst_cur_fd, follow_symlinks=False)
+                                    if (st_sub.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+                                        _os.chmod(
+                                            sub_name,
+                                            st_sub.st_mode | _stat.S_IRWXU,
+                                            dir_fd=dst_cur_fd,
+                                            follow_symlinks=False,
+                                        )
+                                    found_subdirs.append((sub_name, st_entry.st_mode))
+                    finally:
+                        _os.close(dst_cur_fd)
+                finally:
+                    _os.close(src_cur_fd)
+                stack[-1] = (comps, found_subdirs, orig_mode)
+            elif subdirs:
+                child_name, child_mode = subdirs.pop()
+                stack.append((comps + (child_name,), None, child_mode))
+            else:
+                stack.pop()
+                parent_comps = comps[:-1]
+                child_name = comps[-1]
+                dst_p_fd = dst_dir_fd if parent_comps == () else _open_desc(dst_dir_fd, parent_comps)
+                try:
+                    _os.chmod(child_name, orig_mode, dir_fd=dst_p_fd, follow_symlinks=False)
+                finally:
+                    if dst_p_fd != dst_dir_fd:
+                        _os.close(dst_p_fd)
+                src_p_fd = src_dir_fd if parent_comps == () else _open_desc(src_dir_fd, parent_comps)
+                try:
+                    _os.rmdir(child_name, dir_fd=src_p_fd)
+                finally:
+                    if src_p_fd != src_dir_fd:
+                        _os.close(src_p_fd)
 
 
 def _translate_destination_permissions_descriptor_relative(

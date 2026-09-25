@@ -2133,3 +2133,193 @@ def test_require_open_fd_returns_owned_lease_immune_to_workspace_close(tmp_path:
     with pytest.raises(SubjectMaterialisationError) as exc_info:
         workspace.require_open_fd()
     assert exc_info.value.reason_code == SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2
+
+
+def test_read_commit_blobs_streams_blob_chunks_without_monolithic_capture(tmp_path: Path, monkeypatch):
+    """P1 (4097706613): Verifies read_commit_blobs_v2 streams cat-file --batch output
+
+    in bounded chunks without capturing the aggregate payload in a monolithic bytes object.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f1.txt").write_bytes(b"content 1")
+    (repo / "f2.txt").write_bytes(b"content 2")
+    large_payload = b"y" * 150_000
+    (repo / "large.bin").write_bytes(large_payload)
+    commit = _commit_all(repo, "commit with large blob")
+
+    from app.agent_review.git_commit_subject_v2 import list_commit_tree_structure_v2
+    entries = list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit)
+
+    import app.agent_review.git_commit_subject_v2 as gcs
+    orig_open = gcs.open_bounded_git_subprocess_v2
+    chunk_reads: list[int] = []
+
+    def spy_open(argv, **kwargs):
+        proc = orig_open(argv, **kwargs)
+        if "cat-file" in argv and "--batch" in argv:
+            orig_read = proc.stdout.read
+            def spy_read(size=-1):
+                if size > 0:
+                    chunk_reads.append(size)
+                return orig_read(size)
+            proc.stdout.read = spy_read
+        return proc
+
+    monkeypatch.setattr(gcs, "open_bounded_git_subprocess_v2", spy_open)
+
+    content = read_commit_blobs_v2(repo_root=repo, entries=entries)
+
+    assert content["f1.txt"] == b"content 1"
+    assert content["f2.txt"] == b"content 2"
+    assert content["large.bin"] == large_payload
+    # Chunk sizes must be bounded (<= 65536) during streaming
+    assert max(chunk_reads) <= 65536
+    assert any(s == 65536 for s in chunk_reads)
+
+
+def test_list_single_tree_entries_rejects_oversized_single_tree_ingress(tmp_path: Path):
+    """P1 (4097706660): Verifies _list_single_tree_entries_v2 enforces entry budget
+
+    on ingress without allocating full entries for oversized single trees.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for i in range(5):
+        (repo / f"file_{i}.txt").write_bytes(f"data {i}".encode())
+    commit = _commit_all(repo, "5 files")
+
+    from app.agent_review.git_commit_subject_v2 import (
+        _list_single_tree_entries_v2,
+        resolve_commit_tree_sha_v2,
+    )
+    tree_oid = resolve_commit_tree_sha_v2(repo_root=repo, commit_sha=commit)
+
+    # Calling with max_entries=2 on a tree with 5 entries must fail closed immediately
+    with pytest.raises(SubjectMaterialisationError) as exc_info:
+        _list_single_tree_entries_v2(repo_root=repo, tree_oid=tree_oid, max_entries=2)
+    assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+    # Positive control: max_entries=10 succeeds and returns all 5 entries
+    entries = _list_single_tree_entries_v2(repo_root=repo, tree_oid=tree_oid, max_entries=10)
+    assert len(entries) == 5
+
+
+def test_hierarchical_trie_traversal_bounds_subprocess_expansion(tmp_path: Path, monkeypatch):
+    """P2 (4097706650): Verifies hierarchical tree traversal bounds subprocess expansion
+
+    by querying multiple unique subtrees through a single shared batch session (O(1) processes).
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for i in range(10):
+        d = repo / f"subtree_{i:02d}"
+        d.mkdir()
+        (d / f"leaf_{i:02d}.txt").write_bytes(f"leaf content {i}".encode())
+    commit = _commit_all(repo, "10 unique subtrees")
+
+    from app.agent_review.git_commit_subject_v2 import (
+        _build_canonical_trie_hierarchical,
+        resolve_commit_tree_sha_v2,
+    )
+    import app.agent_review.git_commit_subject_v2 as gcs
+
+    root_tree = resolve_commit_tree_sha_v2(repo_root=repo, commit_sha=commit)
+
+    orig_open = gcs.open_bounded_git_subprocess_v2
+    orig_run = gcs.run_bounded_git_v2
+    opened_commands: list[list[str]] = []
+    run_commands: list[list[str]] = []
+
+    def spy_open(argv, **kwargs):
+        opened_commands.append(argv)
+        return orig_open(argv, **kwargs)
+
+    def spy_run(argv, **kwargs):
+        run_commands.append(argv)
+        return orig_run(argv, **kwargs)
+
+    monkeypatch.setattr(gcs, "open_bounded_git_subprocess_v2", spy_open)
+    monkeypatch.setattr(gcs, "run_bounded_git_v2", spy_run)
+
+    _root, all_entries, leaf_blobs = _build_canonical_trie_hierarchical(
+        repo_root=repo, root_tree_oid=root_tree
+    )
+
+    # Across 11 unique trees (root + 10 subtrees), exactly 1 batch subprocess was opened
+    assert len(opened_commands) == 1
+    assert any("cat-file" in cmd and "--batch" in cmd for cmd in opened_commands)
+    # Zero one-off git subprocesses were run during tree traversal
+    assert len(run_commands) == 0
+    # All 20 entries (10 trees + 10 blobs) are properly projected
+    assert len(all_entries) == 20
+    assert len(leaf_blobs) == 10
+
+
+def test_copy_entry_descriptor_relative_succeeds_under_umask_0700(tmp_path: Path):
+    """P2 (4097706632): Verifies _copy_entry_descriptor_relative creates nested destination directories
+
+    with owner permissions regardless of owner-masking umask (e.g. 0700) without EACCES.
+    """
+    src_dir = tmp_path / "src_umask"
+    dst_dir = tmp_path / "dst_umask"
+    src_dir.mkdir()
+    dst_dir.mkdir()
+
+    nested = src_dir / "dir_top" / "dir_nested"
+    nested.mkdir(parents=True)
+    (nested / "payload.txt").write_bytes(b"umask 0700 content")
+
+    src_fd = os.open(src_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(dst_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    old_umask = os.umask(0o700)
+    try:
+        _copy_entry_descriptor_relative("dir_top", src_fd, dst_fd)
+    finally:
+        os.umask(old_umask)
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (dst_dir / "dir_top" / "dir_nested" / "payload.txt").read_bytes() == b"umask 0700 content"
+    assert not (src_dir / "dir_top").exists()
+
+
+def test_copy_entry_descriptor_relative_depth_under_restricted_nofile(tmp_path: Path):
+    """P2 (4097706640): Verifies _copy_entry_descriptor_relative traverses deep hierarchies
+
+    using O(1) live descriptors without hitting EMFILE under restricted descriptor limits.
+    """
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+    src_dir = tmp_path / "src_deep"
+    dst_dir = tmp_path / "dst_deep"
+    src_dir.mkdir()
+    dst_dir.mkdir()
+
+    depth = 35
+    curr = src_dir
+    for i in range(depth):
+        curr = curr / f"depth_{i:02d}"
+        curr.mkdir()
+    (curr / "deep_leaf.txt").write_bytes(b"deep leaf content")
+
+    src_fd = os.open(src_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(dst_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (30, hard))
+    try:
+        _copy_entry_descriptor_relative("depth_00", src_fd, dst_fd)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    expected = dst_dir
+    for i in range(depth):
+        expected = expected / f"depth_{i:02d}"
+    expected = expected / "deep_leaf.txt"
+
+    assert expected.read_bytes() == b"deep leaf content"
+    assert not (src_dir / "depth_00").exists()
