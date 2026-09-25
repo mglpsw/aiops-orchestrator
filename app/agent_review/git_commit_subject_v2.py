@@ -778,6 +778,30 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
             return self[path]
         return default
 
+    def size_of(self, path: str) -> int:
+        """Logical size of the blob at `path`, from the index; reads no payload."""
+        if self._closed:
+            raise ValueError("BoundedBlobCarrierV2 is closed")
+        if path not in self._index:
+            raise KeyError(path)
+        return self._index[path][1]
+
+    def read_bounded(self, path: str, limit: int) -> bytes:
+        """Read the whole blob at `path` only if its size is <= `limit`.
+
+        The size is checked from the index before any payload is read or
+        allocated; an over-limit blob is refused as unrepresentable.
+        """
+        size = self.size_of(path)
+        if size > limit:
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        offset, _ = self._index[path]
+        self._spool.seek(offset)
+        data = self._spool.read(size)
+        if len(data) != size:
+            raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+        return data
+
     def stream_to_fd(self, path: str, target_fd: int) -> int:
         if self._closed:
             raise ValueError("BoundedBlobCarrierV2 is closed")
@@ -878,16 +902,17 @@ def read_commit_blobs_v2(
         if size > max_expanded_bytes or total_logical_bytes > max_expanded_bytes:
             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
+    # Every acquisition (spool, then process) happens inside the region whose
+    # `finally` releases it; only the spool is transferred to the carrier.
+    spool: io.BufferedRandom | None = None
+    proc = None
+    transferred = False
     try:
+        spool = tempfile.TemporaryFile(mode="w+b")
         proc = open_bounded_git_subprocess_v2(
             ["cat-file", "--batch"],
             cwd=repo_root,
         )
-    except BoundedGitError as exc:
-        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-
-    spool = tempfile.TemporaryFile(mode="w+b")
-    try:
         assert proc.stdin is not None
         assert proc.stdout is not None
 
@@ -940,38 +965,47 @@ def read_commit_blobs_v2(
             index[entry.path] = oid_spans[entry.object_id]
             keys.append(entry.path)
 
-        return BoundedBlobCarrierV2(spool=spool, index=index, keys=keys)
+        carrier = BoundedBlobCarrierV2(spool=spool, index=index, keys=keys)
+        transferred = True
+        return carrier
     except (OSError, BoundedGitError) as exc:
-        spool.close()
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
-    except BaseException:
-        spool.close()
-        raise
     finally:
-        if proc.stdin:
+        if spool is not None and not transferred:
             try:
-                proc.stdin.close()
+                spool.close()
             except OSError:
                 pass
-        if proc.stdout:
-            try:
-                proc.stdout.close()
-            except OSError:
-                pass
-        if proc.stderr:
-            try:
-                proc.stderr.close()
-            except OSError:
-                pass
+        if proc is not None:
+            _release_git_subprocess_v2(proc)
+
+
+def _release_git_subprocess_v2(proc: subprocess.Popen) -> None:
+    """Close pipes and terminate/reap the process; never raises OSError."""
+    if proc.stdin:
         try:
-            proc.terminate()
-            proc.wait(timeout=1)
-        except (subprocess.TimeoutExpired, OSError):
-            try:
-                proc.kill()
-                proc.wait()
-            except OSError:
-                pass
+            proc.stdin.close()
+        except OSError:
+            pass
+    if proc.stdout:
+        try:
+            proc.stdout.close()
+        except OSError:
+            pass
+    if proc.stderr:
+        try:
+            proc.stderr.close()
+        except OSError:
+            pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=1)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+            proc.wait()
+        except OSError:
+            pass
 
 
 
@@ -1532,6 +1566,25 @@ def _check_projected_path_max(root_fd: int, dest_path: Path, path_max_limit: int
                     pass
 
 
+def _has_default_acl_fd(dir_fd: int) -> bool:
+    """True if the directory carries a default POSIX ACL (new children inherit it).
+
+    Under a default ACL the kernel derives the creation mode and ACL mask from the
+    creation intent and the ACL, ignoring umask. An explicit chmod afterwards would
+    rewrite the ACL mask, so such directories keep their native creation result.
+    """
+    try:
+        _os.getxattr(dir_fd, "system.posix_acl_default")
+        return True
+    except (OSError, AttributeError):
+        return False
+
+
+def _native_file_intent(source_mode: int) -> int:
+    """Creation intent of an ordinary create: 0666, or 0777 for executables."""
+    return 0o777 if source_mode & 0o111 else 0o666
+
+
 def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int) -> None:
     """Copies an entry from src_dir_fd into dst_dir_fd strictly relative to descriptors.
 
@@ -1551,11 +1604,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
         _os.unlink(name, dir_fd=src_dir_fd)
     elif _stat.S_ISREG(st.st_mode):
         src_file_fd = _os.open(name, _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC, dir_fd=src_dir_fd)
+        native_acl = _has_default_acl_fd(dst_dir_fd)
         try:
             dst_file_fd = _os.open(
                 name,
                 _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC,
-                st.st_mode,
+                _native_file_intent(st.st_mode) if native_acl else st.st_mode,
                 dir_fd=dst_dir_fd,
             )
             try:
@@ -1575,7 +1629,8 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                         if n == 0:
                             raise OSError("write returned 0 bytes")
                         written += n
-                _os.fchmod(dst_file_fd, st.st_mode)
+                if not native_acl:
+                    _os.fchmod(dst_file_fd, st.st_mode)
             finally:
                 _os.close(dst_file_fd)
         finally:
@@ -1597,9 +1652,10 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                 cur = nxt
             return cur
 
-        _os.mkdir(name, mode=0o700, dir_fd=dst_dir_fd)
+        root_native_acl = _has_default_acl_fd(dst_dir_fd)
+        _os.mkdir(name, mode=0o777 if root_native_acl else 0o700, dir_fd=dst_dir_fd)
         st_root = _os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
-        if (st_root.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+        if not root_native_acl and (st_root.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
             _os.chmod(name, st_root.st_mode | _stat.S_IRWXU, dir_fd=dst_dir_fd, follow_symlinks=False)
 
         stack: list[tuple[tuple[str, ...], list[tuple[str, int]] | None, int]] = [
@@ -1628,11 +1684,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                                         _os.O_RDONLY | _os.O_NOFOLLOW | _os.O_CLOEXEC,
                                         dir_fd=src_cur_fd,
                                     )
+                                    sub_native_acl = _has_default_acl_fd(dst_cur_fd)
                                     try:
                                         d_file_fd = _os.open(
                                             sub_name,
                                             _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC,
-                                            st_entry.st_mode,
+                                            _native_file_intent(st_entry.st_mode) if sub_native_acl else st_entry.st_mode,
                                             dir_fd=dst_cur_fd,
                                         )
                                         try:
@@ -1652,16 +1709,18 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                                                     if n == 0:
                                                         raise OSError("write returned 0 bytes")
                                                     written += n
-                                            _os.fchmod(d_file_fd, st_entry.st_mode)
+                                            if not sub_native_acl:
+                                                _os.fchmod(d_file_fd, st_entry.st_mode)
                                         finally:
                                             _os.close(d_file_fd)
                                     finally:
                                         _os.close(s_file_fd)
                                     _os.unlink(sub_name, dir_fd=src_cur_fd)
                                 elif _stat.S_ISDIR(st_entry.st_mode):
-                                    _os.mkdir(sub_name, mode=0o700, dir_fd=dst_cur_fd)
+                                    sub_dir_native_acl = _has_default_acl_fd(dst_cur_fd)
+                                    _os.mkdir(sub_name, mode=0o777 if sub_dir_native_acl else 0o700, dir_fd=dst_cur_fd)
                                     st_sub = _os.stat(sub_name, dir_fd=dst_cur_fd, follow_symlinks=False)
-                                    if (st_sub.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+                                    if not sub_dir_native_acl and (st_sub.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
                                         _os.chmod(
                                             sub_name,
                                             st_sub.st_mode | _stat.S_IRWXU,
@@ -1687,7 +1746,8 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                     final_mode = orig_mode
                     if st_dst.st_mode & _stat.S_ISGID:
                         final_mode |= _stat.S_ISGID
-                    _os.chmod(child_name, final_mode, dir_fd=dst_p_fd, follow_symlinks=False)
+                    if not _has_default_acl_fd(dst_p_fd):
+                        _os.chmod(child_name, final_mode, dir_fd=dst_p_fd, follow_symlinks=False)
                 finally:
                     if dst_p_fd != dst_dir_fd:
                         _os.close(dst_p_fd)
@@ -1745,6 +1805,8 @@ def _translate_destination_permissions_descriptor_relative(
                     dirs_to_visit.append(child_parts)
                     all_subdirs.append(child_parts)
                 elif _stat.S_ISREG(st.st_mode):
+                    if _has_default_acl_fd(cur_fd):
+                        continue  # native creation under a default ACL; chmod would rewrite the mask
                     is_exec = bool(st.st_mode & 0o111)
                     if is_exec:
                         target_mode = (0o666 & ~caller_umask) | 0o111
@@ -1786,6 +1848,8 @@ def _translate_destination_permissions_descriptor_relative(
                 cur_fd = next_fd
                 owned_cur = next_fd
             try:
+                if _has_default_acl_fd(cur_fd):
+                    continue
                 st_cur = _os.fstat(cur_fd)
                 final_dir_mode = dir_target_mode
                 if st_cur.st_mode & _stat.S_ISGID:
@@ -1801,7 +1865,7 @@ def _translate_destination_permissions_descriptor_relative(
                     pass
 
     # 3. Translate root directory last, only if translate_root is True
-    if translate_root:
+    if translate_root and not _has_default_acl_fd(dir_fd):
         try:
             st_root = _os.fstat(dir_fd)
             final_root_mode = dir_target_mode
@@ -1919,15 +1983,6 @@ def materialise_commit_subject_v2(
                                     src_dir_fd=capability.root_fd,
                                     dst_dir_fd=dest_fd,
                                 )
-                            except TypeError:
-                                # Fallback only for legacy 2-argument test mocks (e.g. patch('os.rename'))
-                                try:
-                                    _os.rename(str(capability.root_locator / child_name), str(dest_child))
-                                except OSError as err:
-                                    if err.errno == _errno.EXDEV:
-                                        _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
-                                    else:
-                                        raise
                             except OSError as err:
                                 if err.errno == _errno.EXDEV:
                                     _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
@@ -2056,14 +2111,18 @@ def acquire_materialised_commit_subject_v2(
                 if max_symlink_target_len <= 0:
                     max_symlink_target_len = 4095
 
+                # The limit above is an admission policy (PC_SYMLINK_MAX, else
+                # PATH_MAX-1, else 4095), not a measurement of the real limit.
+                # The size is checked from carrier metadata before any read.
                 for entry in leaf_blobs:
                     if entry.mode == SYMLINK_MODE_V2:
-                        target_bytes = content_by_path.get(entry.path)
                         if (
-                            not target_bytes
-                            or b"\x00" in target_bytes
-                            or len(target_bytes) > max_symlink_target_len
+                            content_by_path.size_of(entry.path) == 0
+                            or content_by_path.size_of(entry.path) > max_symlink_target_len
                         ):
+                            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                        target_bytes = content_by_path.read_bounded(entry.path, max_symlink_target_len)
+                        if b"\x00" in target_bytes:
                             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         except TrustedObjectAuthorityError as exc:
             if content_by_path is not None and hasattr(content_by_path, "close"):

@@ -722,7 +722,7 @@ def test_legacy_materialise_destination_cross_filesystem_exdev(tmp_path: Path):
 
     simulated_exdev = False
 
-    def exdev_rename(src, dst):
+    def exdev_rename(src, dst, *args, **kwargs):
         nonlocal simulated_exdev
         simulated_exdev = True
         err = OSError("Invalid cross-device link")
@@ -1130,11 +1130,11 @@ def test_legacy_materialise_reraises_process_control_exception_after_cleanup(tmp
     orig_rename = os.rename
     call_count = [0]
 
-    def interrupting_rename(src, dst):
+    def interrupting_rename(src, dst, *args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 2:
             raise KeyboardInterrupt("Simulated Ctrl+C during move")
-        return orig_rename(src, dst)
+        return orig_rename(src, dst, *args, **kwargs)
 
     with patch("os.rename", side_effect=interrupting_rename):
         with pytest.raises(KeyboardInterrupt):
@@ -1144,11 +1144,11 @@ def test_legacy_materialise_reraises_process_control_exception_after_cleanup(tmp
 
     # Test with SystemExit
     call_count[0] = 0
-    def exiting_rename(src, dst):
+    def exiting_rename(src, dst, *args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 2:
             raise SystemExit(42)
-        return orig_rename(src, dst)
+        return orig_rename(src, dst, *args, **kwargs)
 
     with patch("os.rename", side_effect=exiting_rename):
         with pytest.raises(SystemExit) as exc:
