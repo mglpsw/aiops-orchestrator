@@ -2495,7 +2495,7 @@ def test_legacy_projection_preserves_setgid_destination_inheritance(tmp_path: Pa
 
     # Determine a supplementary group ID if available, otherwise effective GID
     groups = os.getgroups()
-    target_gid = groups[1] if len(groups) > 1 else groups[0]
+    target_gid = groups[1] if len(groups) > 1 else (groups[0] if groups else os.getegid())
     os.chown(dest, -1, target_gid)
     os.chmod(dest, 0o2770)
 

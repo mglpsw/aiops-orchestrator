@@ -50,6 +50,7 @@ import contextvars
 import errno as _errno
 import io
 import shutil
+import sys
 import stat
 import subprocess
 import tempfile
@@ -156,6 +157,7 @@ class MaterialisedCommitSubjectCapabilityV2:
         root_name: str,
         *,
         owns_pool_fd: bool = True,
+        _defer_ownership: bool = False,
     ):
         import os as _os
         import threading as _threading
@@ -175,6 +177,13 @@ class MaterialisedCommitSubjectCapabilityV2:
             _os.set_inheritable(assigned_pool_fd, False)
         self.root_fd = root_fd
         self.pool_fd = assigned_pool_fd
+        # With `_defer_ownership` the object holds the numbers but does NOT own them
+        # (its finalizer and close() stay inert) until `_take_ownership()`: the single
+        # transfer point that keeps the detached owner and this object from ever owning
+        # the same descriptors at once.
+        self._initialized = not _defer_ownership
+
+    def _take_ownership(self) -> None:
         self._initialized = True
 
     def __enter__(self):
@@ -395,6 +404,31 @@ class OperationWorkspaceLeaseV2:
             pass
 
 
+def _cleanup_to_terminal_v2(attempt, *, attempts: int = 2) -> BaseException | None:
+    """Run an idempotent cleanup step while its owner still holds the authority to retry it.
+
+    An ordinary `Exception` is a filesystem deletion failure and ends the attempts
+    (`FilesystemDeletionFailure != AuthorityHandleLeak`: the caller still releases).
+    A process-control `BaseException` is remembered (the FIRST one) and the step is
+    retried, because an internal transaction that is about to be abandoned must not
+    take its only cleanup authority with it.  The remembered exception is returned so
+    the caller can release its descriptors exactly once and then re-raise it unchanged;
+    it is never swallowed or converted.  Bounded: nothing is claimed for interruptions
+    that keep arriving beyond `attempts`.
+    """
+    first: BaseException | None = None
+    for _ in range(attempts):
+        try:
+            attempt()
+            return first
+        except Exception:
+            return first
+        except BaseException as exc:  # noqa: BLE001 - process control, re-raised by the caller
+            if first is None:
+                first = exc
+    return first
+
+
 class MaterialisationEpochV2:
     """Linearizable transaction managing a private epoch under an operation lease.
 
@@ -447,17 +481,17 @@ class MaterialisationEpochV2:
         if self._committed:
             return
 
+        # Ownership stays with the epoch until cleanup reached a terminal outcome; only
+        # then are the fields poisoned and the descriptors released, exactly once.
         root_fd = self.root_fd
-        self.root_fd = -1
         root_name = self.root_name
-        self.root_name = None
+        pending: BaseException | None = None
 
         try:
             if root_fd != -1:
-                try:
-                    _fd_rmtree(root_fd)
-                except Exception:
-                    pass
+                pending = _cleanup_to_terminal_v2(lambda: _fd_rmtree(root_fd))
+            self.root_fd = -1
+            self.root_name = None
         finally:
             if root_fd != -1:
                 try:
@@ -472,6 +506,8 @@ class MaterialisationEpochV2:
                         pass
             finally:
                 self.lease.close()
+        if pending is not None:
+            raise pending
 
     def commit(
         self,
@@ -483,25 +519,26 @@ class MaterialisationEpochV2:
         if self._committed:
             raise RuntimeError("Epoch already committed")
 
-        # Snapshot descriptor values before entering try block
+        # Detached owners: these locals own the descriptors until `_take_ownership()`.
         root_fd = self.root_fd
         root_name = self.root_name
         pool_fd = self.lease.pool_fd
 
         import os as _os
         cap: MaterialisedCommitSubjectCapabilityV2 | None = None
-        # Enter unconditional rollback guard BEFORE detaching descriptors.
-        # If an asynchronous BaseException arrives before try, the caller's finally
-        # invokes epoch.rollback() which still owns root_fd and pool_fd.
-        # Once inside try, any interruption is caught here: epoch descriptors are poisoned,
-        # and cleanup is executed exactly once on the detached descriptors.
-        try:
+
+        def _detach_epoch() -> None:
             self.root_fd = -1
             self.root_name = None
             self.lease.pool_fd = -1
             self.lease._closed = True
             self._committed = True
 
+        # Ownership has exactly one holder at every step:
+        #   epoch -> (locals hold the numbers, epoch fields poisoned) -> capability.
+        # The capability is built INERT, so if its constructor is interrupted after
+        # it took the numbers, its finalizer cannot close them a second time.
+        try:
             cap = MaterialisedCommitSubjectCapabilityV2(
                 root_fd=root_fd,
                 root_locator=dest_path,
@@ -510,21 +547,24 @@ class MaterialisationEpochV2:
                 pool_fd=pool_fd,
                 root_name=root_name,
                 owns_pool_fd=True,
+                _defer_ownership=True,
             )
+            _detach_epoch()
+            cap._take_ownership()
             return cap
         except BaseException:
-            if cap is not None:
-                try:
-                    cap.close()
-                except BaseException:
-                    pass
+            # The interrupt that started this unwind is the one re-raised (bare `raise`).
+            if cap is not None and cap._initialized:
+                # The capability owns the descriptors and its close() is retryable:
+                # drive it to terminal because this frame is about to abandon it.
+                _cleanup_to_terminal_v2(cap.close)
             else:
+                # Any capability is inert: the detached locals are the only owners.
+                # Poison the epoch first so a later rollback cannot close them again.
+                _detach_epoch()
                 try:
                     if root_fd != -1:
-                        try:
-                            _fd_rmtree(root_fd)
-                        except Exception:
-                            pass
+                        _cleanup_to_terminal_v2(lambda: _fd_rmtree(root_fd))
                 finally:
                     if root_fd != -1:
                         try:
@@ -724,7 +764,7 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
                 mode=mode,
                 object_type=object_type,
                 object_id=object_id,
-                path=raw_path.decode("utf-8", errors="surrogateescape"),
+                path=_os.fsdecode(raw_path),
             )
         )
     return entries
@@ -750,7 +790,7 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
 
     def __init__(
         self,
-        spool: io.BufferedRandom,
+        spool: io.BufferedRandom | None,
         index: dict[str, tuple[int, int]],
         keys: list[str],
     ) -> None:
@@ -761,8 +801,12 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
 
     @classmethod
     def empty(cls) -> BoundedBlobCarrierV2:
-        spool = tempfile.TemporaryFile(mode="w+b")
-        return cls(spool, {}, [])
+        """A carrier for a tree with no blob payload: owns no spool and no descriptor.
+
+        PayloadResourceDemand is proportional to the actual payload domain, so zero
+        payload acquires nothing (an exhausted tmpdir or descriptor table cannot fail it).
+        """
+        return cls(None, {}, [])
 
     def __getitem__(self, path: str) -> bytes:
         if self._closed:
@@ -837,6 +881,8 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
     def close(self) -> None:
         if not self._closed:
             self._closed = True
+            if self._spool is None:
+                return
             try:
                 self._spool.close()
             except OSError:
@@ -1272,10 +1318,16 @@ def _build_canonical_trie_hierarchical(
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
                 try:
-                    name = raw_name.decode("utf-8", errors="surrogateescape")
+                    # Git's raw path bytes are the identity authority. `fsdecode` and
+                    # `fsencode` are inverse against the SAME filesystem encoding, so the
+                    # name reaches the filesystem as exactly `raw_name` or C3 refuses now
+                    # (UTF-8 is not the filesystem's authority).
+                    name = _os.fsdecode(raw_name)
                     fsencoded = _os.fsencode(name)
                 except (UnicodeError, ValueError) as exc:
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
+                if fsencoded != raw_name:
+                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
                 if max_component_len is not None and len(fsencoded) > max_component_len:
                     raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
@@ -1450,7 +1502,9 @@ def _materialise_trie_no_follow(
 
             elif child.node_type == 'symlink':
                 content = content_by_path[child_path]
-                target = content.decode("utf-8", "surrogateescape")
+                # The target is blob content, i.e. raw bytes: pass them as bytes so no
+                # filesystem-encoding round trip can change them.
+                target = bytes(content)
                 try:
                     _os.symlink(target, name_bytes, dir_fd=dir_fd)
                 except FileExistsError as exc:
@@ -1573,6 +1627,44 @@ def _check_projected_path_max(root_fd: int, dest_path: Path, path_max_limit: int
                     _os.close(owned_cur)
                 except OSError:
                     pass
+
+
+def _default_acl_state_v2(dir_fd: int) -> bytes | None:
+    """The directory's default-ACL policy: its bytes, `b""` when authoritatively absent,
+    `None` when it cannot be established (never read as "absent")."""
+    getxattr = getattr(_os, "getxattr", None)
+    if getxattr is None:
+        return None
+    try:
+        return getxattr(dir_fd, "system.posix_acl_default")
+    except OSError as exc:
+        if exc.errno in (_errno.ENODATA, _errno.ENOTSUP):
+            return b""
+        return None
+
+
+def _rename_preserves_destination_inheritance_v2(root_fd: int, dest_fd: int) -> bool:
+    """May the epoch root's children be renamed into the destination unchanged?
+
+    A rename keeps the inodes that were created under the EPOCH ROOT's inheritance
+    semantics; creating under the destination applies the DESTINATION's.  Rename is
+    therefore only equivalent when, for the supported Linux contract, both agree on:
+    filesystem (else EXDEV), setgid/GID inheritance (either side setgid, or differing
+    GID, is not established equivalent) and the default ACL (bytes equal, absent equals
+    absent).  Anything unreadable is NOT equivalent: the caller then copies/creates
+    descriptor-relatively under the destination.
+    """
+    try:
+        source = _os.fstat(root_fd)
+        target = _os.fstat(dest_fd)
+    except OSError:
+        return False
+    if source.st_dev != target.st_dev:
+        return False
+    if (source.st_mode | target.st_mode) & _stat.S_ISGID or source.st_gid != target.st_gid:
+        return False
+    source_acl = _default_acl_state_v2(root_fd)
+    return source_acl is not None and source_acl == _default_acl_state_v2(dest_fd)
 
 
 def _has_default_acl_fd(dir_fd: int) -> bool:
@@ -1960,21 +2052,10 @@ def materialise_commit_subject_v2(
             dest_fd = _os.open(destination, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
             try:
                 dest_st = _os.fstat(dest_fd)
-                pool_st = _os.stat(destination.parent)
-                has_default_acl = False
-                if hasattr(_os, "getxattr"):
-                    try:
-                        _os.getxattr(dest_fd, "system.posix_acl_default")
-                        has_default_acl = True
-                    except OSError:
-                        pass
-
-                use_copy = bool(
-                    (dest_st.st_mode & _stat.S_ISGID)
-                    or (dest_st.st_gid != pool_st.st_gid)
-                    or (dest_st.st_dev != pool_st.st_dev)
-                    or has_default_acl
-                )
+                # RenameEligible iff the epoch root's inheritance semantics (what its
+                # children were created under) equal the destination's; otherwise create
+                # under the destination. Both sides are read from descriptors.
+                use_copy = not _rename_preserves_destination_inheritance_v2(capability.root_fd, dest_fd)
 
                 moved_children: list[Path] = []
                 dest_child: Path | None = None
@@ -2037,6 +2118,36 @@ def materialise_commit_subject_v2(
             )
 
 
+def _require_workspace_name_semantics_v2(pool_fd: int) -> None:
+    """CM-C3-02: refuse, before any epoch exists, a workspace whose lookup cannot be
+    established as byte-distinct (case-insensitive or Unicode-normalizing).
+
+    The decision is the single existing name-semantics authority
+    (`target_pack_epoch_v2.classify_directory_name_semantics_v2`); nothing here
+    folds or compares names.  The flag is read through the pinned descriptor and the
+    governing mount from the typed topology snapshot.  Anything not established as
+    case-sensitive (casefold active, unknown filesystem, unreadable flag, path not
+    naming the descriptor's directory) is refused; UNKNOWN never implies safe.
+    """
+    from app.agent_review import target_pack_epoch_v2 as _authority
+
+    try:
+        located = _os.readlink(f"/proc/self/fd/{pool_fd}")
+        via_fd = _os.fstat(pool_fd)
+        via_path = _os.stat(located)
+        if not located.startswith("/") or (via_fd.st_dev, via_fd.st_ino) != (via_path.st_dev, via_path.st_ino):
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+        semantics = _authority.classify_directory_name_semantics_v2(
+            _authority.MountTopologySnapshotV2.observe(), located, probe_path=f"/proc/self/fd/{pool_fd}"
+        )
+    except SubjectMaterialisationError:
+        raise
+    except Exception as exc:
+        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
+    if semantics is not _authority.NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2:
+        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+
+
 def acquire_materialised_commit_subject_v2(
     *,
     repo_root: Path,
@@ -2065,6 +2176,8 @@ def acquire_materialised_commit_subject_v2(
     cap: MaterialisedCommitSubjectCapabilityV2 | None = None
     transferred_to_caller = False
     try:
+        _require_workspace_name_semantics_v2(lease.pool_fd)
+
         # Determine workspace filesystem NAME_MAX limit before creating epoch
         name_max_limit = -1
         if hasattr(_os, "fpathconf"):
@@ -2173,15 +2286,19 @@ def acquire_materialised_commit_subject_v2(
                 content_by_path.close()
     finally:
         if not transferred_to_caller:
+            pending: BaseException | None = None
             if cap is not None:
-                try:
-                    cap.close()
-                except BaseException:
-                    pass
+                # Ownership already moved to the capability; its close() is retryable, so
+                # drive it to terminal before this frame abandons it, then re-raise.
+                pending = _cleanup_to_terminal_v2(cap.close)
             elif epoch is not None:
                 epoch.rollback()
             else:
                 lease.close()
+            # Process control outranks a domain exception that is merely in flight.
+            inflight = sys.exc_info()[1]
+            if pending is not None and (inflight is None or isinstance(inflight, Exception)):
+                raise pending
 
 
 

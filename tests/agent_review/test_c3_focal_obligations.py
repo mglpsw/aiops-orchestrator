@@ -607,3 +607,533 @@ def test_ordinary_cleanup_success_and_ordinary_failure_still_release_authority(t
             subject.close()  # ordinary failure does not propagate
         assert all(_fd_is_closed(f) for f in fds)
         subject.close()
+
+
+# ---------------------------------------------------------------- C3-S raw path bytes
+
+
+_RAW_BYTES_CHILD = r"""
+import json, os, sys
+from pathlib import Path
+from app.agent_review.git_commit_subject_v2 import (
+    MaterialisationWorkspaceCapabilityV2, SubjectMaterialisationError,
+    acquire_materialised_commit_subject_v2,
+)
+repo, pool, ref = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY)
+ws = MaterialisationWorkspaceCapabilityV2(fd, pool); os.close(fd)
+out = {"fsenc": sys.getfilesystemencoding()}
+try:
+    with ws:
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=ref, workspace=ws, authorized_storage=[repo]
+        ) as subject:
+            root = os.fsencode(pool / subject.root_name)
+            out["names"] = sorted(n.hex() for n in os.listdir(root))
+            out["target"] = os.readlink(os.path.join(root, b"lnk")).hex() if b"lnk" in os.listdir(root) else None
+except SubjectMaterialisationError as exc:
+    out["refused"] = exc.reason_code
+print(json.dumps(out))
+"""
+
+
+def _run_raw_bytes_child(tmp_path: Path, commit: str, repo: Path, pool: Path) -> dict:
+    import json
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "LC_ALL", "LANG", "PYTHONCOERCECLOCALE")}
+    env.update({"PYTHONUTF8": "0", "LC_ALL": "C", "PYTHONCOERCECLOCALE": "0"})
+    result = subprocess.run(
+        [sys.executable, "-c", _RAW_BYTES_CHILD, str(repo), str(pool), commit],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_raw_git_name_and_symlink_target_bytes_survive_a_non_utf8_filesystem_encoding(tmp_path: Path):
+    """GitRawPathBytes are the identity authority: under an ascii filesystem encoding a
+    UTF-8 spelled name (and symlink target) must reach the filesystem as the same bytes."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob = _git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    tgt = _git(repo, "hash-object", "-w", "--stdin", data=b"t\xc3\xa9")
+    tree = _git(
+        repo, "mktree", "-z",
+        data=(f"100644 blob {blob}\t".encode() + b"\xc3\xa9\0" + f"120000 blob {tgt}\t".encode() + b"lnk\0"),
+    )
+    commit = _git(repo, "commit-tree", tree, "-m", "c")
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    out = _run_raw_bytes_child(tmp_path, commit, repo, pool)
+    if out["fsenc"].lower() not in ("ascii", "ansi_x3.4-1968"):
+        pytest.skip(f"could not force a non-UTF-8 filesystem encoding (got {out['fsenc']})")
+    assert "refused" not in out, out  # representable commit must not be refused
+    assert out["names"] == sorted([b"\xc3\xa9".hex(), b"lnk".hex()])
+    assert out["target"] == b"t\xc3\xa9".hex()
+
+
+def test_non_utf8_raw_name_round_trips_on_the_default_encoding(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob = _git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    tree = _git(repo, "mktree", "-z", data=f"100644 blob {blob}\t".encode() + b"\xff\xfe\0")
+    commit = _git(repo, "commit-tree", tree, "-m", "c")
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+        ) as subject:
+            assert os.listdir(os.fsencode(pool / subject.root_name)) == [b"\xff\xfe"]
+
+
+def test_leaf_listing_keeps_raw_name_bytes(tmp_path: Path):
+    """`list_commit_tree_entries_v2` feeds path identity to consumers: the returned
+    str must map back to the committed raw bytes (fsdecode/fsencode inverse)."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    blob = _git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    tree = _git(repo, "mktree", "-z", data=f"100644 blob {blob}\t".encode() + b"\xff\xc3\xa9\0")
+    commit = _git(repo, "commit-tree", tree, "-m", "c")
+    (entry,) = mod.list_commit_tree_entries_v2(repo_root=repo, commit_sha=commit)
+    assert os.fsencode(entry.path) == b"\xff\xc3\xa9"
+
+
+# ---------------------------------------------------------------- C3-R CM-C3-02 name semantics
+
+from app.agent_review import target_pack_epoch_v2 as _name_authority
+
+
+def _alias_commit(repo: Path, names: list[bytes]) -> str:
+    _init_repo(repo)
+    lines = b""
+    for i, name in enumerate(names):
+        oid = _git(repo, "hash-object", "-w", "--stdin", data=f"c{i}".encode())
+        lines += f"100644 blob {oid}\t".encode() + name + b"\0"
+    tree = _git(repo, "mktree", "-z", data=lines)
+    return _git(repo, "commit-tree", tree, "-m", "c")
+
+
+def _workspace_semantics(pool: Path) -> str:
+    pool.mkdir(exist_ok=True)
+    fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        real = os.readlink(f"/proc/self/fd/{fd}")
+        return _name_authority.classify_directory_name_semantics_v2(
+            _name_authority.MountTopologySnapshotV2.observe(), real, probe_path=f"/proc/self/fd/{fd}"
+        )
+    finally:
+        os.close(fd)
+
+
+def _require_established_workspace(pool: Path) -> None:
+    got = _workspace_semantics(pool)
+    if got != _name_authority.NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2:
+        pytest.skip(
+            f"workspace filesystem name semantics are {got}; the success-path alias discriminators "
+            "(distinct names stay distinct) are unqualified on this environment"
+        )
+
+
+ALIAS_SETS = [
+    [b"file.txt", b"FILE.TXT"],
+    ["é".encode(), "é".encode()],  # NFC / NFD spellings
+]
+
+
+@pytest.mark.parametrize("names", ALIAS_SETS)
+def test_distinct_names_stay_distinct_on_an_established_case_sensitive_workspace(tmp_path: Path, names):
+    pool = tmp_path / "pool"
+    _require_established_workspace(pool)
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, names)
+    with _workspace(pool) as workspace:
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+        ) as subject:
+            assert sorted(os.listdir(os.fsencode(pool / subject.root_name))) == sorted(names)
+
+
+@pytest.mark.parametrize("names", ALIAS_SETS)
+@pytest.mark.parametrize("probe,label", [(True, "casefold_active"), (None, "unknown")])
+def test_alias_capable_workspace_is_refused_before_any_epoch(tmp_path: Path, monkeypatch, names, probe, label):
+    """CM-C3-02: a casefolding (or unestablished) workspace cannot honour distinct Git
+    names, so the tree is refused typed BEFORE an epoch exists. Fault injection on the
+    single authority's flag read; the real-flag variant is in the mounted-tmpfs test."""
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, names)
+    pool = tmp_path / "pool"
+    monkeypatch.setattr(_name_authority, "_directory_is_casefolded_v2", lambda _p: probe)
+    with _workspace(pool) as workspace:
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            )
+        assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+        assert _epochs(pool) == []
+
+
+def test_unknown_filesystem_type_is_refused_before_any_epoch(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a"])
+    pool = tmp_path / "pool"
+    monkeypatch.setattr(_name_authority, "_name_semantics_capability_v2", lambda _fs: _name_authority._NAME_SEMANTICS_UNKNOWN_V2)
+    with _workspace(pool) as workspace:
+        with pytest.raises(SubjectMaterialisationError) as exc:
+            acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            )
+        assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+        assert _epochs(pool) == []
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to mount a casefolding tmpfs; the real-flag CM-C3-02 witness is unqualified without it")
+def test_real_casefolded_tmpfs_workspace_is_refused_before_any_epoch(tmp_path: Path):
+    holder = tmp_path / "cf"
+    holder.mkdir()
+    mounted = subprocess.run(["mount", "-t", "tmpfs", "-o", "casefold", "tmpfs", str(holder)], capture_output=True)
+    if mounted.returncode != 0:
+        pytest.skip("kernel/host refused a casefold tmpfs mount; real-flag witness NOT_TESTED here")
+    try:
+        pool = holder / "workspace"
+        pool.mkdir()
+        if subprocess.run(["chattr", "+F", str(pool)], capture_output=True).returncode != 0:
+            pytest.skip("chattr +F unavailable; real-flag witness NOT_TESTED here")
+        repo = tmp_path / "repo"
+        commit = _alias_commit(repo, [b"file.txt", b"FILE.TXT"])
+        with _workspace(pool) as workspace:
+            with pytest.raises(SubjectMaterialisationError) as exc:
+                acquire_materialised_commit_subject_v2(
+                    repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+                )
+            assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+            assert _epochs(pool) == []
+    finally:
+        subprocess.run(["umount", str(holder)], capture_output=True)
+
+
+# ---------------------------------------------------------------- C3-B zero payload -> zero spool
+
+
+def _blobless_commit(repo: Path) -> str:
+    _init_repo(repo)
+    empty_tree = _git(repo, "hash-object", "-t", "tree", "-w", "--stdin", data=b"")
+    tree = _git(repo, "mktree", data=f"040000 tree {empty_tree}\tempty_dir\n".encode())
+    return _git(repo, "commit-tree", tree, "-m", "c")
+
+
+def test_blobless_tree_acquires_no_spool_and_survives_spool_exhaustion(tmp_path: Path):
+    """PayloadResourceDemand ~ ActualPayloadDomain: no payload -> no TemporaryFile/fd."""
+    repo = tmp_path / "repo"
+    commit = _blobless_commit(repo)
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        with patch.object(mod.tempfile, "TemporaryFile", side_effect=OSError(24, "EMFILE")) as spool:
+            with acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            ) as subject:
+                assert os.listdir(os.fsencode(pool / subject.root_name)) == [b"empty_dir"]
+            assert spool.call_count == 0
+
+
+def test_empty_carrier_is_resource_free_and_close_is_idempotent():
+    baseline = _open_fds()
+    with patch.object(mod.tempfile, "TemporaryFile", side_effect=OSError(24, "EMFILE")):
+        carrier = BoundedBlobCarrierV2.empty()
+    assert _open_fds() == baseline
+    assert len(carrier) == 0 and list(carrier) == [] and "x" not in carrier
+    for call in (lambda: carrier["x"], lambda: carrier.size_of("x"), lambda: carrier.read_bounded("x", 1)):
+        with pytest.raises(KeyError):
+            call()
+    carrier.close()
+    carrier.close()
+    with pytest.raises(ValueError):
+        carrier.size_of("x")
+
+
+def test_nonempty_tree_still_uses_the_bounded_spool_and_fails_typed_without_one(tmp_path: Path):
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a"])
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        with patch.object(mod.tempfile, "TemporaryFile", side_effect=OSError(24, "EMFILE")):
+            with pytest.raises(SubjectMaterialisationError) as exc:
+                acquire_materialised_commit_subject_v2(
+                    repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+                )
+        assert exc.value.reason_code == SUBJECT_TREE_UNREADABLE_REASON_V2
+        assert _epochs(pool) == []
+
+
+# ---------------------------------------------------------------- C3-L internal transactions reach terminal state
+
+
+def _one_shot_interrupting_rmtree(exc_type):
+    """First `_fd_rmtree` makes partial progress then is interrupted; later calls are real."""
+    real = mod._fd_rmtree
+    state = {"calls": 0}
+
+    def wrapper(dir_fd):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            for name in os.listdir(dir_fd):
+                os.unlink(name, dir_fd=dir_fd)  # partial progress
+                break
+            raise exc_type()
+        return real(dir_fd)
+
+    return wrapper, state
+
+
+def _raised(call) -> BaseException | None:
+    """Run `call`; return whatever BaseException escaped (so a leaked process-control
+    exception is an assertion failure, not an aborted test session)."""
+    try:
+        call()
+    except BaseException as exc:  # noqa: BLE001 - the point is to observe process control
+        return exc
+    return None
+
+
+def _populated_epoch(tmp_path: Path, workspace):
+    lease = workspace.pin()
+    epoch = mod.MaterialisationEpochV2(lease)
+    root_fd, root_name, _dest = epoch.create_epoch_root()
+    for name in ("a", "b"):
+        os.close(os.open(name, os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=root_fd))
+    return lease, epoch, root_fd, root_name
+
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit, _CustomControl])
+def test_epoch_rollback_interrupted_by_process_control_reaches_terminal_state(tmp_path: Path, exc_type):
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, root_name = _populated_epoch(tmp_path, workspace)
+        pool_fd = lease.pool_fd
+        wrapper, _ = _one_shot_interrupting_rmtree(exc_type)
+        with patch.object(mod, "_fd_rmtree", side_effect=wrapper):
+            raised = _raised(epoch.rollback)
+        assert type(raised) is exc_type  # original process-control propagates unchanged
+        assert _epochs(pool) == []  # no partial epoch is left behind
+        assert _fd_is_closed(root_fd) and _fd_is_closed(pool_fd)  # authority terminally released
+        epoch.rollback()  # idempotent: no double close
+
+
+def test_epoch_rollback_ordinary_exception_and_success_controls(tmp_path: Path):
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, _ = _populated_epoch(tmp_path, workspace)
+        epoch.rollback()
+        assert _epochs(pool) == [] and _fd_is_closed(root_fd) and _fd_is_closed(lease.pool_fd if lease.pool_fd >= 0 else 10**6)
+        lease, epoch, root_fd, _ = _populated_epoch(tmp_path, workspace)
+        with patch.object(mod, "_fd_rmtree", side_effect=OSError(5, "EIO")):
+            epoch.rollback()  # ordinary deletion failure does not propagate; authority still released
+        assert _fd_is_closed(root_fd)
+
+
+def test_acquisition_failure_with_interrupted_rollback_leaves_no_epoch(tmp_path: Path):
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a", b"b"])
+    pool = tmp_path / "pool"
+    wrapper, _ = _one_shot_interrupting_rmtree(KeyboardInterrupt)
+    with _workspace(pool) as workspace:
+        def write_then_fail(_trie, _content, root_fd, _prefix, _written):
+            for name in ("p1", "p2"):  # two entries: the interrupted first pass removes only one
+                os.close(os.open(name, os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=root_fd))
+            raise RuntimeError("materialise")
+
+        with patch.object(mod, "_materialise_trie_no_follow", side_effect=write_then_fail), \
+             patch.object(mod, "_fd_rmtree", side_effect=wrapper):
+            raised = _raised(lambda: acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            ))
+        assert type(raised) is KeyboardInterrupt and raised.__traceback__ is not None  # frames alive: no __del__ rescue
+        assert _epochs(pool) == []
+
+
+def test_commit_transfer_interrupted_before_capability_exists_reaches_terminal_state(tmp_path: Path):
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, root_name = _populated_epoch(tmp_path, workspace)
+        pool_fd = lease.pool_fd
+        wrapper, _ = _one_shot_interrupting_rmtree(KeyboardInterrupt)
+        with patch.object(mod, "MaterialisedCommitSubjectCapabilityV2", side_effect=SystemExit(7)), \
+             patch.object(mod, "_fd_rmtree", side_effect=wrapper):
+            raised = _raised(lambda: epoch.commit(commit_sha="0" * 40, file_count=0, dest_path=pool / root_name))
+        assert type(raised) is SystemExit and raised.code == 7  # the interrupt that started the unwind stays the one raised
+        assert _epochs(pool) == []
+        assert _fd_is_closed(root_fd) and _fd_is_closed(pool_fd)
+
+
+def test_interrupt_after_commit_with_interrupted_capability_close_leaves_no_epoch(tmp_path: Path):
+    """The only window where `acquire` holds a capability it has not yet handed over is
+    asynchronous: after `cap = epoch.commit(...)` and before `transferred_to_caller = True`.
+    Drive an interrupt exactly there with a line trace, and interrupt the capability's own
+    cleanup once; the epoch must still end terminal."""
+    import inspect
+    import sys
+
+    lines, first = inspect.getsourcelines(mod.acquire_materialised_commit_subject_v2)
+    target = first + next(i for i, l in enumerate(lines) if l.strip() == "transferred_to_caller = True")
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a", b"b"])
+    pool = tmp_path / "pool"
+    wrapper, _ = _one_shot_interrupting_rmtree(KeyboardInterrupt)
+
+    def tracer(frame, event, _arg):
+        if frame.f_code is mod.acquire_materialised_commit_subject_v2.__code__:
+            def local(frame, event, _arg):
+                if event == "line" and frame.f_lineno == target:
+                    raise SystemExit(9)
+                return local
+            return local
+        return None
+
+    with _workspace(pool) as workspace:
+        with patch.object(mod, "_fd_rmtree", side_effect=wrapper):
+            sys.settrace(tracer)
+            try:
+                raised = _raised(lambda: acquire_materialised_commit_subject_v2(
+                    repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+                ))
+            finally:
+                sys.settrace(None)
+        assert isinstance(raised, (SystemExit, KeyboardInterrupt)) and raised.__traceback__ is not None
+        assert _epochs(pool) == []
+
+
+# ---------------------------------------------------------------- C3-X rename eligibility matrix
+
+_MATRIX_CHILD = r"""
+import json, os, stat, sys
+from pathlib import Path
+os.umask(0o022)
+from app.agent_review.git_commit_subject_v2 import materialise_commit_subject_v2
+parent, repo, head = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+legacy, native = parent / "legacy", parent / "native"
+materialise_commit_subject_v2(repo_root=repo, ref=head, destination=legacy)
+def wf(p, data):
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666); os.write(fd, data); os.close(fd)
+wf(native / "a.txt", b"a")
+os.mkdir(native / "d1", 0o777); wf(native / "d1" / "n.txt", b"n")
+def xa(p, name):
+    try: return os.getxattr(p, name).hex()
+    except OSError: return None
+def snap(root):
+    out = {}
+    for p in sorted(root.rglob("*")):
+        st = os.lstat(p)
+        out[str(p.relative_to(root))] = [oct(stat.S_IMODE(st.st_mode)), st.st_gid,
+                                          xa(p, "system.posix_acl_access"), xa(p, "system.posix_acl_default")]
+    return out
+print(json.dumps([snap(legacy), snap(native)]))
+"""
+
+
+def _acl(*entries) -> bytes:
+    import struct
+
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", t, p, i) for t, p, i in entries)
+
+
+_ACL_A = _acl((1, 7, 0xFFFFFFFF), (2, 7, 3000), (4, 5, 0xFFFFFFFF), (0x10, 7, 0xFFFFFFFF), (0x20, 0, 0xFFFFFFFF))
+# owner keeps rwx here: the restrictive-owner case is the separate, deliberate u+rwx repair test
+_ACL_B = _acl((1, 7, 0xFFFFFFFF), (2, 5, 3001), (4, 5, 0xFFFFFFFF), (0x10, 5, 0xFFFFFFFF), (0x20, 0, 0xFFFFFFFF))
+_DEFAULT_ACL = "system.posix_acl_default"
+
+# (id, pool default ACL [what the epoch root inherits], destination default ACL, pool setgid, dest setgid)
+INHERITANCE_MATRIX = [
+    ("src-none_dest-none", None, None, False, False),
+    ("src-none_dest-ACL", None, _ACL_B, False, False),
+    ("src-ACL_dest-same-ACL", _ACL_A, _ACL_A, False, False),
+    ("src-ACL_dest-none", _ACL_A, None, False, False),
+    ("src-ACL-A_dest-ACL-B", _ACL_A, _ACL_B, False, False),
+    ("src-setgid_dest-nonsetgid", None, None, True, False),
+    ("src-nonsetgid_dest-setgid", None, None, False, True),
+]
+
+
+@pytest.mark.parametrize("case", INHERITANCE_MATRIX, ids=[c[0] for c in INHERITANCE_MATRIX])
+def test_projection_matches_native_creation_across_source_and_destination_inheritance(tmp_path: Path, case):
+    """RenameEligible iff source inheritance == destination inheritance; otherwise the
+    children are created under the destination. Comparator: native creation there."""
+    import json
+    import sys
+
+    cid, pool_acl, dest_acl, pool_sgid, dest_sgid = case
+    needs_root = pool_sgid or dest_sgid
+    if needs_root and os.geteuid() != 0:
+        pytest.skip("setgid/GID cases need root to chown to a foreign group; GID inheritance is unqualified without it")
+    parent = tmp_path / "pool"
+    parent.mkdir()
+    if pool_acl is not None:
+        try:
+            os.setxattr(parent, _DEFAULT_ACL, pool_acl)
+        except OSError:
+            pytest.skip("default POSIX ACLs unsupported on this filesystem; ACL relation unqualified")
+    if pool_sgid:
+        os.chown(parent, 0, 2000)
+        os.chmod(parent, 0o2775)
+    for name in ("legacy", "native"):
+        d = parent / name
+        d.mkdir()
+        try:
+            os.removexattr(d, _DEFAULT_ACL)  # start from "none", then apply the case's own policy
+        except OSError:
+            pass
+        if dest_acl is not None:
+            os.setxattr(d, _DEFAULT_ACL, dest_acl)
+        if dest_sgid:
+            os.chown(d, 0, 2000)
+            os.chmod(d, 0o2775)
+        elif pool_sgid:
+            os.chown(d, 0, 0)
+            os.chmod(d, 0o775)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("a")
+    (repo / "d1").mkdir()
+    (repo / "d1" / "n.txt").write_text("n")
+    head = _commit_all(repo, "tree")
+    result = subprocess.run(
+        [sys.executable, "-c", _MATRIX_CHILD, str(parent), str(repo), head],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    legacy, native = json.loads(result.stdout)
+    assert legacy == native
+
+
+def test_constructor_interrupted_after_taking_descriptors_cannot_double_close_a_recycled_number(tmp_path: Path):
+    """BorrowedFDNumber != OperationOwnedLease. If the capability constructor took the
+    descriptor numbers and is then interrupted, the half-built object and `commit()`'s
+    detached locals must not BOTH own them: once the numbers are recycled, a late
+    `__del__` would close somebody else's descriptor."""
+    import gc
+
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a"])
+    pool = tmp_path / "pool"
+    orig_init = mod.MaterialisedCommitSubjectCapabilityV2.__init__
+
+    def init_then_interrupt(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        raise KeyboardInterrupt("interrupt right after the constructor took ownership")
+
+    with _workspace(pool) as workspace:
+        with patch.object(mod.MaterialisedCommitSubjectCapabilityV2, "__init__", init_then_interrupt):
+            raised = _raised(lambda: acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            ))
+        assert type(raised) is KeyboardInterrupt
+        raised = None  # drop the traceback: it would keep the half-built object alive and hide the finalizer
+        assert _epochs(pool) == []
+        # recycle every low number, then let any stale finalizer run
+        probes = [os.open("/dev/null", os.O_RDONLY) for _ in range(8)]
+        try:
+            gc.collect()
+            assert not any(_fd_is_closed(p) for p in probes), "a stale finalizer closed a recycled descriptor"
+        finally:
+            for p in probes:
+                if not _fd_is_closed(p):
+                    os.close(p)
