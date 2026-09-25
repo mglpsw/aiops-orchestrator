@@ -2428,7 +2428,7 @@ def test_symlink_target_over_filesystem_limit_rejected_before_epoch(tmp_path: Pa
         assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
 
         # Verify zero epoch root was created on the pool filesystem
-        epoch_entries = [p for p in pool.iterdir() if p.name.startswith("c3_epoch_")]
+        epoch_entries = [p for p in pool.iterdir() if p.name.startswith("c3_")]
         assert len(epoch_entries) == 0
 
     # 2. Maximum admissible target: 4095 bytes succeeds

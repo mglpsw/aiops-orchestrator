@@ -202,26 +202,35 @@ class MaterialisedCommitSubjectCapabilityV2:
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
             root_fd = self.root_fd
-            self.root_fd = -1
             pool_fd = self.pool_fd
-            self.pool_fd = -1
             root_name = self.root_name
-            self.root_name = None
 
+            # Phase 1: remove contents while this capability still owns its
+            # descriptors. A process-control BaseException propagates unchanged
+            # and leaves the capability open, so a later close() can retry; the
+            # released state is only entered once cleanup reached a terminal
+            # outcome. An ordinary Exception is a filesystem deletion failure
+            # (FilesystemDeletionFailure != AuthorityHandleLeak): descriptors
+            # are still released below.
+            if root_fd != -1:
+                try:
+                    _fd_rmtree(root_fd)
+                except Exception:
+                    pass
+
+            # Phase 2: terminal release, exactly once.
+            self._closed = True
+            self.root_fd = -1
+            self.pool_fd = -1
+            self.root_name = None
             try:
-                if root_fd != -1:
-                    try:
-                        _fd_rmtree(root_fd)
-                    except Exception:
-                        pass
-            finally:
                 if root_fd != -1:
                     try:
                         _os.close(root_fd)
                     except OSError:
                         pass
+            finally:
                 try:
                     if pool_fd != -1 and root_name:
                         try:
@@ -1614,7 +1623,7 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
             )
             try:
                 dest_dir_st = _os.fstat(dst_dir_fd)
-                if (dest_dir_st.st_mode & _stat.S_ISGID) or (hasattr(_os, "getgroups") and dest_dir_st.st_gid in _os.getgroups()):
+                if dest_dir_st.st_mode & _stat.S_ISGID:  # only setgid directories give children their GID
                     try:
                         _os.fchown(dst_file_fd, -1, dest_dir_st.st_gid)
                     except OSError:
@@ -1694,7 +1703,7 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                                         )
                                         try:
                                             dest_cur_st = _os.fstat(dst_cur_fd)
-                                            if (dest_cur_st.st_mode & _stat.S_ISGID) or (hasattr(_os, "getgroups") and dest_cur_st.st_gid in _os.getgroups()):
+                                            if dest_cur_st.st_mode & _stat.S_ISGID:  # only setgid directories give children their GID
                                                 try:
                                                     _os.fchown(d_file_fd, -1, dest_cur_st.st_gid)
                                                 except OSError:

@@ -52,7 +52,35 @@ def _workspace(pool: Path) -> MaterialisationWorkspaceCapabilityV2:
 
 
 def _epochs(pool: Path) -> list[str]:
-    return [p.name for p in pool.iterdir() if p.name.startswith("c3_epoch_")]
+    """Epoch roots in `pool`. `create_epoch_root` names them `c3_<uuid4 hex>`."""
+    return [p.name for p in pool.iterdir() if p.name.startswith("c3_")]
+
+
+def test_epoch_oracle_is_not_vacuous(tmp_path: Path):
+    """The zero-epoch oracle must be able to fail: positive control (nothing
+    created), synthetic entry, and a real epoch created by production code."""
+    import uuid
+
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    assert _epochs(pool) == []  # positive control
+    synthetic = f"c3_{uuid.uuid4().hex}"
+    (pool / synthetic).mkdir()
+    assert _epochs(pool) == [synthetic]  # causal negative control
+    (pool / synthetic).rmdir()
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    commit = _commit_entries(repo, [("100644", "f", b"x")])
+    with _workspace(pool) as workspace:
+        subject = acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+        )
+        try:
+            assert _epochs(pool) == [subject.root_name]  # real production epoch
+        finally:
+            subject.close()
+        assert _epochs(pool) == []
 
 
 # ---------------------------------------------------------------- A
@@ -435,3 +463,147 @@ def test_default_acl_with_restrictive_owner_entry_keeps_new_dir_traversable(tmp_
         os.close(dfd)
     assert os.stat(dst / "d").st_mode & 0o700 == 0o700
     assert (dst / "d" / "f").read_text() == "x"
+
+
+_GID_CHILD = r"""
+import json, os, stat, sys
+from pathlib import Path
+gid = int(sys.argv[3])
+os.setgroups([gid])  # the destination GID is a supplementary group, not the effective GID
+os.umask(0o022)
+from app.agent_review.git_commit_subject_v2 import materialise_commit_subject_v2
+parent, repo, head = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[4]
+legacy, native = parent / "legacy", parent / "native"
+materialise_commit_subject_v2(repo_root=repo, ref=head, destination=legacy)
+def wf(p, data):
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666); os.write(fd, data); os.close(fd)
+wf(native / "a.txt", b"a")
+os.mkdir(native / "d1", 0o777); wf(native / "d1" / "n.txt", b"n")
+os.mkdir(native / "d1" / "d2", 0o777); wf(native / "d1" / "d2" / "m.txt", b"m")
+def snap(root):
+    return {str(p.relative_to(root)): [os.lstat(p).st_gid, bool(os.lstat(p).st_mode & stat.S_ISGID)]
+            for p in sorted(root.rglob("*"))}
+print(json.dumps([snap(legacy), snap(native)]))
+"""
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to set a supplementary group and chown the destination")
+@pytest.mark.parametrize("setgid", [False, True])
+def test_projected_gid_matches_native_creation_in_existing_destination(tmp_path: Path, setgid: bool):
+    """Only setgid directories give children the directory's GID; merely being a
+    member of the destination's group must not reassign it (native control)."""
+    import json
+    import sys
+
+    dest_gid = 2000
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    os.chmod(parent, 0o755)
+    for name in ("legacy", "native"):
+        d = parent / name
+        d.mkdir()
+        os.chown(d, 0, dest_gid)
+        os.chmod(d, 0o2775 if setgid else 0o775)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("a")
+    (repo / "d1" / "d2").mkdir(parents=True)
+    (repo / "d1" / "n.txt").write_text("n")
+    (repo / "d1" / "d2" / "m.txt").write_text("m")
+    head = _commit_all(repo, "tree")
+    result = subprocess.run(
+        [sys.executable, "-c", _GID_CHILD, str(parent), str(repo), str(dest_gid), head],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    legacy, native = json.loads(result.stdout)
+    assert legacy == native
+    expected_gid = dest_gid if setgid else 0
+    assert {gid for gid, _ in native.values()} == {expected_gid}  # control really differs by setgid
+
+
+# ---------------------------------------------------------------- C3-L retryable cleanup
+
+
+def _open_fds() -> int:
+    return len(os.listdir(f"/proc/{os.getpid()}/fd"))
+
+
+def _fd_is_closed(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return True
+    return False
+
+
+def _subject_with_files(tmp_path: Path, pool: Path, workspace):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.txt").write_text("a")
+    (repo / "d1").mkdir()
+    (repo / "d1" / "b.txt").write_text("b")
+    head = _commit_all(repo, "tree")
+    return acquire_materialised_commit_subject_v2(
+        repo_root=repo, ref=head, workspace=workspace, authorized_storage=[repo]
+    )
+
+
+class _CustomControl(BaseException):
+    pass
+
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit, _CustomControl])
+def test_interrupted_cleanup_keeps_retry_ownership_then_completes(tmp_path: Path, exc_type):
+    real = mod._fd_rmtree
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        subject = _subject_with_files(tmp_path, pool, workspace)
+        root_fd, pool_fd, root_name = subject.root_fd, subject.pool_fd, subject.root_name
+        baseline_fds = _open_fds()
+
+        def partial_then_interrupt(dir_fd):
+            os.unlink("a.txt", dir_fd=dir_fd)  # partial progress, then process control
+            raise exc_type()
+
+        with patch.object(mod, "_fd_rmtree", side_effect=partial_then_interrupt):
+            with pytest.raises(exc_type):  # propagated unchanged
+                subject.close()
+
+        # ownership needed for retry is still valid; nothing was released or poisoned
+        assert not _fd_is_closed(root_fd) and not _fd_is_closed(pool_fd)
+        assert subject.root_fd == root_fd and subject.pool_fd == pool_fd
+        assert _epochs(pool) == [root_name]
+        assert _open_fds() == baseline_fds
+
+        subject.close()  # retry reaches the terminal state
+        assert _epochs(pool) == []
+        assert _fd_is_closed(root_fd) and _fd_is_closed(pool_fd)
+        assert subject.root_fd == -1 and subject.pool_fd == -1
+        after = _open_fds()
+        subject.close()  # exactly-once release: further closes are no-ops
+        assert _open_fds() == after
+        assert mod._fd_rmtree is real
+
+
+def test_ordinary_cleanup_success_and_ordinary_failure_still_release_authority(tmp_path: Path):
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        ok = _subject_with_files(tmp_path, pool, workspace)
+        fds = (ok.root_fd, ok.pool_fd)
+        ok.close()
+        assert _epochs(pool) == [] and all(_fd_is_closed(f) for f in fds)
+
+    # ordinary Exception: FilesystemDeletionFailure != AuthorityHandleLeak (declared semantics)
+    pool2 = tmp_path / "pool2"
+    with _workspace(pool2) as workspace:
+        repo = tmp_path / "repo"
+        head = _git(repo, "rev-parse", "HEAD")
+        subject = acquire_materialised_commit_subject_v2(
+            repo_root=repo, ref=head, workspace=workspace, authorized_storage=[repo]
+        )
+        fds = (subject.root_fd, subject.pool_fd)
+        with patch.object(mod, "_fd_rmtree", side_effect=OSError(5, "EIO")):
+            subject.close()  # ordinary failure does not propagate
+        assert all(_fd_is_closed(f) for f in fds)
+        subject.close()

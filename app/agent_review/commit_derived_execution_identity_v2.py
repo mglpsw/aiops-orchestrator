@@ -757,87 +757,96 @@ def verify_executed_source_identity_v2(
     # authority built from whatever is physically present at `repo_root`
     # right now -- never against `repo_root` directly. `repo_root` itself is
     # discovery input only; see `trusted_object_authority_v2.py`.
+    # C3 boundary: `read_commit_blobs_v2` returns a carrier that owns an open spool.
+    # It is closed here on every exit (success, refusal, any BaseException); the
+    # carrier's __del__ is a backstop only and must not be relied on, because a
+    # retained traceback keeps this frame (and the carrier) alive.
+    expected_content_by_path = None
     try:
-        with open_trusted_object_authority_v2(
-            repo_root,
-            authorized_storage=authorized_storage,
-            authorized_storage_roots=authorized_storage_roots,
-        ) as authority:
-            trusted_root = authority.trusted_repo_root
-            try:
-                resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
-            except SubjectMaterialisationError as exc:
-                raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
+        try:
+            with open_trusted_object_authority_v2(
+                repo_root,
+                authorized_storage=authorized_storage,
+                authorized_storage_roots=authorized_storage_roots,
+            ) as authority:
+                trusted_root = authority.trusted_repo_root
+                try:
+                    resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
+                except SubjectMaterialisationError as exc:
+                    raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-            try:
-                entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit)
-            except SubjectMaterialisationError as exc:
-                raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+                try:
+                    entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit)
+                except SubjectMaterialisationError as exc:
+                    raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-            for entry in entries:
-                if entry.mode == GITLINK_MODE_V2:
-                    raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
+                for entry in entries:
+                    if entry.mode == GITLINK_MODE_V2:
+                        raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
 
-            try:
-                expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
-            except SubjectMaterialisationError as exc:
-                if exc.reason_code == SUBJECT_BLOB_MISSING_REASON_V2:
-                    raise ExecutedSourceIdentityError(IDENTITY_BLOB_MISSING_REASON_V2) from exc
-                raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
-    except TrustedObjectAuthorityError as exc:
-        raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+                try:
+                    expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
+                except SubjectMaterialisationError as exc:
+                    if exc.reason_code == SUBJECT_BLOB_MISSING_REASON_V2:
+                        raise ExecutedSourceIdentityError(IDENTITY_BLOB_MISSING_REASON_V2) from exc
+                    raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+        except TrustedObjectAuthorityError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-    expected_paths = {entry.path: entry for entry in entries}
+        expected_paths = {entry.path: entry for entry in entries}
 
-    for entry in entries:
-        if entry.mode == GITLINK_MODE_V2:
-            # Defensive only: the early loop above already refuses any
-            # commit whose tree contains a gitlink, so this is never reached
-            # in practice. Kept so that a future change to (or mutation of)
-            # that early check fails closed with a typed refusal here
-            # instead of an uncaught KeyError against
-            # `expected_content_by_path`, which never has gitlink entries.
-            continue
-        actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
-        expected_bytes = expected_content_by_path[entry.path]
+        for entry in entries:
+            if entry.mode == GITLINK_MODE_V2:
+                # Defensive only: the early loop above already refuses any
+                # commit whose tree contains a gitlink, so this is never reached
+                # in practice. Kept so that a future change to (or mutation of)
+                # that early check fails closed with a typed refusal here
+                # instead of an uncaught KeyError against
+                # `expected_content_by_path`, which never has gitlink entries.
+                continue
+            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
+            expected_bytes = expected_content_by_path[entry.path]
 
-        if entry.mode == SYMLINK_MODE_V2:
-            if not actual_path.is_symlink():
+            if entry.mode == SYMLINK_MODE_V2:
+                if not actual_path.is_symlink():
+                    raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
+                expected_target = expected_bytes.decode("utf-8", "surrogateescape")
+                if os.readlink(actual_path) != expected_target:
+                    raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
+                continue
+
+            if actual_path.is_symlink() or not actual_path.is_file():
                 raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-            expected_target = expected_bytes.decode("utf-8", "surrogateescape")
-            if os.readlink(actual_path) != expected_target:
-                raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
-            continue
+            if actual_path.read_bytes() != expected_bytes:
+                raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
 
-        if actual_path.is_symlink() or not actual_path.is_file():
-            raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-        if actual_path.read_bytes() != expected_bytes:
-            raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+            should_be_executable = entry.mode == EXECUTABLE_MODE_V2
+            is_executable = os.access(actual_path, os.X_OK)
+            if should_be_executable != is_executable:
+                raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
 
-        should_be_executable = entry.mode == EXECUTABLE_MODE_V2
-        is_executable = os.access(actual_path, os.X_OK)
-        if should_be_executable != is_executable:
-            raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
+        # Deliberately called here, last, with a fresh walk -- not at call
+        # start. See check 4 in the docstring above for why: this is what
+        # closes the round-2 TOCTOU gap on top of round 1's static fix. A
+        # symlinked directory introduced at ANY point before this line, and
+        # still present when this line runs, is caught here regardless of
+        # whether it existed for the whole call or was introduced moments ago.
+        reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
+        for relative in sorted(reachable_leaf_paths):
+            if relative not in expected_paths:
+                raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
 
-    # Deliberately called here, last, with a fresh walk -- not at call
-    # start. See check 4 in the docstring above for why: this is what
-    # closes the round-2 TOCTOU gap on top of round 1's static fix. A
-    # symlinked directory introduced at ANY point before this line, and
-    # still present when this line runs, is caught here regardless of
-    # whether it existed for the whole call or was introduced moments ago.
-    reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
-    for relative in sorted(reachable_leaf_paths):
-        if relative not in expected_paths:
-            raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
+        if loaded_module_paths is None:
+            loaded_module_paths = loaded_module_files_v2()
+        for module_path in loaded_module_paths:
+            resolved_module_path = Path(module_path).resolve()
+            if not resolved_module_path.is_relative_to(subject_root):
+                raise ExecutedSourceIdentityError(IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2)
 
-    if loaded_module_paths is None:
-        loaded_module_paths = loaded_module_files_v2()
-    for module_path in loaded_module_paths:
-        resolved_module_path = Path(module_path).resolve()
-        if not resolved_module_path.is_relative_to(subject_root):
-            raise ExecutedSourceIdentityError(IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2)
-
-    return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
+        return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
+    finally:
+        if expected_content_by_path is not None:
+            expected_content_by_path.close()
 
 
 def authorize_commit_for_execution_v2(
