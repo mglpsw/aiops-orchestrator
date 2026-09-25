@@ -1655,7 +1655,7 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
         root_native_acl = _has_default_acl_fd(dst_dir_fd)
         _os.mkdir(name, mode=0o777 if root_native_acl else 0o700, dir_fd=dst_dir_fd)
         st_root = _os.stat(name, dir_fd=dst_dir_fd, follow_symlinks=False)
-        if not root_native_acl and (st_root.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+        if (st_root.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
             _os.chmod(name, st_root.st_mode | _stat.S_IRWXU, dir_fd=dst_dir_fd, follow_symlinks=False)
 
         stack: list[tuple[tuple[str, ...], list[tuple[str, int]] | None, int]] = [
@@ -1720,7 +1720,7 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                                     sub_dir_native_acl = _has_default_acl_fd(dst_cur_fd)
                                     _os.mkdir(sub_name, mode=0o777 if sub_dir_native_acl else 0o700, dir_fd=dst_cur_fd)
                                     st_sub = _os.stat(sub_name, dir_fd=dst_cur_fd, follow_symlinks=False)
-                                    if not sub_dir_native_acl and (st_sub.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
+                                    if (st_sub.st_mode & _stat.S_IRWXU) != _stat.S_IRWXU:
                                         _os.chmod(
                                             sub_name,
                                             st_sub.st_mode | _stat.S_IRWXU,

@@ -409,3 +409,29 @@ def test_legacy_projection_matches_native_creation_under_default_acl(tmp_path: P
 
     legacy, native = json.loads(result.stdout)
     assert legacy == native
+
+
+def test_default_acl_with_restrictive_owner_entry_keeps_new_dir_traversable(tmp_path: Path):
+    """The owner rwx repair stays: a default ACL whose owner entry lacks rwx must
+    not leave a copied directory unwritable."""
+    import struct
+
+    entries = [(1, 5, 0xFFFFFFFF), (4, 7, 0xFFFFFFFF), (0x10, 7, 0xFFFFFFFF), (0x20, 7, 0xFFFFFFFF)]
+    acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", t, p, i) for t, p, i in entries)
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    (src / "d").mkdir(parents=True)
+    (src / "d" / "f").write_text("x")
+    dst.mkdir()
+    try:
+        os.setxattr(dst, "system.posix_acl_default", acl)
+    except OSError:
+        pytest.skip("default POSIX ACLs unsupported on this filesystem")
+    sfd = os.open(src, os.O_RDONLY | os.O_DIRECTORY)
+    dfd = os.open(dst, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        mod._copy_entry_descriptor_relative("d", sfd, dfd)
+    finally:
+        os.close(sfd)
+        os.close(dfd)
+    assert os.stat(dst / "d").st_mode & 0o700 == 0o700
+    assert (dst / "d" / "f").read_text() == "x"
