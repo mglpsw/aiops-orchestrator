@@ -1137,3 +1137,183 @@ def test_constructor_interrupted_after_taking_descriptors_cannot_double_close_a_
             for p in probes:
                 if not _fd_is_closed(p):
                     os.close(p)
+
+
+# ------------------------------------------ C3-L propagation precedence at the unwind (finding 4108807657)
+
+
+def _one_shot_interrupt_instance(instance: BaseException):
+    """First `_fd_rmtree` makes partial progress and raises the KNOWN `instance`; later calls are real."""
+    real = mod._fd_rmtree
+    state = {"calls": 0}
+
+    def wrapper(dir_fd):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            for name in os.listdir(dir_fd):
+                os.unlink(name, dir_fd=dir_fd)
+                break
+            raise instance
+        return real(dir_fd)
+
+    return wrapper
+
+
+def _commit_unwind_outcome(tmp_path: Path, *, original: BaseException, interrupt: BaseException | None):
+    """Real epoch, real `commit()`: the capability constructor fails with `original`, and the
+    first cleanup pass is interrupted with `interrupt`. Returns (raised, pool, fds, workspace-state)."""
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, root_name = _populated_epoch(tmp_path, workspace)
+        pool_fd = lease.pool_fd
+        patches = [patch.object(mod, "MaterialisedCommitSubjectCapabilityV2", side_effect=original)]
+        if interrupt is not None:
+            patches.append(patch.object(mod, "_fd_rmtree", side_effect=_one_shot_interrupt_instance(interrupt)))
+        for p in patches:
+            p.start()
+        try:
+            raised = _raised(lambda: epoch.commit(commit_sha="0" * 40, file_count=0, dest_path=pool / root_name))
+        finally:
+            for p in patches:
+                p.stop()
+        return raised, _epochs(pool), (_fd_is_closed(root_fd), _fd_is_closed(pool_fd))
+
+
+PRECEDENCE_ROWS = [
+    # id, original, interrupt, expected: "original" | "interrupt"
+    ("ordinary_no_control", MemoryError("simulated"), None, "original"),
+    ("ordinary_then_KeyboardInterrupt", MemoryError("simulated"), KeyboardInterrupt(), "interrupt"),
+    ("ordinary_then_SystemExit", MemoryError("simulated"), SystemExit(42), "interrupt"),
+    ("control_then_no_control", SystemExit(7), None, "original"),
+    ("control_then_other_control", SystemExit(7), KeyboardInterrupt(), "original"),
+]
+
+
+@pytest.mark.parametrize("row", PRECEDENCE_ROWS, ids=[r[0] for r in PRECEDENCE_ROWS])
+def test_commit_unwind_inert_capability_branch_applies_the_precedence_policy(tmp_path: Path, row):
+    """Branch A: the capability never took ownership, the unwind owns the descriptors."""
+    _rid, original, interrupt, expected = row
+    raised, epochs, (root_closed, pool_closed) = _commit_unwind_outcome(tmp_path, original=original, interrupt=interrupt)
+    winner = original if expected == "original" else interrupt
+    assert raised is winner  # identity of the object, not just its class
+    if isinstance(winner, SystemExit):
+        assert raised.code == winner.code
+    if expected == "interrupt":
+        assert raised.__context__ is original  # the original stays available as context
+    assert epochs == [] and root_closed and pool_closed
+
+
+def _owned_capability_outcome(tmp_path: Path, *, original: BaseException, interrupt: BaseException | None):
+    """Branch B: ownership has been transferred (`_take_ownership` ran) and THEN `original` arrives."""
+    pool = tmp_path / "pool"
+    real_take = mod.MaterialisedCommitSubjectCapabilityV2._take_ownership
+    seen = {"closes": 0, "owned_at_close": None}
+    real_close = mod.MaterialisedCommitSubjectCapabilityV2.close
+
+    def take_then_fail(self):
+        real_take(self)
+        raise original
+
+    def spy_close(self):
+        seen["closes"] += 1
+        seen["owned_at_close"] = self._initialized
+        return real_close(self)
+
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, root_name = _populated_epoch(tmp_path, workspace)
+        pool_fd = lease.pool_fd
+        patches = [
+            patch.object(mod.MaterialisedCommitSubjectCapabilityV2, "_take_ownership", take_then_fail),
+            patch.object(mod.MaterialisedCommitSubjectCapabilityV2, "close", spy_close),
+        ]
+        if interrupt is not None:
+            patches.append(patch.object(mod, "_fd_rmtree", side_effect=_one_shot_interrupt_instance(interrupt)))
+        for p in patches:
+            p.start()
+        try:
+            raised = _raised(lambda: epoch.commit(commit_sha="0" * 40, file_count=0, dest_path=pool / root_name))
+        finally:
+            for p in patches:
+                p.stop()
+        return raised, seen, _epochs(pool), (_fd_is_closed(root_fd), _fd_is_closed(pool_fd))
+
+
+@pytest.mark.parametrize("row", PRECEDENCE_ROWS, ids=[r[0] for r in PRECEDENCE_ROWS])
+def test_commit_unwind_owned_capability_branch_applies_the_precedence_policy(tmp_path: Path, row):
+    _rid, original, interrupt, expected = row
+    raised, seen, epochs, (root_closed, pool_closed) = _owned_capability_outcome(
+        tmp_path, original=original, interrupt=interrupt
+    )
+    assert seen["closes"] >= 1 and seen["owned_at_close"] is True  # the owned-capability branch really ran
+    winner = original if expected == "original" else interrupt
+    assert raised is winner
+    if isinstance(winner, SystemExit):
+        assert raised.code == winner.code
+    if expected == "interrupt":
+        assert raised.__context__ is original
+    assert epochs == [] and root_closed and pool_closed
+
+
+def test_commit_success_path_is_unchanged_and_ownership_is_transferred(tmp_path: Path):
+    pool = tmp_path / "pool"
+    with _workspace(pool) as workspace:
+        lease, epoch, root_fd, root_name = _populated_epoch(tmp_path, workspace)
+        cap = epoch.commit(commit_sha="0" * 40, file_count=0, dest_path=pool / root_name)
+        assert cap.root_fd == root_fd and not _fd_is_closed(root_fd)  # the capability owns them now
+        assert epoch._committed and epoch.root_fd == -1
+        cap.close()
+        assert _epochs(pool) == [] and _fd_is_closed(root_fd)
+
+
+def test_acquire_boundary_surfaces_the_interrupt_that_commit_cleanup_produced(tmp_path: Path):
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a", b"b"])
+    pool = tmp_path / "pool"
+    interrupt = KeyboardInterrupt()
+    original = MemoryError("simulated")
+    with _workspace(pool) as workspace:
+        with patch.object(mod, "MaterialisedCommitSubjectCapabilityV2", side_effect=original), \
+             patch.object(mod, "_fd_rmtree", side_effect=_one_shot_interrupt_instance(interrupt)):
+            raised = _raised(lambda: acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            ))
+        assert raised is interrupt  # no outer layer swallows it again
+        assert _epochs(pool) == []
+
+
+def test_acquire_rollback_does_not_let_a_second_control_replace_the_first(tmp_path: Path):
+    """Table row P1/P2 at the acquisition boundary: the body is stopped by P1, the rollback
+    cleanup is interrupted by P2; the epoch is cleaned and P1 is what propagates."""
+    repo = tmp_path / "repo"
+    commit = _alias_commit(repo, [b"a", b"b"])
+    pool = tmp_path / "pool"
+    first, second = SystemExit(5), KeyboardInterrupt()
+
+    def write_then_stop(_trie, _content, root_fd, _prefix, _written):
+        for name in ("p1", "p2"):
+            os.close(os.open(name, os.O_CREAT | os.O_WRONLY, 0o600, dir_fd=root_fd))
+        raise first
+
+    with _workspace(pool) as workspace:
+        with patch.object(mod, "_materialise_trie_no_follow", side_effect=write_then_stop), \
+             patch.object(mod, "_fd_rmtree", side_effect=_one_shot_interrupt_instance(second)):
+            raised = _raised(lambda: acquire_materialised_commit_subject_v2(
+                repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
+            ))
+        assert raised is first and raised.code == 5
+        assert _epochs(pool) == []
+
+
+def test_retry_bound_is_unchanged_two_attempts():
+    assert mod._cleanup_to_terminal_v2.__defaults__ is None and mod._cleanup_to_terminal_v2.__kwdefaults__["attempts"] == 2
+
+
+def test_precedence_table_of_the_shared_selector():
+    sel = mod._control_to_propagate_v2
+    ordinary, p1, p2 = RuntimeError("o"), KeyboardInterrupt(), SystemExit(3)
+    assert sel(ordinary, None) is None  # ordinary, no control            -> original propagates
+    assert sel(ordinary, p2) is p2  # ordinary, control P                  -> P (same object)
+    assert sel(p1, None) is None  # control P1, nothing                    -> P1 propagates
+    assert sel(p1, p2) is None  # control P1, control P2                    -> P1 kept
+    assert sel(None, p2) is p2  # nothing in flight, control P (acquire)   -> P
+    assert sel(None, None) is None

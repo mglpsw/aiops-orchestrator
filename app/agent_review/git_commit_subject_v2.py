@@ -429,6 +429,24 @@ def _cleanup_to_terminal_v2(attempt, *, attempts: int = 2) -> BaseException | No
     return first
 
 
+def _control_to_propagate_v2(
+    inflight: BaseException | None, pending: BaseException | None
+) -> BaseException | None:
+    """Which process-control exception, if any, must be raised after a cleanup.
+
+    `pending` is what `_cleanup_to_terminal_v2` returned (process control only).
+    Cleanup and result-preservation are different postconditions: a caller that
+    receives a pending control must apply this policy explicitly.
+      in flight: ordinary Exception / nothing -> the pending control wins;
+      in flight: a control exception            -> the original control is kept.
+    """
+    if pending is None:
+        return None
+    if inflight is None or isinstance(inflight, Exception):
+        return pending
+    return None
+
+
 class MaterialisationEpochV2:
     """Linearizable transaction managing a private epoch under an operation lease.
 
@@ -552,19 +570,23 @@ class MaterialisationEpochV2:
             _detach_epoch()
             cap._take_ownership()
             return cap
-        except BaseException:
-            # The interrupt that started this unwind is the one re-raised (bare `raise`).
+        except BaseException as original:
+            # `original` is the exception that started this unwind. After cleanup and after
+            # the descriptors this path owns are released, apply the propagation policy: a
+            # pending process-control exception outranks an ordinary `original` (its context
+            # stays chained); otherwise the original propagates (bare `raise`).
+            pending: BaseException | None = None
             if cap is not None and cap._initialized:
                 # The capability owns the descriptors and its close() is retryable:
                 # drive it to terminal because this frame is about to abandon it.
-                _cleanup_to_terminal_v2(cap.close)
+                pending = _cleanup_to_terminal_v2(cap.close)
             else:
                 # Any capability is inert: the detached locals are the only owners.
                 # Poison the epoch first so a later rollback cannot close them again.
                 _detach_epoch()
                 try:
                     if root_fd != -1:
-                        _cleanup_to_terminal_v2(lambda: _fd_rmtree(root_fd))
+                        pending = _cleanup_to_terminal_v2(lambda: _fd_rmtree(root_fd))
                 finally:
                     if root_fd != -1:
                         try:
@@ -583,6 +605,9 @@ class MaterialisationEpochV2:
                                 _os.close(pool_fd)
                             except OSError:
                                 pass
+            winner = _control_to_propagate_v2(original, pending)
+            if winner is not None:
+                raise winner
             raise
 
 
@@ -2292,13 +2317,19 @@ def acquire_materialised_commit_subject_v2(
                 # drive it to terminal before this frame abandons it, then re-raise.
                 pending = _cleanup_to_terminal_v2(cap.close)
             elif epoch is not None:
-                epoch.rollback()
+                try:
+                    epoch.rollback()
+                except Exception:
+                    raise
+                except BaseException as control:  # rollback re-raises a pending process control
+                    pending = control
             else:
                 lease.close()
-            # Process control outranks a domain exception that is merely in flight.
-            inflight = sys.exc_info()[1]
-            if pending is not None and (inflight is None or isinstance(inflight, Exception)):
-                raise pending
+            # Process control outranks a domain exception that is merely in flight; an
+            # original control exception is kept over a second one.
+            winner = _control_to_propagate_v2(sys.exc_info()[1], pending)
+            if winner is not None:
+                raise winner
 
 
 
