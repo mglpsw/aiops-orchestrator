@@ -2,6 +2,7 @@ import os
 import pytest
 from pathlib import Path
 from app.agent_review.git_commit_subject_v2 import (
+    BoundedBlobCarrierV2,
     MaterialisationWorkspaceCapabilityV2,
     MaterialisedCommitSubjectCapabilityV2,
     OperationWorkspaceLeaseV2,
@@ -2323,3 +2324,203 @@ def test_copy_entry_descriptor_relative_depth_under_restricted_nofile(tmp_path: 
 
     assert expected.read_bytes() == b"deep leaf content"
     assert not (src_dir / "depth_00").exists()
+
+
+def test_blob_transport_does_not_duplicate_large_admitted_body_in_python_heap(tmp_path: Path):
+    """P1 (4100737092, C3-B): Verifies read_commit_blobs_v2 streams admitted blobs into bounded spool
+
+    storage without allocating or rebuilding large blob bodies in Python heap memory.
+    """
+    import tracemalloc
+    from app.agent_review.git_commit_subject_v2 import list_commit_tree_structure_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    large_size = 2_500_000
+    large_payload = b"Q" * large_size
+    (repo / "large.bin").write_bytes(large_payload)
+    (repo / "small.txt").write_bytes(b"small content")
+    commit = _commit_all(repo, "commit with large blob")
+
+    entries = list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit)
+
+    tracemalloc.start()
+    carrier = read_commit_blobs_v2(repo_root=repo, entries=entries)
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    try:
+        assert isinstance(carrier, BoundedBlobCarrierV2)
+        # Peak memory allocated on Python heap must be <= 300 KiB, proving the 2.5 MB body
+        # was never duplicated or buffered in heap via chunks + b"".join.
+        assert peak < 300 * 1024
+
+        assert carrier["small.txt"] == b"small content"
+        assert carrier["large.bin"] == large_payload
+
+        # Verify stream_to_fd streams content directly to descriptor
+        out_path = tmp_path / "streamed.bin"
+        out_fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            bytes_streamed = carrier.stream_to_fd("large.bin", out_fd)
+            assert bytes_streamed == large_size
+        finally:
+            os.close(out_fd)
+        assert out_path.read_bytes() == large_payload
+    finally:
+        carrier.close()
+
+
+def test_symlink_target_over_filesystem_limit_rejected_before_epoch(tmp_path: Path):
+    """P2 (4100737099, C3-R): Verifies symlink targets exceeding filesystem limit are rejected
+
+    as SUBJECT_UNREPRESENTABLE_TREE_REASON_V2 prior to creating any epoch root in workspace.
+    """
+    import subprocess
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+
+    # 1. Overlong target: 4096 bytes exceeds Linux PATH_MAX - 1 (4095)
+    target_4096 = b"a" * 4096
+    p_hash = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        input=target_4096,
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    oid_4096 = p_hash.stdout.decode().strip()
+    p_tree = subprocess.run(
+        ["git", "mktree"],
+        input=f"120000 blob {oid_4096}\toverlong_link\n".encode(),
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    tree_oid_4096 = p_tree.stdout.decode().strip()
+    p_commit = subprocess.run(
+        ["git", "commit-tree", tree_oid_4096, "-m", "overlong symlink commit"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    commit_4096 = p_commit.stdout.decode().strip()
+
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    pool_fd = os.open(pool, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        workspace = MaterialisationWorkspaceCapabilityV2(pool_fd, pool)
+    finally:
+        os.close(pool_fd)
+
+    with workspace:
+        with pytest.raises(SubjectMaterialisationError) as exc_info:
+            with acquire_materialised_commit_subject_v2(
+                repo_root=repo,
+                ref=commit_4096,
+                workspace=workspace,
+                authorized_storage=[repo],
+            ):
+                pass
+        assert exc_info.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+        # Verify zero epoch root was created on the pool filesystem
+        epoch_entries = [p for p in pool.iterdir() if p.name.startswith("c3_epoch_")]
+        assert len(epoch_entries) == 0
+
+    # 2. Maximum admissible target: 4095 bytes succeeds
+    target_4095 = b"b" * 4095
+    p_hash_ok = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        input=target_4095,
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    oid_4095 = p_hash_ok.stdout.decode().strip()
+    p_tree_ok = subprocess.run(
+        ["git", "mktree"],
+        input=f"120000 blob {oid_4095}\tvalid_link\n".encode(),
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    tree_oid_4095 = p_tree_ok.stdout.decode().strip()
+    p_commit_ok = subprocess.run(
+        ["git", "commit-tree", tree_oid_4095, "-m", "4095 symlink commit"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    commit_4095 = p_commit_ok.stdout.decode().strip()
+
+    pool_fd2 = os.open(pool, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        workspace2 = MaterialisationWorkspaceCapabilityV2(pool_fd2, pool)
+    finally:
+        os.close(pool_fd2)
+
+    with workspace2:
+        with acquire_materialised_commit_subject_v2(
+            repo_root=repo,
+            ref=commit_4095,
+            workspace=workspace2,
+            authorized_storage=[repo],
+        ) as cap:
+            assert cap.commit_sha == commit_4095
+            assert os.readlink(cap.root_locator / "valid_link") == target_4095.decode("utf-8")
+
+
+def test_legacy_projection_preserves_setgid_destination_inheritance(tmp_path: Path):
+    """P2 (4100737105, C3-X): Verifies projecting children into an existing setgid directory
+
+    preserves the destination directory's mode and propagates group ownership and S_ISGID to children.
+    """
+    import stat
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "top_file.txt").write_bytes(b"top level file")
+    (repo / "nested_dir").mkdir()
+    (repo / "nested_dir" / "leaf_file.txt").write_bytes(b"nested leaf file")
+    head = _commit_all(repo, "commit for setgid projection")
+
+    pool = tmp_path / "pool"
+    pool.mkdir()
+    dest = pool / "project_dest"
+    dest.mkdir()
+
+    # Determine a supplementary group ID if available, otherwise effective GID
+    groups = os.getgroups()
+    target_gid = groups[1] if len(groups) > 1 else groups[0]
+    os.chown(dest, -1, target_gid)
+    os.chmod(dest, 0o2770)
+
+    materialise_commit_subject_v2(
+        repo_root=repo,
+        ref=head,
+        destination=dest,
+        authorized_storage=[repo],
+    )
+
+    st_dest = os.stat(dest)
+    st_top = os.stat(dest / "top_file.txt")
+    st_nested = os.stat(dest / "nested_dir")
+    st_leaf = os.stat(dest / "nested_dir" / "leaf_file.txt")
+
+    # Destination directory's own mode (02770) and group must be preserved
+    assert (st_dest.st_mode & 0o7777) == 0o2770
+    assert st_dest.st_gid == target_gid
+
+    # Projected top file must inherit destination group
+    assert st_top.st_gid == target_gid
+
+    # Projected subdirectory must inherit destination group AND retain S_ISGID bit
+    assert st_nested.st_gid == target_gid
+    assert bool(st_nested.st_mode & stat.S_ISGID)
+
+    # Projected nested leaf must inherit destination group
+    assert st_leaf.st_gid == target_gid

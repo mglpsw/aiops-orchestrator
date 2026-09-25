@@ -45,11 +45,15 @@ decision.
 
 from __future__ import annotations
 
+import collections.abc
 import contextvars
+import errno as _errno
+import io
 import shutil
 import stat
 import subprocess
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -75,6 +79,7 @@ __all__ = [
     "SUBJECT_UNREPRESENTABLE_TREE_REASON_V2",
     "SUBJECT_WORKSPACE_AUTHORITY_CLOSED_REASON_V2",
     "SUBJECT_WORKSPACE_AUTHORITY_REQUIRED_REASON_V2",
+    "BoundedBlobCarrierV2",
     "MaterialisedCommitSubjectV2",
     "MaterialisationWorkspaceCapabilityV2",
     "MaterialisedCommitSubjectCapabilityV2",
@@ -719,12 +724,107 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
 
 
 
+class BoundedBlobCarrierV2(Mapping[str, bytes]):
+    """Bounded carrier for committed git blob payloads.
+
+    Streams blob data into an anonymous on-disk spool file during cat-file --batch
+    ingestion, eliminating dual-payload allocation (such as chunks + b"".join)
+    in Python heap memory.
+
+    Implements Mapping[str, bytes] for backward compatibility with existing
+    consumers, reading individual blobs from the spool on demand.
+
+    Provides stream_to_fd(path, target_fd) for streaming blob content directly to a
+    destination file descriptor in bounded chunks (<= 64 KiB) without loading
+    the full blob body into Python heap.
+    """
+
+    def __init__(
+        self,
+        spool: io.BufferedRandom,
+        index: dict[str, tuple[int, int]],
+        keys: list[str],
+    ) -> None:
+        self._spool = spool
+        self._index = index  # path -> (offset, size)
+        self._keys = keys
+        self._closed = False
+
+    @classmethod
+    def empty(cls) -> BoundedBlobCarrierV2:
+        spool = tempfile.TemporaryFile(mode="w+b")
+        return cls(spool, {}, [])
+
+    def __getitem__(self, path: str) -> bytes:
+        if self._closed:
+            raise ValueError("BoundedBlobCarrierV2 is closed")
+        if path not in self._index:
+            raise KeyError(path)
+        offset, size = self._index[path]
+        self._spool.seek(offset)
+        return self._spool.read(size)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __contains__(self, path: object) -> bool:
+        return path in self._index
+
+    def get(self, path: str, default: object = None) -> bytes | object:
+        if path in self._index:
+            return self[path]
+        return default
+
+    def stream_to_fd(self, path: str, target_fd: int) -> int:
+        if self._closed:
+            raise ValueError("BoundedBlobCarrierV2 is closed")
+        if path not in self._index:
+            raise KeyError(path)
+        offset, size = self._index[path]
+        self._spool.seek(offset)
+        remaining = size
+        total_written = 0
+        while remaining > 0:
+            chunk = self._spool.read(min(remaining, 65536))
+            if not chunk:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            written = 0
+            while written < len(chunk):
+                n = _os.write(target_fd, chunk[written:])
+                if n == 0:
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                written += n
+            remaining -= len(chunk)
+            total_written += len(chunk)
+        return total_written
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            try:
+                self._spool.close()
+            except OSError:
+                pass
+
+    def __enter__(self) -> BoundedBlobCarrierV2:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
+
+
 def read_commit_blobs_v2(
     *,
     repo_root: Path,
     entries: list[TreeEntryV2],
     max_expanded_bytes: int = MAX_EXPANDED_BYTES_V2,
-) -> dict[str, bytes]:
+) -> BoundedBlobCarrierV2:
     """Fetch every blob's raw content in one batched `cat-file` call.
 
     Keyed by path (not object id) because the caller wants "what is at this
@@ -737,10 +837,13 @@ def read_commit_blobs_v2(
     - If total logical bytes exceed `max_expanded_bytes`, fails closed as
       `SUBJECT_UNREPRESENTABLE_TREE_REASON_V2` with zero filesystem mutations
       and without buffering large blob bodies into process memory.
+    - Streams blob payloads from `cat-file --batch` directly into an anonymous
+      spool without accumulating or rebuilding chunks in Python heap, ensuring
+      O(chunk_size) peak heap memory.
     """
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2 and entry.object_type != "tree"]
     if not blobs:
-        return {}
+        return BoundedBlobCarrierV2.empty()
     batch_request = "".join(f"{entry.object_id}\n" for entry in blobs)
 
     # Preflight: query object metadata/sizes via `cat-file --batch-check` to enforce
@@ -783,12 +886,21 @@ def read_commit_blobs_v2(
     except BoundedGitError as exc:
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
-    content_by_path: dict[str, bytes] = {}
-    verified_bytes = 0
+    spool = tempfile.TemporaryFile(mode="w+b")
     try:
         assert proc.stdin is not None
         assert proc.stdout is not None
+
+        oid_spans: dict[str, tuple[int, int]] = {}
+        unique_blobs: list[TreeEntryV2] = []
+        seen_oids: set[str] = set()
         for entry in blobs:
+            if entry.object_id not in seen_oids:
+                seen_oids.add(entry.object_id)
+                unique_blobs.append(entry)
+
+        verified_bytes = 0
+        for entry in unique_blobs:
             proc.stdin.write(f"{entry.object_id}\n".encode("utf-8"))
             proc.stdin.flush()
             header_line = proc.stdout.readline()
@@ -809,20 +921,32 @@ def read_commit_blobs_v2(
             if size > max_expanded_bytes or verified_bytes > max_expanded_bytes:
                 raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
 
-            chunks: list[bytes] = []
+            offset = spool.tell()
             remaining = size
             while remaining > 0:
                 chunk = proc.stdout.read(min(remaining, 65536))
                 if not chunk:
                     raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
-                chunks.append(chunk)
+                spool.write(chunk)
                 remaining -= len(chunk)
             trailing_nl = proc.stdout.read(1)
             if trailing_nl != b"\n":
                 raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
-            content_by_path[entry.path] = b"".join(chunks)
+            oid_spans[entry.object_id] = (offset, size)
+
+        index: dict[str, tuple[int, int]] = {}
+        keys: list[str] = []
+        for entry in blobs:
+            index[entry.path] = oid_spans[entry.object_id]
+            keys.append(entry.path)
+
+        return BoundedBlobCarrierV2(spool=spool, index=index, keys=keys)
     except (OSError, BoundedGitError) as exc:
+        spool.close()
         raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+    except BaseException:
+        spool.close()
+        raise
     finally:
         if proc.stdin:
             try:
@@ -848,8 +972,6 @@ def read_commit_blobs_v2(
                 proc.wait()
             except OSError:
                 pass
-
-    return content_by_path
 
 
 
@@ -1202,7 +1324,7 @@ def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[T
 
 def _materialise_trie_no_follow(
     root_node: _TrieNode,
-    content_by_path: dict[str, bytes],
+    content_by_path: Mapping[str, bytes] | dict[str, bytes],
     initial_dir_fd: int,
     initial_path: str,
     count: list[int],
@@ -1290,6 +1412,10 @@ def _materialise_trie_no_follow(
                     _os.symlink(target, name_bytes, dir_fd=dir_fd)
                 except FileExistsError as exc:
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+                except OSError as exc:
+                    if exc.errno == _errno.ENAMETOOLONG:
+                        raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2) from exc
+                    raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
                 # Revalidate symlink
                 stat_name = _os.stat(name_bytes, dir_fd=dir_fd, follow_symlinks=False)
@@ -1301,7 +1427,6 @@ def _materialise_trie_no_follow(
                 count[0] += 1
 
             elif child.node_type == 'blob':
-                content = content_by_path[child_path]
                 flags = _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_NOFOLLOW | _os.O_CLOEXEC
                 mode = 0o666
                 try:
@@ -1312,12 +1437,16 @@ def _materialise_trie_no_follow(
                     raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
 
                 try:
-                    written_bytes = 0
-                    while written_bytes < len(content):
-                        chunk = _os.write(fd, content[written_bytes:])
-                        if chunk == 0:
-                            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
-                        written_bytes += chunk
+                    if hasattr(content_by_path, "stream_to_fd"):
+                        content_by_path.stream_to_fd(child_path, fd)
+                    else:
+                        content = content_by_path[child_path]
+                        written_bytes = 0
+                        while written_bytes < len(content):
+                            chunk = _os.write(fd, content[written_bytes:])
+                            if chunk == 0:
+                                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2)
+                            written_bytes += chunk
 
                     stat_before = _os.fstat(fd)
                     target_mode = stat_before.st_mode | _stat.S_IRUSR | _stat.S_IWUSR
@@ -1430,6 +1559,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                 dir_fd=dst_dir_fd,
             )
             try:
+                dest_dir_st = _os.fstat(dst_dir_fd)
+                if (dest_dir_st.st_mode & _stat.S_ISGID) or (hasattr(_os, "getgroups") and dest_dir_st.st_gid in _os.getgroups()):
+                    try:
+                        _os.fchown(dst_file_fd, -1, dest_dir_st.st_gid)
+                    except OSError:
+                        pass
                 while True:
                     chunk = _os.read(src_file_fd, 65536)
                     if not chunk:
@@ -1501,6 +1636,12 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                                             dir_fd=dst_cur_fd,
                                         )
                                         try:
+                                            dest_cur_st = _os.fstat(dst_cur_fd)
+                                            if (dest_cur_st.st_mode & _stat.S_ISGID) or (hasattr(_os, "getgroups") and dest_cur_st.st_gid in _os.getgroups()):
+                                                try:
+                                                    _os.fchown(d_file_fd, -1, dest_cur_st.st_gid)
+                                                except OSError:
+                                                    pass
                                             while True:
                                                 chunk = _os.read(s_file_fd, 65536)
                                                 if not chunk:
@@ -1542,7 +1683,11 @@ def _copy_entry_descriptor_relative(name: str, src_dir_fd: int, dst_dir_fd: int)
                 child_name = comps[-1]
                 dst_p_fd = dst_dir_fd if parent_comps == () else _open_desc(dst_dir_fd, parent_comps)
                 try:
-                    _os.chmod(child_name, orig_mode, dir_fd=dst_p_fd, follow_symlinks=False)
+                    st_dst = _os.stat(child_name, dir_fd=dst_p_fd, follow_symlinks=False)
+                    final_mode = orig_mode
+                    if st_dst.st_mode & _stat.S_ISGID:
+                        final_mode |= _stat.S_ISGID
+                    _os.chmod(child_name, final_mode, dir_fd=dst_p_fd, follow_symlinks=False)
                 finally:
                     if dst_p_fd != dst_dir_fd:
                         _os.close(dst_p_fd)
@@ -1641,7 +1786,11 @@ def _translate_destination_permissions_descriptor_relative(
                 cur_fd = next_fd
                 owned_cur = next_fd
             try:
-                _os.fchmod(cur_fd, dir_target_mode)
+                st_cur = _os.fstat(cur_fd)
+                final_dir_mode = dir_target_mode
+                if st_cur.st_mode & _stat.S_ISGID:
+                    final_dir_mode |= _stat.S_ISGID
+                _os.fchmod(cur_fd, final_dir_mode)
             except OSError:
                 pass
         finally:
@@ -1654,7 +1803,11 @@ def _translate_destination_permissions_descriptor_relative(
     # 3. Translate root directory last, only if translate_root is True
     if translate_root:
         try:
-            _os.fchmod(dir_fd, dir_target_mode)
+            st_root = _os.fstat(dir_fd)
+            final_root_mode = dir_target_mode
+            if st_root.st_mode & _stat.S_ISGID:
+                final_root_mode |= _stat.S_ISGID
+            _os.fchmod(dir_fd, final_root_mode)
         except OSError:
             pass
 
@@ -1733,33 +1886,53 @@ def materialise_commit_subject_v2(
 
             dest_fd = _os.open(destination, _os.O_RDONLY | _os.O_DIRECTORY | _os.O_CLOEXEC)
             try:
+                dest_st = _os.fstat(dest_fd)
+                pool_st = _os.stat(destination.parent)
+                has_default_acl = False
+                if hasattr(_os, "getxattr"):
+                    try:
+                        _os.getxattr(dest_fd, "system.posix_acl_default")
+                        has_default_acl = True
+                    except OSError:
+                        pass
+
+                use_copy = bool(
+                    (dest_st.st_mode & _stat.S_ISGID)
+                    or (dest_st.st_gid != pool_st.st_gid)
+                    or (dest_st.st_dev != pool_st.st_dev)
+                    or has_default_acl
+                )
+
                 moved_children: list[Path] = []
                 dest_child: Path | None = None
                 try:
                     child_names = _os.listdir(capability.root_fd)
                     for child_name in child_names:
                         dest_child = destination / child_name
-                        try:
-                            _os.rename(
-                                child_name,
-                                child_name,
-                                src_dir_fd=capability.root_fd,
-                                dst_dir_fd=dest_fd,
-                            )
-                        except TypeError:
-                            # Fallback only for legacy 2-argument test mocks (e.g. patch('os.rename'))
+                        if use_copy:
+                            _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
+                        else:
                             try:
-                                _os.rename(str(capability.root_locator / child_name), str(dest_child))
+                                _os.rename(
+                                    child_name,
+                                    child_name,
+                                    src_dir_fd=capability.root_fd,
+                                    dst_dir_fd=dest_fd,
+                                )
+                            except TypeError:
+                                # Fallback only for legacy 2-argument test mocks (e.g. patch('os.rename'))
+                                try:
+                                    _os.rename(str(capability.root_locator / child_name), str(dest_child))
+                                except OSError as err:
+                                    if err.errno == _errno.EXDEV:
+                                        _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
+                                    else:
+                                        raise
                             except OSError as err:
                                 if err.errno == _errno.EXDEV:
                                     _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
                                 else:
                                     raise
-                        except OSError as err:
-                            if err.errno == _errno.EXDEV:
-                                _copy_entry_descriptor_relative(child_name, capability.root_fd, dest_fd)
-                            else:
-                                raise
                         moved_children.append(dest_child)
                         dest_child = None
 
@@ -1844,6 +2017,7 @@ def acquire_materialised_commit_subject_v2(
             name_max_limit = 255
 
         # 2. Trusted Git authority & canonical trie validation
+        content_by_path = None
         try:
             with open_trusted_object_authority_v2(
                 repo_root,
@@ -1864,37 +2038,71 @@ def acquire_materialised_commit_subject_v2(
                     entries=leaf_blobs,
                     max_expanded_bytes=max_expanded_bytes,
                 )
+
+                # Derive maximum allowed symlink target length from workspace filesystem before epoch creation
+                max_symlink_target_len = -1
+                if hasattr(_os, "fpathconf"):
+                    try:
+                        max_symlink_target_len = _os.fpathconf(lease.pool_fd, "PC_SYMLINK_MAX")
+                    except OSError:
+                        pass
+                if max_symlink_target_len <= 0 and hasattr(_os, "fpathconf"):
+                    try:
+                        path_max = _os.fpathconf(lease.pool_fd, "PC_PATH_MAX")
+                        if path_max > 1:
+                            max_symlink_target_len = path_max - 1
+                    except OSError:
+                        pass
+                if max_symlink_target_len <= 0:
+                    max_symlink_target_len = 4095
+
                 for entry in leaf_blobs:
                     if entry.mode == SYMLINK_MODE_V2:
                         target_bytes = content_by_path.get(entry.path)
-                        if not target_bytes or b"\x00" in target_bytes:
+                        if (
+                            not target_bytes
+                            or b"\x00" in target_bytes
+                            or len(target_bytes) > max_symlink_target_len
+                        ):
                             raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
         except TrustedObjectAuthorityError as exc:
+            if content_by_path is not None and hasattr(content_by_path, "close"):
+                content_by_path.close()
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
         except BoundedGitError as exc:
+            if content_by_path is not None and hasattr(content_by_path, "close"):
+                content_by_path.close()
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
+        except BaseException:
+            if content_by_path is not None and hasattr(content_by_path, "close"):
+                content_by_path.close()
+            raise
 
-        # 3. Create epoch root relative to pinned lease
-        epoch = MaterialisationEpochV2(lease)
-        root_fd, root_name, dest_path = epoch.create_epoch_root()
-
-        # 4. Materialise canonical trie
-        written = [0]
         try:
-            _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
-        except Exception as exc:
-            if isinstance(exc, SubjectMaterialisationError):
-                raise
-            raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+            # 3. Create epoch root relative to pinned lease
+            epoch = MaterialisationEpochV2(lease)
+            root_fd, root_name, dest_path = epoch.create_epoch_root()
 
-        # 5. Exactly-once ownership transfer commit
-        cap = epoch.commit(
-            commit_sha=commit_sha,
-            file_count=written[0],
-            dest_path=dest_path,
-        )
-        transferred_to_caller = True
-        return cap
+            # 4. Materialise canonical trie
+            written = [0]
+            try:
+                _materialise_trie_no_follow(trie, content_by_path, root_fd, "", written)
+            except Exception as exc:
+                if isinstance(exc, SubjectMaterialisationError):
+                    raise
+                raise SubjectMaterialisationError(SUBJECT_MATERIALISATION_RACE_REASON_V2) from exc
+
+            # 5. Exactly-once ownership transfer commit
+            cap = epoch.commit(
+                commit_sha=commit_sha,
+                file_count=written[0],
+                dest_path=dest_path,
+            )
+            transferred_to_caller = True
+            return cap
+        finally:
+            if content_by_path is not None and hasattr(content_by_path, "close"):
+                content_by_path.close()
     finally:
         if not transferred_to_caller:
             if cap is not None:
