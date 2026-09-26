@@ -693,6 +693,13 @@ def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, carrier: BoundedBlob
 
 
 _LEGACY_SCAN_MAX_RECORD_V2 = 1 << 20
+# `#352` review 5327688067: the refusal-only scan is bounded by C3's own work
+# budget -- `ls-tree -r -t` emits one record per expanded entry, exactly what
+# C3 counts -- plus a total-bytes ceiling, so a small shared-subtree DAG whose
+# flattened listing is exponential cannot keep the verifier busy after C3 has
+# already refused it.
+_LEGACY_SCAN_MAX_RECORDS_V2 = MAX_EXPANDED_ENTRIES_V2 + 1
+_LEGACY_SCAN_MAX_BYTES_V2 = 64 << 20
 
 
 def _subject_name_max_v2(root_fd: int) -> int:
@@ -714,8 +721,11 @@ def _legacy_refusal_reason_v2(trusted_root: Path, commit_sha: str) -> str | None
     ``..`` that names an empty tree, hence ``-t``) -- so those codes keep
     their meaning. Streams ``git ls-tree -r -t -z`` one record at a time
     (at most ``_LEGACY_SCAN_MAX_RECORD_V2`` buffered) and stops at the first
-    hit; never on the success path, never materialises the flattened listing.
-    Returns ``None`` when neither applies or the scan cannot complete."""
+    hit, or after ``_LEGACY_SCAN_MAX_RECORDS_V2`` records or
+    ``_LEGACY_SCAN_MAX_BYTES_V2`` bytes (C3's own entry budget): never on the
+    success path, never materialises the flattened listing, never does more
+    work than C3's enumeration may. Returns ``None`` when neither applies or
+    the bounded scan cannot decide."""
     try:
         proc = open_bounded_git_subprocess_v2(
             ["ls-tree", "-r", "-t", "-z", commit_sha], cwd=trusted_root,
@@ -725,13 +735,21 @@ def _legacy_refusal_reason_v2(trusted_root: Path, commit_sha: str) -> str | None
         return None
     try:
         buffer = b""
+        consumed_bytes = 0
+        consumed_records = 0
         while True:
             chunk = proc.stdout.read1(65536) if proc.stdout is not None else b""
             if not chunk:
                 return None
+            consumed_bytes += len(chunk)
+            if consumed_bytes > _LEGACY_SCAN_MAX_BYTES_V2:
+                return None
             buffer += chunk
             *records, buffer = buffer.split(b"\0")
             for record in records:
+                consumed_records += 1
+                if consumed_records > _LEGACY_SCAN_MAX_RECORDS_V2:
+                    return None
                 metadata, _, raw_path = record.partition(b"\t")
                 if metadata.split(b" ", 1)[0].decode("ascii", "replace") == GITLINK_MODE_V2:
                     return IDENTITY_GITLINK_PRESENT_REASON_V2

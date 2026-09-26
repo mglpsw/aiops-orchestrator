@@ -820,3 +820,75 @@ def test_component_length_limit_is_the_subject_filesystems_as_c3_derives_it(
     real = os.fpathconf
     monkeypatch.setattr(ident.os, "fpathconf", lambda fd, name: 300 if name == "PC_NAME_MAX" else real(fd, name))
     assert _refusal(plumbing, c, root) == IDENTITY_MISSING_TRACKED_FILE_REASON_V2
+
+
+# -- #352 Q review 5327688067 ----------------------------------------------------
+
+_DAG_PROBE = r"""
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from app.agent_review import commit_derived_execution_identity_v2 as ident
+repo = Path(sys.argv[2])
+try:
+    ident.verify_executed_source_identity_v2(repo_root=repo, commit_sha=sys.argv[3], subject_root=Path(sys.argv[4]), loaded_module_paths=())
+    print("SUCCESS")
+except ident.ExecutedSourceIdentityError as exc:
+    print("REFUSED:" + exc.reason_code)
+"""
+
+
+def test_refusal_only_scan_is_bounded_by_c3s_budget_on_an_exponential_dag(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """24 tree objects, 2^24 flattened leaves: C3 refuses at its entry budget,
+    and the legacy reason-code scan must stop within that same budget instead
+    of walking the exponential flattened listing (unbounded: ~minutes here,
+    days at depth 40)."""
+    tree = plumbing.tree(("100644", "blob", plumbing.blob(b"x"), b"f"))
+    for _ in range(24):
+        tree = plumbing.tree(("040000", "tree", tree, b"a"), ("040000", "tree", tree, b"b"))
+    c = plumbing.commit(tree)
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _DAG_PROBE, str(REPO_ROOT), str(plumbing.repo), c, str(_subject(tmp_path / "s"))],
+            capture_output=True, text=True, timeout=30, cwd=REPO_ROOT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("refusal-only legacy scan walked an exponential flattened listing")
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == f"REFUSED:{ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2}"
+
+
+def test_refusal_only_scan_stops_at_its_byte_budget(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
+    """Few records, very long paths (a 300-deep chain of 255-byte names that C3
+    refuses on depth, then 100 leaves): the scan's total consumption is capped
+    by its byte budget, not only by its record budget. Budget lowered to 1 MiB
+    for speed; the flattened listing here is ~7.5 MiB."""
+    name = b"n" * 255
+    tree = plumbing.tree(*[("100644", "blob", plumbing.blob(b"x"), f"f{i:03d}".encode()) for i in range(100)])
+    for _ in range(300):
+        tree = plumbing.tree(("040000", "tree", tree, name))
+    c = plumbing.commit(tree)
+    consumed = {"bytes": 0}
+    real_open = ident.open_bounded_git_subprocess_v2
+
+    class _Counting:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def read1(self, n: int) -> bytes:
+            data = self._inner.read1(n)
+            consumed["bytes"] += len(data)
+            return data
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def counting_open(argv, **kwargs):
+        proc = real_open(argv, **kwargs)
+        proc.stdout = _Counting(proc.stdout)
+        return proc
+
+    monkeypatch.setattr(ident, "_LEGACY_SCAN_MAX_BYTES_V2", 1 << 20)
+    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", counting_open)
+    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+    assert 0 < consumed["bytes"] <= (1 << 20) + 65536, consumed
