@@ -892,3 +892,40 @@ def test_refusal_only_scan_stops_at_its_byte_budget(plumbing: _Plumbing, tmp_pat
     monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", counting_open)
     assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
     assert 0 < consumed["bytes"] <= (1 << 20) + 65536, consumed
+
+
+def test_refusal_only_scan_stops_at_c3s_entry_budget_in_records(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
+    """The scan's work is bounded in RECORDS by C3's entry budget (ls-tree -r -t
+    emits one record per expanded entry), not merely by its byte ceiling: with
+    short paths, 64 MiB would hold ten times C3's budget. Record budget lowered
+    to 1000 for speed; the flattened listing has 2^18 records (~23 MiB, under
+    the byte ceiling)."""
+    tree = plumbing.tree(("100644", "blob", plumbing.blob(b"x"), b"f"))
+    for _ in range(17):
+        tree = plumbing.tree(("040000", "tree", tree, b"a"), ("040000", "tree", tree, b"b"))
+    c = plumbing.commit(tree)
+    seen = {"records": 0}
+    real_open = ident.open_bounded_git_subprocess_v2
+
+    class _Counting:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def read1(self, n: int) -> bytes:
+            data = self._inner.read1(n)
+            seen["records"] += data.count(b"\0")
+            return data
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def counting_open(argv, **kwargs):
+        proc = real_open(argv, **kwargs)
+        proc.stdout = _Counting(proc.stdout)
+        return proc
+
+    monkeypatch.setattr(ident, "_LEGACY_SCAN_MAX_RECORDS_V2", 1000)
+    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", counting_open)
+    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+    # at most the budget plus what one 64 KiB read can carry past it
+    assert 1000 < seen["records"] <= 1000 + 65536 // 40, seen
