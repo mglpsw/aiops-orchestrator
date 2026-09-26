@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- AgentReview v2 (`#333`, C4 structural prerequisite): `verify_executed_source_identity_v2`
+  now enforces full Git tree structural equality (contract A) instead of tracked-leaf
+  equality. Explicit (empty) tree nodes must exist, extra directories/special files are
+  refused, node kinds are compared (symlink rule A2: a committed symlink is compared by
+  target bytes and never followed), the subject root is acquired as a no-follow directory
+  descriptor, and leaf content is read on a descriptor whose kind `fstat` established
+  first (a FIFO where Git declares a regular file is a typed refusal, not a hang).
+  Additive reason codes: `identity_missing_tree_node`, `identity_extra_untracked_node`,
+  `identity_node_type_mismatch`, `identity_tree_unrepresentable`,
+  `identity_subject_structure_budget_exceeded`. No execution provenance (`#301`), anchor
+  provenance (`#319`) or composition (`#350`) is claimed.
+
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:
   reconciles the historical offline/F1 transport with the current Router
   F2-A authority. Structured review requests now send exact `messages[]`, the

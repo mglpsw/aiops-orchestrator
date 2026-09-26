@@ -506,6 +506,25 @@ primitive only.
 
 ### The claim this primitive actually proves
 
+> **`#333` addendum (2026-09-26).** The wording below ("byte-for-byte identical
+> to `commit_sha`'s tree") was, until `#333`, stronger than the implemented
+> truth-maker, which compared tracked leaves only (`git ls-tree -r` without
+> `-t` drops explicit empty tree nodes; the completeness walk collected
+> leaves only). Reproduced on master `9a5cf35b` (issue #333, comment
+> 5844528708): a subject missing an explicit empty tree, or carrying an extra
+> empty directory, verified as identical -- and with `sys.path=[subject_root]`
+> such directories are PEP 420 namespace packages, so the difference is
+> execution-visible. `#333` makes the implementation match the claim: the
+> structural authority is C3's raw-tree enumeration, the subject is walked
+> descriptor-relative without following symlinks, node kinds are compared,
+> and a committed symlink leaf is compared by target bytes (rule A2). The
+> reason-code table gains `identity_missing_tree_node`,
+> `identity_extra_untracked_node`, `identity_node_type_mismatch`,
+> `identity_tree_unrepresentable` and
+> `identity_subject_structure_budget_exceeded`;
+> `identity_symlinked_directory_in_subject` now names exactly "a symlink where
+> the commit declares a tree".
+
 **Superseding the wording used throughout §1 and §6 above.** Those sections
 repeatedly describe IDENTITY as *"which commit **produced** the bytes now on
 disk"*. That phrasing is wrong in a way this addendum corrects rather than

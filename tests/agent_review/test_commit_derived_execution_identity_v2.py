@@ -30,6 +30,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_GITLINK_PRESENT_REASON_V2,
     IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2,
     IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
+    IDENTITY_MISSING_TREE_NODE_REASON_V2,
     IDENTITY_MODE_MISMATCH_REASON_V2,
     IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
     IDENTITY_SYMLINKED_DIRECTORY_REASON_V2,
@@ -117,6 +118,9 @@ def test_round1_narrow_root_attack_is_refused(tmp_path: Path) -> None:
     assert excinfo.value.reason_code in (
         IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2,
         IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
+        # `#333`: a narrowed root is missing a whole tree node, and the
+        # structural verifier names that more precisely than "missing file".
+        IDENTITY_MISSING_TREE_NODE_REASON_V2,
     )
 
 
@@ -759,52 +763,31 @@ def test_completeness_is_reverified_close_to_return_not_only_at_call_start(
 def test_completeness_traversal_error_is_refused_not_silently_swallowed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Post-merge Codex finding on PR #284 (finding #4), salvaged via
-    `#200-G1-S` (issue #305) from forensic PR #302 where it was already
-    `CLOSED_AND_VERIFIED` (unaffected by that PR's terminal STOP, which
-    covers two unrelated mechanisms).
-
-    `os.walk`'s default behaviour on a directory it cannot enumerate (e.g. a
-    permission error) is to silently skip it: "cannot enumerate a directory"
-    is not the same fact as "directory is empty", but the original
-    `os.walk(subject_root, followlinks=False)` call (no `onerror`) treated
-    them identically -- an unreadable subtree contributed zero leaf paths to
-    the completeness scan, exactly like a genuinely empty one, so a
-    directory made unreadable partway through the subject's lifetime could
-    hide an entire subtree from the "no extra untracked file" check without
-    raising anything. Note this is a *different* property from the
-    tracked-file-presence check earlier in `verify_executed_source_identity_
-    v2` (which reads `actual_path` directly, not via `os.walk`, and is
-    unaffected by this bug) -- an unreadable directory does not make its
-    tracked contents look "missing", it just makes anything extra hidden
-    under it invisible to the completeness scan.
-
-    This sandbox runs as root, where a real `chmod 000` does not block
-    traversal (root bypasses DAC permission checks) -- reproduced instead,
-    same as the original finding, by monkeypatching `os.scandir` (what
-    `os.walk` calls internally) to raise a real `PermissionError` for one
-    specific subdirectory, leaving every other call untouched."""
+    """`#200-G1-S` (issue #305): "cannot enumerate a directory" is not the
+    same fact as "directory is empty". `#333` re-expresses the injection
+    against the descriptor-relative walk: the enumeration of one
+    subdirectory (``os.listdir`` on its descriptor) fails, and the verifier
+    must answer with a typed refusal, never with a clean pass that treats
+    the unreadable subtree as empty."""
     repo, head_sha = _toolrepo_fixture(tmp_path)
     subject_root = tmp_path / "subject"
     subject_root.mkdir()
     materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
 
-    unreadable_dir = subject_root / "app_agent_review"
-    real_scandir = os.scandir
+    real_listdir = os.listdir
+    unreadable_dir = (subject_root / "app_agent_review").resolve()
 
-    def fake_scandir(path="."):
-        # `path` is not always a str/Path here: `#200-G1C`'s trusted object
-        # authority is torn down via `shutil.rmtree`, whose safe fd-based
-        # walker calls `os.scandir` with a raw directory file descriptor
-        # (an `int`) for entries below the top -- unrelated to this
-        # fixture's `subject_root`-scoped simulation, and never
-        # constructible as a `Path`. Anything not path-like is passed
-        # through untouched.
-        if isinstance(path, (str, os.PathLike)) and Path(path) == unreadable_dir:
-            raise PermissionError(f"simulated unreadable directory: {path}")
-        return real_scandir(path)
+    def fake_listdir(target="."):
+        if isinstance(target, int):
+            try:
+                located = Path(os.readlink(f"/proc/self/fd/{target}")).resolve()
+            except OSError:
+                located = None
+            if located == unreadable_dir:
+                raise PermissionError(f"simulated unreadable directory: {unreadable_dir}")
+        return real_listdir(target)
 
-    monkeypatch.setattr(os, "scandir", fake_scandir)
+    monkeypatch.setattr(os, "listdir", fake_listdir)
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         verify_executed_source_identity_v2(
@@ -813,97 +796,27 @@ def test_completeness_traversal_error_is_refused_not_silently_swallowed(
     assert excinfo.value.reason_code == IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
 
 
-class _ClassificationFailureEntry:
-    """Wraps a real `os.DirEntry` so `is_symlink`/`is_dir` raise `OSError`
-    while `name`/`path` stay readable -- reproduces the CPython `os.walk`
-    internal-classification failure Codex found in this PR's own external
-    review (PR #306), a narrower and distinct gap from the `scandir`-level
-    failure `test_completeness_traversal_error_is_refused_not_silently_
-    swallowed` above already covers."""
-
-    def __init__(self, real_entry: os.DirEntry) -> None:
-        self._real = real_entry
-
-    @property
-    def name(self) -> str:
-        return self._real.name
-
-    @property
-    def path(self) -> str:
-        return self._real.path
-
-    def is_symlink(self) -> bool:
-        raise OSError("simulated entry classification failure")
-
-    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
-        raise OSError("simulated entry classification failure")
-
-
 def test_completeness_traversal_classification_error_is_refused_not_silently_treated_as_a_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Independent-review finding (P1) on this PR's own external review
-    (PR #306, on top of `#200-G1-S` / issue #305): CPython's `os.walk`
-    invokes its `onerror` callback only when `os.scandir(top)` itself
-    fails. It separately catches an `OSError` raised by classifying an
-    already-enumerated entry (its internal `entry.is_dir()` call, used to
-    sort a name into `dirnames` vs `filenames`) and silently treats that
-    entry as a non-directory -- `onerror` is never invoked for that second
-    failure point. A tracked directory whose classification fails at
-    exactly that moment would be added to the leaf-path set under its own
-    bare name (never descended into), invisible unless that name happens to
-    coincide with an actual tracked leaf path -- but either way, the
-    subtree's real completeness was never actually checked, silently.
-
-    Closed by replacing `os.walk` with an explicit recursive `os.scandir`
-    walk (see `_reachable_leaf_paths_v2`'s current docstring) where BOTH the
-    `scandir` call and each entry's own `is_symlink`/`is_dir` calls are
-    wrapped and raise the same typed refusal -- reproduced here by wrapping
-    one specific entry so its classification methods raise, while every
-    other entry (and every other directory's `scandir` call) is untouched."""
+    """A node whose no-follow classification (``stat(name, dir_fd=...,
+    follow_symlinks=False)``) fails must be a typed refusal, not sorted into
+    some default kind (the CPython ``os.walk`` fallback this suite
+    originally closed, PR #306). Only one entry's classification fails;
+    every other stat call is real."""
     repo, head_sha = _toolrepo_fixture(tmp_path)
     subject_root = tmp_path / "subject"
     subject_root.mkdir()
     materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
 
-    unreadable_dir_name = "app_agent_review"
-    real_scandir = os.scandir
+    real_stat = os.stat
 
-    class _ScandirResultProxy:
-        """Supports both `list(os.scandir(...))` (this module's own
-        traversal) and `with os.scandir(...) as it:` (`os.walk`'s usage) so
-        this fixture exercises either implementation identically."""
+    def fake_stat(target, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None and os.fsdecode(target) == "app_agent_review":
+            raise OSError("simulated entry classification failure")
+        return real_stat(target, *args, **kwargs)
 
-        def __init__(self, entries: list) -> None:
-            self._iterator = iter(entries)
-
-        def __iter__(self):
-            return self._iterator
-
-        def __next__(self):
-            return next(self._iterator)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc_info: object) -> None:
-            return None
-
-    def fake_scandir(path="."):
-        # See the sibling test above: `path` can be a raw fd (`int`) from
-        # `#200-G1C`'s trusted-object-authority teardown (`shutil.rmtree`'s
-        # fd-based safe walker), never constructible as a `Path`, and
-        # unrelated to this fixture's `subject_root`-scoped simulation.
-        if isinstance(path, (str, os.PathLike)) and Path(path) == subject_root:
-            return _ScandirResultProxy(
-                [
-                    _ClassificationFailureEntry(entry) if entry.name == unreadable_dir_name else entry
-                    for entry in real_scandir(path)
-                ]
-            )
-        return real_scandir(path)
-
-    monkeypatch.setattr(os, "scandir", fake_scandir)
+    monkeypatch.setattr(os, "stat", fake_stat)
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         verify_executed_source_identity_v2(
@@ -1706,7 +1619,9 @@ def test_carrier_is_closed_on_unexpected_and_process_control_exceptions(
     def boom(*_a, **_k):
         raise exc_type("injected")
 
-    monkeypatch.setattr(ident, "_safe_subject_path_v2", boom)
+    # `#333`: inject after the carrier exists (the observation step), so the
+    # property under test -- deterministic carrier release -- is exercised.
+    monkeypatch.setattr(ident, "_observe_subject_graph_v2", boom)
     with pytest.raises(exc_type) as excinfo:
         verify_executed_source_identity_v2(
             repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
