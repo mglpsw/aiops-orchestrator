@@ -711,3 +711,34 @@ def test_oversized_directory_is_refused_without_enumerating_all_of_it(
     monkeypatch.setattr(ident, "_observe_subject_graph_v2", observe)
     assert _refusal(plumbing, c, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
     assert drawn["names"] <= budget + 1, f"walk pulled {drawn['names']} names for a budget of {budget}"
+
+
+def test_leaf_swapped_for_symlink_only_while_it_is_read_is_not_followed(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    """Rule A2 on the READ itself, independent of the final observation: the
+    regular file is a symlink (to byte-identical content elsewhere) only while
+    its bytes are being compared, and is restored before the final structural
+    observation runs. Only a no-follow open of the leaf can refuse this; the
+    final walk, by construction, sees a regular file again."""
+    c = _commit_main_only(plumbing)
+    root = _subject(tmp_path / "s", {"main.py": CODE})
+    elsewhere = tmp_path / "elsewhere.py"
+    elsewhere.write_bytes(CODE)
+    parked = tmp_path / "parked_main.py"
+    real = ident._compare_regular_leaf_v2
+    swapped = {"n": 0}
+
+    def compare_through_a_transient_symlink(root_fd, relative, *args, **kwargs):
+        os.rename(root / "main.py", parked)
+        os.symlink(elsewhere, root / "main.py")
+        swapped["n"] += 1
+        try:
+            return real(root_fd, relative, *args, **kwargs)
+        finally:
+            os.unlink(root / "main.py")
+            os.rename(parked, root / "main.py")
+
+    monkeypatch.setattr(ident, "_compare_regular_leaf_v2", compare_through_a_transient_symlink)
+    assert _refusal(plumbing, c, root) == ident.IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
+    assert swapped["n"] == 1 and not (root / "main.py").is_symlink()  # restored: the final walk alone cannot tell
