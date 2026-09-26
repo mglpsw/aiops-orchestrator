@@ -423,9 +423,12 @@ class ExecutedSourceIdentityError(ValueError):
 class ExecutedSourceIdentityV2:
     """IDENTITY only: ``commit_sha``'s raw tree IS the subject's directory graph.
 
-    Full structural equality (`#333`, contract A): explicit tree nodes
-    including empty ones, leaves, node kinds, bytes, symlink target bytes and
-    executable semantics; nothing extra. Tree equality, not unique provenance -- a different commit sharing the
+    Full structural equality (`#333`, contract Q = contract A under the
+    quiescence precondition documented on ``verify_executed_source_identity_v2``):
+    explicit tree nodes including empty ones, leaves, node kinds, bytes,
+    symlink target bytes and executable semantics; nothing extra. Not a
+    statement that the subject cannot change afterwards, and not the trust
+    root of execution (`#301`). Tree equality, not unique provenance -- a different commit sharing the
     exact same tree would pass this same check against the same bytes. Never
     carries an opinion about whether that commit was permitted to run -- see
     ``ExecutedSourceAuthorizationV2`` for that separate question.
@@ -580,11 +583,14 @@ def _observe_subject_graph_v2(root_fd: int) -> dict[bytes, tuple[str, int]]:
                         count += 1
                         if count > MAX_OBSERVED_NODES_V2:
                             raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
+                        # `#352` R2: the depth budget applies to EVERY node kind,
+                        # before kind dispatch -- as C3 checks `child_depth` before
+                        # dispatching on object type.
+                        if len(components) + 1 > MAX_OBSERVED_DEPTH_V2:
+                            raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
                         relative = b"/".join(components + (raw_name,))
                         mode = st.st_mode
                         if stat.S_ISDIR(mode):
-                            if len(components) + 1 > MAX_OBSERVED_DEPTH_V2:
-                                raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
                             observed[relative] = ("tree", mode)
                             pending.append(components + (raw_name,))
                         elif stat.S_ISREG(mode):
@@ -823,30 +829,44 @@ def verify_executed_source_identity_v2(
 ) -> ExecutedSourceIdentityV2:
     """Prove ``subject_root``'s directory graph IS ``commit_sha``'s raw tree.
 
-    `#333` contract A (full Git tree structural equality) with symlink rule
-    A2. Success postcondition, exactly: every leaf of ``commit_sha``'s raw
-    Git tree was compared on a descriptor under the ACQUIRED ``subject_root``
-    descriptor and matched (regular-file bytes, symlink target bytes,
-    executable semantics ``100755`` <=> owner-execute bit), and THEN a final
-    structural observation of the directory graph rooted at that descriptor,
-    walked without following symlinks, was node-for-node equal to the raw
-    Git tree -- the same explicit tree nodes (including empty trees) and the
-    same leaves, every node of the kind Git declares (tree / regular blob /
-    symlink), and no additional node beneath the root (`#352` F1: this
-    final observation runs after the leaf phase, not only before it).
+    `#333` contract Q: full Git tree structural equality (contract A, symlink
+    rule A2) of the observed materialised subject, UNDER A QUIESCENCE
+    PRECONDITION. Let G be ``commit_sha``'s raw Git tree (read through the
+    trusted object authority), M the directory graph rooted at the ACQUIRED
+    ``subject_root`` descriptor, and I the interval of this call.
 
-    FinalObservation != ImmutableAfterObservation: the claim is equality at
-    that final observation, NOT at the instant this function returns --
-    a same-UID writer can still change the subject between the final walk
-    and the return, or at any time after. Nonclaims: not execution
-    provenance (`#301`); not bytes any process has already imported; not
-    immutability after the final observation; not unique commit provenance
-    (tree-sharing commits pass alike); not trusted-anchor provenance
-    (`#319`); not filesystem metadata Git does not encode (directory modes,
-    ownership, times, xattrs/ACLs); not an interpretation of where a symlink
-    target resolves (that boundary is `#301`'s); not a binding between the
-    returned ``subject_root`` PATH and the descriptor that was walked
-    (``PathReturned != DescriptorIdentityVerified``, `#301`'s to bind).
+    Precondition ``Quiescent(M, I)``: no actor mutates M's node graph, file
+    bytes, executable semantics or symlink target data during I (nor the
+    trusted object authority's private copy, whose own threat scope is the
+    same). This is a contract precondition and a threat-scope boundary, NOT
+    an enforced lock: ``QuiescencePrecondition != WriteExclusionMechanism``.
+    It is this module's existing boundary made explicit, not a new
+    exception -- a writer that can mutate M during I is a
+    ``host_arbitrary_code_attacker`` (module docstring, "Threat scope"; the
+    same boundary ``trusted_object_authority_v2.py`` declares), out of scope
+    here. Resistance to that writer is owned by `#301` (an authenticated,
+    immutable closed representation that execution consumes), never by
+    observing M again.
+
+    Success postcondition (given the precondition): G == M over I -- the
+    same explicit tree nodes (including empty trees) and the same leaves;
+    every node of the kind Git declares (tree / regular blob / symlink),
+    walked without following symlinks; regular-file bytes, executable
+    semantics (``100755`` <=> owner-execute bit) and raw symlink target bytes
+    equal; no missing node and no extra node beneath the root.
+
+    Nonclaims: no same-UID arbitrary-writer resistance (a writer that
+    violates the precondition can make this return success on a subject that
+    differs from G at return -- witnessed in `#352`, R1/R3/N1, and out of
+    scope by the boundary above); no immutability after verification; no
+    execution provenance and no claim about bytes any process loaded
+    (`#301`); not the trust root of `#301`; no Git-anchor provenance
+    (`#319`); not unique commit provenance (tree-sharing commits pass alike);
+    no filesystem metadata Git does not represent (directory modes,
+    ownership, times, xattrs/ACLs); no interpretation of where a symlink
+    target resolves; no binding between the returned ``subject_root`` PATH
+    and the descriptor that was walked (``PathReturned !=
+    DescriptorIdentityVerified``, `#301`'s to bind).
 
     Never trusts a pre-computed digest. Re-derives the commit's tree fresh
     from ``repo_root``'s own git object store on every call, through the
@@ -886,10 +906,6 @@ def verify_executed_source_identity_v2(
     7. Every path in ``loaded_module_paths`` (defaulting to
        ``loaded_module_files_v2()``) resolves under ``subject_root``. An
        independent second signal, not a substitute for the structure check.
-    8. LAST: a fresh structural observation (the same walk and comparison
-       as 4-5) after every leaf comparison, so completeness is observed after
-       the leaf phase rather than only before it (`#352` F1; the ordering
-       `#305` round 2 established).
     """
     # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
     # owns component-wise no-follow acquisition of the raw locator, and states
@@ -989,15 +1005,6 @@ def verify_executed_source_identity_v2(
             resolved_module_path = Path(module_path).resolve()
             if not resolved_module_path.is_relative_to(resolved_root):
                 raise ExecutedSourceIdentityError(IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2)
-
-        # `#352` F1: the FINAL structural observation, a fresh walk taken
-        # after every leaf comparison. The observation above ran before the
-        # leaf phase; a node added (or a directory replaced) while leaves
-        # were being read would otherwise survive to return. Same walk, same
-        # comparison, same budgets and reason codes -- not a second model of
-        # the tree. Restores the ordering property `#305` round 2 established
-        # (completeness observed last).
-        _compare_structure_v2(expected, _observe_subject_graph_v2(root_fd))
 
         return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=resolved_root)
     finally:

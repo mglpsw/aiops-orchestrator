@@ -525,23 +525,40 @@ primitive only.
 > `identity_symlinked_directory_in_subject` now names exactly "a symlink where
 > the commit declares a tree".
 >
-> **`#352` corrective cut (F1, F3).** The first `#333` candidate observed the
-> structure once, BEFORE the leaf comparisons, which silently undid the
-> round-2 ordering recorded below ("moved ... to LAST"): a node added, or a
-> directory replaced by an equivalent one carrying an extra child, during the
-> leaf phase verified as identical (reproduced cross-machine; base refused
-> both). The verifier now keeps the initial structural observation (typed
-> kind refusals before any leaf is opened) and adds a FINAL structural
-> observation -- the same walk and comparison -- after every leaf comparison.
-> The claim is equality **at that final observation**; it is not
-> immutability afterwards (`FinalObservation != ImmutableAfterObservation`),
-> and the residual window between the final walk and return remains, as the
-> round-2 text below already states. The existing round-2 regression test
-> injects during git-side resolution, which now precedes both walks, so the
-> leaf-phase injection is carried by new tests in
-> `tests/agent_review/test_c4_structural_identity_v2.py`. F3: directory
-> entries are streamed (`os.scandir` on the descriptor), so the node budget
-> bounds names pulled from the filesystem, not only names kept.
+> **`#352` history: expanded claim → refuted → STOP → Q (2026-09-26).** The
+> first `#333` candidate observed the structure once, before the leaf
+> comparisons, which lost the round-2 ordering recorded below ("moved ... to
+> LAST"): a node added during the leaf phase verified as identical (F1). A
+> corrective cut added a FINAL structural observation after the leaf phase
+> and claimed equality "at that final observation". Native Codex review of
+> that head refuted the expanded claim, and both witnesses were reproduced:
+> a node added to an already-scanned directory during the final walk (R1),
+> and same-kind leaf data changed between its comparison and the final walk
+> (R3). Both require a concurrent same-privilege writer. The recurrence was
+> admitted under `docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md` and
+> STOP/REDESIGN fired (PR #352 comment 5847321998). The redesign spike
+> (comment 5848970869) found that repeated observation of a mutable subject
+> cannot establish a single subject state. It also witnessed N1: a
+> same-privilege swap in the trusted object authority's private copy, after
+> build-time verification, is served by `git cat-file` without a hash check,
+> so `BuildTimeObjectAuthentication != ReadTimeContentAuthentication`.
+>
+> **Ratified contract Q.** `#333` decides G == M only under an explicit
+> precondition `Quiescent(M, I)`: nothing mutates the subject during the
+> verification interval. That precondition is this module's existing
+> `host_arbitrary_code_attacker` boundary made explicit
+> (`QuiescencePrecondition != WriteExclusionMechanism`); it is not a new
+> exception. The final re-walk was removed, because it formed no part of Q's
+> truth-maker. R1, R3 and N1 remain factually valid, are not material to Q,
+> and are not "fixed". Resistance to a same-privilege writer is owned by
+> `#301`: an authenticated, immutable closed representation that execution
+> consumes, with every contributing Git object rebound to its object ID at
+> consumption time. Q is not the trust root of `#301`. The round-2 ordering
+> text below is therefore historical: it narrowed a window for an actor this
+> module had already declared out of scope, and Q claims nothing about that
+> actor. Kept from the cut: streamed directory entries (F3; the node budget
+> bounds names pulled from the filesystem, not only names kept); the depth
+> budget applied to every node kind before kind dispatch (R2).
 
 **Superseding the wording used throughout §1 and §6 above.** Those sections
 repeatedly describe IDENTITY as *"which commit **produced** the bytes now on

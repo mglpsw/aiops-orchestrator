@@ -14,12 +14,12 @@
   Additive reason codes: `identity_missing_tree_node`, `identity_extra_untracked_node`,
   `identity_node_type_mismatch`, `identity_tree_unrepresentable`,
   `identity_subject_structure_budget_exceeded`. No execution provenance (`#301`), anchor
-  provenance (`#319`) or composition (`#350`) is claimed. Corrective cut (`#352` F1/F3,
-  cross-machine requalification): a final structural observation now runs after every
-  leaf comparison, so a node added or a directory replaced during the leaf phase is refused
-  (the claim is equality at that final observation, not immutability afterwards); directory
-  entries are streamed, so an oversized directory is refused after budget + 1 names instead
-  of being listed whole.
+  provenance (`#319`) or composition (`#350`) is claimed. Contract ratified as Q after STOP/REDESIGN (`#352`):
+  equality holds under an explicit quiescence precondition (the module's existing
+  `host_arbitrary_code_attacker` boundary), is not a write-exclusion mechanism, and is not the
+  trust root of `#301`; a briefly added second structural walk was removed. Directory entries
+  are streamed (an oversized directory is refused after budget + 1 names) and the depth budget
+  applies to every node kind.
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:
   reconciles the historical offline/F1 transport with the current Router

@@ -1,7 +1,9 @@
 """#333 -- full Git tree structural equality (contract A, symlink rule A2).
 
-`G == M`: the directory graph at `subject_root`, walked without following
-symlinks, is node-for-node equal to `commit_sha`'s raw Git tree. Countermodels
+Contract Q: under the quiescence precondition (nothing mutates the subject
+during verification), `G == M` -- the directory graph at `subject_root`,
+walked without following symlinks, is node-for-node equal to `commit_sha`'s
+raw Git tree. Every fixture here is a STABLE subject. Countermodels
 CM-333-01..05 were reproduced on master `9a5cf35b` (issue comment 5844528708)
 before this file existed; the leaf-only verifier accepted every one of them.
 """
@@ -398,13 +400,16 @@ def test_traversal_live_descriptors_are_independent_of_tree_depth(plumbing: _Plu
     assert deep < 12, f"traversal-only live-descriptor guardrail exceeded ({deep})"
 
 
-# -- race-shaped discriminators: the node changes AFTER the structural walk ----
+# -- #321 mechanism discriminators (NOT part of contract Q's truth-maker) --------
 #
 # The static FIFO/symlink cases above are caught by the structural walk before
 # any leaf is opened. These tests substitute the node between the structural
-# comparison and the leaf read, so the descriptor-level gates in the read
-# path (`O_NOFOLLOW`, `O_NONBLOCK` + `fstat` `S_ISREG`, no-follow
-# re-acquisition) are the ONLY thing standing -- the `#321` shape.
+# comparison and the leaf read -- #321's historical falsifiers -- so the
+# descriptor-level gates in the read path (`O_NOFOLLOW`, `O_NONBLOCK` + `fstat`
+# `S_ISREG`, no-follow re-acquisition) are the only thing standing. They pin
+# those gates (typed refusal, never a hang, never a followed symlink). They do
+# NOT claim resistance to a concurrent writer: such a writer is outside Q, and
+# other same-privilege mutations (R1/R3) are accepted by design of the contract.
 
 
 def _swap_after_structure(monkeypatch, mutate) -> None:
@@ -480,56 +485,14 @@ def test_directory_swapped_for_symlink_after_the_walk_is_not_followed_on_reacqui
     assert _refusal(plumbing, c, root) == ident.IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
 
 
-# -- #352 F1: completeness is observed AFTER the leaf phase --------------------
+# -- #352 F1 history (not a Q qualification test) --------------------------------
 #
-# Cross-machine requalification of 7ac2087 found that the only structural walk
-# ran BEFORE the leaf comparisons, so a node added while leaves were being read
-# survived to return (the ordering #305 round 2 had established was lost). The
-# injection below fires after the first leaf comparison -- after the initial
-# structural observation has already passed.
-
-
-def _mutate_during_leaf_phase(monkeypatch, mutate) -> dict[str, int]:
-    real = ident._compare_regular_leaf_v2
-    fired = {"n": 0}
-
-    def compare_then_mutate(*args, **kwargs):
-        real(*args, **kwargs)
-        if not fired["n"]:
-            fired["n"] = 1
-            mutate()
-
-    monkeypatch.setattr(ident, "_compare_regular_leaf_v2", compare_then_mutate)
-    return fired
-
-
-def test_node_added_during_leaf_phase_is_refused_by_the_final_structural_observation(
-    plumbing: _Plumbing, tmp_path: Path, monkeypatch
-) -> None:
-    c = _commit_ordinary(plumbing)
-    root = _materialised(plumbing, c, tmp_path / "s")
-    fired = _mutate_during_leaf_phase(monkeypatch, lambda: (root / "late.py").write_bytes(b"import os\n"))
-    assert _refusal(plumbing, c, root) == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
-    assert fired["n"] == 1 and (root / "late.py").exists()  # the node really was there at the end
-
-
-def test_directory_replaced_during_leaf_phase_by_equivalent_dir_with_extra_child_is_refused(
-    plumbing: _Plumbing, tmp_path: Path, monkeypatch
-) -> None:
-    """Every expected leaf stays byte-identical (the replacement carries the same
-    files); only a re-walk of the replaced subtree can see the extra child."""
-    c = _commit_ordinary(plumbing)
-    root = _materialised(plumbing, c, tmp_path / "s")
-    shadow = _materialised(plumbing, c, tmp_path / "shadow")
-    (shadow / "pkg" / "evil.py").write_bytes(b"x\n")
-
-    def replace() -> None:
-        os.rename(root / "pkg", tmp_path / "moved_away")
-        os.rename(shadow / "pkg", root / "pkg")
-
-    fired = _mutate_during_leaf_phase(monkeypatch, replace)
-    assert _refusal(plumbing, c, root) == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
-    assert fired["n"] == 1 and (root / "pkg" / "evil.py").exists()
+# A node added while leaves were being read, and a node added during a second
+# ("final") walk (Codex R1), both require a concurrent same-privilege writer.
+# That writer violates contract Q's quiescence precondition (the module's
+# `host_arbitrary_code_attacker` boundary), so no test here asserts refusal of
+# it, and none asserts that such an attack is safe. The witnesses are preserved
+# as forensic evidence in PR #352's records; resistance belongs to #301.
 
 
 # -- #352 M14: executable semantics are Git's own ---------------------------------
@@ -713,32 +676,34 @@ def test_oversized_directory_is_refused_without_enumerating_all_of_it(
     assert drawn["names"] <= budget + 1, f"walk pulled {drawn['names']} names for a budget of {budget}"
 
 
-def test_leaf_swapped_for_symlink_only_while_it_is_read_is_not_followed(
-    plumbing: _Plumbing, tmp_path: Path, monkeypatch
-) -> None:
-    """Rule A2 on the READ itself, independent of the final observation: the
-    regular file is a symlink (to byte-identical content elsewhere) only while
-    its bytes are being compared, and is restored before the final structural
-    observation runs. Only a no-follow open of the leaf can refuse this; the
-    final walk, by construction, sees a regular file again."""
-    c = _commit_main_only(plumbing)
-    root = _subject(tmp_path / "s", {"main.py": CODE})
-    elsewhere = tmp_path / "elsewhere.py"
-    elsewhere.write_bytes(CODE)
-    parked = tmp_path / "parked_main.py"
-    real = ident._compare_regular_leaf_v2
-    swapped = {"n": 0}
+# -- #352 R2: the depth budget applies to every node kind, before kind dispatch --
 
-    def compare_through_a_transient_symlink(root_fd, relative, *args, **kwargs):
-        os.rename(root / "main.py", parked)
-        os.symlink(elsewhere, root / "main.py")
-        swapped["n"] += 1
-        try:
-            return real(root_fd, relative, *args, **kwargs)
-        finally:
-            os.unlink(root / "main.py")
-            os.rename(parked, root / "main.py")
 
-    monkeypatch.setattr(ident, "_compare_regular_leaf_v2", compare_through_a_transient_symlink)
-    assert _refusal(plumbing, c, root) == ident.IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
-    assert swapped["n"] == 1 and not (root / "main.py").is_symlink()  # restored: the final walk alone cannot tell
+def _commit_with_leaf_at_depth(p: _Plumbing, depth: int, entry: tuple[str, str, str, bytes]) -> str:
+    tree = p.tree(entry)
+    for _ in range(depth - 1):
+        tree = p.tree(("040000", "tree", tree, b"d"))
+    return p.commit(tree)
+
+
+@pytest.mark.parametrize("kind", ["regular", "symlink"])
+def test_leaf_at_the_depth_bound_is_admitted_as_c3_admits_it(plumbing: _Plumbing, tmp_path: Path, kind: str) -> None:
+    """C3 admits a leaf at child depth 100; the verifier must too (depth 100
+    directory is covered by the deepest-tree test above)."""
+    entry = ("100644", "blob", plumbing.blob(CODE), b"leaf.py") if kind == "regular" else \
+        ("120000", "blob", plumbing.blob(b"leaf.py"), b"link")
+    c = _commit_with_leaf_at_depth(plumbing, ident.MAX_OBSERVED_DEPTH_V2, entry)
+    _verify(plumbing, c, _materialised(plumbing, c, tmp_path / "s"))
+
+
+@pytest.mark.parametrize("kind", ["directory", "regular", "symlink", "fifo"])
+def test_any_node_beyond_the_depth_bound_is_a_budget_refusal(plumbing: _Plumbing, tmp_path: Path, kind: str) -> None:
+    """A node of ANY kind one level below the deepest directory C3 can admit
+    is refused with the typed budget reason -- not as an extra file/node that
+    happened to be classified first. The FIFO is never opened (no hang)."""
+    c = _chain_of_empty_trees(plumbing, ident.MAX_OBSERVED_DEPTH_V2)
+    root = _materialised(plumbing, c, tmp_path / "s")
+    node = root / "/".join(["d"] * ident.MAX_OBSERVED_DEPTH_V2) / "n"
+    {"directory": lambda: node.mkdir(), "regular": lambda: node.write_bytes(b""),
+     "symlink": lambda: os.symlink("x", node), "fifo": lambda: os.mkfifo(node)}[kind]()
+    assert _refusal(plumbing, c, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
