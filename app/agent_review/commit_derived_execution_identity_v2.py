@@ -559,8 +559,11 @@ def _observe_subject_graph_v2(root_fd: int) -> dict[bytes, tuple[str, int]]:
     re-acquisition from the root authority. Budgets are enforced on the
     OBSERVED graph as nodes are discovered, so a hostile subject is refused
     typed before it can expand the walk (`MAX_OBSERVED_NODES_V2`,
-    `MAX_OBSERVED_DEPTH_V2`). Any enumeration or classification failure is a
-    typed refusal, never "empty".
+    `MAX_OBSERVED_DEPTH_V2`). Entries are STREAMED from each directory
+    (``os.scandir`` on the descriptor), never listed whole first: one
+    oversized directory is refused after ``MAX_OBSERVED_NODES_V2 + 1`` names,
+    not after all of them have been read into memory (`#352` F3). Any
+    enumeration or classification failure is a typed refusal, never "empty".
     """
     observed: dict[bytes, tuple[str, int]] = {}
     pending: list[tuple[bytes, ...]] = [()]
@@ -570,31 +573,28 @@ def _observe_subject_graph_v2(root_fd: int) -> dict[bytes, tuple[str, int]]:
         directory_fd = _open_directory_relative_v2(root_fd, components)
         try:
             try:
-                names = os.listdir(directory_fd)
+                with os.scandir(directory_fd) as entries:
+                    for entry in entries:
+                        raw_name = os.fsencode(entry.name)
+                        st = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
+                        count += 1
+                        if count > MAX_OBSERVED_NODES_V2:
+                            raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
+                        relative = b"/".join(components + (raw_name,))
+                        mode = st.st_mode
+                        if stat.S_ISDIR(mode):
+                            if len(components) + 1 > MAX_OBSERVED_DEPTH_V2:
+                                raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
+                            observed[relative] = ("tree", mode)
+                            pending.append(components + (raw_name,))
+                        elif stat.S_ISREG(mode):
+                            observed[relative] = ("regular", mode)
+                        elif stat.S_ISLNK(mode):
+                            observed[relative] = ("symlink", mode)
+                        else:
+                            observed[relative] = ("special", mode)
             except OSError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-            for name in names:
-                raw_name = os.fsencode(name)
-                try:
-                    st = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
-                except OSError as exc:
-                    raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-                count += 1
-                if count > MAX_OBSERVED_NODES_V2:
-                    raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
-                relative = b"/".join(components + (raw_name,))
-                mode = st.st_mode
-                if stat.S_ISDIR(mode):
-                    if len(components) + 1 > MAX_OBSERVED_DEPTH_V2:
-                        raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
-                    observed[relative] = ("tree", mode)
-                    pending.append(components + (raw_name,))
-                elif stat.S_ISREG(mode):
-                    observed[relative] = ("regular", mode)
-                elif stat.S_ISLNK(mode):
-                    observed[relative] = ("symlink", mode)
-                else:
-                    observed[relative] = ("special", mode)
         finally:
             os.close(directory_fd)
     return observed
@@ -824,22 +824,29 @@ def verify_executed_source_identity_v2(
     """Prove ``subject_root``'s directory graph IS ``commit_sha``'s raw tree.
 
     `#333` contract A (full Git tree structural equality) with symlink rule
-    A2. Success postcondition, exactly: at the instant this function
-    returned, the directory graph rooted at the ACQUIRED ``subject_root``
-    descriptor, walked without following symlinks, was node-for-node equal
-    to ``commit_sha``'s raw Git tree -- the same explicit tree nodes
-    (including empty trees) and the same leaves; every node of the kind Git
-    declares (tree / regular blob / symlink); regular-file bytes, symlink
-    target bytes and executable semantics (``100755`` <=> owner-execute bit)
-    matched; and no additional node existed beneath the root.
+    A2. Success postcondition, exactly: every leaf of ``commit_sha``'s raw
+    Git tree was compared on a descriptor under the ACQUIRED ``subject_root``
+    descriptor and matched (regular-file bytes, symlink target bytes,
+    executable semantics ``100755`` <=> owner-execute bit), and THEN a final
+    structural observation of the directory graph rooted at that descriptor,
+    walked without following symlinks, was node-for-node equal to the raw
+    Git tree -- the same explicit tree nodes (including empty trees) and the
+    same leaves, every node of the kind Git declares (tree / regular blob /
+    symlink), and no additional node beneath the root (`#352` F1: this
+    final observation runs after the leaf phase, not only before it).
 
-    Nonclaims: not execution provenance (`#301`); not bytes any process has
-    already imported; not immutability after return; not unique commit
-    provenance (tree-sharing commits pass alike); not trusted-anchor
-    provenance (`#319`); not filesystem metadata Git does not encode
-    (directory modes, ownership, times, xattrs/ACLs); not an interpretation
-    of where a symlink target resolves (that boundary is `#301`'s); not
-    resistance to same-UID mutation beyond the ordering of the walk itself.
+    FinalObservation != ImmutableAfterObservation: the claim is equality at
+    that final observation, NOT at the instant this function returns --
+    a same-UID writer can still change the subject between the final walk
+    and the return, or at any time after. Nonclaims: not execution
+    provenance (`#301`); not bytes any process has already imported; not
+    immutability after the final observation; not unique commit provenance
+    (tree-sharing commits pass alike); not trusted-anchor provenance
+    (`#319`); not filesystem metadata Git does not encode (directory modes,
+    ownership, times, xattrs/ACLs); not an interpretation of where a symlink
+    target resolves (that boundary is `#301`'s); not a binding between the
+    returned ``subject_root`` PATH and the descriptor that was walked
+    (``PathReturned != DescriptorIdentityVerified``, `#301`'s to bind).
 
     Never trusts a pre-computed digest. Re-derives the commit's tree fresh
     from ``repo_root``'s own git object store on every call, through the
@@ -861,9 +868,12 @@ def verify_executed_source_identity_v2(
        observation is descriptor-relative from that authority: the locator
        is discovery input, a root locator that is itself a symlink is
        refused. Node kinds come from ``fstatat(..., AT_SYMLINK_NOFOLLOW)``;
-       directories are entered by no-follow re-acquisition (O(1) live
-       descriptors, budgets ``MAX_OBSERVED_NODES_V2`` /
-       ``MAX_OBSERVED_DEPTH_V2`` enforced as nodes are discovered).
+       directories are entered by no-follow re-acquisition (live
+       descriptors of the traversal independent of tree depth -- a property
+       of the walk, not a bound on the whole call, whose git-side pipes and
+       spool are separate), entries are streamed, and budgets
+       ``MAX_OBSERVED_NODES_V2`` / ``MAX_OBSERVED_DEPTH_V2`` are enforced as
+       nodes are discovered.
     5. ``ExpectedPaths == ObservedPaths`` with kind equality at every path
        (missing tree node, missing leaf, extra node, extra file, kind
        mismatch, symlink where a tree is declared -- each its own reason).
@@ -876,6 +886,10 @@ def verify_executed_source_identity_v2(
     7. Every path in ``loaded_module_paths`` (defaulting to
        ``loaded_module_files_v2()``) resolves under ``subject_root``. An
        independent second signal, not a substitute for the structure check.
+    8. LAST: a fresh structural observation (the same walk and comparison
+       as 4-5) after every leaf comparison, so completeness is observed after
+       the leaf phase rather than only before it (`#352` F1; the ordering
+       `#305` round 2 established).
     """
     # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
     # owns component-wise no-follow acquisition of the raw locator, and states
@@ -975,6 +989,15 @@ def verify_executed_source_identity_v2(
             resolved_module_path = Path(module_path).resolve()
             if not resolved_module_path.is_relative_to(resolved_root):
                 raise ExecutedSourceIdentityError(IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2)
+
+        # `#352` F1: the FINAL structural observation, a fresh walk taken
+        # after every leaf comparison. The observation above ran before the
+        # leaf phase; a node added (or a directory replaced) while leaves
+        # were being read would otherwise survive to return. Same walk, same
+        # comparison, same budgets and reason codes -- not a second model of
+        # the tree. Restores the ordering property `#305` round 2 established
+        # (completeness observed last).
+        _compare_structure_v2(expected, _observe_subject_graph_v2(root_fd))
 
         return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=resolved_root)
     finally:

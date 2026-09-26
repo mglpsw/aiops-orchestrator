@@ -14,7 +14,12 @@
   Additive reason codes: `identity_missing_tree_node`, `identity_extra_untracked_node`,
   `identity_node_type_mismatch`, `identity_tree_unrepresentable`,
   `identity_subject_structure_budget_exceeded`. No execution provenance (`#301`), anchor
-  provenance (`#319`) or composition (`#350`) is claimed.
+  provenance (`#319`) or composition (`#350`) is claimed. Corrective cut (`#352` F1/F3,
+  cross-machine requalification): a final structural observation now runs after every
+  leaf comparison, so a node added or a directory replaced during the leaf phase is refused
+  (the claim is equality at that final observation, not immutability afterwards); directory
+  entries are streamed, so an oversized directory is refused after budget + 1 names instead
+  of being listed whole.
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:
   reconciles the historical offline/F1 transport with the current Router

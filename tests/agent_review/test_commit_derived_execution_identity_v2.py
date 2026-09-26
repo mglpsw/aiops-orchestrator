@@ -760,34 +760,57 @@ def test_completeness_is_reverified_close_to_return_not_only_at_call_start(
 # -- #200-G1-S / S2: completeness traversal must fail closed --------------------
 
 
+@pytest.mark.parametrize("failure_point", ["open", "mid-iteration"])
 def test_completeness_traversal_error_is_refused_not_silently_swallowed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_point: str
 ) -> None:
     """`#200-G1-S` (issue #305): "cannot enumerate a directory" is not the
     same fact as "directory is empty". `#333` re-expresses the injection
     against the descriptor-relative walk: the enumeration of one
-    subdirectory (``os.listdir`` on its descriptor) fails, and the verifier
-    must answer with a typed refusal, never with a clean pass that treats
-    the unreadable subtree as empty."""
+    subdirectory (``os.scandir`` on its descriptor, streamed since `#352`
+    F3) fails -- when opened, or while entries are being read -- and the
+    verifier must answer with a typed refusal, never with a clean pass that
+    treats the unreadable subtree as empty (or as partially listed)."""
     repo, head_sha = _toolrepo_fixture(tmp_path)
     subject_root = tmp_path / "subject"
     subject_root.mkdir()
     materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
 
-    real_listdir = os.listdir
+    real_scandir = os.scandir
     unreadable_dir = (subject_root / "app_agent_review").resolve()
 
-    def fake_listdir(target="."):
+    class _FailingIterator:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            self._inner.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise OSError("simulated read failure while streaming directory entries")
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def fake_scandir(target="."):
         if isinstance(target, int):
             try:
                 located = Path(os.readlink(f"/proc/self/fd/{target}")).resolve()
             except OSError:
                 located = None
             if located == unreadable_dir:
-                raise PermissionError(f"simulated unreadable directory: {unreadable_dir}")
-        return real_listdir(target)
+                if failure_point == "open":
+                    raise PermissionError(f"simulated unreadable directory: {unreadable_dir}")
+                return _FailingIterator(real_scandir(target))
+        return real_scandir(target)
 
-    monkeypatch.setattr(os, "listdir", fake_listdir)
+    monkeypatch.setattr(os, "scandir", fake_scandir)
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         verify_executed_source_identity_v2(

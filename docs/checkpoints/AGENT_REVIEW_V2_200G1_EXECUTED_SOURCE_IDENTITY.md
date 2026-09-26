@@ -524,6 +524,24 @@ primitive only.
 > `identity_subject_structure_budget_exceeded`;
 > `identity_symlinked_directory_in_subject` now names exactly "a symlink where
 > the commit declares a tree".
+>
+> **`#352` corrective cut (F1, F3).** The first `#333` candidate observed the
+> structure once, BEFORE the leaf comparisons, which silently undid the
+> round-2 ordering recorded below ("moved ... to LAST"): a node added, or a
+> directory replaced by an equivalent one carrying an extra child, during the
+> leaf phase verified as identical (reproduced cross-machine; base refused
+> both). The verifier now keeps the initial structural observation (typed
+> kind refusals before any leaf is opened) and adds a FINAL structural
+> observation -- the same walk and comparison -- after every leaf comparison.
+> The claim is equality **at that final observation**; it is not
+> immutability afterwards (`FinalObservation != ImmutableAfterObservation`),
+> and the residual window between the final walk and return remains, as the
+> round-2 text below already states. The existing round-2 regression test
+> injects during git-side resolution, which now precedes both walks, so the
+> leaf-phase injection is carried by new tests in
+> `tests/agent_review/test_c4_structural_identity_v2.py`. F3: directory
+> entries are streamed (`os.scandir` on the descriptor), so the node budget
+> bounds names pulled from the filesystem, not only names kept.
 
 **Superseding the wording used throughout §1 and §6 above.** Those sections
 repeatedly describe IDENTITY as *"which commit **produced** the bytes now on

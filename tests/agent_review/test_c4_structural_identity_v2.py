@@ -341,28 +341,61 @@ def test_observed_depth_budget_is_typed_and_bounded(plumbing: _Plumbing, tmp_pat
     assert _refusal(plumbing, c, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
 
 
-def test_live_descriptors_do_not_grow_with_depth(plumbing: _Plumbing, tmp_path: Path) -> None:
-    depth = 60
-    parts = ["d"] * depth
-    p = plumbing
+def _traversal_live_fd_delta(p: _Plumbing, tmp_path: Path, depth: int) -> int:
+    """Peak live descriptors ABOVE the pre-call baseline, sampled only while
+    the SUBJECT TRAVERSAL runs (both structural observations and every leaf
+    comparison), after each ``os.open`` / ``os.dup`` / ``os.scandir`` /
+    ``os.readlink``. Deliberately NOT the whole verifier call: the git-side
+    pipes and spool dominate that peak and do not depend on the subject's
+    depth (measured on #352: whole call +13, traversal +4, at every depth
+    5..99)."""
     tree = p.tree(("100644", "blob", p.blob(CODE), b"leaf.py"))
     for _ in range(depth):
         tree = p.tree(("040000", "tree", tree, b"d"))
     c = p.commit(tree)
-    root = _materialised(p, c, tmp_path / "s")
-    peak = {"n": 0}
-    real_open = os.open
+    root = _materialised(p, c, tmp_path / f"s{depth}")
+    live = lambda: len(os.listdir("/proc/self/fd"))  # noqa: E731
+    state = {"inside": 0, "peak": 0}
 
-    def counting_open(*a, **k):
-        fd = real_open(*a, **k)
-        peak["n"] = max(peak["n"], len(os.listdir("/proc/self/fd")))
-        return fd
+    def sampled(fn):
+        def inner(*a, **k):
+            out = fn(*a, **k)
+            if state["inside"]:
+                state["peak"] = max(state["peak"], live())
+            return out
+        return inner
 
-    baseline = len(os.listdir("/proc/self/fd"))
+    def traversal(fn):
+        def inner(*a, **k):
+            state["inside"] += 1
+            try:
+                return fn(*a, **k)
+            finally:
+                state["inside"] -= 1
+        return inner
+
     from unittest.mock import patch
-    with patch.object(ident.os, "open", counting_open):
+    baseline = live()
+    with patch.object(ident.os, "open", sampled(os.open)), patch.object(ident.os, "dup", sampled(os.dup)), \
+            patch.object(ident.os, "scandir", sampled(os.scandir)), patch.object(ident.os, "readlink", sampled(os.readlink)), \
+            patch.object(ident, "_observe_subject_graph_v2", traversal(ident._observe_subject_graph_v2)), \
+            patch.object(ident, "_compare_regular_leaf_v2", traversal(ident._compare_regular_leaf_v2)), \
+            patch.object(ident, "_compare_symlink_leaf_v2", traversal(ident._compare_symlink_leaf_v2)):
         _verify(p, c, root)
-    assert peak["n"] - baseline < 12, f"live descriptors grew with depth ({peak['n'] - baseline})"
+    assert live() == baseline, "descriptors leaked past return"
+    return state["peak"] - baseline
+
+
+def test_traversal_live_descriptors_are_independent_of_tree_depth(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """Property: StructuralTraversalLiveFDs = O(1) with respect to tree depth.
+    Discriminated by comparing the SAME measurement at depth 5 and depth 60
+    (an O(depth) descriptor stack or a per-directory leak differs by ~55).
+    The numeric ceiling is a regression guardrail on that same traversal-only
+    measurement, not a bound on the whole verifier's descriptors."""
+    shallow = _traversal_live_fd_delta(plumbing, tmp_path, 5)
+    deep = _traversal_live_fd_delta(plumbing, tmp_path, 60)
+    assert deep == shallow, f"traversal descriptors depend on depth (depth 5: {shallow}, depth 60: {deep})"
+    assert deep < 12, f"traversal-only live-descriptor guardrail exceeded ({deep})"
 
 
 # -- race-shaped discriminators: the node changes AFTER the structural walk ----
@@ -445,3 +478,236 @@ def test_directory_swapped_for_symlink_after_the_walk_is_not_followed_on_reacqui
 
     _swap_after_structure(monkeypatch, swap)
     assert _refusal(plumbing, c, root) == ident.IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
+
+
+# -- #352 F1: completeness is observed AFTER the leaf phase --------------------
+#
+# Cross-machine requalification of 7ac2087 found that the only structural walk
+# ran BEFORE the leaf comparisons, so a node added while leaves were being read
+# survived to return (the ordering #305 round 2 had established was lost). The
+# injection below fires after the first leaf comparison -- after the initial
+# structural observation has already passed.
+
+
+def _mutate_during_leaf_phase(monkeypatch, mutate) -> dict[str, int]:
+    real = ident._compare_regular_leaf_v2
+    fired = {"n": 0}
+
+    def compare_then_mutate(*args, **kwargs):
+        real(*args, **kwargs)
+        if not fired["n"]:
+            fired["n"] = 1
+            mutate()
+
+    monkeypatch.setattr(ident, "_compare_regular_leaf_v2", compare_then_mutate)
+    return fired
+
+
+def test_node_added_during_leaf_phase_is_refused_by_the_final_structural_observation(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    c = _commit_ordinary(plumbing)
+    root = _materialised(plumbing, c, tmp_path / "s")
+    fired = _mutate_during_leaf_phase(monkeypatch, lambda: (root / "late.py").write_bytes(b"import os\n"))
+    assert _refusal(plumbing, c, root) == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
+    assert fired["n"] == 1 and (root / "late.py").exists()  # the node really was there at the end
+
+
+def test_directory_replaced_during_leaf_phase_by_equivalent_dir_with_extra_child_is_refused(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    """Every expected leaf stays byte-identical (the replacement carries the same
+    files); only a re-walk of the replaced subtree can see the extra child."""
+    c = _commit_ordinary(plumbing)
+    root = _materialised(plumbing, c, tmp_path / "s")
+    shadow = _materialised(plumbing, c, tmp_path / "shadow")
+    (shadow / "pkg" / "evil.py").write_bytes(b"x\n")
+
+    def replace() -> None:
+        os.rename(root / "pkg", tmp_path / "moved_away")
+        os.rename(shadow / "pkg", root / "pkg")
+
+    fired = _mutate_during_leaf_phase(monkeypatch, replace)
+    assert _refusal(plumbing, c, root) == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
+    assert fired["n"] == 1 and (root / "pkg" / "evil.py").exists()
+
+
+# -- #352 M14: executable semantics are Git's own ---------------------------------
+
+
+def _git_recorded_mode(tmp_path: Path, file_mode: int) -> str:
+    """The mode Git itself records for a regular file with `file_mode` (oracle
+    independent of the verifier: `core.fileMode=true`, `update-index --add`)."""
+    repo = tmp_path / f"oracle_{file_mode:o}"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.fileMode", "true")
+    (repo / "f").write_bytes(CODE)
+    os.chmod(repo / "f", file_mode)
+    _git(repo, "update-index", "--add", "f")
+    return _git(repo, "ls-files", "-s", "f").split()[0]
+
+
+@pytest.mark.parametrize("file_mode", [0o644, 0o645, 0o654, 0o744, 0o655, 0o711, 0o755])
+def test_executable_semantics_agree_with_the_mode_git_itself_records(
+    plumbing: _Plumbing, tmp_path: Path, file_mode: int
+) -> None:
+    """For a regular file carrying `file_mode`, the verifier accepts it against
+    a 100644 blob iff Git would record it as 100644, and against a 100755 blob
+    iff Git would record it as 100755 (group/other execute bits are not Git's
+    executable bit)."""
+    recorded = _git_recorded_mode(tmp_path, file_mode)
+    assert recorded in ("100644", "100755")
+    for committed_mode in ("100644", "100755"):
+        c = plumbing.commit(plumbing.tree((committed_mode, "blob", plumbing.blob(CODE), b"f")))
+        root = _subject(tmp_path / f"s_{file_mode:o}_{committed_mode}", {"f": CODE})
+        os.chmod(root / "f", file_mode)
+        if committed_mode == recorded:
+            _verify(plumbing, c, root)
+        else:
+            assert _refusal(plumbing, c, root) == IDENTITY_MODE_MISMATCH_REASON_V2
+
+
+# -- #352 M17/M18/M21: budget edges and admission parity with C3 ---------------
+
+
+def _chain_of_empty_trees(p: _Plumbing, depth: int) -> str:
+    tree = p.empty_tree
+    for _ in range(depth):
+        tree = p.tree(("040000", "tree", tree, b"d"))
+    return p.commit(tree)
+
+
+def test_deepest_tree_c3_admits_verifies_and_one_level_deeper_is_unrepresentable(
+    plumbing: _Plumbing, tmp_path: Path
+) -> None:
+    """Real constants, no monkeypatch. C3 admits a directory at depth 100
+    (child depth <= 100); the verifier's observed-depth budget must admit the
+    exact subject C3 materialises for it. One level deeper, C3 refuses the
+    COMMIT as unrepresentable and the verifier reports exactly that."""
+    from app.agent_review.git_commit_subject_v2 import (
+        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+        SubjectMaterialisationError,
+    )
+
+    at_bound = _chain_of_empty_trees(plumbing, ident.MAX_OBSERVED_DEPTH_V2)
+    root = _materialised(plumbing, at_bound, tmp_path / "at_bound")
+    _verify(plumbing, at_bound, root)
+
+    deeper_subject = root / "/".join(["d"] * ident.MAX_OBSERVED_DEPTH_V2) / "d"
+    deeper_subject.mkdir()  # the subject, not the commit, goes one level deeper
+    assert _refusal(plumbing, at_bound, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
+
+    beyond = _chain_of_empty_trees(plumbing, ident.MAX_OBSERVED_DEPTH_V2 + 1)
+    with pytest.raises(SubjectMaterialisationError) as c3:
+        materialise_commit_subject_v2(repo_root=plumbing.repo, ref=beyond, destination=tmp_path / "beyond")
+    assert c3.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert _refusal(plumbing, beyond, _subject(tmp_path / "empty_subject")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+
+
+def test_tree_c3_refuses_as_unrepresentable_keeps_its_own_reason(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """A committed name longer than NAME_MAX: C3 cannot represent it, and the
+    verifier must say so -- not collapse it into `identity_tree_unreadable`."""
+    from app.agent_review.git_commit_subject_v2 import (
+        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+        SubjectMaterialisationError,
+    )
+
+    c = plumbing.commit(plumbing.tree(("100644", "blob", plumbing.blob(CODE), b"n" * 256)))
+    with pytest.raises(SubjectMaterialisationError) as c3:
+        materialise_commit_subject_v2(repo_root=plumbing.repo, ref=c, destination=tmp_path / "m")
+    assert c3.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+    assert _refusal(plumbing, c, _subject(tmp_path / "s", {"main.py": CODE})) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+
+
+@pytest.mark.parametrize("budget", [13, 12], ids=["exactly-at-bound", "one-below"])
+def test_observed_node_budget_has_the_same_edge_as_c3_admission(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch, budget: int
+) -> None:
+    """Admission parity at the edge: a 13-entry tree is admitted by C3's
+    structural enumeration iff its entry budget is >= 13; the verifier's
+    observed-node budget must draw the edge in the same place for the subject
+    C3 materialises (so "exactly at the bound" is admitted by both)."""
+    from app.agent_review.git_commit_subject_v2 import SubjectMaterialisationError, _build_canonical_trie_hierarchical
+
+    c = plumbing.commit(plumbing.tree(
+        ("100644", "blob", plumbing.blob(CODE), b"main.py"),
+        *[("040000", "tree", plumbing.empty_tree, f"d{i:02d}".encode()) for i in range(12)],
+    ))
+    root = _materialised(plumbing, c, tmp_path / "s")
+    root_tree = _git(plumbing.repo, "rev-parse", f"{c}^{{tree}}")
+    try:
+        _build_canonical_trie_hierarchical(repo_root=plumbing.repo, root_tree_oid=root_tree, max_expanded_entries=budget)
+        c3_admits = True
+    except SubjectMaterialisationError:
+        c3_admits = False
+    monkeypatch.setattr(ident, "MAX_OBSERVED_NODES_V2", budget)
+    try:
+        _verify(plumbing, c, root)
+        verifier_admits = True
+    except ExecutedSourceIdentityError as exc:
+        assert exc.reason_code == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
+        verifier_admits = False
+    assert verifier_admits == c3_admits == (budget >= 13)
+
+
+# -- #352 F3: entries are streamed; one huge directory is not listed whole -----
+
+
+def test_oversized_directory_is_refused_without_enumerating_all_of_it(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    """The observed-node budget bounds how many names the walk pulls from the
+    filesystem, not only how many it keeps: a directory holding far more
+    entries than the budget is refused after at most budget + 1 names.
+    Counted at the enumeration primitive (both `os.scandir` and `os.listdir`
+    on a descriptor), only while the structural walk runs."""
+    c = _commit_main_only(plumbing)
+    root = _subject(tmp_path / "s", {"main.py": CODE}, dirs=("big",))
+    for i in range(500):
+        (root / "big" / f"f{i:03d}").write_bytes(b"")
+    budget = 50
+    monkeypatch.setattr(ident, "MAX_OBSERVED_NODES_V2", budget)
+    drawn = {"names": 0, "inside": 0}
+    real_scandir, real_listdir, real_observe = os.scandir, os.listdir, ident._observe_subject_graph_v2
+
+    class _Counting:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            self._inner.close()
+
+        def __iter__(self):
+            for entry in self._inner:
+                drawn["names"] += 1
+                yield entry
+
+        def close(self) -> None:
+            self._inner.close()
+
+    def scandir(target="."):
+        it = real_scandir(target)
+        return _Counting(it) if drawn["inside"] and isinstance(target, int) else it
+
+    def listdir(target="."):
+        names = real_listdir(target)
+        if drawn["inside"] and isinstance(target, int):
+            drawn["names"] += len(names)
+        return names
+
+    def observe(root_fd):
+        drawn["inside"] += 1
+        try:
+            return real_observe(root_fd)
+        finally:
+            drawn["inside"] -= 1
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(ident, "_observe_subject_graph_v2", observe)
+    assert _refusal(plumbing, c, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
+    assert drawn["names"] <= budget + 1, f"walk pulled {drawn['names']} names for a budget of {budget}"
