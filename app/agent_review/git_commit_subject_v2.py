@@ -75,6 +75,8 @@ __all__ = [
     "SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2",
     "SUBJECT_PATH_COLLISION_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
+    "SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2",
+    "SUBJECT_REFUSAL_DETAIL_GITLINK_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
     "SUBJECT_UNREPRESENTABLE_TREE_REASON_V2",
@@ -120,12 +122,27 @@ MAX_EXPANDED_ENTRIES_V2: int = 100_000
 MAX_EXPANDED_BYTES_V2: int = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 
-class SubjectMaterialisationError(ValueError):
-    """A subject could not be materialised from committed bytes."""
+#: Closed set of optional refusal DETAILS (`#352`, authority-first refusal
+#: cause): which admission rule refused, attached by the C3 site that first
+#: decides it, for consumers that need that cause. Not free text, not a path,
+#: not a consumer's reason code; ``detail`` is ``None`` for every refusal whose
+#: cause is not intentionally exposed.
+SUBJECT_REFUSAL_DETAIL_GITLINK_V2 = "gitlink"
+SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2 = "dotdot_name"
 
-    def __init__(self, reason_code: str) -> None:
+
+class SubjectMaterialisationError(ValueError):
+    """A subject could not be materialised from committed bytes.
+
+    ``reason_code`` is the semantic field (also ``args[0]`` and ``str(exc)``);
+    ``detail`` is an optional ``SUBJECT_REFUSAL_DETAIL_*`` constant and never
+    changes either.
+    """
+
+    def __init__(self, reason_code: str, *, detail: str | None = None) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -1164,7 +1181,10 @@ def _parse_tree_data(
 
         # Invariant: Single directory entry must not contain path separators or NUL bytes
         if b"/" in raw_name or b"\0" in raw_name or raw_name in (b".", b"..", b""):
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+            raise SubjectMaterialisationError(
+                SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+                detail=SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2 if raw_name == b".." else None,
+            )
 
         if mode_str in ("40000", "040000"):
             obj_type = "tree"
@@ -1424,8 +1444,13 @@ def _build_canonical_trie_hierarchical(
                     all_entries.append(entry)
                     leaf_blobs.append(entry)
                 else:
-                    # Submodule commits, tags in tree, or unknown types
-                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    # Submodule commits (gitlinks: the parser maps mode 160000 to
+                    # obj_type "commit"; this is where C3 refuses them), tags
+                    # in tree, or unknown types.
+                    raise SubjectMaterialisationError(
+                        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+                        detail=SUBJECT_REFUSAL_DETAIL_GITLINK_V2 if obj_type == "commit" else None,
+                    )
     finally:
         _ACTIVE_TREE_BATCH_SESSION.reset(token_session)
         if batch_proc.stdin:

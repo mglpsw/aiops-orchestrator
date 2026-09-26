@@ -599,3 +599,58 @@ def test_c3_structural_fidelity_rejects_excessive_tree_depth(tmp_path):
     with pytest.raises(SubjectMaterialisationError) as exc:
         materialise_commit_subject_v2(repo_root=repo, ref=commit, destination=tmp_path / "dest")
     assert exc.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+# -- #352 authority-first refusal cause: additive, closed `detail` ---------------
+
+
+def _refusal_git(repo: Path, *argv: str, data: bytes | None = None) -> str:
+    return subprocess.run(["git", *argv], cwd=repo, input=data, check=True, capture_output=True).stdout.decode().strip()
+
+
+def _refusal_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "refusal_repo"
+    repo.mkdir()
+    _refusal_git(repo, "init", "-q")
+    return repo
+
+
+def _refusal_commit(repo: Path, *entries: tuple[str, str, str, bytes]) -> str:
+    payload = b"".join(f"{m} {t} {o}\t".encode() + n + b"\0" for m, t, o, n in entries)
+    tree = _refusal_git(repo, "mktree", "-z", "--missing", data=payload)
+    return _refusal_git(repo, "commit-tree", tree, "-m", "c")
+
+
+def test_refusal_detail_is_additive_and_leaves_reason_code_args_and_str_unchanged() -> None:
+    from app.agent_review.git_commit_subject_v2 import SUBJECT_REFUSAL_DETAIL_GITLINK_V2
+    plain = SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+    tagged = SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2, detail=SUBJECT_REFUSAL_DETAIL_GITLINK_V2)
+    assert plain.detail is None and tagged.detail == SUBJECT_REFUSAL_DETAIL_GITLINK_V2
+    for exc in (plain, tagged):
+        assert exc.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+        assert exc.args == (SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,)
+        assert str(exc) == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+
+
+def test_c3_refusal_carries_the_cause_at_its_authoritative_site(tmp_path: Path) -> None:
+    """gitlink: refused by the hierarchical builder (the parser maps mode 160000
+    to a commit entry). `..`: refused by the raw-tree parser, the earliest site.
+    Any other unrepresentable refusal carries no detail."""
+    from app.agent_review.git_commit_subject_v2 import (
+        SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2,
+        SUBJECT_REFUSAL_DETAIL_GITLINK_V2,
+        list_commit_tree_structure_v2,
+    )
+    repo = _refusal_repo(tmp_path)
+    blob = _refusal_git(repo, "hash-object", "-w", "--stdin", data=b"x")
+    empty = _refusal_git(repo, "hash-object", "-t", "tree", "-w", "--stdin", data=b"")
+    cases = {
+        SUBJECT_REFUSAL_DETAIL_GITLINK_V2: _refusal_commit(repo, ("160000", "commit", "0" * 39 + "1", b"sub")),
+        SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2: _refusal_commit(repo, ("040000", "tree", empty, b"..")),
+        None: _refusal_commit(repo, ("100644", "blob", blob, b"n" * 256)),
+    }
+    for expected_detail, commit in cases.items():
+        with pytest.raises(SubjectMaterialisationError) as excinfo:
+            list_commit_tree_structure_v2(repo_root=repo, commit_sha=commit)
+        assert excinfo.value.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2
+        assert excinfo.value.detail == expected_detail

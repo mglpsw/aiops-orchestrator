@@ -273,21 +273,19 @@ identity check to do so; that is not a boundary this module claims to hold.
 from __future__ import annotations
 
 import os
-import posixpath
 import stat
-import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import BoundedGitError, open_bounded_git_subprocess_v2
 from app.agent_review.git_commit_subject_v2 import (
     BoundedBlobCarrierV2,
     EXECUTABLE_MODE_V2,
-    GITLINK_MODE_V2,
     MAX_EXPANDED_ENTRIES_V2,
     SUBJECT_BLOB_MISSING_REASON_V2,
+    SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2,
+    SUBJECT_REFUSAL_DETAIL_GITLINK_V2,
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
     SYMLINK_MODE_V2,
     SubjectMaterialisationError,
@@ -465,43 +463,6 @@ class ExecutedSourceAuthorizationV2:
         # branch, silently. Not exercised by any call site today, but a
         # footgun worth closing before one exists.
         return self.authorized
-
-
-def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
-    """Reject any tree entry whose path would land outside ``subject_root``.
-
-    A path from a commit's tree is untrusted input, exactly as it is for
-    ``git_commit_subject_v2._safe_destination_v2`` during materialisation --
-    this function exists because verification must apply the identical
-    containment discipline, not because it can borrow that one unchanged
-    (that helper resolves a destination being *written*, where the leaf
-    typically does not exist yet; this one is checked against a subject
-    whose files already exist, some of which may themselves be symlinks).
-
-    Proven necessary, not merely theoretical: ``git mktree`` accepts a
-    subtree literally named ``..`` (git only refuses a path *segment*
-    containing a literal ``/``, not the two-character name ``..`` on its
-    own), and ``git ls-tree -r`` on such a tree emits a flattened entry path
-    like ``../evil.py``. ``Path(subject_root) / "../evil.py"`` is not
-    rejected by the ``/`` operator (only a truly absolute right-hand side
-    would override the left), but the OS resolves the ``..`` on open/stat,
-    so an unchecked ``actual_path`` would read from *outside*
-    ``subject_root``.
-
-    Containment is decided *lexically*, on ``relative_path`` itself via
-    ``posixpath.normpath`` -- deliberately not via ``Path.resolve()`` against
-    the filesystem. ``resolve()`` would dereference a symlink sitting at
-    ``relative_path`` (a legitimate, already-materialised tracked entry) and
-    judge containment by where that symlink's *target* points, which is a
-    different question this function must not answer: a symlink tampered to
-    point at ``/etc/passwd`` must be caught by the symlink-target-text
-    comparison in the caller, tagged with its own reason code, not folded
-    into this containment check.
-    """
-    normalised = posixpath.normpath(relative_path)
-    if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
-        raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
-    return subject_root / relative_path
 
 
 _DIR_OPEN_FLAGS_V2 = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -692,14 +653,14 @@ def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, carrier: BoundedBlob
         raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
 
 
-_LEGACY_SCAN_MAX_RECORD_V2 = 1 << 20
-# `#352` review 5327688067: the refusal-only scan is bounded by C3's own work
-# budget -- `ls-tree -r -t` emits one record per expanded entry, exactly what
-# C3 counts -- plus a total-bytes ceiling, so a small shared-subtree DAG whose
-# flattened listing is exponential cannot keep the verifier busy after C3 has
-# already refused it.
-_LEGACY_SCAN_MAX_RECORDS_V2 = MAX_EXPANDED_ENTRIES_V2 + 1
-_LEGACY_SCAN_MAX_BYTES_V2 = 64 << 20
+#: `#352` authority-first refusal cause: C3's hierarchical traversal decides
+#: the refusal AND carries its cause; this module only translates the causes
+#: its compatibility surface names. Any other (or absent, or future) detail
+#: stays the generic typed refusal -- never a guessed specific code.
+_LEGACY_REASON_BY_C3_DETAIL_V2 = {
+    SUBJECT_REFUSAL_DETAIL_GITLINK_V2: IDENTITY_GITLINK_PRESENT_REASON_V2,
+    SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2: IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
+}
 
 
 def _subject_name_max_v2(root_fd: int) -> int:
@@ -712,60 +673,6 @@ def _subject_name_max_v2(root_fd: int) -> int:
     except (OSError, ValueError):
         limit = -1
     return limit if limit > 0 else 255
-
-
-def _legacy_refusal_reason_v2(trusted_root: Path, commit_sha: str) -> str | None:
-    """Refusal path ONLY (C3 already refused the tree as unrepresentable):
-    name the two refusals the pre-`#333` verifier reported with their own
-    reason codes -- a gitlink, or a ``..``-shaped entry path (including a
-    ``..`` that names an empty tree, hence ``-t``) -- so those codes keep
-    their meaning. Streams ``git ls-tree -r -t -z`` one record at a time
-    (at most ``_LEGACY_SCAN_MAX_RECORD_V2`` buffered) and stops at the first
-    hit, or after ``_LEGACY_SCAN_MAX_RECORDS_V2`` records or
-    ``_LEGACY_SCAN_MAX_BYTES_V2`` bytes (C3's own entry budget): never on the
-    success path, never materialises the flattened listing, never does more
-    work than C3's enumeration may. Returns ``None`` when neither applies or
-    the bounded scan cannot decide."""
-    try:
-        proc = open_bounded_git_subprocess_v2(
-            ["ls-tree", "-r", "-t", "-z", commit_sha], cwd=trusted_root,
-            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except BoundedGitError:
-        return None
-    try:
-        buffer = b""
-        consumed_bytes = 0
-        consumed_records = 0
-        while True:
-            chunk = proc.stdout.read1(65536) if proc.stdout is not None else b""
-            if not chunk:
-                return None
-            consumed_bytes += len(chunk)
-            if consumed_bytes > _LEGACY_SCAN_MAX_BYTES_V2:
-                return None
-            buffer += chunk
-            *records, buffer = buffer.split(b"\0")
-            for record in records:
-                consumed_records += 1
-                if consumed_records > _LEGACY_SCAN_MAX_RECORDS_V2:
-                    return None
-                metadata, _, raw_path = record.partition(b"\t")
-                if metadata.split(b" ", 1)[0].decode("ascii", "replace") == GITLINK_MODE_V2:
-                    return IDENTITY_GITLINK_PRESENT_REASON_V2
-                try:
-                    _safe_subject_path_v2(subject_root=Path("."), relative_path=os.fsdecode(raw_path))
-                except ExecutedSourceIdentityError as exc:
-                    return exc.reason_code
-            if len(buffer) > _LEGACY_SCAN_MAX_RECORD_V2:
-                return None
-    except (OSError, ValueError):
-        return None
-    finally:
-        if proc.stdout is not None:
-            proc.stdout.close()
-        proc.kill()
-        proc.wait()
 
 
 def _compare_structure_v2(
@@ -968,7 +875,7 @@ def verify_executed_source_identity_v2(
     graphs are keyed by full raw paths, so peak heap is O(total flattened
     path bytes) of the tree -- measured at about 2.9x C3's own
     materialisation peak for the same tree (the flattened ``ls-tree -r``
-    listing, which added about 1x more, is off the success path). C3's
+    listing, which added about 1x more, is consulted on no path). C3's
     budgets bound entries and depth, not path bytes; a path-bytes budget
     would bound producer and verifier alike and is C3's to add.
 
@@ -980,15 +887,17 @@ def verify_executed_source_identity_v2(
     Authorities, in order:
 
     1. ``commit_sha`` resolves to a real commit (never a tree/blob sha).
-    2. The tree contains no gitlink, and no ``..``-shaped entry path
-       (pre-existing reason codes; consulted through the leaf listing, which
-       is NOT the structural authority).
-    3. Structure comes from C3's hierarchical raw-tree traversal
-       (``list_commit_tree_structure_v2``): ``git ls-tree -r`` drops explicit
-       empty trees, so it is exactly the lossy boundary this contract
-       removes. A commit C3 cannot represent is refused
-       (``IDENTITY_TREE_UNREPRESENTABLE_REASON_V2``).
-    4. The subject root is opened ``O_DIRECTORY | O_NOFOLLOW`` and every
+    2. Structure AND refusal come from ONE authority, C3's hierarchical
+       raw-tree traversal (``list_commit_tree_structure_v2``); ``git ls-tree
+       -r`` drops explicit empty trees and is consulted on no path. A commit
+       C3 cannot represent is refused ``IDENTITY_TREE_UNREPRESENTABLE_REASON_V2``,
+       except where C3's refusal ``detail`` names a cause this module's
+       pre-existing codes express: a gitlink -> ``IDENTITY_GITLINK_PRESENT``,
+       a ``..`` entry -> ``IDENTITY_PATH_ESCAPES_SUBJECT``. The code reflects the
+       refusal C3's traversal met first: single-cause compatibility is
+       preserved; no total priority order among coexisting defects is
+       promised.
+    3. The subject root is opened ``O_DIRECTORY | O_NOFOLLOW`` and every
        observation is descriptor-relative from that authority: the locator
        is discovery input, a root locator that is itself a symlink is
        refused. Node kinds come from ``fstatat(..., AT_SYMLINK_NOFOLLOW)``;
@@ -998,16 +907,16 @@ def verify_executed_source_identity_v2(
        spool are separate), entries are streamed, and budgets
        ``MAX_OBSERVED_NODES_V2`` / ``MAX_OBSERVED_DEPTH_V2`` are enforced as
        nodes are discovered.
-    5. ``ExpectedPaths == ObservedPaths`` with kind equality at every path
+    4. ``ExpectedPaths == ObservedPaths`` with kind equality at every path
        (missing tree node, missing leaf, extra node, extra file, kind
        mismatch, symlink where a tree is declared -- each its own reason).
-    6. Only then leaf content: a regular leaf is opened
+    5. Only then leaf content: a regular leaf is opened
        ``O_NOFOLLOW | O_NONBLOCK`` and ``fstat`` must say ``S_ISREG`` before
        a byte is read (a FIFO/special file is a kind mismatch, never a
        hang -- `#321`'s class); bytes are compared in bounded chunks; a
        symlink leaf is ``readlink``ed and its raw target bytes compared,
        never followed.
-    7. Every path in ``loaded_module_paths`` (defaulting to
+    6. Every path in ``loaded_module_paths`` (defaulting to
        ``loaded_module_files_v2()``) resolves under ``subject_root``. An
        independent second signal, not a substitute for the structure check.
     """
@@ -1019,7 +928,7 @@ def verify_executed_source_identity_v2(
     # `#331-B`: external storage transitions require explicit authorized_storage_roots.
     # `#333` -- the LOCATOR is discovery input; the DESCRIPTOR is the observed
     # subject. `resolved_root` is kept only for the loaded-module containment
-    # check (5) and the returned value; no observation is made through it.
+    # check (6) and the returned value; no observation is made through it.
     resolved_root = Path(subject_root).resolve()
     root_fd = _acquire_subject_root_fd_v2(Path(subject_root))
 
@@ -1045,13 +954,15 @@ def verify_executed_source_identity_v2(
                 except SubjectMaterialisationError as exc:
                     raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-                # Structural authority: C3's hierarchical raw-tree traversal,
-                # bounded by C3's own budgets. `git ls-tree -r` drops explicit
-                # (empty) tree nodes -- the earliest lossy boundary this
-                # contract exists to remove -- and its flattened output is not
-                # bounded by those budgets (`#352` review: ~3x the flattened
-                # path bytes of a C3-admitted tree), so it is never on the
-                # success path. C3 itself refuses gitlinks and `..` names.
+                # Structural AND refusal authority: C3's hierarchical raw-tree
+                # traversal, bounded by C3's own budgets. No flattened re-listing
+                # (`git ls-tree -r`) is consulted on any path: it drops explicit
+                # (empty) tree nodes, is not bounded by C3's budgets, and would be
+                # a second representation second-guessing C3's refusal (`#352`
+                # STOP_REDESIGN_SCOPED). C3 refuses gitlinks and `..` names and
+                # says so in `detail`; the reason code is whatever refusal C3's
+                # traversal met first -- single-cause compatibility is preserved,
+                # no total priority order among coexisting defects is promised.
                 try:
                     structure = list_commit_tree_structure_v2(
                         repo_root=trusted_root, commit_sha=resolved_commit,
@@ -1059,8 +970,11 @@ def verify_executed_source_identity_v2(
                     )
                 except SubjectMaterialisationError as exc:
                     if exc.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2:
-                        legacy = _legacy_refusal_reason_v2(trusted_root, resolved_commit)
-                        raise ExecutedSourceIdentityError(legacy or IDENTITY_TREE_UNREPRESENTABLE_REASON_V2) from exc
+                        raise ExecutedSourceIdentityError(
+                            _LEGACY_REASON_BY_C3_DETAIL_V2.get(
+                                getattr(exc, "detail", None), IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+                            )
+                        ) from exc
                     raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
                 expected: dict[bytes, tuple[str, bool]] = {}

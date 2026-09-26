@@ -712,12 +712,12 @@ def test_any_node_beyond_the_depth_bound_is_a_budget_refusal(plumbing: _Plumbing
 # -- #352 Q review (5327260045): bounded expected side and cleanup ----------------
 
 
-def test_success_path_never_produces_the_flattened_leaf_listing(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
-    """`git ls-tree -r` flattens every repeated path prefix and is not bounded
-    by C3's budgets (review finding A: ~3x the flattened path bytes of a tree
-    C3 admits). On a tree C3 admits, the verifier must not run it at all; it
-    is consulted only on C3's refusal path, to keep the legacy gitlink / `..`
-    reason codes."""
+@pytest.mark.parametrize("shape", ["admitted", "gitlink", "dotdot"])
+def test_no_flattened_listing_is_consulted_on_any_path(plumbing: _Plumbing, tmp_path: Path, monkeypatch, shape: str) -> None:
+    """`git ls-tree -r` flattens every repeated prefix and is not bounded by
+    C3's budgets (review A, then F-y and the hidden-cause finding on the
+    refusal-only scan). Under the authority-first refusal design the verifier
+    consults it on NO path: not on success, not to name a refusal's cause."""
     from app.agent_review import bounded_git_v2, git_commit_subject_v2
     seen: list[list[str]] = []
     real_run, real_open = bounded_git_v2.run_bounded_git_v2, bounded_git_v2.open_bounded_git_subprocess_v2
@@ -732,10 +732,14 @@ def test_success_path_never_produces_the_flattened_leaf_listing(plumbing: _Plumb
 
     monkeypatch.setattr(git_commit_subject_v2, "run_bounded_git_v2", run)
     monkeypatch.setattr(git_commit_subject_v2, "open_bounded_git_subprocess_v2", open_)
-    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", open_)
-    c = _commit_with_nested_empty(plumbing)
-    _verify(plumbing, c, _materialised(plumbing, c, tmp_path / "s"))
-    assert not [argv for argv in seen if argv[:1] == ["ls-tree"] and "-r" in argv], seen
+    if shape == "admitted":
+        c = _commit_with_nested_empty(plumbing)
+        _verify(plumbing, c, _materialised(plumbing, c, tmp_path / "s"))
+    else:
+        entry = ("160000", "commit", "0" * 39 + "1", b"sub") if shape == "gitlink" else ("040000", "tree", plumbing.empty_tree, b"..")
+        c = plumbing.commit(_tree_missing(plumbing, ("100644", "blob", plumbing.blob(CODE), b"main.py"), entry))
+        _refusal(plumbing, c, _subject(tmp_path / "s", {"main.py": CODE}))
+    assert not [argv for argv in seen if argv[:1] == ["ls-tree"]], seen
 
 
 def test_expected_blob_is_compared_without_holding_it_whole(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
@@ -822,110 +826,95 @@ def test_component_length_limit_is_the_subject_filesystems_as_c3_derives_it(
     assert _refusal(plumbing, c, root) == IDENTITY_MISSING_TRACKED_FILE_REASON_V2
 
 
-# -- #352 Q review 5327688067 ----------------------------------------------------
 
-_DAG_PROBE = r"""
-import subprocess, sys
-sys.path.insert(0, sys.argv[1])
-from pathlib import Path
-from app.agent_review import commit_derived_execution_identity_v2 as ident
-repo = Path(sys.argv[2])
-try:
-    ident.verify_executed_source_identity_v2(repo_root=repo, commit_sha=sys.argv[3], subject_root=Path(sys.argv[4]), loaded_module_paths=())
-    print("SUCCESS")
-except ident.ExecutedSourceIdentityError as exc:
-    print("REFUSED:" + exc.reason_code)
-"""
+# -- #352 authority-first refusal cause (Option B) --------------------------------
+#
+# C3's hierarchical traversal decides the refusal AND carries its cause
+# (`SubjectMaterialisationError.detail`); the verifier only translates the
+# causes its compatibility surface names. There is no second (flattened)
+# representation to rediscover why C3 refused.
 
 
-def test_refusal_only_scan_is_bounded_by_c3s_budget_on_an_exponential_dag(plumbing: _Plumbing, tmp_path: Path) -> None:
-    """24 tree objects, 2^24 flattened leaves: C3 refuses at its entry budget,
-    and the legacy reason-code scan must stop within that same budget instead
-    of walking the exponential flattened listing (unbounded: ~minutes here,
-    days at depth 40)."""
-    tree = plumbing.tree(("100644", "blob", plumbing.blob(b"x"), b"f"))
-    for _ in range(24):
-        tree = plumbing.tree(("040000", "tree", tree, b"a"), ("040000", "tree", tree, b"b"))
-    c = plumbing.commit(tree)
+def _tree_missing(p: _Plumbing, *entries: tuple[str, str, str, bytes]) -> str:
+    """mktree that accepts gitlink / absent object ids (plumbing only)."""
+    payload = b"".join(f"{m} {t} {o}\t".encode() + n + b"\0" for m, t, o, n in entries)
+    return _git(p.repo, "mktree", "-z", "--missing", data=payload)
+
+
+def _shared_dag(p: _Plumbing, levels: int) -> str:
+    tree = p.tree(("100644", "blob", p.blob(b"x"), b"f"))
+    for _ in range(levels):
+        tree = p.tree(("040000", "tree", tree, b"a"), ("040000", "tree", tree, b"b"))
+    return tree
+
+
+def test_exponential_shared_subtree_dag_is_refused_in_bounded_time(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """24 tree objects, 2^24 flattened leaves: C3 refuses at its entry budget
+    and nothing re-walks the flattened listing afterwards (the refusal-only
+    scan that did is deleted; the class is eliminated by construction)."""
+    c = plumbing.commit(_shared_dag(plumbing, 24))
     try:
         completed = subprocess.run(
             [sys.executable, "-c", _DAG_PROBE, str(REPO_ROOT), str(plumbing.repo), c, str(_subject(tmp_path / "s"))],
             capture_output=True, text=True, timeout=30, cwd=REPO_ROOT,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail("refusal-only legacy scan walked an exponential flattened listing")
+        pytest.fail("an exponential flattened listing was walked after C3 refused")
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == f"REFUSED:{ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2}"
 
 
-def test_refusal_only_scan_stops_at_its_byte_budget(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
-    """Few records, very long paths (a 300-deep chain of 255-byte names that C3
-    refuses on depth, then 100 leaves): the scan's total consumption is capped
-    by its byte budget, not only by its record budget. Budget lowered to 1 MiB
-    for speed; the flattened listing here is ~7.5 MiB."""
-    name = b"n" * 255
-    tree = plumbing.tree(*[("100644", "blob", plumbing.blob(b"x"), f"f{i:03d}".encode()) for i in range(100)])
-    for _ in range(300):
-        tree = plumbing.tree(("040000", "tree", tree, name))
-    c = plumbing.commit(tree)
-    consumed = {"bytes": 0}
-    real_open = ident.open_bounded_git_subprocess_v2
-
-    class _Counting:
-        def __init__(self, inner) -> None:
-            self._inner = inner
-
-        def read1(self, n: int) -> bytes:
-            data = self._inner.read1(n)
-            consumed["bytes"] += len(data)
-            return data
-
-        def close(self) -> None:
-            self._inner.close()
-
-    def counting_open(argv, **kwargs):
-        proc = real_open(argv, **kwargs)
-        proc.stdout = _Counting(proc.stdout)
-        return proc
-
-    monkeypatch.setattr(ident, "_LEGACY_SCAN_MAX_BYTES_V2", 1 << 20)
-    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", counting_open)
-    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
-    assert 0 < consumed["bytes"] <= (1 << 20) + 65536, consumed
+_DAG_PROBE = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from app.agent_review import commit_derived_execution_identity_v2 as ident
+try:
+    ident.verify_executed_source_identity_v2(repo_root=Path(sys.argv[2]), commit_sha=sys.argv[3], subject_root=Path(sys.argv[4]), loaded_module_paths=())
+    print("SUCCESS")
+except ident.ExecutedSourceIdentityError as exc:
+    print("REFUSED:" + exc.reason_code)
+"""
 
 
-def test_refusal_only_scan_stops_at_c3s_entry_budget_in_records(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
-    """The scan's work is bounded in RECORDS by C3's entry budget (ls-tree -r -t
-    emits one record per expanded entry), not merely by its byte ceiling: with
-    short paths, 64 MiB would hold ten times C3's budget. Record budget lowered
-    to 1000 for speed; the flattened listing has 2^18 records (~23 MiB, under
-    the byte ceiling)."""
-    tree = plumbing.tree(("100644", "blob", plumbing.blob(b"x"), b"f"))
-    for _ in range(17):
-        tree = plumbing.tree(("040000", "tree", tree, b"a"), ("040000", "tree", tree, b"b"))
-    c = plumbing.commit(tree)
-    seen = {"records": 0}
-    real_open = ident.open_bounded_git_subprocess_v2
+def test_rc2_gitlink_behind_an_expanded_shared_subtree_keeps_its_code(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """The STOP witness: a 2^17 shared-subtree DAG listed before a root gitlink.
+    C3's breadth-first traversal meets the gitlink before exhausting its budget
+    and says so; the verifier maps that cause."""
+    c = plumbing.commit(_tree_missing(plumbing, ("040000", "tree", _shared_dag(plumbing, 17), b"aaa"),
+                                      ("160000", "commit", "0" * 39 + "1", b"zz_sub")))
+    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_GITLINK_PRESENT_REASON_V2
 
-    class _Counting:
-        def __init__(self, inner) -> None:
-            self._inner = inner
 
-        def read1(self, n: int) -> bytes:
-            data = self._inner.read1(n)
-            seen["records"] += data.count(b"\0")
-            return data
+def test_rc4_dotdot_behind_an_expanded_shared_subtree_keeps_its_code(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """A `..` entry inside a later sibling of an expanded shared subtree: C3's
+    traversal parses that sibling before exhausting its budget."""
+    later = plumbing.tree(("040000", "tree", plumbing.empty_tree, b".."))
+    c = plumbing.commit(plumbing.tree(("040000", "tree", _shared_dag(plumbing, 17), b"aaa"), ("040000", "tree", later, b"zzz")))
+    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2
 
-        def close(self) -> None:
-            self._inner.close()
 
-    def counting_open(argv, **kwargs):
-        proc = real_open(argv, **kwargs)
-        proc.stdout = _Counting(proc.stdout)
-        return proc
+def test_rc5_unrelated_unrepresentable_tree_gets_no_fabricated_legacy_code(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """Refusals whose cause C3 does not expose (depth and entry budgets here;
+    NAME_MAX in the test above) carry no detail and stay generic."""
+    over_depth = _chain_of_empty_trees(plumbing, ident.MAX_OBSERVED_DEPTH_V2 + 1)
+    assert _refusal(plumbing, over_depth, _subject(tmp_path / "a")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+    over_budget = plumbing.commit(_shared_dag(plumbing, 17))
+    assert _refusal(plumbing, over_budget, _subject(tmp_path / "b")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
 
-    monkeypatch.setattr(ident, "_LEGACY_SCAN_MAX_RECORDS_V2", 1000)
-    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", counting_open)
-    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
-    # at most the budget plus what one 64 KiB read can carry past it
-    assert 1000 < seen["records"] <= 1000 + 65536 // 40, seen
+
+def test_rc6_missing_tree_object_is_unreadable_not_unrepresentable(plumbing: _Plumbing, tmp_path: Path) -> None:
+    c = plumbing.commit(_tree_missing(plumbing, ("040000", "tree", "0" * 39 + "2", b"gone")))
+    assert _refusal(plumbing, c, _subject(tmp_path / "s")) == ident.IDENTITY_TREE_UNREADABLE_REASON_V2
+
+
+def test_unknown_or_future_c3_detail_fails_closed_to_the_generic_code(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
+    """The verifier translates only the causes it names; any other detail --
+    or none -- is the generic typed refusal, never a guessed specific code."""
+    from app.agent_review.git_commit_subject_v2 import SUBJECT_UNREPRESENTABLE_TREE_REASON_V2, SubjectMaterialisationError
+    c = _commit_main_only(plumbing)
+    for detail in ("some_future_admission_rule", None):
+        def refuse(*, detail=detail, **_kwargs):
+            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2, detail=detail)
+        monkeypatch.setattr(ident, "list_commit_tree_structure_v2", refuse)
+        assert _refusal(plumbing, c, _subject(tmp_path / f"s{detail}", {"main.py": CODE})) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
