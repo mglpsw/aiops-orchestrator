@@ -933,6 +933,14 @@ def verify_executed_source_identity_v2(
     and the descriptor that was walked (``PathReturned !=
     DescriptorIdentityVerified``, `#301`'s to bind).
 
+    Resource limitation (declared, `#352` review A): expected and observed
+    graphs are keyed by full raw paths, so peak heap is O(total flattened
+    path bytes) of the tree -- measured at about 2.9x C3's own
+    materialisation peak for the same tree (the flattened ``ls-tree -r``
+    listing, which added about 1x more, is off the success path). C3's
+    budgets bound entries and depth, not path bytes; a path-bytes budget
+    would bound producer and verifier alike and is C3's to add.
+
     Never trusts a pre-computed digest. Re-derives the commit's tree fresh
     from ``repo_root``'s own git object store on every call, through the
     private trusted object authority, and compares against what is on disk
