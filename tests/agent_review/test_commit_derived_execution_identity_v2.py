@@ -1638,3 +1638,78 @@ def test_composing_identity_and_authorization_from_the_same_input_can_resolve_di
         "authorization.commit_sha before treating the pair as describing "
         "the same commit; see this test's docstring"
     )
+
+
+# --- C3 boundary compatibility: the spool-owning carrier is closed deterministically ---
+
+
+def _record_carriers(monkeypatch):
+    from app.agent_review import commit_derived_execution_identity_v2 as ident
+
+    carriers: list = []
+    real = ident.read_commit_blobs_v2
+
+    def recording(*args, **kwargs):
+        carrier = real(*args, **kwargs)
+        carriers.append(carrier)
+        return carrier
+
+    monkeypatch.setattr(ident, "read_commit_blobs_v2", recording)
+    return carriers
+
+
+def test_carrier_is_closed_after_successful_verification(tmp_path: Path, monkeypatch) -> None:
+    carriers = _record_carriers(monkeypatch)
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert len(carriers) == 1 and carriers[0]._closed
+    assert carriers[0]._spool.closed
+
+
+def test_carrier_is_closed_on_refusal_even_when_the_traceback_is_retained(tmp_path: Path, monkeypatch) -> None:
+    carriers = _record_carriers(monkeypatch)
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    (subject_root / "scripts" / "entry.py").chmod(0o755)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    # `excinfo` still holds the traceback, and with it the consumer frame:
+    # closure must not depend on that frame (or the carrier's __del__) going away.
+    assert excinfo.value.__traceback__ is not None
+    assert len(carriers) == 1 and carriers[0]._closed
+    assert carriers[0]._spool.closed
+
+
+@pytest.mark.parametrize("exc_type", [RuntimeError, KeyboardInterrupt])
+def test_carrier_is_closed_on_unexpected_and_process_control_exceptions(
+    tmp_path: Path, monkeypatch, exc_type
+) -> None:
+    from app.agent_review import commit_derived_execution_identity_v2 as ident
+
+    carriers = _record_carriers(monkeypatch)
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    def boom(*_a, **_k):
+        raise exc_type("injected")
+
+    monkeypatch.setattr(ident, "_safe_subject_path_v2", boom)
+    with pytest.raises(exc_type) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.__traceback__ is not None
+    assert len(carriers) == 1 and carriers[0]._closed

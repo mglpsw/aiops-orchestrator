@@ -54,6 +54,7 @@ __all__ = [
     "BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2",
     "BoundedGitError",
     "bounded_git_environment_v2",
+    "open_bounded_git_subprocess_v2",
     "resolve_trusted_git_absolute_path_v2",
     "run_bounded_git_v2",
 ]
@@ -174,3 +175,46 @@ def run_bounded_git_v2(
     if check and completed.returncode != 0:
         raise BoundedGitError(BOUNDED_GIT_COMMAND_FAILED_REASON_V2)
     return completed
+
+
+def open_bounded_git_subprocess_v2(
+    argv: list[str],
+    *,
+    cwd: Path,
+    home: Path | None = None,
+    stdin: int | None = subprocess.PIPE,
+    stdout: int | None = subprocess.PIPE,
+    stderr: int | None = subprocess.PIPE,
+) -> subprocess.Popen[bytes]:
+    """Launch a bounded git subprocess with streamed pipes.
+
+    Uses the exact same hardened environment, configuration, and binary
+    resolution as `run_bounded_git_v2`.
+    """
+    if not Path(cwd).is_dir():
+        raise BoundedGitError(BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2)
+
+    executable = resolve_trusted_git_absolute_path_v2()
+    resolved_argv = [
+        executable,
+        "--no-replace-objects",
+        *_BOUNDED_GIT_CONFIG_ARGUMENTS_V2,
+        *argv,
+    ]
+
+    try:
+        return subprocess.Popen(
+            resolved_argv,
+            cwd=cwd,
+            env=bounded_git_environment_v2(home=home),
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except FileNotFoundError as exc:
+        if not Path(cwd).is_dir():
+            raise BoundedGitError(BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2) from exc
+        raise BoundedGitError(BOUNDED_GIT_UNAVAILABLE_REASON_V2) from exc
+    except OSError as exc:
+        raise BoundedGitError(BOUNDED_GIT_IO_FAILED_REASON_V2) from exc
+

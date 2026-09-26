@@ -788,6 +788,43 @@ def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
     return tuple(authorities)
 
 
+_NAME_SEMANTICS_CASEFOLD_ACTIVE_V2 = "casefold_active"
+
+
+def _classify_directory_name_semantics_v2(
+    snapshot: "MountTopologySnapshotV2", authority: str, *, probe_path: str | None = None
+) -> str:
+    """The single per-directory name-semantics decision.
+
+    Returns ESTABLISHED_CASE_SENSITIVE, CASEFOLD_ACTIVE or UNKNOWN_NAME_SEMANTICS.
+    `authority` locates the governing mount; `probe_path` (default: `authority`)
+    is what the casefold flag is read through, so a caller that holds a directory
+    descriptor can anchor the flag read on it (`/proc/self/fd/N`).  Both this
+    module's K-DISJOINT gate and other consumers (C3 materialisation) use this
+    one function: one semantic question, one authority.
+    """
+
+    governing = snapshot.resolve_query_v2(
+        TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, authority)).governing_mount
+    capability = _name_semantics_capability_v2(governing.filesystem_type)
+    if capability is _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2:
+        return _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+    if capability is _NAME_SEMANTICS_UNKNOWN_V2:
+        return _NAME_SEMANTICS_UNKNOWN_V2
+    casefolded = _directory_is_casefolded_v2(probe_path if probe_path is not None else authority)
+    if casefolded is None:
+        return _NAME_SEMANTICS_UNKNOWN_V2
+    if casefolded:
+        return _NAME_SEMANTICS_CASEFOLD_ACTIVE_V2
+    return _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+
+
+classify_directory_name_semantics_v2 = _classify_directory_name_semantics_v2
+NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2 = _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+NAME_SEMANTICS_CASEFOLD_ACTIVE_V2 = _NAME_SEMANTICS_CASEFOLD_ACTIVE_V2
+NAME_SEMANTICS_UNKNOWN_V2 = _NAME_SEMANTICS_UNKNOWN_V2
+
+
 def _require_name_semantics_applicable_v2(
     snapshot: "MountTopologySnapshotV2", *paths: str
 ) -> None:
@@ -815,17 +852,10 @@ def _require_name_semantics_applicable_v2(
         # UNKNOWN.  The decision is per authority, from that authority's own
         # governing filesystem.
         for authority in _lookup_authorities_v2(path):
-            governing = snapshot.resolve_query_v2(
-                TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, authority)).governing_mount
-            capability = _name_semantics_capability_v2(governing.filesystem_type)
-            if capability is _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2:
-                continue
-            if capability is _NAME_SEMANTICS_UNKNOWN_V2:
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            casefolded = _directory_is_casefolded_v2(authority)
-            if casefolded is None or casefolded:
+            if (
+                _classify_directory_name_semantics_v2(snapshot, authority)
+                is not _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+            ):
                 raise TargetPackEpochError(
                     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
                 )
