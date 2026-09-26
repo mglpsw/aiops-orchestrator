@@ -1126,11 +1126,15 @@ def test_constructor_interrupted_after_taking_descriptors_cannot_double_close_a_
                 repo_root=repo, ref=commit, workspace=workspace, authorized_storage=[repo]
             ))
         assert type(raised) is KeyboardInterrupt
-        raised = None  # drop the traceback: it would keep the half-built object alive and hide the finalizer
         assert _epochs(pool) == []
-        # recycle every low number, then let any stale finalizer run
+        # Order matters: `raised` keeps the traceback, and with it the half-built capability,
+        # alive. Recycle the low descriptor numbers FIRST, and only then release the exception
+        # so that any stale finalizer runs while those numbers belong to somebody else.
+        # (Releasing it earlier lets the finalizer run while the numbers are still free, and
+        # the test cannot tell whether the constructor was inert.)
         probes = [os.open("/dev/null", os.O_RDONLY) for _ in range(8)]
         try:
+            raised = None
             gc.collect()
             assert not any(_fd_is_closed(p) for p in probes), "a stale finalizer closed a recycled descriptor"
         finally:
