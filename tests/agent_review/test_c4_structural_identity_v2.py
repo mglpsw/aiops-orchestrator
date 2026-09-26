@@ -707,3 +707,89 @@ def test_any_node_beyond_the_depth_bound_is_a_budget_refusal(plumbing: _Plumbing
     {"directory": lambda: node.mkdir(), "regular": lambda: node.write_bytes(b""),
      "symlink": lambda: os.symlink("x", node), "fifo": lambda: os.mkfifo(node)}[kind]()
     assert _refusal(plumbing, c, root) == ident.IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2
+
+
+# -- #352 Q review (5327260045): bounded expected side and cleanup ----------------
+
+
+def test_success_path_never_produces_the_flattened_leaf_listing(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
+    """`git ls-tree -r` flattens every repeated path prefix and is not bounded
+    by C3's budgets (review finding A: ~3x the flattened path bytes of a tree
+    C3 admits). On a tree C3 admits, the verifier must not run it at all; it
+    is consulted only on C3's refusal path, to keep the legacy gitlink / `..`
+    reason codes."""
+    from app.agent_review import bounded_git_v2, git_commit_subject_v2
+    seen: list[list[str]] = []
+    real_run, real_open = bounded_git_v2.run_bounded_git_v2, bounded_git_v2.open_bounded_git_subprocess_v2
+
+    def run(argv, *a, **k):
+        seen.append(list(argv))
+        return real_run(argv, *a, **k)
+
+    def open_(argv, *a, **k):
+        seen.append(list(argv))
+        return real_open(argv, *a, **k)
+
+    monkeypatch.setattr(git_commit_subject_v2, "run_bounded_git_v2", run)
+    monkeypatch.setattr(git_commit_subject_v2, "open_bounded_git_subprocess_v2", open_)
+    monkeypatch.setattr(ident, "open_bounded_git_subprocess_v2", open_)
+    c = _commit_with_nested_empty(plumbing)
+    _verify(plumbing, c, _materialised(plumbing, c, tmp_path / "s"))
+    assert not [argv for argv in seen if argv[:1] == ["ls-tree"] and "-r" in argv], seen
+
+
+def test_expected_blob_is_compared_without_holding_it_whole(plumbing: _Plumbing, tmp_path: Path, monkeypatch) -> None:
+    """Review finding B: the expected side is streamed from the carrier spool;
+    the leaf comparison's heap peak is independent of the blob size."""
+    import tracemalloc
+    big = os.urandom(1 << 20) * 8
+    c = plumbing.commit(plumbing.tree(("100644", "blob", plumbing.blob(big), b"big.bin")))
+    root = _materialised(plumbing, c, tmp_path / "s")
+    del big
+    real = ident._compare_regular_leaf_v2
+    peaks: list[int] = []
+
+    def measured(*a, **k):
+        tracemalloc.start()
+        try:
+            return real(*a, **k)
+        finally:
+            peaks.append(tracemalloc.get_traced_memory()[1])
+            tracemalloc.stop()
+
+    monkeypatch.setattr(ident, "_compare_regular_leaf_v2", measured)
+    _verify(plumbing, c, root)
+    assert peaks and max(peaks) < (1 << 20), f"leaf comparison held {max(peaks)} bytes for an 8 MiB blob"
+
+
+def test_blob_carrier_is_closed_even_if_closing_the_root_descriptor_is_interrupted(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    """Review finding C: neither cleanup step may skip the other."""
+    c = _commit_main_only(plumbing)
+    root = _materialised(plumbing, c, tmp_path / "s")
+    carriers, root_fds = [], []
+    real_read, real_acquire, real_close = ident.read_commit_blobs_v2, ident._acquire_subject_root_fd_v2, os.close
+
+    def read(**k):
+        carrier = real_read(**k)
+        carriers.append(carrier)
+        return carrier
+
+    def acquire(path):
+        fd = real_acquire(path)
+        root_fds.append(fd)
+        return fd
+
+    def close(fd):
+        real_close(fd)
+        if root_fds and fd == root_fds[0]:
+            raise KeyboardInterrupt("interrupted while closing the root descriptor")
+
+    monkeypatch.setattr(ident, "read_commit_blobs_v2", read)
+    monkeypatch.setattr(ident, "_acquire_subject_root_fd_v2", acquire)
+    monkeypatch.setattr(ident.os, "close", close)
+    with pytest.raises(KeyboardInterrupt):
+        _verify(plumbing, c, root)
+    monkeypatch.setattr(ident.os, "close", real_close)
+    assert carriers and carriers[0]._closed

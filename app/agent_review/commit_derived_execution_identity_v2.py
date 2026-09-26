@@ -275,12 +275,15 @@ from __future__ import annotations
 import os
 import posixpath
 import stat
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.agent_review.bounded_git_v2 import BoundedGitError, open_bounded_git_subprocess_v2
 from app.agent_review.git_commit_subject_v2 import (
+    BoundedBlobCarrierV2,
     EXECUTABLE_MODE_V2,
     GITLINK_MODE_V2,
     MAX_EXPANDED_ENTRIES_V2,
@@ -288,7 +291,6 @@ from app.agent_review.git_commit_subject_v2 import (
     SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
     SYMLINK_MODE_V2,
     SubjectMaterialisationError,
-    list_commit_tree_entries_v2,
     list_commit_tree_structure_v2,
     read_commit_blobs_v2,
     resolve_commit_v2,
@@ -380,7 +382,6 @@ IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2 = "identity_subject_structu
 #: walk can expand further.
 MAX_OBSERVED_NODES_V2: int = MAX_EXPANDED_ENTRIES_V2
 MAX_OBSERVED_DEPTH_V2: int = 100
-_CONTENT_CHUNK_V2: int = 65536
 # #200-G1C (issue #303): the graph could not be *completely* walked --
 # missing/corrupted parent object, shallow history, or any other reason
 # `TrustedObjectAuthorityV2.prove_ancestry` could not finish enumerating the
@@ -611,14 +612,18 @@ def _split_relative_v2(relative: bytes) -> tuple[tuple[bytes, ...], bytes]:
     return tuple(parts[:-1]), parts[-1]
 
 
-def _compare_regular_leaf_v2(root_fd: int, relative: bytes, expected: bytes, *, executable: bool) -> None:
+def _compare_regular_leaf_v2(
+    root_fd: int, relative: bytes, carrier: BoundedBlobCarrierV2, path: str, *, executable: bool
+) -> None:
     """Open the leaf descriptor-relative and no-follow, establish its type and
     mode on THAT descriptor with ``fstat``, then compare bytes in bounded
-    chunks. ``O_NONBLOCK`` makes an ``open`` of a FIFO return instead of
-    block, and the ``S_ISREG`` check refuses it before any read (`#321`'s
-    defect class, closed here by mechanism). Executable semantics are the
-    owner-execute bit of ``st_mode`` (``100755`` <=> ``S_IXUSR``), not
-    ``os.access``, which answers a process-permission question.
+    chunks on BOTH sides: the expected blob is streamed from the carrier's
+    spool (``iter_chunks``), never held whole (`#352` review). ``O_NONBLOCK``
+    makes an ``open`` of a FIFO return instead of block, and the ``S_ISREG``
+    check refuses it before any read (`#321`'s defect class). Executable
+    semantics are the owner-execute bit of ``st_mode`` (``100755`` <=>
+    ``S_IXUSR``), not ``os.access``, which answers a process-permission
+    question.
     """
     parents, name = _split_relative_v2(relative)
     parent_fd = _open_directory_relative_v2(root_fd, parents)
@@ -635,30 +640,39 @@ def _compare_regular_leaf_v2(root_fd: int, relative: bytes, expected: bytes, *, 
             raise ExecutedSourceIdentityError(IDENTITY_NODE_TYPE_MISMATCH_REASON_V2)
         if bool(st.st_mode & stat.S_IXUSR) != executable:
             raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
-        if st.st_size != len(expected):
+        if st.st_size != carrier.size_of(path):
             raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
-        view = memoryview(expected)
-        offset = 0
-        while True:
-            try:
-                chunk = os.read(leaf_fd, _CONTENT_CHUNK_V2)
-            except OSError as exc:
-                raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-            if not chunk:
-                break
-            if chunk != view[offset : offset + len(chunk)]:
-                raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
-            offset += len(chunk)
-        if offset != len(expected):
+        try:
+            for expected_chunk in carrier.iter_chunks(path):
+                observed = b""
+                while len(observed) < len(expected_chunk):
+                    try:
+                        piece = os.read(leaf_fd, len(expected_chunk) - len(observed))
+                    except OSError as exc:
+                        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+                    if not piece:
+                        raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+                    observed += piece
+                if observed != expected_chunk:
+                    raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+        except SubjectMaterialisationError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+        try:
+            trailing = os.read(leaf_fd, 1)
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+        if trailing:
             raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
     finally:
         os.close(leaf_fd)
 
 
-def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, expected_target: bytes) -> None:
+def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, carrier: BoundedBlobCarrierV2, path: str) -> None:
     """A symlink is data: its raw target bytes are compared, it is never
     followed, and nothing about what the target resolves to is decided here
-    (rule A2; the execution boundary belongs to `#301`)."""
+    (rule A2; the execution boundary belongs to `#301`). The expected target
+    is sized from the carrier index first and read only up to the observed
+    target's length (bounded by the filesystem), never whole."""
     parents, name = _split_relative_v2(relative)
     parent_fd = _open_directory_relative_v2(root_fd, parents)
     try:
@@ -668,8 +682,59 @@ def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, expected_target: byt
             raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
     finally:
         os.close(parent_fd)
+    if carrier.size_of(path) != len(target):
+        raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
+    try:
+        expected_target = carrier.read_bounded(path, len(target))
+    except SubjectMaterialisationError as exc:
+        raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
     if target != expected_target:
         raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
+
+
+_LEGACY_SCAN_MAX_RECORD_V2 = 1 << 20
+
+
+def _legacy_refusal_reason_v2(trusted_root: Path, commit_sha: str) -> str | None:
+    """Refusal path ONLY (C3 already refused the tree as unrepresentable):
+    name the two refusals the pre-`#333` verifier reported with their own
+    reason codes -- a gitlink, or a ``..``-shaped entry path -- so those codes
+    keep their meaning. Streams ``git ls-tree -r -z`` one record at a time
+    (at most ``_LEGACY_SCAN_MAX_RECORD_V2`` buffered) and stops at the first
+    hit; never on the success path, never materialises the flattened listing.
+    Returns ``None`` when neither applies or the scan cannot complete."""
+    try:
+        proc = open_bounded_git_subprocess_v2(
+            ["ls-tree", "-r", "-z", commit_sha], cwd=trusted_root,
+            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except BoundedGitError:
+        return None
+    try:
+        buffer = b""
+        while True:
+            chunk = proc.stdout.read1(65536) if proc.stdout is not None else b""
+            if not chunk:
+                return None
+            buffer += chunk
+            *records, buffer = buffer.split(b"\0")
+            for record in records:
+                metadata, _, raw_path = record.partition(b"\t")
+                if metadata.split(b" ", 1)[0].decode("ascii", "replace") == GITLINK_MODE_V2:
+                    return IDENTITY_GITLINK_PRESENT_REASON_V2
+                try:
+                    _safe_subject_path_v2(subject_root=Path("."), relative_path=os.fsdecode(raw_path))
+                except ExecutedSourceIdentityError as exc:
+                    return exc.reason_code
+            if len(buffer) > _LEGACY_SCAN_MAX_RECORD_V2:
+                return None
+    except (OSError, ValueError):
+        return None
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
+        proc.kill()
+        proc.wait()
 
 
 def _compare_structure_v2(
@@ -941,27 +1006,19 @@ def verify_executed_source_identity_v2(
                 except SubjectMaterialisationError as exc:
                     raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-                # Leaf listing is NOT the structural authority any more; it is
-                # consulted first only so the two refusals it can name more
-                # precisely than the structural enumeration keep their
-                # pre-existing reason codes (gitlink; `..`-shaped entry paths).
-                try:
-                    leaf_entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit)
-                except SubjectMaterialisationError as exc:
-                    raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
-                for entry in leaf_entries:
-                    if entry.mode == GITLINK_MODE_V2:
-                        raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
-                    _safe_subject_path_v2(subject_root=resolved_root, relative_path=entry.path)
-
-                # Structural authority: C3's hierarchical raw-tree traversal.
-                # `git ls-tree -r` drops explicit (empty) tree nodes -- the
-                # earliest lossy boundary this contract exists to remove.
+                # Structural authority: C3's hierarchical raw-tree traversal,
+                # bounded by C3's own budgets. `git ls-tree -r` drops explicit
+                # (empty) tree nodes -- the earliest lossy boundary this
+                # contract exists to remove -- and its flattened output is not
+                # bounded by those budgets (`#352` review: ~3x the flattened
+                # path bytes of a C3-admitted tree), so it is never on the
+                # success path. C3 itself refuses gitlinks and `..` names.
                 try:
                     structure = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=resolved_commit)
                 except SubjectMaterialisationError as exc:
                     if exc.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2:
-                        raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREPRESENTABLE_REASON_V2) from exc
+                        legacy = _legacy_refusal_reason_v2(trusted_root, resolved_commit)
+                        raise ExecutedSourceIdentityError(legacy or IDENTITY_TREE_UNREPRESENTABLE_REASON_V2) from exc
                     raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
                 expected: dict[bytes, tuple[str, bool]] = {}
@@ -991,12 +1048,12 @@ def verify_executed_source_identity_v2(
         _compare_structure_v2(expected, observed)
         for entry in leaves:
             relative = os.fsencode(entry.path)
-            expected_bytes = expected_content_by_path[entry.path]
             if entry.mode == SYMLINK_MODE_V2:
-                _compare_symlink_leaf_v2(root_fd, relative, expected_bytes)
+                _compare_symlink_leaf_v2(root_fd, relative, expected_content_by_path, entry.path)
             else:
                 _compare_regular_leaf_v2(
-                    root_fd, relative, expected_bytes, executable=entry.mode == EXECUTABLE_MODE_V2
+                    root_fd, relative, expected_content_by_path, entry.path,
+                    executable=entry.mode == EXECUTABLE_MODE_V2,
                 )
 
         if loaded_module_paths is None:
@@ -1008,9 +1065,12 @@ def verify_executed_source_identity_v2(
 
         return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=resolved_root)
     finally:
-        os.close(root_fd)
-        if expected_content_by_path is not None:
-            expected_content_by_path.close()
+        # `#352` review: neither close may skip the other, whatever raises.
+        try:
+            os.close(root_fd)
+        finally:
+            if expected_content_by_path is not None:
+                expected_content_by_path.close()
 
 
 def authorize_commit_for_execution_v2(
