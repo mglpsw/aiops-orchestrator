@@ -1456,11 +1456,18 @@ def _build_canonical_trie_hierarchical(
     return root, all_entries, leaf_blobs
 
 
-def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
-    """C3-owned structural enumeration via hierarchical raw Git tree traversal."""
+def list_commit_tree_structure_v2(
+    *, repo_root: Path, commit_sha: str, max_component_len: int | None = 255
+) -> list[TreeEntryV2]:
+    """C3-owned structural enumeration via hierarchical raw Git tree traversal.
+
+    ``max_component_len`` defaults to the historical 255; a consumer judging a
+    subject C3 materialised passes that subject filesystem's ``PC_NAME_MAX``,
+    the same limit ``acquire_materialised_commit_subject_v2`` admitted under.
+    """
     root_tree_oid = resolve_commit_tree_sha_v2(repo_root=repo_root, commit_sha=commit_sha)
     _trie, all_entries, _leaf_blobs = _build_canonical_trie_hierarchical(
-        repo_root=repo_root, root_tree_oid=root_tree_oid
+        repo_root=repo_root, root_tree_oid=root_tree_oid, max_component_len=max_component_len
     )
     return all_entries
 

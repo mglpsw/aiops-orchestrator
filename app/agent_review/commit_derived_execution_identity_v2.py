@@ -695,17 +695,30 @@ def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, carrier: BoundedBlob
 _LEGACY_SCAN_MAX_RECORD_V2 = 1 << 20
 
 
+def _subject_name_max_v2(root_fd: int) -> int:
+    """The subject filesystem's component-length limit, derived exactly as C3
+    derives the one it materialised under (`PC_NAME_MAX`, else 255), so Q
+    never refuses a subject C3 admitted on a filesystem allowing longer names
+    (`#352` review 5327601883)."""
+    try:
+        limit = os.fpathconf(root_fd, "PC_NAME_MAX")
+    except (OSError, ValueError):
+        limit = -1
+    return limit if limit > 0 else 255
+
+
 def _legacy_refusal_reason_v2(trusted_root: Path, commit_sha: str) -> str | None:
     """Refusal path ONLY (C3 already refused the tree as unrepresentable):
     name the two refusals the pre-`#333` verifier reported with their own
-    reason codes -- a gitlink, or a ``..``-shaped entry path -- so those codes
-    keep their meaning. Streams ``git ls-tree -r -z`` one record at a time
+    reason codes -- a gitlink, or a ``..``-shaped entry path (including a
+    ``..`` that names an empty tree, hence ``-t``) -- so those codes keep
+    their meaning. Streams ``git ls-tree -r -t -z`` one record at a time
     (at most ``_LEGACY_SCAN_MAX_RECORD_V2`` buffered) and stops at the first
     hit; never on the success path, never materialises the flattened listing.
     Returns ``None`` when neither applies or the scan cannot complete."""
     try:
         proc = open_bounded_git_subprocess_v2(
-            ["ls-tree", "-r", "-z", commit_sha], cwd=trusted_root,
+            ["ls-tree", "-r", "-t", "-z", commit_sha], cwd=trusted_root,
             stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except BoundedGitError:
@@ -1022,7 +1035,10 @@ def verify_executed_source_identity_v2(
                 # path bytes of a C3-admitted tree), so it is never on the
                 # success path. C3 itself refuses gitlinks and `..` names.
                 try:
-                    structure = list_commit_tree_structure_v2(repo_root=trusted_root, commit_sha=resolved_commit)
+                    structure = list_commit_tree_structure_v2(
+                        repo_root=trusted_root, commit_sha=resolved_commit,
+                        max_component_len=_subject_name_max_v2(root_fd),
+                    )
                 except SubjectMaterialisationError as exc:
                     if exc.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2:
                         legacy = _legacy_refusal_reason_v2(trusted_root, resolved_commit)

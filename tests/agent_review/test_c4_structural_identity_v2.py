@@ -793,3 +793,30 @@ def test_blob_carrier_is_closed_even_if_closing_the_root_descriptor_is_interrupt
         _verify(plumbing, c, root)
     monkeypatch.setattr(ident.os, "close", real_close)
     assert carriers and carriers[0]._closed
+
+
+# -- #352 Q review 5327601883 ----------------------------------------------------
+
+
+def test_dotdot_entry_naming_an_empty_tree_keeps_the_legacy_escape_reason(plumbing: _Plumbing, tmp_path: Path) -> None:
+    """C3 refuses a `..` entry; the refusal-only scan must see it even when it
+    names an EMPTY tree (which `ls-tree -r` without `-t` omits)."""
+    c = plumbing.commit(plumbing.tree(("100644", "blob", plumbing.blob(CODE), b"main.py"),
+                                      ("040000", "tree", plumbing.empty_tree, b"..")))
+    assert _refusal(plumbing, c, _subject(tmp_path / "s", {"main.py": CODE})) == ident.IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2
+
+
+def test_component_length_limit_is_the_subject_filesystems_as_c3_derives_it(
+    plumbing: _Plumbing, tmp_path: Path, monkeypatch
+) -> None:
+    """C3 admits components up to the materialisation filesystem's PC_NAME_MAX.
+    The verifier must judge with the SAME limit, derived from the subject root
+    descriptor: on a filesystem reporting 300, a 256-byte committed name is not
+    refused as unrepresentable (here the subject lacks it, so the refusal is
+    the missing leaf); with the reported 255 it is unrepresentable."""
+    c = plumbing.commit(plumbing.tree(("100644", "blob", plumbing.blob(CODE), b"n" * 256)))
+    root = _subject(tmp_path / "s")
+    assert _refusal(plumbing, c, root) == ident.IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+    real = os.fpathconf
+    monkeypatch.setattr(ident.os, "fpathconf", lambda fd, name: 300 if name == "PC_NAME_MAX" else real(fd, name))
+    assert _refusal(plumbing, c, root) == IDENTITY_MISSING_TRACKED_FILE_REASON_V2
