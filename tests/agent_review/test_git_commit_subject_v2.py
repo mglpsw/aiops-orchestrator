@@ -612,6 +612,8 @@ def _refusal_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "refusal_repo"
     repo.mkdir()
     _refusal_git(repo, "init", "-q")
+    _refusal_git(repo, "config", "user.email", "t@t.com")
+    _refusal_git(repo, "config", "user.name", "t")
     return repo
 
 
