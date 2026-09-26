@@ -880,6 +880,28 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         return data
 
+    def iter_chunks(self, path: str) -> Iterator[bytes]:
+        """Yield the blob at `path` in bounded chunks (<= 64 KiB), in order.
+
+        Read-only sibling of `stream_to_fd` for consumers that COMPARE rather
+        than copy (`#352`: the identity verifier); never holds the whole blob.
+        """
+        if self._closed:
+            raise ValueError("BoundedBlobCarrierV2 is closed")
+        if path not in self._index:
+            raise KeyError(path)
+        offset, size = self._index[path]
+        position = offset
+        remaining = size
+        while remaining > 0:
+            self._spool.seek(position)
+            chunk = self._spool.read(min(remaining, 65536))
+            if not chunk:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            position += len(chunk)
+            remaining -= len(chunk)
+            yield chunk
+
     def stream_to_fd(self, path: str, target_fd: int) -> int:
         if self._closed:
             raise ValueError("BoundedBlobCarrierV2 is closed")
