@@ -140,7 +140,7 @@ current_owner: aiops-orchestrator, app/agent_review/ (v1 line) — per #46 the h
                LEGACY_ADVISORY_BASELINE: debt/quality fixes only, no new trust architecture;
                product successor after the first Assured release is #357
 current_implementation: released, baseline v0.22.0@2ce1f45768b8779cb48ef8a302d4ed796349f0e5
-               consumed by mglpsw/AgentEscala#802/#803 (per #46 §1)
+               consumed by mglpsw/AgentEscala#802 and mglpsw/AgentEscala#803 (per #46 §1)
 current_consumers: mglpsw/AgentEscala — .github/workflows/agent-review.yml pins this repository
                at the v0.22.0 SHA and transports through the Agent Router
                (scripts/call-agent-router.sh → /v1/chat/completions); active on every internal PR
@@ -268,7 +268,8 @@ status: FINAL_OWNER_ASSIGNED — already correctly placed pre-#351; not promotio
 current_owner: homelab, HL-HO series (mglpsw/homelab#61 parent, mglpsw/homelab#62
                contract/vocabulary, mglpsw/homelab#63 registry, mglpsw/homelab#64 ObservationSnapshot
                of CT200, mglpsw/homelab#65 reconciliation + maintenance_projection_v1)
-current_implementation: mglpsw/homelab#62/#63/#64/#65 all OPEN — foundation not yet built
+current_implementation: mglpsw/homelab#62, mglpsw/homelab#63, mglpsw/homelab#64 and
+               mglpsw/homelab#65 all OPEN — foundation not yet built
 current_consumers: none yet (no ObservationSnapshot exists to consume)
 final_owner: HomeOps (mglpsw/homelab)
 disposition: MOVE was already the design — this repository never implemented physical
@@ -278,11 +279,13 @@ migration_dependency: mglpsw/homelab#62 → mglpsw/homelab#63 → mglpsw/homelab
                mglpsw/homelab#65, in that order (mglpsw/homelab
                docs/homeops-control-plane.md sequencing)
 countermodels: HomeOps must not become `HomeOps → AIOps service → Router`; the sanctioned shape is
-               `Registry → ObservationSnapshot → reconciliation → Incident Journal → bounded Ops
-               Analysis → Agent Router (when inference is useful) → advisory → explicit human grant`
+               `Registry → ObservationSnapshot → reconciliation → maintenance_projection_v1 →
+               Incident Journal → bounded Ops Analysis → Agent Router (when inference is useful) →
+               advisory → explicit human grant`
 retirement_gate: n/a for this repository (it never held this capability); the gates are
                mglpsw/homelab#62–mglpsw/homelab#65 acceptance criteria
-evidence: mglpsw/homelab#58/#61/#62/#63/#64/#65 (all OPEN this round);
+evidence: mglpsw/homelab#58, mglpsw/homelab#61, mglpsw/homelab#62, mglpsw/homelab#63,
+               mglpsw/homelab#64, mglpsw/homelab#65 (all OPEN this round);
                mglpsw/homelab docs/homeops-control-plane.md (merged via mglpsw/homelab#66)
 limitations: nothing is implemented in homelab by this document; the dissolution framing there is
                mglpsw/homelab#68 (OPEN, unmerged)
@@ -312,7 +315,8 @@ status: FINAL_OWNER_ASSIGNED
 
 ```text
 current_owner: none implemented anywhere yet
-current_implementation: not built — depends on the HomeOps foundation (mglpsw/homelab#62–mglpsw/homelab#65) and,
+current_implementation: not built — depends on the HomeOps foundation
+               (mglpsw/homelab#62–mglpsw/homelab#65) and,
                when useful, the Agent Router as an inference service it consumes
 current_consumers: none
 final_owner: HomeOps, as a consumer of the Agent Router (never the reverse)
@@ -395,7 +399,8 @@ countermodels: - CAEMDesignInfluence != CAEMRuntimeConsumption
                  CURRENT/RECONCILIATION comment on mglpsw/caem#63)
 retirement_gate: n/a for CAEM itself. The local F0 carrier follows the RI-B0a disposition
                (#351 slice A); its consumer-identity binding is an input to #358
-evidence: mglpsw/caem#63/#74/#97 (all OPEN); app/caem_consumer/f0.py:3/82/564;
+evidence: mglpsw/caem#63, mglpsw/caem#74, mglpsw/caem#97 (all OPEN);
+               app/caem_consumer/f0.py:3/82/564;
                scripts/verify-caem-f0-pin.py:19; RI_A0 erratum (F0 pin location)
 limitations: - this document does not audit mglpsw/caem's own repository
                - #46 §6 keeps "o pin/consumer CAEM compartilhado que AgentReview realmente usa"
@@ -415,7 +420,8 @@ current_state: NOT yet the only current inference path — the legacy in-process
                path in this repository still exists (see "Legacy in-process inference")
 current_implementation: OpenAI-compatible API, preset resolution, provider/model registry,
                admission, routing policy, fallback, `agent-router.inference-receipt.v2`
-               (mglpsw/agent-router-api#99/#111, F2-A integrated at master@a6ea6ba)
+               (mglpsw/agent-router-api#99, mglpsw/agent-router-api#111; F2-A integrated at
+               master@a6ea6ba)
 current_consumers: mglpsw/AgentEscala's AgentReview lanes via scripts/call-agent-router.sh →
                /v1/chat/completions (per mglpsw/AgentEscala#859). AgentReview is the canonical
                consumer (mglpsw/agent-router-api#116). The Router-side AIOpsRouterAdapter shim is
@@ -431,7 +437,8 @@ countermodels: no "policy brain"/semantic reducer/review planner/infrastructure
 retirement_gate: n/a
 evidence: mglpsw/agent-router-api@a6ea6ba:app/agent_router/main.py:2103
                (`@app.post("/v1/chat/completions")`) and app/agent_router/inference_receipt.py;
-               mglpsw/agent-router-api#65/#99/#111/#116. NOT this repository's
+               mglpsw/agent-router-api#65, mglpsw/agent-router-api#99, mglpsw/agent-router-api#111,
+               mglpsw/agent-router-api#116. NOT this repository's
                app/agent_router/main.py, which is the local AIOps Diagnostic Engine
                (RI_A1, "A naming collision worth flagging explicitly")
 limitations: receipt v3 is not authorized by this or any document in this round
