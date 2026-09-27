@@ -506,6 +506,60 @@ primitive only.
 
 ### The claim this primitive actually proves
 
+> **`#333` addendum (2026-09-26).** The wording below ("byte-for-byte identical
+> to `commit_sha`'s tree") was, until `#333`, stronger than the implemented
+> truth-maker, which compared tracked leaves only (`git ls-tree -r` without
+> `-t` drops explicit empty tree nodes; the completeness walk collected
+> leaves only). Reproduced on master `9a5cf35b` (issue #333, comment
+> 5844528708): a subject missing an explicit empty tree, or carrying an extra
+> empty directory, verified as identical -- and with `sys.path=[subject_root]`
+> such directories are PEP 420 namespace packages, so the difference is
+> execution-visible. `#333` makes the implementation match the claim: the
+> structural authority is C3's raw-tree enumeration, the subject is walked
+> descriptor-relative without following symlinks, node kinds are compared,
+> and a committed symlink leaf is compared by target bytes (rule A2). The
+> reason-code table gains `identity_missing_tree_node`,
+> `identity_extra_untracked_node`, `identity_node_type_mismatch`,
+> `identity_tree_unrepresentable` and
+> `identity_subject_structure_budget_exceeded`;
+> `identity_symlinked_directory_in_subject` now names exactly "a symlink where
+> the commit declares a tree".
+>
+> **`#352` history: expanded claim → refuted → STOP → Q (2026-09-26).** The
+> first `#333` candidate observed the structure once, before the leaf
+> comparisons, which lost the round-2 ordering recorded below ("moved ... to
+> LAST"): a node added during the leaf phase verified as identical (F1). A
+> corrective cut added a FINAL structural observation after the leaf phase
+> and claimed equality "at that final observation". Native Codex review of
+> that head refuted the expanded claim, and both witnesses were reproduced:
+> a node added to an already-scanned directory during the final walk (R1),
+> and same-kind leaf data changed between its comparison and the final walk
+> (R3). Both require a concurrent same-privilege writer. The recurrence was
+> admitted under `docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md` and
+> STOP/REDESIGN fired (PR #352 comment 5847321998). The redesign spike
+> (comment 5848970869) found that repeated observation of a mutable subject
+> cannot establish a single subject state. It also witnessed N1: a
+> same-privilege swap in the trusted object authority's private copy, after
+> build-time verification, is served by `git cat-file` without a hash check,
+> so `BuildTimeObjectAuthentication != ReadTimeContentAuthentication`.
+>
+> **Ratified contract Q.** `#333` decides G == M only under an explicit
+> precondition `Quiescent(M, I)`: nothing mutates the subject during the
+> verification interval. That precondition is this module's existing
+> `host_arbitrary_code_attacker` boundary made explicit
+> (`QuiescencePrecondition != WriteExclusionMechanism`); it is not a new
+> exception. The final re-walk was removed, because it formed no part of Q's
+> truth-maker. R1, R3 and N1 remain factually valid, are not material to Q,
+> and are not "fixed". Resistance to a same-privilege writer is owned by
+> `#301`: an authenticated, immutable closed representation that execution
+> consumes, with every contributing Git object rebound to its object ID at
+> consumption time. Q is not the trust root of `#301`. The round-2 ordering
+> text below is therefore historical: it narrowed a window for an actor this
+> module had already declared out of scope, and Q claims nothing about that
+> actor. Kept from the cut: streamed directory entries (F3; the node budget
+> bounds names pulled from the filesystem, not only names kept); the depth
+> budget applied to every node kind before kind dispatch (R2).
+
 **Superseding the wording used throughout §1 and §6 above.** Those sections
 repeatedly describe IDENTITY as *"which commit **produced** the bytes now on
 disk"*. That phrasing is wrong in a way this addendum corrects rather than

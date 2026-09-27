@@ -75,6 +75,8 @@ __all__ = [
     "SUBJECT_LEGACY_PATH_UNREPRESENTABLE_REASON_V2",
     "SUBJECT_PATH_COLLISION_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
+    "SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2",
+    "SUBJECT_REFUSAL_DETAIL_GITLINK_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
     "SUBJECT_UNREPRESENTABLE_TREE_REASON_V2",
@@ -120,12 +122,27 @@ MAX_EXPANDED_ENTRIES_V2: int = 100_000
 MAX_EXPANDED_BYTES_V2: int = 2 * 1024 * 1024 * 1024  # 2 GiB
 
 
-class SubjectMaterialisationError(ValueError):
-    """A subject could not be materialised from committed bytes."""
+#: Closed set of optional refusal DETAILS (`#352`, authority-first refusal
+#: cause): which admission rule refused, attached by the C3 site that first
+#: decides it, for consumers that need that cause. Not free text, not a path,
+#: not a consumer's reason code; ``detail`` is ``None`` for every refusal whose
+#: cause is not intentionally exposed.
+SUBJECT_REFUSAL_DETAIL_GITLINK_V2 = "gitlink"
+SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2 = "dotdot_name"
 
-    def __init__(self, reason_code: str) -> None:
+
+class SubjectMaterialisationError(ValueError):
+    """A subject could not be materialised from committed bytes.
+
+    ``reason_code`` is the semantic field (also ``args[0]`` and ``str(exc)``);
+    ``detail`` is an optional ``SUBJECT_REFUSAL_DETAIL_*`` constant and never
+    changes either.
+    """
+
+    def __init__(self, reason_code: str, *, detail: str | None = None) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -880,6 +897,28 @@ class BoundedBlobCarrierV2(Mapping[str, bytes]):
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         return data
 
+    def iter_chunks(self, path: str) -> Iterator[bytes]:
+        """Yield the blob at `path` in bounded chunks (<= 64 KiB), in order.
+
+        Read-only sibling of `stream_to_fd` for consumers that COMPARE rather
+        than copy (`#352`: the identity verifier); never holds the whole blob.
+        """
+        if self._closed:
+            raise ValueError("BoundedBlobCarrierV2 is closed")
+        if path not in self._index:
+            raise KeyError(path)
+        offset, size = self._index[path]
+        position = offset
+        remaining = size
+        while remaining > 0:
+            self._spool.seek(position)
+            chunk = self._spool.read(min(remaining, 65536))
+            if not chunk:
+                raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
+            position += len(chunk)
+            remaining -= len(chunk)
+            yield chunk
+
     def stream_to_fd(self, path: str, target_fd: int) -> int:
         if self._closed:
             raise ValueError("BoundedBlobCarrierV2 is closed")
@@ -1142,7 +1181,10 @@ def _parse_tree_data(
 
         # Invariant: Single directory entry must not contain path separators or NUL bytes
         if b"/" in raw_name or b"\0" in raw_name or raw_name in (b".", b"..", b""):
-            raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+            raise SubjectMaterialisationError(
+                SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+                detail=SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2 if raw_name == b".." else None,
+            )
 
         if mode_str in ("40000", "040000"):
             obj_type = "tree"
@@ -1402,8 +1444,13 @@ def _build_canonical_trie_hierarchical(
                     all_entries.append(entry)
                     leaf_blobs.append(entry)
                 else:
-                    # Submodule commits, tags in tree, or unknown types
-                    raise SubjectMaterialisationError(SUBJECT_UNREPRESENTABLE_TREE_REASON_V2)
+                    # Submodule commits (gitlinks: the parser maps mode 160000 to
+                    # obj_type "commit"; this is where C3 refuses them), tags
+                    # in tree, or unknown types.
+                    raise SubjectMaterialisationError(
+                        SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
+                        detail=SUBJECT_REFUSAL_DETAIL_GITLINK_V2 if obj_type == "commit" else None,
+                    )
     finally:
         _ACTIVE_TREE_BATCH_SESSION.reset(token_session)
         if batch_proc.stdin:
@@ -1434,11 +1481,18 @@ def _build_canonical_trie_hierarchical(
     return root, all_entries, leaf_blobs
 
 
-def list_commit_tree_structure_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
-    """C3-owned structural enumeration via hierarchical raw Git tree traversal."""
+def list_commit_tree_structure_v2(
+    *, repo_root: Path, commit_sha: str, max_component_len: int | None = 255
+) -> list[TreeEntryV2]:
+    """C3-owned structural enumeration via hierarchical raw Git tree traversal.
+
+    ``max_component_len`` defaults to the historical 255; a consumer judging a
+    subject C3 materialised passes that subject filesystem's ``PC_NAME_MAX``,
+    the same limit ``acquire_materialised_commit_subject_v2`` admitted under.
+    """
     root_tree_oid = resolve_commit_tree_sha_v2(repo_root=repo_root, commit_sha=commit_sha)
     _trie, all_entries, _leaf_blobs = _build_canonical_trie_hierarchical(
-        repo_root=repo_root, root_tree_oid=root_tree_oid
+        repo_root=repo_root, root_tree_oid=root_tree_oid, max_component_len=max_component_len
     )
     return all_entries
 

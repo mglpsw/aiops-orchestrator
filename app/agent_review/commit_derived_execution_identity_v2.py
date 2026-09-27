@@ -273,19 +273,23 @@ identity check to do so; that is not a boundary this module claims to hold.
 from __future__ import annotations
 
 import os
-import posixpath
+import stat
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent_review.git_commit_subject_v2 import (
+    BoundedBlobCarrierV2,
     EXECUTABLE_MODE_V2,
-    GITLINK_MODE_V2,
+    MAX_EXPANDED_ENTRIES_V2,
     SUBJECT_BLOB_MISSING_REASON_V2,
+    SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2,
+    SUBJECT_REFUSAL_DETAIL_GITLINK_V2,
+    SUBJECT_UNREPRESENTABLE_TREE_REASON_V2,
     SYMLINK_MODE_V2,
     SubjectMaterialisationError,
-    list_commit_tree_entries_v2,
+    list_commit_tree_structure_v2,
     read_commit_blobs_v2,
     resolve_commit_v2,
 )
@@ -303,8 +307,13 @@ __all__ = [
     "IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2",
     "IDENTITY_GITLINK_PRESENT_REASON_V2",
     "IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2",
+    "IDENTITY_EXTRA_UNTRACKED_NODE_REASON_V2",
     "IDENTITY_MISSING_TRACKED_FILE_REASON_V2",
+    "IDENTITY_MISSING_TREE_NODE_REASON_V2",
     "IDENTITY_MODE_MISMATCH_REASON_V2",
+    "IDENTITY_NODE_TYPE_MISMATCH_REASON_V2",
+    "IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2",
+    "IDENTITY_TREE_UNREPRESENTABLE_REASON_V2",
     "IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2",
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
     "IDENTITY_SYMLINKED_DIRECTORY_REASON_V2",
@@ -341,6 +350,36 @@ IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2 = "identity_loaded_code_outside_s
 IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2 = "identity_subject_root_unreadable"
 IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2 = "identity_path_escapes_subject"
 IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subject"
+
+# `#333` -- full Git tree structural equality (contract A / symlink rule A2).
+# Additive codes; every pre-existing code keeps its meaning where it applies.
+#: A tree node (directory, including an explicit EMPTY tree) the commit
+#: declares is absent from the subject.
+IDENTITY_MISSING_TREE_NODE_REASON_V2 = "identity_missing_tree_node"
+#: A non-regular-file node (directory, special file) exists under the subject
+#: where the commit declares nothing. Extra regular files and symlink leaves
+#: keep `IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2`.
+IDENTITY_EXTRA_UNTRACKED_NODE_REASON_V2 = "identity_extra_untracked_node"
+#: The node exists but is not of the kind Git declares (regular file where a
+#: symlink is expected, FIFO/special file where a regular file is expected,
+#: directory where a leaf is expected...). A symlink sitting where Git declares
+#: a TREE keeps the pre-existing `IDENTITY_SYMLINKED_DIRECTORY_REASON_V2`.
+IDENTITY_NODE_TYPE_MISMATCH_REASON_V2 = "identity_node_type_mismatch"
+#: The commit's own raw tree cannot be represented as a filesystem graph
+#: (refused by the C3 structural enumeration: duplicate/aliased names,
+#: `.`/`..` tree names, cycles, depth or entry budgets, unrepresentable names).
+IDENTITY_TREE_UNREPRESENTABLE_REASON_V2 = "identity_tree_unrepresentable"
+#: The OBSERVED subject exceeds the admitted structural budget (nodes or
+#: depth) before the comparison could finish; refused typed, never expanded.
+IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2 = "identity_subject_structure_budget_exceeded"
+
+#: Structural budgets for the OBSERVED subject. Same numbers as C3's admitted
+#: subject (`MAX_EXPANDED_ENTRIES_V2`, child depth <= 100): the verifier walks
+#: a graph that was admitted under those budgets, so a subject beyond them is
+#: not the materialisation of an admitted commit and is refused before the
+#: walk can expand further.
+MAX_OBSERVED_NODES_V2: int = MAX_EXPANDED_ENTRIES_V2
+MAX_OBSERVED_DEPTH_V2: int = 100
 # #200-G1C (issue #303): the graph could not be *completely* walked --
 # missing/corrupted parent object, shallow history, or any other reason
 # `TrustedObjectAuthorityV2.prove_ancestry` could not finish enumerating the
@@ -381,9 +420,14 @@ class ExecutedSourceIdentityError(ValueError):
 
 @dataclass(frozen=True)
 class ExecutedSourceIdentityV2:
-    """IDENTITY only: ``commit_sha``'s tree matches the bytes now on disk.
+    """IDENTITY only: ``commit_sha``'s raw tree IS the subject's directory graph.
 
-    Tree equality, not unique provenance -- a different commit sharing the
+    Full structural equality (`#333`, contract Q = contract A under the
+    quiescence precondition documented on ``verify_executed_source_identity_v2``):
+    explicit tree nodes including empty ones, leaves, node kinds, bytes,
+    symlink target bytes and executable semantics; nothing extra. Not a
+    statement that the subject cannot change afterwards, and not the trust
+    root of execution (`#301`). Tree equality, not unique provenance -- a different commit sharing the
     exact same tree would pass this same check against the same bytes. Never
     carries an opinion about whether that commit was permitted to run -- see
     ``ExecutedSourceAuthorizationV2`` for that separate question.
@@ -421,142 +465,248 @@ class ExecutedSourceAuthorizationV2:
         return self.authorized
 
 
-def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
-    """Reject any tree entry whose path would land outside ``subject_root``.
+_DIR_OPEN_FLAGS_V2 = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_LEAF_OPEN_FLAGS_V2 = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
-    A path from a commit's tree is untrusted input, exactly as it is for
-    ``git_commit_subject_v2._safe_destination_v2`` during materialisation --
-    this function exists because verification must apply the identical
-    containment discipline, not because it can borrow that one unchanged
-    (that helper resolves a destination being *written*, where the leaf
-    typically does not exist yet; this one is checked against a subject
-    whose files already exist, some of which may themselves be symlinks).
 
-    Proven necessary, not merely theoretical: ``git mktree`` accepts a
-    subtree literally named ``..`` (git only refuses a path *segment*
-    containing a literal ``/``, not the two-character name ``..`` on its
-    own), and ``git ls-tree -r`` on such a tree emits a flattened entry path
-    like ``../evil.py``. ``Path(subject_root) / "../evil.py"`` is not
-    rejected by the ``/`` operator (only a truly absolute right-hand side
-    would override the left), but the OS resolves the ``..`` on open/stat,
-    so an unchecked ``actual_path`` would read from *outside*
-    ``subject_root``.
+def _acquire_subject_root_fd_v2(subject_root: Path) -> int:
+    """Acquire the subject root as a DESCRIPTOR: the locator is discovery input.
 
-    Containment is decided *lexically*, on ``relative_path`` itself via
-    ``posixpath.normpath`` -- deliberately not via ``Path.resolve()`` against
-    the filesystem. ``resolve()`` would dereference a symlink sitting at
-    ``relative_path`` (a legitimate, already-materialised tracked entry) and
-    judge containment by where that symlink's *target* points, which is a
-    different question this function must not answer: a symlink tampered to
-    point at ``/etc/passwd`` must be caught by the symlink-target-text
-    comparison in the caller, tagged with its own reason code, not folded
-    into this containment check.
+    `#333`: the previous verifier resolved the locator and treated the result
+    as the compared subject. Here the final component is opened
+    `O_DIRECTORY | O_NOFOLLOW`, so a locator whose final component is a
+    symlink is refused rather than silently replaced by its target. Every
+    later observation is made relative to this descriptor, never by
+    re-resolving the locator. Limitation (declared): intermediate locator
+    components are resolved by the OS as for any pathname; the producer of the
+    locator (C3 workspace / composition) owns that provenance.
     """
-    normalised = posixpath.normpath(relative_path)
-    if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
-        raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
-    return subject_root / relative_path
+    try:
+        return os.open(os.fsencode(subject_root), _DIR_OPEN_FLAGS_V2)
+    except OSError as exc:
+        raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2) from exc
 
 
-def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
-    """Enumerate every leaf path under ``subject_root`` with ONE traversal
-    policy, and refuse outright if any symlinked directory is found.
+def _open_directory_relative_v2(root_fd: int, components: tuple[bytes, ...]) -> int:
+    """Re-acquire `components` under `root_fd`, one no-follow `openat` per step.
 
-    Independent-review finding (correction round after the first review
-    pair): the original code used two different traversal policies that
-    disagreed about what is "under" ``subject_root``. The per-tracked-path
-    comparison joined paths with plain ``/`` (which the OS resolves by
-    transparently following a symlink in an intermediate component), while
-    the "no extra file" scan used ``Path.rglob("*")`` (which does NOT
-    descend into a symlinked directory -- it reports the symlink entry
-    itself and stops). Replacing a materialised tracked directory with a
-    symlink to an attacker directory containing a byte-identical file
-    (satisfying the tracked-file comparison) plus an extra untracked file
-    made the two checks disagree: the completeness scan never saw the extra
-    file, while it was fully reachable by anything that actually opens
-    files under ``subject_root`` (e.g. Python's import machinery).
-
-    ``materialise_commit_subject_v2`` never creates a symlinked directory
-    itself -- tree structure is always real directories via
-    ``mkdir(parents=True)``, and symlinks are only ever created as leaf blob
-    entries. A symlinked directory anywhere under ``subject_root`` is
-    therefore never something this primitive's own materialisation would
-    produce, and is refused unconditionally rather than given a traversal
-    policy to disagree about.
-
-    Called by ``verify_executed_source_identity_v2`` LAST, with a fresh
-    walk, deliberately not before the per-entry comparison loop (round-2
-    independent review: calling it only once, early, left the rest of the
-    function -- including subprocess calls to git -- as an open window in
-    which a concurrent writer could add a file a start-of-call snapshot
-    would never see; see that function's docstring, check 4). This function
-    does not make any claim about what happens *during* the per-entry loop
-    that runs before it; it only guarantees that whatever is actually under
-    ``subject_root`` at the moment IT runs -- including anything introduced
-    partway through the call -- is what gets compared against the commit's
-    tree for completeness.
-
-    A manual, recursive ``os.scandir``-based walk is used rather than
-    ``os.walk`` or ``Path.rglob`` for the enumeration itself -- see the S2
-    note below for why ``os.walk`` alone is not enough to fail closed here.
-
-    S2 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
-    #4, hardened further after independent review of this fix itself found
-    a second, narrower gap in the first attempt): "cannot enumerate a
-    directory" is not the same fact as "directory is empty" -- an unreadable
-    subtree must contribute a typed refusal, never zero leaf paths as if it
-    had been checked and found empty. `os.walk`'s default behaviour on a
-    directory it cannot enumerate (e.g. a permission error during
-    ``scandir``) is to silently skip it; passing an ``onerror`` callback
-    closes that gap. But CPython's ``os.walk`` ALSO separately catches an
-    ``OSError`` from classifying an already-enumerated entry (its internal
-    ``entry.is_dir()`` call, used to sort each name into `dirnames` or
-    `filenames`) and silently treats that entry as a non-directory --
-    `onerror` is never invoked for that failure, only for the ``scandir``
-    call itself. A tracked directory whose classification fails at exactly
-    that moment (e.g. a race, a stale NFS handle, a mid-walk permission
-    change) would be added to this function's leaf-path set under its OWN
-    name (not descended into), which is invisible unless that bare name
-    happens to coincide with an actual tracked leaf path -- silently
-    skipping the subtree's real completeness check either way. Reimplemented
-    as an explicit recursive walk over ``os.scandir`` so BOTH failure points
-    -- the initial ``scandir`` call and each entry's own
-    ``is_symlink``/``is_dir`` classification -- are wrapped and raise the
-    same typed refusal, with no CPython-internal fallback path left that
-    this module does not control.
+    The logical component path is navigation state only; the returned
+    descriptor is the authority. At most two descriptors are live during the
+    step-down, whatever the depth (`NonRecursive != ResourceBounded`, C3).
+    Always returns a descriptor the caller owns and must close.
     """
-
-    leaf_paths: list[str] = []
-
-    def _walk(directory: Path) -> None:
-        try:
-            entries = list(os.scandir(directory))
-        except OSError as exc:
-            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-        for entry in entries:
+    current = os.dup(root_fd)
+    try:
+        os.set_inheritable(current, False)
+        for component in components:
             try:
-                # `is_dir()` follows symlinks by default, matching what
-                # `os.walk` itself classifies as a directory entry (a
-                # symlink-to-directory is still sorted into `dirnames`,
-                # just not recursed into when `followlinks=False`) --
-                # `is_symlink()` is checked separately so a symlinked
-                # directory is refused outright rather than given a
-                # traversal policy to disagree about (see this function's
-                # docstring above).
-                is_symlink = entry.is_symlink()
-                is_dir = entry.is_dir()
+                next_fd = os.open(component, _DIR_OPEN_FLAGS_V2, dir_fd=current)
+            finally:
+                os.close(current)
+                current = -1
+            current = next_fd
+        return current
+    except OSError as exc:
+        if current != -1:
+            os.close(current)
+        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+
+
+def _observe_subject_graph_v2(root_fd: int) -> dict[bytes, tuple[str, int]]:
+    """Every node beneath `root_fd` as ``raw_relative_path -> (kind, st_mode)``.
+
+    Kinds: ``tree`` (real directory), ``regular``, ``symlink``, ``special``
+    (FIFO, socket, device...). Classification comes from
+    ``stat(name, dir_fd=..., follow_symlinks=False)`` (`fstatat`
+    `AT_SYMLINK_NOFOLLOW`) -- never from ``Path.is_dir()``/``is_file()``,
+    which follow symlinks and separate classification from later use
+    (`#321`). Directories are entered through a fresh no-follow
+    re-acquisition from the root authority. Budgets are enforced on the
+    OBSERVED graph as nodes are discovered, so a hostile subject is refused
+    typed before it can expand the walk (`MAX_OBSERVED_NODES_V2`,
+    `MAX_OBSERVED_DEPTH_V2`). Entries are STREAMED from each directory
+    (``os.scandir`` on the descriptor), never listed whole first: one
+    oversized directory is refused after ``MAX_OBSERVED_NODES_V2 + 1`` names,
+    not after all of them have been read into memory (`#352` F3). Any
+    enumeration or classification failure is a typed refusal, never "empty".
+    """
+    observed: dict[bytes, tuple[str, int]] = {}
+    pending: list[tuple[bytes, ...]] = [()]
+    count = 0
+    while pending:
+        components = pending.pop()
+        directory_fd = _open_directory_relative_v2(root_fd, components)
+        try:
+            try:
+                with os.scandir(directory_fd) as entries:
+                    for entry in entries:
+                        raw_name = os.fsencode(entry.name)
+                        st = os.stat(raw_name, dir_fd=directory_fd, follow_symlinks=False)
+                        count += 1
+                        if count > MAX_OBSERVED_NODES_V2:
+                            raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
+                        # `#352` R2: the depth budget applies to EVERY node kind,
+                        # before kind dispatch -- as C3 checks `child_depth` before
+                        # dispatching on object type.
+                        if len(components) + 1 > MAX_OBSERVED_DEPTH_V2:
+                            raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_STRUCTURE_BUDGET_EXCEEDED_REASON_V2)
+                        relative = b"/".join(components + (raw_name,))
+                        mode = st.st_mode
+                        if stat.S_ISDIR(mode):
+                            observed[relative] = ("tree", mode)
+                            pending.append(components + (raw_name,))
+                        elif stat.S_ISREG(mode):
+                            observed[relative] = ("regular", mode)
+                        elif stat.S_ISLNK(mode):
+                            observed[relative] = ("symlink", mode)
+                        else:
+                            observed[relative] = ("special", mode)
             except OSError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
-            entry_path = Path(entry.path)
-            if is_dir:
-                if is_symlink:
-                    raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-                _walk(entry_path)
-            else:
-                leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
+        finally:
+            os.close(directory_fd)
+    return observed
 
-    _walk(subject_root)
-    return frozenset(leaf_paths)
+
+def _split_relative_v2(relative: bytes) -> tuple[tuple[bytes, ...], bytes]:
+    parts = relative.split(b"/")
+    return tuple(parts[:-1]), parts[-1]
+
+
+def _compare_regular_leaf_v2(
+    root_fd: int, relative: bytes, carrier: BoundedBlobCarrierV2, path: str, *, executable: bool
+) -> None:
+    """Open the leaf descriptor-relative and no-follow, establish its type and
+    mode on THAT descriptor with ``fstat``, then compare bytes in bounded
+    chunks on BOTH sides: the expected blob is streamed from the carrier's
+    spool (``iter_chunks``), never held whole (`#352` review). ``O_NONBLOCK``
+    makes an ``open`` of a FIFO return instead of block, and the ``S_ISREG``
+    check refuses it before any read (`#321`'s defect class). Executable
+    semantics are the owner-execute bit of ``st_mode`` (``100755`` <=>
+    ``S_IXUSR``), not ``os.access``, which answers a process-permission
+    question.
+    """
+    parents, name = _split_relative_v2(relative)
+    parent_fd = _open_directory_relative_v2(root_fd, parents)
+    try:
+        try:
+            leaf_fd = os.open(name, _LEAF_OPEN_FLAGS_V2, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+    finally:
+        os.close(parent_fd)
+    try:
+        st = os.fstat(leaf_fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ExecutedSourceIdentityError(IDENTITY_NODE_TYPE_MISMATCH_REASON_V2)
+        if bool(st.st_mode & stat.S_IXUSR) != executable:
+            raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
+        if st.st_size != carrier.size_of(path):
+            raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+        try:
+            for expected_chunk in carrier.iter_chunks(path):
+                observed = b""
+                while len(observed) < len(expected_chunk):
+                    try:
+                        piece = os.read(leaf_fd, len(expected_chunk) - len(observed))
+                    except OSError as exc:
+                        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+                    if not piece:
+                        raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+                    observed += piece
+                if observed != expected_chunk:
+                    raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+        except SubjectMaterialisationError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+        try:
+            trailing = os.read(leaf_fd, 1)
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+        if trailing:
+            raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
+    finally:
+        os.close(leaf_fd)
+
+
+def _compare_symlink_leaf_v2(root_fd: int, relative: bytes, carrier: BoundedBlobCarrierV2, path: str) -> None:
+    """A symlink is data: its raw target bytes are compared, it is never
+    followed, and nothing about what the target resolves to is decided here
+    (rule A2; the execution boundary belongs to `#301`). The expected target
+    is sized from the carrier index first and read only up to the observed
+    target's length (bounded by the filesystem), never whole."""
+    parents, name = _split_relative_v2(relative)
+    parent_fd = _open_directory_relative_v2(root_fd, parents)
+    try:
+        try:
+            target = os.readlink(name, dir_fd=parent_fd)
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+    finally:
+        os.close(parent_fd)
+    if carrier.size_of(path) != len(target):
+        raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
+    try:
+        expected_target = carrier.read_bounded(path, len(target))
+    except SubjectMaterialisationError as exc:
+        raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
+    if target != expected_target:
+        raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
+
+
+#: `#352` authority-first refusal cause: C3's hierarchical traversal decides
+#: the refusal AND carries its cause; this module only translates the causes
+#: its compatibility surface names. Any other (or absent, or future) detail
+#: stays the generic typed refusal -- never a guessed specific code.
+_LEGACY_REASON_BY_C3_DETAIL_V2 = {
+    SUBJECT_REFUSAL_DETAIL_GITLINK_V2: IDENTITY_GITLINK_PRESENT_REASON_V2,
+    SUBJECT_REFUSAL_DETAIL_DOTDOT_NAME_V2: IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
+}
+
+
+def _subject_name_max_v2(root_fd: int) -> int:
+    """The subject filesystem's component-length limit, derived exactly as C3
+    derives the one it materialised under (`PC_NAME_MAX`, else 255), so Q
+    never refuses a subject C3 admitted on a filesystem allowing longer names
+    (`#352` review 5327601883)."""
+    try:
+        limit = os.fpathconf(root_fd, "PC_NAME_MAX")
+    except (OSError, ValueError):
+        limit = -1
+    return limit if limit > 0 else 255
+
+
+def _compare_structure_v2(
+    expected: dict[bytes, tuple[str, bool]], observed: dict[bytes, tuple[str, int]]
+) -> None:
+    """``ExpectedPaths == ObservedPaths`` with node-kind equality at every path.
+
+    Refusal order: every expected node first (missing / wrong kind), in the
+    commit's own hierarchical order, then any extra observed node. Reason
+    codes: missing tree -> `IDENTITY_MISSING_TREE_NODE`; missing leaf ->
+    pre-existing `IDENTITY_MISSING_TRACKED_FILE`; symlink where a tree is
+    expected -> pre-existing `IDENTITY_SYMLINKED_DIRECTORY` (still the exact
+    fact); other kind mismatch -> `IDENTITY_NODE_TYPE_MISMATCH`; extra regular
+    file or symlink -> pre-existing `IDENTITY_EXTRA_UNTRACKED_FILE`; extra
+    directory or special file -> `IDENTITY_EXTRA_UNTRACKED_NODE`.
+    """
+    for relative, (kind, _executable) in expected.items():
+        actual = observed.get(relative)
+        if actual is None:
+            if kind == "tree":
+                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TREE_NODE_REASON_V2)
+            raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
+        actual_kind = actual[0]
+        if kind == actual_kind:
+            continue
+        if kind == "tree" and actual_kind == "symlink":
+            raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+        raise ExecutedSourceIdentityError(IDENTITY_NODE_TYPE_MISMATCH_REASON_V2)
+    for relative in sorted(observed):
+        if relative in expected:
+            continue
+        if observed[relative][0] in ("regular", "symlink"):
+            raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
+        raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_NODE_REASON_V2)
 
 
 _FULL_COMMIT_SHA_LENGTHS_V2 = (40,)  # sha1 only -- see the P0 note below for why 64 is excluded
@@ -680,67 +830,95 @@ def verify_executed_source_identity_v2(
     authorized_storage: AuthorizedGitStorageSetV2 | Sequence[Path | str] | None = None,
     authorized_storage_roots: Sequence[Path | str] | None = None,
 ) -> ExecutedSourceIdentityV2:
-    """Prove ``subject_root``'s bytes are exactly ``commit_sha``'s tree.
+    """Prove ``subject_root``'s directory graph IS ``commit_sha``'s raw tree.
+
+    `#333` contract Q: full Git tree structural equality (contract A, symlink
+    rule A2) of the observed materialised subject, UNDER A QUIESCENCE
+    PRECONDITION. Let G be ``commit_sha``'s raw Git tree (read through the
+    trusted object authority), M the directory graph rooted at the ACQUIRED
+    ``subject_root`` descriptor, and I the interval of this call.
+
+    Precondition ``Quiescent(M, I)``: no actor mutates M's node graph, file
+    bytes, executable semantics or symlink target data during I (nor the
+    trusted object authority's private copy, whose own threat scope is the
+    same). This is a contract precondition and a threat-scope boundary, NOT
+    an enforced lock: ``QuiescencePrecondition != WriteExclusionMechanism``.
+    It is this module's existing boundary made explicit, not a new
+    exception -- a writer that can mutate M during I is a
+    ``host_arbitrary_code_attacker`` (module docstring, "Threat scope"; the
+    same boundary ``trusted_object_authority_v2.py`` declares), out of scope
+    here. Resistance to that writer is owned by `#301` (an authenticated,
+    immutable closed representation that execution consumes), never by
+    observing M again.
+
+    Success postcondition (given the precondition): G == M over I -- the
+    same explicit tree nodes (including empty trees) and the same leaves;
+    every node of the kind Git declares (tree / regular blob / symlink),
+    walked without following symlinks; regular-file bytes, executable
+    semantics (``100755`` <=> owner-execute bit) and raw symlink target bytes
+    equal; no missing node and no extra node beneath the root.
+
+    Nonclaims: no same-UID arbitrary-writer resistance (a writer that
+    violates the precondition can make this return success on a subject that
+    differs from G at return -- witnessed in `#352`, R1/R3/N1, and out of
+    scope by the boundary above); no immutability after verification; no
+    execution provenance and no claim about bytes any process loaded
+    (`#301`); not the trust root of `#301`; no Git-anchor provenance
+    (`#319`); not unique commit provenance (tree-sharing commits pass alike);
+    no filesystem metadata Git does not represent (directory modes,
+    ownership, times, xattrs/ACLs); no interpretation of where a symlink
+    target resolves; no binding between the returned ``subject_root`` PATH
+    and the descriptor that was walked (``PathReturned !=
+    DescriptorIdentityVerified``, `#301`'s to bind).
+
+    Resource limitation (declared, `#352` review A): expected and observed
+    graphs are keyed by full raw paths, so peak heap is O(total flattened
+    path bytes) of the tree -- measured at about 2.9x C3's own
+    materialisation peak for the same tree (the flattened ``ls-tree -r``
+    listing, which added about 1x more, is consulted on no path). C3's
+    budgets bound entries and depth, not path bytes; a path-bytes budget
+    would bound producer and verifier alike and is C3's to add.
 
     Never trusts a pre-computed digest. Re-derives the commit's tree fresh
-    from ``repo_root``'s own git object store on every call
-    (``list_commit_tree_entries_v2`` + ``read_commit_blobs_v2``, i.e. a
-    fresh ``git ls-tree`` + ``git cat-file --batch``) and compares it
-    byte-for-byte against what is actually on disk at ``subject_root``. No
-    digest, sha, or any other value supplied by a caller as a description of
-    ``subject_root``'s content is ever accepted as ground truth -- only
-    ``commit_sha`` is used, and only as an input to ``resolve_commit_v2``,
-    which re-verifies it names a real commit in ``repo_root``'s own history
-    rather than trusting its shape.
+    from ``repo_root``'s own git object store on every call, through the
+    private trusted object authority, and compares against what is on disk
+    at ``subject_root`` NOW.
 
-    Checks, in order:
+    Authorities, in order:
 
-    1. ``commit_sha`` resolves to a real commit in ``repo_root`` (never a
-       tree or blob sha, and never a value that merely looks like a sha).
-    2. The commit's tree contains no gitlink -- a submodule reference names
-       a commit in another repository, which this primitive has no bytes
-       for and therefore cannot verify; refused rather than silently
-       skipped.
-    3. Every tracked path in the commit's tree exists under ``subject_root``
-       with byte-identical content (and, for symlinks, byte-identical
-       target text) and the mode implied by git (executable bit set iff the
-       tree entry is the executable blob mode). This alone makes a
-       "narrowed" subject -- one that omits part of the real tree -- an
-       *incomplete* subject, refused directly, not merely a subject with a
-       digest a checker forgot to look at closely enough. Each tree path is
-       resolved through ``_safe_subject_path_v2`` first: a hostile tree can
-       contain a subtree literally named ``..`` (git only rejects a literal
-       ``/`` inside one path segment, not the two-character name ``..``),
-       which ``ls-tree -r`` then flattens into an entry path like
-       ``../evil.py`` -- an unchecked join would read from outside
-       ``subject_root`` when the OS resolves it.
-    4. ``subject_root`` contains no symlinked directory anywhere, and no
-       file absent from the commit's tree. Both checked together by
-       ``_reachable_leaf_paths_v2``, deliberately called LAST -- as close to
-       return as this function's structure allows -- with a FRESH walk, not
-       one taken at call start. Independent review (round 1) found that
-       checking this once, early, let a symlinked directory's transparent
-       following by check 3's plain path joins disagree with an
-       early-computed "what's present" view. Independent review (round 2)
-       found a narrower but real follow-on: even after that fix, checking
-       completeness once at call start left everything after it (commit
-       resolution, tree listing, blob reads, all of check 3) as an open
-       window in which a concurrent writer with access to ``subject_root``
-       could add a file that a start-of-call snapshot would never see.
-       Running this check last, against the filesystem as it is at that
-       moment, does not eliminate every conceivable race (no check-then-use
-       pattern can, without a filesystem-level lock this primitive does not
-       take), but it collapses the window from "this function's entire
-       duration, including subprocess calls to git" to "the checks between
-       here and return", and a symlinked directory introduced earlier in
-       the call to redirect an earlier comparison is still caught here, as
-       long as it has not ALSO been removed again by the time this runs.
-    5. Every path in ``loaded_module_paths`` (defaulting to
-       ``loaded_module_files_v2()``, i.e. real interpreter state) resolves
-       under ``subject_root``. Kept as an independent second signal on top
-       of (3): "every tracked path is present" and "every loaded module
-       lives under the root" are different properties, and neither check is
-       asked to cover for the other.
+    1. ``commit_sha`` resolves to a real commit (never a tree/blob sha).
+    2. Structure AND refusal come from ONE authority, C3's hierarchical
+       raw-tree traversal (``list_commit_tree_structure_v2``); ``git ls-tree
+       -r`` drops explicit empty trees and is consulted on no path. A commit
+       C3 cannot represent is refused ``IDENTITY_TREE_UNREPRESENTABLE_REASON_V2``,
+       except where C3's refusal ``detail`` names a cause this module's
+       pre-existing codes express: a gitlink -> ``IDENTITY_GITLINK_PRESENT``,
+       a ``..`` entry -> ``IDENTITY_PATH_ESCAPES_SUBJECT``. The code reflects the
+       refusal C3's traversal met first: single-cause compatibility is
+       preserved; no total priority order among coexisting defects is
+       promised.
+    3. The subject root is opened ``O_DIRECTORY | O_NOFOLLOW`` and every
+       observation is descriptor-relative from that authority: the locator
+       is discovery input, a root locator that is itself a symlink is
+       refused. Node kinds come from ``fstatat(..., AT_SYMLINK_NOFOLLOW)``;
+       directories are entered by no-follow re-acquisition (live
+       descriptors of the traversal independent of tree depth -- a property
+       of the walk, not a bound on the whole call, whose git-side pipes and
+       spool are separate), entries are streamed, and budgets
+       ``MAX_OBSERVED_NODES_V2`` / ``MAX_OBSERVED_DEPTH_V2`` are enforced as
+       nodes are discovered.
+    4. ``ExpectedPaths == ObservedPaths`` with kind equality at every path
+       (missing tree node, missing leaf, extra node, extra file, kind
+       mismatch, symlink where a tree is declared -- each its own reason).
+    5. Only then leaf content: a regular leaf is opened
+       ``O_NOFOLLOW | O_NONBLOCK`` and ``fstat`` must say ``S_ISREG`` before
+       a byte is read (a FIFO/special file is a kind mismatch, never a
+       hang -- `#321`'s class); bytes are compared in bounded chunks; a
+       symlink leaf is ``readlink``ed and its raw target bytes compared,
+       never followed.
+    6. Every path in ``loaded_module_paths`` (defaulting to
+       ``loaded_module_files_v2()``) resolves under ``subject_root``. An
+       independent second signal, not a substitute for the structure check.
     """
     # `#331-A`: do not pre-resolve `repo_root`. `open_trusted_object_authority_v2`
     # owns component-wise no-follow acquisition of the raw locator, and states
@@ -748,10 +926,11 @@ def verify_executed_source_identity_v2(
     # goes through `authority.trusted_repo_root`. Locator refusals arrive here
     # as one reason code, with the authority's specific code on `__cause__`.
     # `#331-B`: external storage transitions require explicit authorized_storage_roots.
-    subject_root = Path(subject_root).resolve()
-
-    if not subject_root.is_dir():
-        raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2)
+    # `#333` -- the LOCATOR is discovery input; the DESCRIPTOR is the observed
+    # subject. `resolved_root` is kept only for the loaded-module containment
+    # check (6) and the returned value; no observation is made through it.
+    resolved_root = Path(subject_root).resolve()
+    root_fd = _acquire_subject_root_fd_v2(Path(subject_root))
 
     # #200-G1C: every read below goes through a private, remote-less object
     # authority built from whatever is physically present at `repo_root`
@@ -775,17 +954,42 @@ def verify_executed_source_identity_v2(
                 except SubjectMaterialisationError as exc:
                     raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
+                # Structural AND refusal authority: C3's hierarchical raw-tree
+                # traversal, bounded by C3's own budgets. No flattened re-listing
+                # (`git ls-tree -r`) is consulted on any path: it drops explicit
+                # (empty) tree nodes, is not bounded by C3's budgets, and would be
+                # a second representation second-guessing C3's refusal (`#352`
+                # STOP_REDESIGN_SCOPED). C3 refuses gitlinks and `..` names and
+                # says so in `detail`; the reason code is whatever refusal C3's
+                # traversal met first -- single-cause compatibility is preserved,
+                # no total priority order among coexisting defects is promised.
                 try:
-                    entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=resolved_commit)
+                    structure = list_commit_tree_structure_v2(
+                        repo_root=trusted_root, commit_sha=resolved_commit,
+                        max_component_len=_subject_name_max_v2(root_fd),
+                    )
                 except SubjectMaterialisationError as exc:
+                    if exc.reason_code == SUBJECT_UNREPRESENTABLE_TREE_REASON_V2:
+                        raise ExecutedSourceIdentityError(
+                            _LEGACY_REASON_BY_C3_DETAIL_V2.get(
+                                getattr(exc, "detail", None), IDENTITY_TREE_UNREPRESENTABLE_REASON_V2
+                            )
+                        ) from exc
                     raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-                for entry in entries:
-                    if entry.mode == GITLINK_MODE_V2:
-                        raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
+                expected: dict[bytes, tuple[str, bool]] = {}
+                for entry in structure:
+                    if entry.object_type == "tree":
+                        kind = "tree"
+                    elif entry.mode == SYMLINK_MODE_V2:
+                        kind = "symlink"
+                    else:
+                        kind = "regular"
+                    expected[os.fsencode(entry.path)] = (kind, entry.mode == EXECUTABLE_MODE_V2)
+                leaves = [entry for entry in structure if entry.object_type != "tree"]
 
                 try:
-                    expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=entries)
+                    expected_content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=leaves)
                 except SubjectMaterialisationError as exc:
                     if exc.reason_code == SUBJECT_BLOB_MISSING_REASON_V2:
                         raise ExecutedSourceIdentityError(IDENTITY_BLOB_MISSING_REASON_V2) from exc
@@ -793,60 +997,36 @@ def verify_executed_source_identity_v2(
         except TrustedObjectAuthorityError as exc:
             raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
-        expected_paths = {entry.path: entry for entry in entries}
-
-        for entry in entries:
-            if entry.mode == GITLINK_MODE_V2:
-                # Defensive only: the early loop above already refuses any
-                # commit whose tree contains a gitlink, so this is never reached
-                # in practice. Kept so that a future change to (or mutation of)
-                # that early check fails closed with a typed refusal here
-                # instead of an uncaught KeyError against
-                # `expected_content_by_path`, which never has gitlink entries.
-                continue
-            actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
-            expected_bytes = expected_content_by_path[entry.path]
-
+        # Observation, after all git-side work: the structural graph first
+        # (bounded, typed, no content), then every leaf's bytes on a
+        # descriptor whose type was established by `fstat` first.
+        observed = _observe_subject_graph_v2(root_fd)
+        _compare_structure_v2(expected, observed)
+        for entry in leaves:
+            relative = os.fsencode(entry.path)
             if entry.mode == SYMLINK_MODE_V2:
-                if not actual_path.is_symlink():
-                    raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-                expected_target = expected_bytes.decode("utf-8", "surrogateescape")
-                if os.readlink(actual_path) != expected_target:
-                    raise ExecutedSourceIdentityError(IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2)
-                continue
-
-            if actual_path.is_symlink() or not actual_path.is_file():
-                raise ExecutedSourceIdentityError(IDENTITY_MISSING_TRACKED_FILE_REASON_V2)
-            if actual_path.read_bytes() != expected_bytes:
-                raise ExecutedSourceIdentityError(IDENTITY_CONTENT_MISMATCH_REASON_V2)
-
-            should_be_executable = entry.mode == EXECUTABLE_MODE_V2
-            is_executable = os.access(actual_path, os.X_OK)
-            if should_be_executable != is_executable:
-                raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
-
-        # Deliberately called here, last, with a fresh walk -- not at call
-        # start. See check 4 in the docstring above for why: this is what
-        # closes the round-2 TOCTOU gap on top of round 1's static fix. A
-        # symlinked directory introduced at ANY point before this line, and
-        # still present when this line runs, is caught here regardless of
-        # whether it existed for the whole call or was introduced moments ago.
-        reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
-        for relative in sorted(reachable_leaf_paths):
-            if relative not in expected_paths:
-                raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
+                _compare_symlink_leaf_v2(root_fd, relative, expected_content_by_path, entry.path)
+            else:
+                _compare_regular_leaf_v2(
+                    root_fd, relative, expected_content_by_path, entry.path,
+                    executable=entry.mode == EXECUTABLE_MODE_V2,
+                )
 
         if loaded_module_paths is None:
             loaded_module_paths = loaded_module_files_v2()
         for module_path in loaded_module_paths:
             resolved_module_path = Path(module_path).resolve()
-            if not resolved_module_path.is_relative_to(subject_root):
+            if not resolved_module_path.is_relative_to(resolved_root):
                 raise ExecutedSourceIdentityError(IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2)
 
-        return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
+        return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=resolved_root)
     finally:
-        if expected_content_by_path is not None:
-            expected_content_by_path.close()
+        # `#352` review: neither close may skip the other, whatever raises.
+        try:
+            os.close(root_fd)
+        finally:
+            if expected_content_by_path is not None:
+                expected_content_by_path.close()
 
 
 def authorize_commit_for_execution_v2(
