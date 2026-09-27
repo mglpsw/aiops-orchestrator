@@ -107,7 +107,9 @@ snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos b
     supported: [sha1, sha256]
   reader:
     runs_as: unprivileged runner                     # required; otherwise STOP_301_C_READER_PRIVILEGE_DEPENDENCY (C11)
-    precondition: refuse a snapshot the reader can mutate (owner or W_OK on any node or ancestor; symlink)
+    precondition: [absolute canonical path with no symlink component, no component from / down and no node below
+                   owned by or writable for the reader, reader holds no effective capability]   # else refusal
+    subreaper: verified before git starts; a descendant surviving teardown -> refusal
     local_git: {target: committed immutable snapshot only, deadline: per object, parsing: strict header,
                 memory_envelope: RLIMIT_AS per process where supported, aggregate_memory: NOT_CLAIMED}
     process_lifetime: "reader is a child subreaper; teardown kills and reaps every descendant (setsid included)"
@@ -126,6 +128,8 @@ snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos b
 B_findings_candidate_disposition:
   B1: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # alternates injected after publish -> kernel EACCES (C3); source alternates only via capability (C9)
   B2: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # promisor config injected after publish -> EACCES (C4); no fetch (C4/C8)
+                                              # review of a858dc9 (RC-1): reproduced again via a NON-canonical path handed to
+                                              # the reader; now refused at consumption (C11 counters); stays candidate
   B3: ELIMINATED_FROM_PHYSICAL_PRODUCER       # producer never inflates (C5); expansion only inside the contained reader unit
   B4: AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT   # C + content-addressed map; aux root has no effect, ablation changes S_G (C6)
   B5: DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL   # setsid grandchild: unit 0 survivors, process-group ablation leaves one (C7)
@@ -364,8 +368,14 @@ C (esperado, via #319; expected_subject = {object_format, commit_oid, component_
   busca: a política é `OfflineClosureComplete(C)` (C4/C8B), e um clone parcial com closure completa
   é admitido (C8A).
 - **Leitor como o runner (C11).** A derivação de S_G roda sem privilégio, no UID do runner, e
-  **verifica** a fronteira no consumo em vez de supô-la: recusa (`snapshot_mutable_by_reader`) se
-  qualquer nó do snapshot ou qualquer ancestral for dele, gravável por ele ou symlink. Se a
+  **verifica** a fronteira no consumo em vez de supô-la. O caminho recebido tem de ser absoluto,
+  canônico e **sem symlink em nenhum componente** (`snapshot_path_not_canonical`), para que o
+  caminho que o Git re-resolve seja o caminho verificado. Nenhum componente, de `/` até o snapshot,
+  e nenhum nó abaixo dele pode ser do leitor ou gravável por ele (`snapshot_mutable_by_reader`). Um
+  leitor com qualquer capability efetiva é recusado (`reader_has_capabilities`). A revisão de
+  `a858dc9` mostrou que a checagem **lexical** anterior aceitava um caminho com symlink root-owned
+  apontando para um diretório do runner, e o runner então trocava o snapshot e fazia o Git executar
+  o seu helper (mecanismo de B-2); ver EVIDENCE. Se a
   derivação precisasse do privilégio do produtor, o resultado seria
   `STOP_301_C_READER_PRIVILEGE_DEPENDENCY`.
 - **Algoritmo** vem **só** do `expected_subject.object_format` (sha1 ou sha256) e é conferido com o
@@ -506,17 +516,23 @@ limite · owner · evidência.
   hook, alternates, refs e `tmp_obj_*`; alternate fora da capability; objeto obrigatório ausente;
   SIGKILL do produtor durante o staging; loose-bomba de 256 MiB · nada da fonte atravessa (C2);
   `alternate_outside_authorized_storage` (C9); `object_missing` sem marcador de busca (C4/C8B); 0
-  snapshot publicado e staging ilegível pelo runner (C10); produtor sem inflate, VmHWM 21,2 MiB (C5);
+  snapshot publicado e staging ilegível pelo runner (C10); produtor sem inflate, VmHWM 21,4 MiB (C5);
   alternate autorizado achatado sem ponteiro, clone parcial com closure completa **admitido**,
-  sha256 aceito · quem autorizou a capability é #331/C2_B; produtor de produção U3; GC do staging é
-  obrigação futura · #301 (S_G), #331 · EXP-ARCH-C C2/C4/C5/C8/C9/C10, `POSITIVE_sha256_runner_S_G`.
+  sha256 aceito; toda entrada **listada** (copiada ou ignorada) conta no orçamento de entradas
+  (`C5_producer_listing_charged_to_entry_budget`) · quem autorizou a capability é #331/C2_B; produtor
+  de produção U3; GC do staging é obrigação futura; um pack maior que o envelope do leitor torna S_G
+  indisponível (R4-3, reproduzido pela revisão) · #301 (S_G), #331 · EXP-ARCH-C C2/C4/C5/C8/C9/C10,
+  `POSITIVE_sha256_runner_S_G`.
 - **301S-PRIV** — `RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)`, e o leitor roda como o
   runner e confere isso no consumo · snapshot publicado · negação do kernel (DAC no experimento) +
   precondição do leitor · produtor → leitor · 12 mutações pelo runner (escrever `config`, criar
   alternates, reescrever/renomear loose, reescrever pack, `unlink`, `rename`, `mkdir`, `chmod` do
   snapshot e de objeto, renomear o snapshot, criar irmão em `committed/`); cópia do snapshot de
-  posse do runner; formato esperado divergente · todas EACCES/EPERM, leitura positiva ok (C1);
-  `snapshot_mutable_by_reader` (C11 contra-controle); `snapshot_format_mismatch`; leitor com uid
+  posse do runner; snapshot root-owned sob diretório do runner, acessado por symlink root-owned, por
+  caminho direto e por caminho relativo; formato esperado divergente · todas EACCES/EPERM, leitura
+  positiva ok (C1); `snapshot_mutable_by_reader` (cópia do runner; ancestral real do runner);
+  `snapshot_path_not_canonical` (symlink, relativo), com o contramodelo confirmado (o runner renomeia
+  o snapshot); `snapshot_format_mismatch`; leitor com uid
   2000 deriva a estrutura declarada (árvore vazia, executável, symlink com target em bytes,
   subárvore) e o S_G do toolrepo real · a propriedade é do kernel no domínio do experimento
   (container sem userns-remap); CT104 e o serviço de produção não testados · #301, U3 ·
@@ -576,21 +592,29 @@ limite · owner · evidência.
   contido fica em 11 MiB (envelope de teste 64 MiB); 9 cabeçalhos hostis; subárvore compartilhada
   2.000×; blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB; profundidade 110; contagem cumulativa de
   nós; loose-bomba fora da closure (S_G aceito, produtor sem inflate) e dentro da closure
-  (`budget_payload_bytes`, unidade Git ≤ 14,4 MiB) · corpus real aceito com a unidade Git ≤ 14,5 MiB
+  (`budget_payload_bytes`, unidade Git ≤ 14,8 MiB); **no leitor de C**: blob de 1 MiB em 100 paths
+  com orçamento de 8 MiB → `budget_payload_bytes` (cada ocorrência repetida é cobrada do corpo já
+  autenticado antes do uso; controle com 4 paths aceito) e ~18,6 MB de paths → `budget_path_bytes`
+  (`charge_node` durante a caminhada) · corpus real aceito com a unidade Git ≤ 14,5 MiB
   dentro do envelope de 128 MiB · valores de envelope e orçamentos (§8) ainda não adjudicados;
   memória **agregada** da unidade e prazo total **não** reivindicados (#320); `RLIMIT_AS` segue a
   semântica já usada por `trusted_check_supervisor_v2` · #301 · EXP-RES `git_child_contained_*`,
-  `strict_transport_*`; EXP-ARCH-C C5; EXP-FUNC.
+  `strict_transport_*`; EXP-ARCH-C C5 (inclusive `C5_blob_charged_per_occurrence_refused`,
+  `C5_path_bytes_budget_enforced_during_walk`); EXP-FUNC. Os casos de EXP-RES exercitam o caminho
+  `build_subject`, **não** o leitor de C; só os casos de EXP-ARCH-C valem para C.
 - **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial nem snapshot publicado;
   filho sem resposta não vira sucesso; nada do transporte sobrevive à captura · produtor/leitor/
   launcher · FD/processos contados antes e depois; o leitor é *child subreaper* e o teardown da
-  unidade mata e colhe **todos** os descendentes; staging só vira snapshot no commit point · — ·
+  unidade mata e colhe **todos** os descendentes; o leitor confere que é subreaper antes de iniciar o
+  Git (`subreaper_required`) e um descendente que sobreviva ao prazo do teardown vira recusa
+  (`unit_teardown_incomplete`); staging só vira snapshot no commit point · — ·
   ferramenta falsa → filho → neto com `setsid` → `sleep` infinito; SIGKILL do produtor no meio do
   staging; falha de escrita (EFBIG), de selo (injetada), de hash no meio da captura, falha do
   launcher antes do spawn, filho travado, filho com rc 0 sem resposta · unidade: `transport_deadline`
   e 0 sobreviventes (C7), **ablação** "só grupo de processos": o neto `setsid` sobrevive (limpo depois
   por pid + starttime + nonce); FDs restaurados; censo final sem processos nem sockets em escuta ·
-  lixo de staging após crash exige GC futuro; #354 não é ativado (§8) · #301 · EXP-RES, EXP-ARCH-C
+  lixo de staging após crash exige GC futuro; descendente em sono não interrompível **não testado**
+  (caminho de recusa só por leitura de código); #354 não é ativado (§8) · #301 · EXP-RES, EXP-ARCH-C
   C7/C10/`LIFECYCLE_*`.
 
 ### 7.2 — E (viabilidade; E é futura)
@@ -665,19 +689,23 @@ arquitetura C (produtor uid 0 do container, leitor uid 2000; EXP-FUNC e EXP-ARCH
 | Bytes únicos vs por ocorrência | 8.642.394 (blobs únicos); 51.346 B de corpos commit/tree | 9.700.542 (payload) | — |
 | Bytes de paths (soma dos comprimentos) | 54.726 B | — | — |
 | Container (RAM-backed) | 8.769.133 B | 9.718.908 B | 2 memfds nativos no filho |
-| Snapshot físico (arquitetura C, domínio `snapshot_budget`) | 3.646.095 B em 2 entradas (1 pack + idx), 0 alternates; produtor uid 0: heap 3,81 MiB, VmHWM 23,1 MiB, rchar 5.624.669 / wchar 3.646.583, 0,061 s, 0 processos Git | — | — |
-| Closure (domínio `closure_budget`, leitor uid 2000) | 933 objetos únicos lidos 1× cada; heap do leitor 36,68 MiB, VmHWM 58,0 MiB, 0,294 s | — | — |
-| Heap de pico build → selo → revalidação | 34,7 MiB (EXP-FUNC) | 54,2 MiB | maxrss 88.624 KiB (normal: 88.624) |
+| Snapshot físico (arquitetura C, domínio `snapshot_budget`) | 3.646.095 B em 2 entradas (1 pack + idx), 0 alternates; produtor uid 0: heap 3,81 MiB, VmHWM 23,2 MiB, rchar 5.625.991 / wchar 3.646.583, 0,060 s, 0 processos Git | — | — |
+| Closure (domínio `closure_budget`, leitor uid 2000) | 933 objetos únicos lidos 1× cada; payload cobrado por ocorrência 8.660.242 B; heap do leitor 36,69 MiB, VmHWM 58,0 MiB, 0,295 s | — | — |
+| Heap de pico build → selo → revalidação | 34,7 MiB (EXP-FUNC) | 54,2 MiB | maxrss 88.860 KiB (normal: 88.860) |
 | Memória da unidade `git` local | ≤ 14,5 MiB (limite superior medido), envelope `RLIMIT_AS` 128 MiB **por processo**; agregado **não testado** (sem cgroup) | — | — |
 | FDs | 1 por container | 1 | 3 herdados (por construção) + 1 socket + 2 nativos |
 | Subprocessos | 1 unidade `git cat-file` sobre o snapshot (formato conferido na config do produtor, sem `rev-parse`); 0 no produtor | 0 | 0 (audit hook) |
 | I/O | 933 objetos únicos do `git` (payload 8.642.394 B + metadados 51.346 B) | 6 wheels lidos 1× | 0 aberturas em checkout/venv |
-| Tempo | snapshot 0,061 s (processo separado); build 0,183 s; serialize+selo+revalidação 0,095 s | 0,096 s | 0,38 s (normal 0,26 s) |
+| Tempo | snapshot 0,058 s (processo separado); build 0,175 s; serialize+selo+revalidação 0,100 s | 0,100 s | 0,39 s (normal 0,25 s) |
 
 **Dois domínios de orçamento** (não se misturam nem se inferem um do outro): `snapshot_budget`
 proposto de 256 MiB, 200.000 entradas, profundidade de alternates 8, proporcional ao **store** e
 cobrado pelo `fstat` antes da leitura (a loose-bomba de 256 MiB inflados é cobrada pelos 261.293 B
-físicos e **nunca** inflada pelo produtor: EXP-ARCH-C C5) — e `closure_budget` do subject (abaixo). **Prazo** proposto por objeto no leitor: 30 s (#320 é owner da família de timeouts
+físicos e **nunca** inflada pelo produtor: EXP-ARCH-C C5; toda entrada listada conta) — e
+`closure_budget` do subject (abaixo). Os dois valores ainda **não** são coerentes entre si: um
+snapshot de até 256 MiB é admitido, mas um pack maior que o envelope de 128 MiB do Git local não é
+mapeado e torna S_G indisponível (revisão de `a858dc9`, F3; R4-3), com uma razão de recusa
+enganosa (`transport_header_invalid`). A decisão dos valores fica com (i) de §12. **Prazo** proposto por objeto no leitor: 30 s (#320 é owner da família de timeouts
 do Git local). Envelope **proposto** do transporte local: `RLIMIT_AS` = 128 MiB (a base do `git cat-file` é ~8 MB de
 VM; o envelope precisa admitir o maior corpo que a política admite). Limites **propostos** (para
 adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,

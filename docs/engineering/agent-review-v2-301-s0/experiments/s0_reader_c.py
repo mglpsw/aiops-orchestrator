@@ -4,14 +4,18 @@ Runs as the unprivileged runner over a COMMITTED snapshot published by the privi
 (s0_snapshot_c.py). Producer owns immutability; runner owns subject derivation.
 
   expected_subject = {object_format, commit_oid, component_policy}   # the only external identity
-  precondition     : the reader refuses a snapshot it could mutate (ownership/writability of every node
-                     and of every ancestor directory) -- the boundary is checked at consumption, not assumed
+  precondition     : the reader refuses a snapshot it could mutate: the path must be absolute and canonical
+                     with NO symlink in any component (so the path git re-resolves is the path checked), and
+                     no component from / down, nor any node below, may be owned by or writable for the reader;
+                     a reader holding any effective capability is refused (it must run as the runner) --
+                     the boundary is checked at consumption, not assumed
   object format    : from expected_subject; checked against the commit id length and the producer-authored
                      snapshot config (the live repository is never asked)
   local git        : `git -c safe.directory=* cat-file --batch` on the snapshot only; own session, RLIMIT_AS,
                      per-object deadline, strict header (s0_capture.VerifiedObjectReader); the reader is a
-                     CHILD SUBREAPER, so every descendant (setsid included) re-parents to it and the unit
-                     teardown kills and reaps the whole subtree
+                     CHILD SUBREAPER (verified before git starts), so every descendant (setsid included)
+                     re-parents to it and the unit teardown kills and reaps the whole subtree; a descendant
+                     that survives the teardown deadline turns the capture into a refusal
   identity         : C + a content-addressed object map; root tree T DERIVED from the authenticated commit
                      bytes; one walk fetches and derives; seal; re-derive and compare with the SEALED bytes
 """
@@ -29,6 +33,7 @@ from pathlib import Path
 
 FORMATS = {"sha1": 40, "sha256": 64}
 PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 
 
 class Refused(Exception):
@@ -40,6 +45,13 @@ class Refused(Exception):
 def become_subreaper() -> None:
     if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         raise Refused("subreaper_unavailable")
+
+
+def is_subreaper() -> bool:
+    flag = ctypes.c_int(0)
+    if ctypes.CDLL(None, use_errno=True).prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(flag), 0, 0, 0) != 0:
+        return False
+    return flag.value == 1
 
 
 def descendants(root_pid: int) -> list:
@@ -83,13 +95,30 @@ def teardown_unit(deadline_s: float = 5.0) -> dict:
 
 
 def require_immutable_to_me(snapshot: Path) -> None:
+    """RunnerCanRead AND NOT RunnerCanMutate, checked by the reader itself (C11).
+
+    The check is only meaningful if git later resolves the SAME objects: an absolute, canonical path with no
+    symlink component cannot be re-pointed by a reader that owns and can write none of its components."""
+    cap_eff = next(l.split()[1] for l in open("/proc/self/status") if l.startswith("CapEff:"))
+    if int(cap_eff, 16) != 0:
+        raise Refused("reader_has_capabilities", cap_eff)
+    raw = os.fspath(snapshot)
+    if not os.path.isabs(raw) or os.path.normpath(raw) != raw or raw.startswith("//"):
+        raise Refused("snapshot_path_not_canonical", raw)
     me = os.getuid()
-    chain = [snapshot, *snapshot.parents]
-    for d in chain:
-        st = os.lstat(d)
-        if st.st_uid == me or os.access(d, os.W_OK):
-            raise Refused("snapshot_mutable_by_reader", str(d))
-    for dirpath, dirnames, filenames in os.walk(snapshot):
+    prefix = "/"
+    for part in [""] + raw.strip("/").split("/"):
+        prefix = os.path.join(prefix, part) if part else "/"
+        st = os.lstat(prefix)
+        if stat.S_ISLNK(st.st_mode):
+            raise Refused("snapshot_path_not_canonical", "symlink component: " + prefix)
+        if st.st_uid == me or os.access(prefix, os.W_OK):
+            raise Refused("snapshot_mutable_by_reader", prefix)
+
+    def unreadable(exc: OSError) -> None:
+        raise Refused("snapshot_not_fully_inspectable", str(exc))
+
+    for dirpath, dirnames, filenames in os.walk(raw, onerror=unreadable):
         for name in dirnames + filenames:
             p = os.path.join(dirpath, name)
             st = os.lstat(p)
@@ -116,8 +145,12 @@ def git_object_hash(alg: str, kind: str, body: bytes) -> str:
     return h.hexdigest()
 
 
-def walk(commit: str, load, *, component_limit: int, root_override: str | None = None):
-    """ONE walk used to fetch and to derive. root_override exists ONLY as the ablation mutant."""
+def walk(commit: str, load, *, component_limit: int, root_override: str | None = None, budget=None):
+    """ONE walk used to fetch and to derive. root_override exists ONLY as the ablation mutant.
+
+    With a budget (fetch phase) every logical node is charged: node count, depth and cumulative path bytes
+    (Budget.charge_node), and every blob OCCURRENCE is charged as payload -- the first from the transport header
+    before the body is read, each repeat from the cached authenticated body before it is used again."""
     import s0_capture as cap
     body = load(commit, "commit")
     first = body.split(b"\n", 1)[0].split(b" ")
@@ -140,6 +173,8 @@ def walk(commit: str, load, *, component_limit: int, root_override: str | None =
             if count > 100_000:
                 raise Refused("budget_nodes")
             path = prefix + name
+            if budget is not None:
+                budget.charge_node(path, depth + 1)
             if obj_type == "tree":
                 nodes[path] = ("tree", oid, b"")
                 stack.append((path + b"/", oid, depth + 1))
@@ -162,27 +197,34 @@ def check_expected_subject(snapshot: Path, expected: dict) -> tuple:
 
 
 def fetch_objects(snapshot: Path, expected: dict, *, envelope=128 << 20, deadline_s=30.0, payload_budget=64 << 20,
-                  argv=None, abort_delay_s=0.0, contain_unit=True):
+                  argv=None, abort_delay_s=0.0, contain_unit=True, budget_overrides=None):
     import s0_capture as cap
     require_immutable_to_me(snapshot)
+    if contain_unit and not is_subreaper():
+        raise Refused("subreaper_required")
     fmt, commit, limit = check_expected_subject(snapshot, expected)
     reader = cap.VerifiedObjectReader(snapshot, FORMATS[fmt], argv=argv or ["git", "-c", "safe.directory=*", "cat-file", "--batch"],
                                       address_space=envelope, deadline_s=deadline_s, abort_delay_s=abort_delay_s)
-    budget = cap.Budget(max_component_len=limit, max_payload_bytes=payload_budget)
+    budget = cap.Budget(max_component_len=limit, max_payload_bytes=payload_budget, **(budget_overrides or {}))
     objmap, ok = {}, False
     try:
         def load(oid, kind):
             if oid not in objmap:
-                objmap[oid] = (kind, reader.get(oid, kind, budget))
+                objmap[oid] = (kind, reader.get(oid, kind, budget))   # charged from the header, before the read
+            elif kind == "blob":
+                budget.charge_payload(oid, len(objmap[oid][1]))       # repeated occurrence: charged again
             return objmap[oid][1]
-        walk(commit, load, component_limit=limit)
+        walk(commit, load, component_limit=limit, budget=budget)
         ok = True
         return objmap, {"objects_read": reader.objects_read, "unique_objects": len(objmap),
-                        "payload_bytes": budget.payload_bytes, "metadata_bytes": budget.metadata_bytes}
+                        "payload_bytes": budget.payload_bytes, "metadata_bytes": budget.metadata_bytes,
+                        "path_bytes_charged": budget.path_bytes}
     finally:
         reader.close() if ok else reader.abort()
         if contain_unit:
-            teardown_unit()
+            unit = teardown_unit()
+            if unit["remaining"] and ok:
+                raise Refused("unit_teardown_incomplete", str(unit["remaining"]))
 
 
 def commit_sg(expected: dict, objmap: dict, *, root_override: str | None = None):
@@ -228,7 +270,8 @@ if __name__ == "__main__":
     try:
         if mode == "acquire":
             objmap, acq = fetch_objects(snapshot, args["expected"], abort_delay_s=args.get("abort_delay_s", 0.0),
-                                        payload_budget=args.get("payload_budget", 64 << 20))
+                                        payload_budget=args.get("payload_budget", 64 << 20),
+                                        budget_overrides=args.get("budget_overrides"))
             fd, digest, root, nodes = commit_sg(args["expected"], objmap)
             os.close(fd)
             result = {"s_g_sha256": digest, "root_tree_derived": root, "nodes": len(nodes),

@@ -33,11 +33,11 @@
     "physical_entries": 4,
     "alternate_sources_count": 1,
     "storage_capability_binding": [
-     "/work/ar301c-e753c8d1/altpool",
-     "/work/ar301c-e753c8d1/src"
+     "/work/ar301c-1e15b59b/altpool",
+     "/work/ar301c-1e15b59b/src"
     ],
     "published_snapshot_identity": {
-     "snapshot_id": "45d3c05392193f664a1dcce5-28267ba2",
+     "snapshot_id": "45d3c05392193f664a1dcce5-1e941892",
      "physical_content_sha256": "45d3c05392193f664a1dcce58469181b981781df5863398cb4186961b3c3eb40"
     },
     "skipped_non_object_files": 1
@@ -130,6 +130,26 @@
    "pass": true,
    "evidence": "REPRODUCED"
   },
+  "C11_COUNTER_symlinked_path_into_runner_owned_parent_refused": {
+   "expected": "REFUSED:snapshot_path_not_canonical",
+   "observed": "REFUSED:snapshot_path_not_canonical",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "countermodel_is_real": "RENAMED_AND_RESTORED",
+   "mutant": "a858dc9 lexical ancestor check ACCEPTED this path and the runner then replaced the snapshot (PR #355 review)"
+  },
+  "C11_COUNTER_runner_owned_real_ancestor_refused": {
+   "expected": "REFUSED:snapshot_mutable_by_reader",
+   "observed": "REFUSED:snapshot_mutable_by_reader",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_COUNTER_relative_path_refused": {
+   "expected": "REFUSED:snapshot_path_not_canonical",
+   "observed": "REFUSED:snapshot_path_not_canonical",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
   "C11_expected_format_mismatch_refused": {
    "expected": "REFUSED:snapshot_format_mismatch",
    "observed": "REFUSED:snapshot_format_mismatch",
@@ -191,7 +211,7 @@
    },
    "pass": true,
    "evidence": "REPRODUCED",
-   "producer_vmhwm_MiB": 21.2,
+   "producer_vmhwm_MiB": 21.4,
    "producer_heap_MiB": 2.62,
    "physical_bytes": 261293,
    "inflated_bytes": 268435456
@@ -214,7 +234,34 @@
    "pass": true,
    "evidence": "REPRODUCED",
    "reason": "budget_payload_bytes",
-   "git_unit_rss_MiB_upper_bound": 14.4
+   "git_unit_rss_MiB_upper_bound": 14.8
+  },
+  "C5_blob_charged_per_occurrence_refused": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "one 1 MiB blob at 100 paths, payload budget 8 MiB (a858dc9 accepted it and sealed 104.9 MB)"
+  },
+  "C5_POSITIVE_repeated_blob_within_budget_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_path_bytes_budget_enforced_during_walk": {
+   "expected": "REFUSED:budget_path_bytes",
+   "observed": "REFUSED:budget_path_bytes",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "700 leaves under 98 dirs of 250-byte names: ~18.6 MB of path bytes vs max_path_bytes 16 MiB (a858dc9 accepted)"
+  },
+  "C5_producer_listing_charged_to_entry_budget": {
+   "expected": "REFUSED:physical_budget_exceeded",
+   "observed": "REFUSED:physical_budget_exceeded",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "1,200 non-object names in one fanout dir, max_entries 1000 (a858dc9 listed them unbounded)"
   },
   "C6_root_derived_from_authenticated_commit_only": {
    "expected": {
@@ -265,8 +312,8 @@
    "evidence": "REPRODUCED",
    "survivors": [
     [
-     300777,
-     "22657737"
+     300905,
+     "22832472"
     ]
    ]
   },
@@ -337,7 +384,9 @@
   "cgroup aggregate memory of the git unit",
   "total-capture deadline",
   "production staging GC",
-  "R4-3 envelope vs mapped packs"
+  "R4-3 envelope vs mapped packs (reproduced by review F3 as unavailability, not re-run here)",
+  "teardown with a descendant in uninterruptible sleep (fail-closed path by code reading only)",
+  "producer short write (retry by code reading only)"
  ],
  "resource_vector": {
   "physical_snapshot": {
@@ -345,26 +394,26 @@
    "entry_count": 2,
    "alternate_depth": 0,
    "producer_heap_MiB": 3.81,
-   "producer_rss_MiB_vmhwm": 23.1,
+   "producer_rss_MiB_vmhwm": 23.2,
    "io": {
-    "rchar": 5624669,
+    "rchar": 5625991,
     "wchar": 3646583
    },
-   "time_s": 0.061,
+   "time_s": 0.06,
    "producer_uid": 0
   },
   "subject_closure": {
    "object_count_unique": 933,
    "object_reads": 933,
    "nodes": 1001,
-   "unique_payload_bytes": 8642394,
+   "payload_bytes_charged_per_occurrence": 8660242,
    "metadata_bytes": 51346,
    "path_bytes": 54726,
-   "reader_heap_MiB": 36.68,
+   "reader_heap_MiB": 36.69,
    "reader_rss_MiB_vmhwm": 58.0,
    "local_git_processes": 1,
    "per_object_deadline_s": 30,
-   "time_s": 0.294,
+   "time_s": 0.295,
    "reader_uid": 2000
   },
   "local_git_unit": {

@@ -46,7 +46,7 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 |---|---|
 | `s0_bootstrap.py` | dono único do formato do container, do compromisso de selo e da validação do consumidor; também é o bootstrap do filho (`-c`) |
 | `s0_snapshot_c.py` | **arquitetura C (candidata)**: produtor físico com privilégio separado — cópia por descritor sem Git/inflate/metadata da fonte, alternates autorizados achatados, orçamento físico, staging → finalize → `rename` (commit point), recibo |
-| `s0_reader_c.py` | **arquitetura C (candidata)**: leitor que roda como o runner — recusa snapshot mutável por ele, Git local contido (prazo, `RLIMIT_AS`, subreaper + teardown), raiz derivada de `C`, mapa endereçado por conteúdo, selo + re-derivação |
+| `s0_reader_c.py` | **arquitetura C (candidata)**: leitor que roda como o runner — exige caminho absoluto canônico sem symlink e `CapEff == 0`, recusa snapshot mutável por ele (componentes de `/` para baixo e nós), cobra cada ocorrência e os paths durante a caminhada, Git local contido (prazo, `RLIMIT_AS`, subreaper + teardown), raiz derivada de `C`, mapa endereçado por conteúdo, selo + re-derivação |
 | `s0_snapshot.py` | **arquitetura B (REJEITADA; histórico)**: snapshot físico privado sem remoto (aquisição por descritor da G1C, esqueleto com formato de objeto, sem `verify-pack`), identidade do snapshot |
 | `s0_capture.py` | leitor de objetos com hash-on-read, construção de `S_G`, orçamentos por ocorrência |
 | `s0_deps.py` | `S_D`: lock (dentro de `S_G`) → wheel → membros verificados pelo RECORD |
@@ -60,7 +60,7 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | `exp_bootstrap_env.py` | configuração anterior ao 1º import; `-I` vs `-S`; piso root-owned |
 | `exp_functional.py` | engine real executada só de `S_G`/`S_D`; paridade; contramodelos; censo; com o 9º argumento, a captura de `S_G` passa pelo leitor de C sobre o snapshot publicado |
 | `exp_resources.py` | expansão, orçamentos, falhas e ownership |
-| `exp_arch_c.py` | **arquitetura C**: C1–C11 (mutação negada pelo kernel, metadata da fonte, injeções, objeto ausente, bomba, raiz derivada, neto `setsid`, clone parcial, alternates, crash antes do commit point, leitor como o runner), positivos, vetor de recursos em dois domínios, censo |
+| `exp_arch_c.py` | **arquitetura C**: C1–C11 (+ contra-controles do caminho do leitor e dos orçamentos adicionados após a revisão de `a858dc9`) (mutação negada pelo kernel, metadata da fonte, injeções, objeto ausente, bomba, raiz derivada, neto `setsid`, clone parcial, alternates, crash antes do commit point, leitor como o runner), positivos, vetor de recursos em dois domínios, censo |
 | `exp_snapshot.py` | arquitetura B (**REJEITADA**; reexecutado como histórico): Spike B portado + prazo, forja de pack/`.idx`, sha256, identidade imutável, orçamentos, censo de órfãos |
 | `exp_deps.py` | recusas de S_D em wheels sintéticos (identidade, tags, RECORD, zip bomb, colisões, ELF) |
 | `results/py311/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |

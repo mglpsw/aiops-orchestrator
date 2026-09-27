@@ -11,7 +11,8 @@ The producer only handles PHYSICAL bytes (PhysicalSnapshot != AuthenticatedSubje
   - authorized alternates flattened physically, their pointer never copied; out-of-capability -> refusal;
   - no git, no zlib, no verify-pack, no semantic object validation;
   - no source config, remote, promisor, hooks, HEAD, refs, packed-refs;
-  - physical budget charged from fstat BEFORE each file is read;
+  - physical budget charged from fstat BEFORE each file is read; every LISTED entry counts against the entry
+    budget (copied or skipped); short writes are retried;
   - staging/<id> (0700) -> finalize (files 0444, dirs 0555, fsync) -> atomic rename into committed/<id>:
     the COMMIT POINT. A crash before it leaves staging garbage, never a committed snapshot.
 """
@@ -48,7 +49,15 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
         raise Refused("object_format_unsupported", object_format)
     hexlen = FORMATS[object_format]
     stage = Path(tempfile.mkdtemp(prefix="stage-", dir=Path(out_base) / "staging"))  # 0700 producer-only
-    stats = {"bytes": 0, "entries": 0, "max_depth": 0, "object_dirs": 0, "skipped_non_object": 0}
+    stats = {"bytes": 0, "entries": 0, "max_depth": 0, "object_dirs": 0, "skipped_non_object": 0, "scanned": 0}
+
+    def scanned(entry_iter):
+        """Every listed entry (copied, skipped or ignored) counts against the physical entry budget."""
+        for entry in entry_iter:
+            stats["scanned"] += 1
+            if stats["scanned"] > max_entries:
+                raise Refused("physical_budget_exceeded", f"scanned {stats['scanned']} entries")
+            yield entry
     records = []
 
     def copy_raw(fd: int, dest: Path) -> None:
@@ -71,7 +80,9 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
                     chunk = os.read(fd, min(left, 1 << 20))  # raw compressed bytes; never inflated
                     if not chunk:
                         raise Refused("physical_truncated", str(dest))
-                    os.write(out, chunk)
+                    view = memoryview(chunk)
+                    while view:  # a short write is retried, never recorded as written
+                        view = view[os.write(out, view):]
                     h.update(chunk)
                     left -= len(chunk)
                 if os.read(fd, 1):
@@ -98,7 +109,7 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
             visited.add(key)
             stats["object_dirs"] += 1
             stats["max_depth"] = max(stats["max_depth"], depth)
-            for entry in os.scandir(src_fd):
+            for entry in scanned(os.scandir(src_fd)):
                 if len(entry.name) == 2 and all(c in "0123456789abcdef" for c in entry.name):
                     if entry.is_symlink():
                         raise Refused("physical_symlink", entry.name)
@@ -106,7 +117,7 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
                         continue
                     fan = g1c._open_dir_no_follow_v2(src_fd, entry.name)
                     try:
-                        for obj in os.scandir(fan):
+                        for obj in scanned(os.scandir(fan)):
                             if obj.is_symlink():
                                 raise Refused("physical_symlink", obj.name)
                             if not obj.is_file(follow_symlinks=False):
@@ -120,7 +131,7 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
             pack_fd = g1c._try_open_dir_no_follow_v2(src_fd, "pack")
             if pack_fd is not None:
                 try:
-                    for entry in os.scandir(pack_fd):
+                    for entry in scanned(os.scandir(pack_fd)):
                         if entry.is_symlink():
                             raise Refused("physical_symlink", entry.name)
                         if entry.is_file(follow_symlinks=False) and PACK_NAME.match(entry.name):

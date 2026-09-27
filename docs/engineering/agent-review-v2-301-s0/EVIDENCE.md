@@ -17,7 +17,7 @@ wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
 scripts: experiments/results/py311/SCRIPTS.sha256   # hashes gravados ANTES da execução registrada e conferidos depois (sha256sum -c)
-outcome: 195/195 casos com expectativa passaram (10 scripts; captura pela arquitetura C; exp_arch_c 24/24);
+outcome: 202/202 casos com expectativa passaram (10 scripts; captura pela arquitetura C; exp_arch_c 31/31);
          2 observações sem expectativa em exp_process_channel e 1 em exp_structure
          (non_utf8_name_S_vs_C3); único stderr = aviso esperado do zipfile no fixture de membro
          duplicado (exp_deps.stderr)
@@ -61,7 +61,7 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Corpus real capturado pela arquitetura C | `exp_functional.json` `S_G_digest_equals_architecture_A_record_on_this_corpus` (`capture_architecture: C`) | `95504743…` igual ao registro anterior; paridade funcional de E mantida | aqui; produtor uid 0 (`producer_functional.json`), leitor no processo de EXP-FUNC | controle positivo **neste corpus**, não equivalência universal |
 | **B/iv** — kill vs fechar-e-esperar (R4-4) | `exp_resources.json` `ABLATION_close_and_wait_refusal_path_waits_for_transport` | mutante espera 8,0 s; kill < 4 s | aqui | — |
 | **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
-| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 15,8 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
+| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 15,6 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
 | **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
 | **C** — o objeto comprometido é o autenticado (**S_G**) | `exp_capture_stability.json` `authenticate_A_substitute_B_*`, `ABLATION_no_post_seal_revalidation_*`, `node_not_in_acquisition_record_refused`, `mutate_unsealed_S_then_seal_refused` | `sealed_binding_mismatch`; ablação compromete `EVIL`; `sealed_record_mismatch`; `sealed_content_mismatch` | aqui | tree oids vinculados pelo registro, não re-hasheados pós-selo |
 | **D** — limite de componente explícito (**S_G**) | `exp_structure.json` `component_256_*`, `C3_parity_under_same_limit_300`, `C3_also_refuses_*`, `no_admission_limit_refused` | 300 admite, 255 recusa, C3 igual sob o mesmo limite; ausência recusada | aqui | — |
@@ -91,7 +91,7 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 
 ## Arquitetura C (candidata) — EXP-ARCH-C
 
-`exp_arch_c.json` (24/24, `evidence: REPRODUCED` em cada caso). O orquestrador roda como root no
+`exp_arch_c.json` (31/31, `evidence: REPRODUCED` em cada caso; 7 casos novos após a revisão de `a858dc9`). O orquestrador roda como root no
 container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader_c.py`) roda
 **sempre** como uid 2000 via `setpriv --reuid=2000 --regid=2000 --clear-groups`. A propriedade é
 `RunnerCanRead ∧ ¬RunnerCanMutate`; uid 0 é o mecanismo deste container, não a primitiva.
@@ -104,11 +104,12 @@ container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader
 | **C4/C8B** objeto ausente | `C4_C8B_missing_required_object_no_network` | `object_missing`; marcador de busca ausente; pré-condição (objeto ausente na fonte) verificada | — |
 | **C8A** clone parcial completo | `C8A_partial_clone_complete_closure_accepted` | aceito; marcador ausente; pré-condição `rev-list --missing=print` verificada | Git do fixture roda como o runner |
 | **C9** alternates | `C9_authorized_alternate_flattened_no_pointer`, `C9_unauthorized_alternate_typed_refusal` | autorizado: achatado, sem ponteiro, 1 fonte alternativa; fora da capability: `alternate_outside_authorized_storage` | quem autorizou a capability: #331/C2_B |
-| **C5** bomba | `C5_producer_never_inflates`, `C5_unrelated_bomb_does_not_affect_runner_S_G`, `C5_bomb_in_closure_runner_bounded_refusal` | loose de 256 MiB inflados (261.293 B físicos): produtor VmHWM 21,2 MiB, heap 2,62 MiB; fora da closure → S_G aceito; na closure → `budget_payload_bytes`, unidade Git ≤ 14,4 MiB | envelope por processo; agregado não testado |
-| **C6** autoridade da raiz | `C6_root_derived_from_authenticated_commit_only`, `C6_ABLATION_trusting_aux_root_changes_S_G`, `C6_forged_object_map_entry_refused` | raiz `a3ab46d8…` derivada de `C`; registro auxiliar sem efeito; ablação `root_override` → raiz `6a638b87…` (S_G muda); mapa forjado → `object_map_binding_mismatch` | integridade do processo leitor: **P** |
+| **C5** bomba | `C5_producer_never_inflates`, `C5_unrelated_bomb_does_not_affect_runner_S_G`, `C5_bomb_in_closure_runner_bounded_refusal` | loose de 256 MiB inflados (261.293 B físicos): produtor VmHWM 21,4 MiB, heap 2,62 MiB; fora da closure → S_G aceito; na closure → `budget_payload_bytes`, unidade Git ≤ 14,8 MiB | envelope por processo; agregado não testado; bomba fora da closure só como **loose** (um pack acima do envelope torna S_G indisponível: F3) |
+| **C5 (leitor de C)** orçamento por ocorrência e de paths; listagem do produtor | `C5_blob_charged_per_occurrence_refused`, `C5_POSITIVE_repeated_blob_within_budget_accepted`, `C5_path_bytes_budget_enforced_during_walk`, `C5_producer_listing_charged_to_entry_budget` | 1 MiB × 100 paths com 8 MiB → `budget_payload_bytes` (controle 4 paths aceito); ~18,6 MB de paths → `budget_path_bytes`; 1.200 nomes não-objeto com 1.000 entradas → `physical_budget_exceeded` | o mutante é `a858dc9`, que aceitou os três (reprodução da revisão) |
+| **C6** autoridade da raiz (`aux_record_no_effect` vale **por construção**: `commit_sg` não recebe raiz; discriminam a ablação e o mapa forjado) | `C6_root_derived_from_authenticated_commit_only`, `C6_ABLATION_trusting_aux_root_changes_S_G`, `C6_forged_object_map_entry_refused` | raiz `a3ab46d8…` derivada de `C`; registro auxiliar sem efeito; ablação `root_override` → raiz `6a638b87…` (S_G muda); mapa forjado → `object_map_binding_mismatch` | integridade do processo leitor: **P** |
 | **C7** tempo de vida da unidade | `C7_runner_unit_teardown_0_survivors`, `C7_ABLATION_process_group_only_leaves_setsid_survivor` | ferramenta falsa → filho → neto `setsid` → `sleep`: `transport_deadline`, 3 mortos, 0 restantes, leitor uid 2000; ablação: 1 sobrevivente, limpo por pid + starttime + nonce | — |
 | **C10** crash antes do commit point | `C10_sigkill_before_publish_no_committed_snapshot` | SIGKILL no staging: nenhum snapshot novo em `committed/`; lixo de staging presente; runner lista `staging/` → EACCES | GC do staging: futuro |
-| **C11** leitor como o runner | `C11_unprivileged_reader_derives_S_G_structure`, `C11_COUNTER_reader_refuses_runner_mutable_snapshot`, `C11_expected_format_mismatch_refused`, `C11_POSITIVE_real_toolrepo_runner_derived_S_G_equals_prior_record` | uid 2000 deriva o mapa declarado (vazio, executável, symlink `pkg/../main.py`, aninhado); cópia de posse do runner → `snapshot_mutable_by_reader`; formato divergente → `snapshot_format_mismatch`; toolrepo real → `95504743…` | igualdade do digest é controle positivo **neste** subject |
+| **C11** leitor como o runner | `C11_unprivileged_reader_derives_S_G_structure`, `C11_COUNTER_reader_refuses_runner_mutable_snapshot`, `C11_COUNTER_symlinked_path_into_runner_owned_parent_refused`, `C11_COUNTER_runner_owned_real_ancestor_refused`, `C11_COUNTER_relative_path_refused`, `C11_expected_format_mismatch_refused`, `C11_POSITIVE_real_toolrepo_runner_derived_S_G_equals_prior_record` | uid 2000 deriva o mapa declarado (vazio, executável, symlink `pkg/../main.py`, aninhado); cópia de posse do runner → `snapshot_mutable_by_reader`; snapshot root-owned sob diretório do runner: por symlink root-owned → `snapshot_path_not_canonical` (contramodelo confirmado: o runner renomeia o snapshot), por caminho direto → `snapshot_mutable_by_reader`, relativo → `snapshot_path_not_canonical`; formato divergente → `snapshot_format_mismatch`; toolrepo real → `95504743…` | igualdade do digest é controle positivo **neste** subject; o mutante da checagem lexical é `a858dc9` |
 | Positivos | `POSITIVE_sha256_runner_S_G`, C9 autorizado, C8A, C11 | sha256 aceito; sha1 no corpus real | — |
 | Lifecycle | `LIFECYCLE_no_survivors_no_listeners` | sem processos nem sockets em escuta | namespace de PID do container |
 
@@ -116,10 +117,10 @@ container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader
 
 ```yaml
 physical_snapshot: {compressed_bytes: 3646095, entries: 2, alternate_depth: 0, producer_heap_MiB: 3.81,
-                    producer_vmhwm_MiB: 23.1, io: {rchar: 5624669, wchar: 3646583}, time_s: 0.061, producer_uid: 0}
-subject_closure:   {unique_objects: 933, object_reads: 933, nodes: 1001, unique_payload_bytes: 8642394,
-                    metadata_bytes: 51346, path_bytes: 54726, reader_heap_MiB: 36.68, reader_vmhwm_MiB: 58.0,
-                    local_git_processes: 1, per_object_deadline_s: 30, time_s: 0.294, reader_uid: 2000}
+                    producer_vmhwm_MiB: 23.2, io: {rchar: 5625991, wchar: 3646583}, time_s: 0.060, producer_uid: 0}
+subject_closure:   {unique_objects: 933, object_reads: 933, nodes: 1001, payload_bytes_charged_per_occurrence: 8660242,
+                    metadata_bytes: 51346, path_bytes: 54726, reader_heap_MiB: 36.69, reader_vmhwm_MiB: 58.0,
+                    local_git_processes: 1, per_object_deadline_s: 30, time_s: 0.295, reader_uid: 2000}
 local_git_unit:    {rss_MiB_upper_bound: 14.5, envelope: "RLIMIT_AS 128 MiB per process", aggregate_memory: NOT_TESTED}
 ```
 
@@ -130,7 +131,9 @@ sem contenção 68 MiB); aqui só o lado contido foi medido; NOT_TESTED — ver 
 **B-findings sob C (disposição candidata; nenhuma "fechada" antes da revisão do exact head):** B1/B2
 `ELIMINATED_BY_PRIVILEGE_BOUNDARY` (C1/C3/C4/C8), B3 `ELIMINATED_FROM_PHYSICAL_PRODUCER` (C5), B4
 `AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT` (C6), B5 `DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL`
-(C7), B6 `PARTIAL` (`tmp_obj_*` ignorado pelo nome; o resto não retestado).
+(C7), B6 `PARTIAL` (`tmp_obj_*` ignorado pelo nome; o resto não retestado). Nota: a revisão de `a858dc9` reproduziu o
+mecanismo de B-2 por um caminho **não canônico** entregue ao leitor (RC-1); a disposição de B2
+continua candidata e depende da precondição corrigida (C11 contra-controles).
 
 | Item de A/B | Estado sob C |
 |---|---|
@@ -138,6 +141,36 @@ sem contenção 68 MiB); aqui só o lado contido foi medido; NOT_TESTED — ver 
 | R4-1 família (recursos do Git local) | **aberta**, owner #320; prazo por objeto, `RLIMIT_AS` por processo, subreaper; agregado e prazo total não reivindicados |
 | R4-2 / B-4 | raiz derivada dos bytes autenticados de `C`, sem autoridade independente; discriminado por C6 |
 | R4-3 | aberto (parâmetro do envelope) |
+
+## Revisão do exact head `a858dc9` → correção proporcional única (este head)
+
+Revisores do exact head `a858dc9`:
+- **Codex:** review 5331717758, com 5 comentários inline.
+- **Revisão adversarial independente:** subagente com contexto limpo, do mesmo modelo, portanto com independência limitada. Os experimentos rodaram em containers descartáveis.
+
+CI do head `a858dc9`: verde. O comentário 5859018189 registra o corte. Ambos os revisores atacaram as prioridades 1–8. Nada forjado passou pelo hash-on-read, e a separação de privilégio é real: o leitor roda com uid/gid 2000 e todas as capabilities zeradas.
+
+| # | Achado | Fonte | Estabelecido | Material a | Classificação (regra de convergência) | Destino |
+|---|---|---|---|---|---|---|
+| RC-1 | A checagem de imutabilidade do leitor era **lexical**. Com um symlink root-owned no caminho apontando para um diretório do runner, ou um caminho relativo, o snapshot era aceito; depois disso o runner trocava o diretório, e o Git honrava a `config` do runner e **executava o helper dele** | Codex P1 (4116643939); adversarial F1 | **reproduzido**: aceito + `RENAMED_AND_RESTORED`; troca instrumentada com o helper executado; corrida real: 38/80 aceitos e 3/80 com o helper executado | 301S-PRIV (checagem no consumo); disposição candidata de B2 | O revisor adversarial classificou como **(a) condicional ao caminho**. Adjudicação: **defeito local da precondição**. Com o caminho canônico de publicação, os dois revisores confirmam que o runner não tem autoridade de escrita sobre nada que o Git lê. A autoridade explorada (ancestral real do runner) já era excluída pelo contrato ("qualquer ancestral; symlink"); a implementação da checagem não a verificava. **Decisão sensível — ver a adjudicação na PR.** | caminho absoluto canônico, sem symlink em nenhum componente, componentes reais de `/` para baixo, `CapEff == 0`; três contra-controles C11 novos |
+| RC-2 | O leitor de C cobrava o payload **por objeto único**, mas materializava por ocorrência | Codex P1 (4116643927); adversarial F2 | **reproduzido**: 1 MiB × 100 com orçamento de 8 MiB → aceito, 104,9 MB selados; 200 × 1 MiB → VmHWM 629,6 MiB | 301S-RES (`closure_budget`) | Transição cobrar-X/consumir-Y **de recurso**; a autenticação continua intacta. É regressão de uma propriedade que A tinha discriminado (EXP-RES) e que o port para C não levou; EVIDENCE de `a858dc9` citava EXP-RES para C **sem reexecução** (overclaim meu) | cobrança de cada ocorrência repetida; `C5_blob_charged_per_occurrence_refused` + positivo |
+| RC-3 | `walk` não chamava `charge_node`: o orçamento de 16 MiB de paths não era aplicado | Codex P1 (4116643928); adversarial F2 | **reproduzido**: 18,6 MB de paths aceitos | 301S-RES | local | `charge_node` na caminhada; `C5_path_bytes_budget_enforced_during_walk` |
+| RC-4 | `remaining` do teardown era descartado; o status de subreaper não era conferido | Codex P2 (4116643930); adversarial F5 | leitura de código | 301S-LIFE | local | `unit_teardown_incomplete`, `subreaper_required`; descendente em estado D **não testado** |
+| RC-5 | escrita curta do produtor registrada como completa | Codex P2 (4116643935) | leitura de código | recibo (rastreabilidade) | local | laço de escrita; **não testado** |
+| RC-6 | um pack não relacionado maior que o envelope torna S_G indisponível | adversarial F3 | reproduzido pelo revisor | disponibilidade; R4-3 | fora das duas classes de STOP; decisão de valores | **não corrigido**: §8 e §12 (i) registram a incoerência 256 MiB × 128 MiB e a razão de recusa enganosa |
+| RC-7 | a listagem do produtor não tinha limite (300.000 nomes `tmp_obj_*` aceitos) | adversarial F4 | reproduzido pelo revisor | `snapshot_budget` | local | toda entrada listada conta; `C5_producer_listing_charged_to_entry_budget` |
+| RC-8 | discriminadores fracos: C11 só exercitava a posse; `aux_record_no_effect` vale por construção | adversarial F6 | leitura de código | evidência | — | contra-controles C11 novos; C6 rotulado |
+| RC-9 | dono de terceiro uid; CAP_FOWNER | adversarial F7 | plausível | 301S-PRIV | — | `CapEff == 0` exigido; terceiro uid fica fora do domínio (§3: "UID diferente: fora"); vincular o dono à identidade do produtor é obrigação de S1/U3 |
+
+**Regra de convergência deste corte.**
+- Nenhum achado mostra, **com a publicação que a arquitetura especifica**, outra autoridade gravável sobre o namespace Git.
+- Nenhum achado mostra outra transição autenticar-X/consumir-Y na autenticação dos objetos.
+
+RC-1 e RC-2 são as decisões sensíveis:
+- **RC-1** reproduz o mecanismo de B-2 quando o caminho entregue ao leitor não é canônico.
+- **RC-2** é uma transição cobrar/consumir no orçamento.
+
+Adjudiquei os dois como defeitos locais de obrigações delimitadas (301S-PRIV e 301S-RES) e apliquei **uma** correção proporcional, com requalificação completa. Se o mantenedor entender RC-1 como recorrência da fronteira, a disposição correta passa a ser `STOP_301_C_BOUNDARY_RECURRENCE`. Não haverá outro patch neste corte: achados sobre o head corretivo vão para adjudicação humana.
 
 ## Herdado e não reexecutado
 

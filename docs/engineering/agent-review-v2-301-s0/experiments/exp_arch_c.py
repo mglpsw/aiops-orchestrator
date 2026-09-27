@@ -182,6 +182,25 @@ chown_runner(mutable)
 subprocess.run(["chmod", "-R", "u+w", str(mutable)], check=True)
 case("C11_COUNTER_reader_refuses_runner_mutable_snapshot", "REFUSED:snapshot_mutable_by_reader",
      outcome(reader("acquire", snapshot=str(mutable), expected=expected(c_src))))
+# counter-controls for the path the reader is handed (review of a858dc9: Codex P1 + adversarial F1). The published
+# snapshot is copied, still root-owned 0555/0444, under a RUNNER-owned directory; the runner then owns a real ancestor.
+rdir = WORK / "runner-owned-parent"
+rdir.mkdir()
+subprocess.run(["cp", "-a", str(snap), str(rdir / "snap")], check=True)
+os.chown(rdir, RUNNER, RUNNER)
+os.chmod(rdir, 0o555)
+link_parent = BASE / "link"
+link_parent.mkdir(mode=0o755)
+os.symlink(rdir, link_parent / "pub")            # root-owned symlink: the runner cannot create this one
+RENAME = "import os,sys\ntry:\n    os.chmod(sys.argv[1], 0o755); os.rename(sys.argv[2], sys.argv[2] + '.x'); os.rename(sys.argv[2] + '.x', sys.argv[2]); os.chmod(sys.argv[1], 0o555); print('RENAMED_AND_RESTORED')\nexcept OSError as e:\n    print('DENIED', e.errno)"
+case("C11_COUNTER_symlinked_path_into_runner_owned_parent_refused", "REFUSED:snapshot_path_not_canonical",
+     outcome(reader("acquire", snapshot=str(link_parent / "pub" / "snap"), expected=expected(c_src))),
+     countermodel_is_real=as_runner(RENAME, str(rdir), str(rdir / "snap")),
+     mutant="a858dc9 lexical ancestor check ACCEPTED this path and the runner then replaced the snapshot (PR #355 review)")
+case("C11_COUNTER_runner_owned_real_ancestor_refused", "REFUSED:snapshot_mutable_by_reader",
+     outcome(reader("acquire", snapshot=str(rdir / "snap"), expected=expected(c_src))))
+case("C11_COUNTER_relative_path_refused", "REFUSED:snapshot_path_not_canonical",
+     outcome(reader("acquire", snapshot=os.path.relpath(snap, "/"), expected=expected(c_src))))
 case("C11_expected_format_mismatch_refused", "REFUSED:snapshot_format_mismatch",
      outcome(reader("acquire", snapshot=str(snap), expected={**expected(c_src), "object_format": "sha256",
                                                             "commit_oid": c_src + "0" * 24})))
@@ -270,11 +289,45 @@ case("C5_bomb_in_closure_runner_bounded_refusal", {"refused": True, "git_unit_un
      {"refused": r5["status"] == "refused", "git_unit_under_128MiB_envelope": r5.get("git_unit_rss_MiB_upper_bound", 999) <= 128},
      reason=r5.get("result", {}).get("reason"), git_unit_rss_MiB_upper_bound=r5.get("git_unit_rss_MiB_upper_bound"))
 
+# per-occurrence charging and the path-byte budget in the C reader (review of a858dc9: Codex P1 x2 + adversarial F2)
+occ = fx.init(WORK / "occ")
+mib = fx.blob(occ, os.urandom(1 << 20))
+c_occ = fx.commit(occ, fx.mktree(occ, [("100644", "blob", mib, b"f%03d" % i) for i in range(100)]))
+c_occ_ok = fx.commit(occ, fx.mktree(occ, [("100644", "blob", mib, b"f%03d" % i) for i in range(4)]))
+deep = fx.init(WORK / "deep")
+e0 = fx.blob(deep, b"")
+t = fx.mktree(deep, [("100644", "blob", e0, b"%04d" % i + b"L" * 246) for i in range(700)])
+for _ in range(98):
+    t = fx.mktree(deep, [("040000", "tree", t, b"D" * 250)])
+c_deep = fx.commit(deep, fx.mktree(deep, [("040000", "tree", t, b"top")]))
+chown_runner(WORK)
+socc, sdeep = produce(occ, "sha1", [occ])["result"]["snapshot"], produce(deep, "sha1", [deep])["result"]["snapshot"]
+case("C5_blob_charged_per_occurrence_refused", "REFUSED:budget_payload_bytes",
+     outcome(reader("acquire", snapshot=socc, expected=expected(c_occ), payload_budget=8 << 20)),
+     shape="one 1 MiB blob at 100 paths, payload budget 8 MiB (a858dc9 accepted it and sealed 104.9 MB)")
+case("C5_POSITIVE_repeated_blob_within_budget_accepted", "ACCEPTED",
+     outcome(reader("acquire", snapshot=socc, expected=expected(c_occ_ok), payload_budget=8 << 20)))
+case("C5_path_bytes_budget_enforced_during_walk", "REFUSED:budget_path_bytes",
+     outcome(reader("acquire", snapshot=sdeep, expected=expected(c_deep))),
+     shape="700 leaves under 98 dirs of 250-byte names: ~18.6 MB of path bytes vs max_path_bytes 16 MiB (a858dc9 accepted)")
+scan = fx.init(WORK / "scan")
+c_scan = fx.commit(scan, fx.mktree(scan, [("100644", "blob", fx.blob(scan, b"s\n"), b"s.py")]))
+fan = scan / ".git" / "objects" / "ab"
+fan.mkdir(exist_ok=True)
+for i in range(1200):
+    (fan / f"tmp_obj_{i:05d}").write_bytes(b"")
+chown_runner(WORK)
+case("C5_producer_listing_charged_to_entry_budget", "REFUSED:physical_budget_exceeded",
+     outcome(produce(scan, "sha1", [scan], max_entries=1000)),
+     shape="1,200 non-object names in one fanout dir, max_entries 1000 (a858dc9 listed them unbounded)")
+
 # ---------------------------------------------------------------- C6 identity (runner) ----------------------
 r6 = reader("c6", snapshot=str(snap), expected=expected(c_src), other_tree=nested)
 res6 = r6.get("result", {})
 derived = subprocess.run(["git", "-C", str(src), "rev-parse", c_src + "^{tree}"], capture_output=True, text=True,
                          env=fx.FIXTURE_ENV).stdout.strip()
+# aux_record_no_effect holds BY CONSTRUCTION (commit_sg takes no root input); the discriminators are the ablation
+# and the forged map entry (review of a858dc9, adversarial F6)
 case("C6_root_derived_from_authenticated_commit_only", {"root": derived, "aux_record_no_effect": True},
      {"root": res6.get("root"), "aux_record_no_effect": res6.get("root_with_aux_records_present") == derived and res6.get("digest_stable")})
 case("C6_ABLATION_trusting_aux_root_changes_S_G", True, res6.get("ablation_changes_S_G"), ablation_root=res6.get("ablation_root"))
@@ -352,7 +405,7 @@ out["resource_vector"] = {
                           "producer_rss_MiB_vmhwm": preal["rss_MiB"], "io": preal["io"], "time_s": preal["time_s"],
                           "producer_uid": preal["uid"]},
     "subject_closure": {"object_count_unique": areal["result"].get("unique_objects"), "object_reads": areal["result"].get("objects_read"),
-                        "nodes": areal["result"].get("nodes"), "unique_payload_bytes": areal["result"].get("payload_bytes"),
+                        "nodes": areal["result"].get("nodes"), "payload_bytes_charged_per_occurrence": areal["result"].get("payload_bytes"),
                         "metadata_bytes": areal["result"].get("metadata_bytes"), "path_bytes": areal["result"].get("path_bytes"),
                         "reader_heap_MiB": areal["heap_peak_MiB"], "reader_rss_MiB_vmhwm": areal["rss_MiB"],
                         "local_git_processes": 1, "per_object_deadline_s": 30, "time_s": areal["time_s"], "reader_uid": areal["uid"]},
@@ -360,7 +413,9 @@ out["resource_vector"] = {
                        "aggregate_memory": "NOT_TESTED (no cgroup)"}}
 out["not_tested"] += ["CT104", "production producer/service and its provenance (U3)", "C2_B host policy provenance (#331)",
                       "#319 anchor provenance", "cgroup aggregate memory of the git unit", "total-capture deadline",
-                      "production staging GC", "R4-3 envelope vs mapped packs"]
+                      "production staging GC", "R4-3 envelope vs mapped packs (reproduced by review F3 as unavailability, not re-run here)",
+                      "teardown with a descendant in uninterruptible sleep (fail-closed path by code reading only)",
+                      "producer short write (retry by code reading only)"]
 
 time.sleep(0.5)
 after = census()

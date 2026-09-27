@@ -40,7 +40,7 @@
    "expected": "ACCEPTED",
    "observed": "ACCEPTED",
    "pass": true,
-   "heap_peak_MiB": 99.92,
+   "heap_peak_MiB": 97.03,
    "note": "heap ~ blob size: the carrier is in-memory by design; the budget bounds it"
   },
   "oversized_tree_refused_before_read": {
@@ -80,11 +80,11 @@
    "pass": true,
    "uncontained": {
     "result": "REFUSED:budget_tree_entries_pre_read",
-    "git_child_maxrss_MiB": 68.1
+    "git_child_maxrss_MiB": 68.3
    },
    "contained": {
     "result": "REFUSED:budget_tree_entries_pre_read",
-    "git_child_maxrss_MiB": 10.9
+    "git_child_maxrss_MiB": 11.0
    },
    "envelope_MiB": 64
   },
@@ -102,11 +102,11 @@
    "pass": true,
    "uncontained": {
     "result": "REFUSED:budget_commit_bytes",
-    "git_child_maxrss_MiB": 68.0
+    "git_child_maxrss_MiB": 68.1
    },
    "contained": {
     "result": "REFUSED:budget_commit_bytes",
-    "git_child_maxrss_MiB": 11.0
+    "git_child_maxrss_MiB": 10.9
    },
    "envelope_MiB": 64
   },
