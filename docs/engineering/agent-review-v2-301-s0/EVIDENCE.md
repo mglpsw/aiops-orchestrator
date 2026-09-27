@@ -15,7 +15,7 @@ wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
 scripts: experiments/results/py311/SCRIPTS.sha256   # os arquivos que produziram estes resultados
-outcome: 148/148 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
+outcome: 171/171 casos com expectativa passaram (9 scripts; arquitetura B); 2 observações sem expectativa em
          exp_process_channel e 1 em exp_structure (non_utf8_name_S_vs_C3); único stderr = aviso
          esperado do zipfile no fixture de membro duplicado (exp_deps.stderr)
 reproduction: própria (esta sessão); não é reprodução independente
@@ -23,7 +23,7 @@ reproduction: própria (esta sessão); não é reprodução independente
 
 Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
 ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
-deste head; as dos heads `3d426e1`, `1e2453e` e `1299b00` continuam no histórico git.
+deste head; as dos heads `3d426e1`, `1e2453e`, `1299b00` e `cf69fbf` (arquitetura A) continuam no histórico git. O Spike B (host 3.12/git 2.43) foi evidência de viabilidade; a execução registrada aqui é o runtime declarado (3.11/git 2.39).
 
 **Escopo após a decisão do mantenedor (CONTRACT, topo):** as linhas marcadas **S_G** sustentam a
 claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qualificação.
@@ -43,6 +43,15 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui | kernel 6.18 |
 | Janela pré-selo; selo estranho; mapeamento retido | `pre_seal_*`, `ABLATION_no_post_seal_rehash_*` | detectado / `seal_failed`; mutante `COMMITTED` | aqui | — |
 | M mutado após captura; consumidor não lê M | `M_mutated_*`, `consumer_*` | digest igual; `trusted`; 0 aberturas | aqui | `cwd=M`, `PYTHONPATH=M` oferecidos |
+| **SNAP** — snapshot sem Git e sem busca (**S_G**) | `exp_snapshot.json` `Q1_snapshot_runs_no_git_and_no_fetch`, `Q2_*`, `Q6_*` | 0 processos Git no snapshot; marcador de `uploadpack` ausente; sem remoto no snapshot; `object_missing` tipado; clone parcial com closure completa admitido; o leitor roda só `rev-parse`/`cat-file` com cwd no snapshot | aqui | autorização do host para as raízes: #331 |
+| **SNAP** — snapshot adulterado depois de tirado (**S_G**) | `Q3_*` | loose trocado → `object_hash_mismatch`; objeto malformado → `transport_deadline` em 3,0 s; **ablação sem prazo trava** (morto aos 15 s); `.idx` forjado → `object_hash_mismatch`; pack corrompido → `object_truncated` | aqui | sem `verify-pack` no caminho de S_G |
+| **SNAP** — identidade de aquisição imutável (R4-2) | `Q4_*` | root_tree/commit trocados após a aquisição → `sealed_identity_mismatch`; `Subject` congelado; controle comprometido | aqui | integridade do registro sob a premissa **P** do produtor |
+| **SNAP** — sha256 pelo snapshot | `SHA256_*` | captura aceita com snapshot `sha256`; adulteração recusada | aqui | — |
+| **SNAP** — duas classes de orçamento | `Q7_*` | store de 50,3 MB / subject de 1 blob → `snapshot_refused`; subject de 48 MiB → `budget_payload_bytes` com snapshot aceito | aqui | — |
+| **SNAP** — identidade do snapshot (rastreabilidade) | `snapshot_identity_distinguishes_snapshot_from_S_G` | mesmo store → mesmo recibo; store alterado → recibo diferente, S_G igual | aqui | recibo não é trust root |
+| **SNAP** — censo de órfãos | `no_orphan_processes_or_listeners_remain` | nenhum processo nem socket em escuta novo | aqui, namespace de PID do container | no host o censo vê outras sessões |
+| **SNAP** — corpus real pelo snapshot | `exp_functional.json` `S_G_digest_equals_architecture_A_record_on_this_corpus` | `95504743…` igual ao registro da arquitetura A; paridade funcional de E mantida | aqui | controle positivo **neste corpus**, não equivalência universal |
+| **B/iv** — kill vs fechar-e-esperar (R4-4) | `exp_resources.json` `ABLATION_close_and_wait_refusal_path_waits_for_transport` | mutante espera 8,0 s; kill < 4 s | aqui | — |
 | **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
 | **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito; filho 14,7 MiB ≤ 128 MiB | aqui | — |
 | **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
@@ -91,7 +100,28 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 - Interpretador não oficial (Debian `/usr/bin/python3.11`), musl.
 - Reprodução independente por outro operador/máquina.
 
-## Rodada de revisão 3 (head `1299b00`) → STOP/REDESIGN → decisões (a)–(d) → este head
+## Arquitetura A rejeitada após a rodada 4 → Spike B → arquitetura B (este head)
+
+Rodada 4 em `cf69fbf`: duas recorrências admitidas **dentro** do mecanismo ratificado. R4-1: o
+transporte `git` é uma árvore de processos (busca lazy de clone parcial antes do cabeçalho). R4-2:
+a identidade da raiz fora do registro de aquisição. Pela regra de parada acordada, não houve rodada
+5: a arquitetura A (transporte Git vivo) foi **rejeitada** (comentário 5852664959). O mantenedor
+escolheu a opção 2. O Spike B foi favorável às 7 perguntas (comentário 5852938161), com as
+qualificações do topo de CONTRACT. Este head é o **corte sucessor** documental/experimental.
+
+| Item | Estado neste head |
+|---|---|
+| R4-1 mecanismo original (busca lazy / árvore de processos do repo vivo) | **eliminado por construção** (SNAP Q1/Q2) |
+| R4-1 família (CPU/memória/tempo do Git local sobre o snapshot) | **aberta**, owner #320; prazo, `RLIMIT_AS` e grupo de processos no protótipo; o Spike B e EXP-SNAP reproduziram uma instância de travamento sem prazo |
+| R4-2 | mecanismo **integrado e discriminado** (SNAP Q4); fechamento só após revisão do head exato |
+| R4-3 (envelope × packs mapeados) | aberto como parâmetro do envelope |
+| R4-4 (discriminador B) | corrigido: ablação close-and-wait |
+| R4-5 (sessão sem prazo) | prazo por objeto + ablação |
+| R4-6 (interface C3 subdeclarada) | preservado; §12 nomeia a decisão do owner |
+| `verify-pack` | fora do caminho de S_G; forja de pack/`.idx` sem falso positivo |
+| Harness | censo de órfãos incluído (lição dos `git-daemon` órfãos da revisão da rodada 4) |
+
+## Rodada de revisão 3 (head `1299b00`) → STOP/REDESIGN → decisões (a)–(d) → `cf69fbf`
 
 A autenticação de S_G se manteve. Foi admitida recorrência sobre a correção da rodada 1 (limite de
 corpos commit/tree). R3-1: o filho `git` expande; medido em 68,2 MiB. R3-2: um cabeçalho negativo

@@ -1,0 +1,200 @@
+{
+ "cases": {
+  "Q1_snapshot_runs_no_git_and_no_fetch": {
+   "expected": {
+    "processes": [],
+    "fetch_attempted": false,
+    "remote_in_snapshot": false
+   },
+   "observed": {
+    "processes": [],
+    "fetch_attempted": false,
+    "remote_in_snapshot": false
+   },
+   "pass": true
+  },
+  "Q2_missing_required_object_typed_refusal": {
+   "expected": "REFUSED:object_missing",
+   "observed": "REFUSED:object_missing",
+   "pass": true
+  },
+  "Q2_offline_closure_complete_partial_clone_admitted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "Q2_no_fetch_during_closure_reads": {
+   "expected": false,
+   "observed": false,
+   "pass": true
+  },
+  "Q6_reader_runs_only_rev_parse_and_cat_file_inside_the_snapshot": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "reader_processes": [
+    {
+     "argv": [
+      "git",
+      "rev-parse",
+      "--show-object-format"
+     ],
+     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+    },
+    {
+     "argv": [
+      "git",
+      "cat-file",
+      "--batch"
+     ],
+     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+    },
+    {
+     "argv": [
+      "git",
+      "rev-parse",
+      "--show-object-format"
+     ],
+     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+    },
+    {
+     "argv": [
+      "git",
+      "cat-file",
+      "--batch"
+     ],
+     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+    }
+   ]
+  },
+  "Q3_loose_object_swapped_in_snapshot": {
+   "expected": "REFUSED:object_hash_mismatch",
+   "observed": "REFUSED:object_hash_mismatch",
+   "pass": true
+  },
+  "Q3_malformed_loose_object_refused_by_deadline": {
+   "expected": {
+    "result": "REFUSED:transport_deadline",
+    "within_10s": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_deadline",
+    "within_10s": true
+   },
+   "pass": true,
+   "elapsed_s": 3.0
+  },
+  "Q3_ABLATION_no_deadline_hangs": {
+   "expected": "HANG_KILLED_BY_HARNESS_AT_15s",
+   "observed": "HANG_KILLED_BY_HARNESS_AT_15s",
+   "pass": true
+  },
+  "Q5_packed_control_accepted_without_verify_pack": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "Q3_forged_idx_never_false_positive": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "observed_reason": "REFUSED:object_hash_mismatch",
+   "note": "verify-pack is not run on the S_G path; hash-on-read is the truth-maker"
+  },
+  "Q3_corrupted_pack_never_false_positive": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "observed_reason": "REFUSED:object_truncated"
+  },
+  "Q4_root_tree_changed_after_acquisition_refused": {
+   "expected": "REFUSED:sealed_identity_mismatch",
+   "observed": "REFUSED:sealed_identity_mismatch",
+   "pass": true
+  },
+  "Q4_commit_changed_after_acquisition_refused": {
+   "expected": "REFUSED:sealed_identity_mismatch",
+   "observed": "REFUSED:sealed_identity_mismatch",
+   "pass": true
+  },
+  "Q4_control_commits": {
+   "expected": "COMMITTED",
+   "observed": "COMMITTED",
+   "pass": true
+  },
+  "Q4_subject_is_frozen": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "SHA256_capture_through_snapshot": {
+   "expected": {
+    "result": "ACCEPTED",
+    "snapshot_format": "sha256"
+   },
+   "observed": {
+    "result": "ACCEPTED",
+    "snapshot_format": "sha256"
+   },
+   "pass": true
+  },
+  "SHA256_snapshot_tamper_refused": {
+   "expected": "REFUSED:object_hash_mismatch",
+   "observed": "REFUSED:object_hash_mismatch",
+   "pass": true
+  },
+  "Q7_physical_budget_refuses_by_store_footprint_not_subject": {
+   "expected": "REFUSED:snapshot_refused",
+   "observed": "REFUSED:snapshot_refused",
+   "pass": true,
+   "store_bytes": 50348664,
+   "subject": "1 tiny blob"
+  },
+  "Q7_subject_budget_is_a_separate_class": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "note": "snapshot within its physical budget; the SUBJECT budget refuses the 48 MiB closure"
+  },
+  "snapshot_identity_distinguishes_snapshot_from_S_G": {
+   "expected": {
+    "same_store_same_receipt": true,
+    "store_changed_receipt_changed": true,
+    "S_G_unchanged": true
+   },
+   "observed": {
+    "same_store_same_receipt": true,
+    "store_changed_receipt_changed": true,
+    "S_G_unchanged": true
+   },
+   "pass": true,
+   "snapshot_identity": {
+    "object_format": "sha1",
+    "physical_bytes": 237,
+    "physical_entries": 4,
+    "object_dirs": 1,
+    "receipt_sha256": "f0fce104776db3d7db44239cc096477fe576e503307e23dc87cd1f2ca570fb34",
+    "storage_roots": [
+     "/work/scr-snap/trace"
+    ]
+   }
+  },
+  "no_orphan_processes_or_listeners_remain": {
+   "expected": {
+    "processes": [],
+    "listeners": []
+   },
+   "observed": {
+    "processes": [],
+    "listeners": []
+   },
+   "pass": true
+  }
+ },
+ "observations": {
+  "fixture": {
+   "promisor_config_in_live_repo": true
+  }
+ },
+ "all_pass": true
+}

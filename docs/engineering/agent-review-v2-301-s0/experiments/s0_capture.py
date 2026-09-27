@@ -63,6 +63,7 @@ class Budget:
     max_commit_bytes: int = 1024 * 1024
     max_path_bytes: int = 16 * 1024 * 1024
     child_address_space_bytes: int | None = 128 * 1024 * 1024
+    transport_deadline_s: float | None = 30.0  # per object; None = ablation (no deadline)
     nodes: int = 0
     payload_bytes: int = 0
     metadata_bytes: int = 0
@@ -114,8 +115,8 @@ def _contain(address_space: int | None):
     return apply
 
 
-def _git(repo: Path, *args: str, address_space: int | None = None) -> str:
-    cp = subprocess.run(["git", *args], cwd=repo, env=GIT_ENV, capture_output=True, timeout=60,
+def _git(repo: Path, *args: str, address_space: int | None = None, timeout: float | None = 60) -> str:
+    cp = subprocess.run(["git", *args], cwd=repo, env=GIT_ENV, capture_output=True, timeout=timeout or 60,
                         preexec_fn=_contain(address_space))
     if cp.returncode != 0:
         raise CaptureRefused("git_failed", " ".join(args))
@@ -123,36 +124,73 @@ def _git(repo: Path, *args: str, address_space: int | None = None) -> str:
 
 
 class VerifiedObjectReader:
-    """`git cat-file --batch` as an UNTRUSTED, CONTAINED transport.
+    """`git cat-file --batch` as an UNTRUSTED, CONTAINED transport over the PRIVATE SNAPSHOT (arch. B).
 
-    - the child runs under RLIMIT_AS set before exec (its own expansion fails inside the envelope);
-    - the header is read with a bounded readline and parsed strictly (exact oid, known type, plain
-      non-negative decimal size) BEFORE anything is charged or read;
-    - every refusal terminates and reaps the child before it propagates (never close-and-wait,
-      which lets the child keep expanding);
-    - bytes are accepted only if they hash to the oid they were requested by.
-    `verify=False` is the ablation mutant; `argv`/`abort_delay_s` are test hooks (fake transport,
-    adversarial scheduling of the parent)."""
+    - own process group (start_new_session) under RLIMIT_AS set before exec; refusal kills the GROUP;
+    - unbuffered pipe read through select() with a per-object DEADLINE (a malformed object must not
+      hang the capture: availability is a separate property from integrity, and both are required);
+    - header read with a bound and parsed strictly before anything is charged or read;
+    - bytes accepted only if they hash to the oid they were requested by.
+    `verify=False` is the ablation mutant; `argv`/`abort_delay_s` are test hooks."""
 
     def __init__(self, repo: Path, expected_hexlen: int, *, verify: bool = True,
                  address_space: int | None = 128 * 1024 * 1024, argv: list | None = None,
-                 abort_delay_s: float = 0.0) -> None:
+                 abort_delay_s: float = 0.0, deadline_s: float | None = 30.0) -> None:
         if expected_hexlen not in ALGORITHM_BY_HEXLEN:
             raise CaptureRefused("object_format_unsupported", str(expected_hexlen))
         self.algorithm = ALGORITHM_BY_HEXLEN[expected_hexlen]
         if argv is None:
-            declared = _git(repo, "rev-parse", "--show-object-format", address_space=address_space)
+            try:
+                declared = _git(repo, "rev-parse", "--show-object-format", address_space=address_space,
+                                timeout=deadline_s)
+            except subprocess.TimeoutExpired as exc:
+                raise CaptureRefused("transport_deadline", "rev-parse") from exc
             if declared != self.algorithm:
                 raise CaptureRefused("object_format_mismatch", f"expected={self.algorithm} repo={declared}")
         self.verify = verify
         self.abort_delay_s = abort_delay_s
+        self.deadline_s = deadline_s
         self.bytes_read = 0
         self.objects_read = 0
+        self._buf = bytearray()
         self.proc = subprocess.Popen(
-            argv or ["git", "cat-file", "--batch"], cwd=repo, env=GIT_ENV,
+            argv or ["git", "cat-file", "--batch"], cwd=repo, env=GIT_ENV, bufsize=0,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            preexec_fn=_contain(address_space),
+            preexec_fn=_contain(address_space), start_new_session=True,
         )
+
+    def _fill(self, deadline: float | None) -> bool:
+        import select
+        import time
+        fd = self.proc.stdout.fileno()
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        ready, _, _ = select.select([fd], [], [], timeout)
+        if not ready:
+            raise CaptureRefused("transport_deadline")
+        chunk = os.read(fd, 1 << 16)
+        if not chunk:
+            return False
+        self._buf += chunk
+        return True
+
+    def _line(self, limit: int, deadline: float | None) -> bytes:
+        while b"\n" not in self._buf:
+            if len(self._buf) >= limit or not self._fill(deadline):
+                raise CaptureRefused("transport_header_invalid", "unterminated_or_too_long")
+        i = self._buf.index(b"\n")
+        if i >= limit:
+            raise CaptureRefused("transport_header_invalid", "unterminated_or_too_long")
+        line = bytes(self._buf[:i + 1])
+        del self._buf[:i + 1]
+        return line
+
+    def _exact(self, n: int, deadline: float | None) -> bytes:
+        while len(self._buf) < n:
+            if not self._fill(deadline):
+                raise CaptureRefused("object_truncated")
+        data = bytes(self._buf[:n])
+        del self._buf[:n]
+        return data
 
     def get(self, oid: str, want: str, budget: Budget | None = None) -> bytes:
         try:
@@ -162,15 +200,13 @@ class VerifiedObjectReader:
             raise
 
     def _get(self, oid: str, want: str, budget: Budget | None) -> bytes:
-        assert self.proc.stdin is not None and self.proc.stdout is not None
+        import time
+        deadline = None if self.deadline_s is None else time.monotonic() + self.deadline_s
         try:
             self.proc.stdin.write(oid.encode("ascii") + b"\n")
-            self.proc.stdin.flush()
         except OSError as exc:
             raise CaptureRefused("transport_failed", f"errno={exc.errno}") from exc
-        line = self.proc.stdout.readline(MAX_HEADER_BYTES)
-        if not line.endswith(b"\n"):
-            raise CaptureRefused("transport_header_invalid", "unterminated_or_too_long")
+        line = self._line(MAX_HEADER_BYTES, deadline)
         fields = line[:-1].split(b" ")
         if len(fields) == 2 and fields[0] == oid.encode("ascii") and fields[1] == b"missing":
             raise CaptureRefused("object_missing", oid)
@@ -189,9 +225,10 @@ class VerifiedObjectReader:
                 budget.charge_payload(oid, size)
             else:
                 budget.charge_metadata(want, size)
-        body = self.proc.stdout.read(size)
-        if len(body) != size or self.proc.stdout.read(1) != b"\n":
+        body = self._exact(size + 1, deadline)
+        if body[-1:] != b"\n":
             raise CaptureRefused("object_truncated", oid)
+        body = body[:-1]
         self.bytes_read += size
         self.objects_read += 1
         if self.verify:
@@ -202,13 +239,19 @@ class VerifiedObjectReader:
                 raise CaptureRefused("object_hash_mismatch", f"{kind} {oid}")
         return body
 
+    def _kill_group(self) -> None:
+        import signal
+        try:
+            os.killpg(self.proc.pid, signal.SIGKILL)  # the whole transport group, not only the direct child
+        except ProcessLookupError:
+            pass
+
     def abort(self) -> None:
-        """Refusal path: terminate + reap FIRST, then release the pipes. Idempotent."""
+        """Refusal path: kill the process GROUP + reap FIRST, then release the pipes. Idempotent."""
         if self.abort_delay_s:
             import time
             time.sleep(self.abort_delay_s)  # test hook: an adversarially slow parent
-        if self.proc.poll() is None:
-            self.proc.kill()
+        self._kill_group()
         self.proc.wait()
         for stream in (self.proc.stdin, self.proc.stdout):
             try:
@@ -218,17 +261,22 @@ class VerifiedObjectReader:
                 pass
 
     def close(self) -> None:
-        for stream in (self.proc.stdin, self.proc.stdout):
-            try:
-                if stream is not None:
-                    stream.close()
-            except OSError:
-                pass
         try:
-            self.proc.wait(timeout=5)
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=self.deadline_s or 5)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            self._kill_group()
             self.proc.wait()
+        self._kill_group()  # nothing of the transport group may outlive the capture
+        try:
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
+        except OSError:
+            pass
 
 
 def _parse_tree(raw: bytes, oid_len: int, max_entries: int):
@@ -242,13 +290,28 @@ def _parse_tree(raw: bytes, oid_len: int, max_entries: int):
         raise CaptureRefused("tree_unrepresentable", getattr(exc, "reason_code", str(exc))) from exc
 
 
-@dataclass
+CONTAINER_CONTRACT = "AR-301-S0-EXP-1"
+
+
+@dataclass(frozen=True)
+class AcquisitionIdentity:
+    """Created INSIDE the walk from the authenticated commit body; compared with the sealed header.
+    Its integrity rests on the producer's process integrity (premise P), like the record's."""
+    algorithm: str
+    commit: str
+    root_tree: str
+    component_limit: int
+    container_contract: str = CONTAINER_CONTRACT
+
+
+@dataclass(frozen=True)
 class Subject:
     algorithm: str
     commit: str
     root_tree: str
     nodes: dict  # raw path bytes -> (kind, oid-or-"", payload bytes)
-    record: dict  # raw path bytes -> (kind, oid): what the authenticated walk admitted (acquisition record)
+    record: object  # read-only mapping raw path -> (kind, oid): what the authenticated walk admitted
+    identity: AcquisitionIdentity
     budget: Budget
     objects_read: int
     git_bytes_read: int
@@ -260,7 +323,7 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
     if budget.max_component_len is None:  # decision (d): no implicit limit
         raise CaptureRefused("admission_limit_missing", "max_component_len")
     reader = VerifiedObjectReader(repo, len(commit), verify=verify, address_space=budget.child_address_space_bytes,
-                                  abort_delay_s=_abort_delay_s)
+                                  abort_delay_s=_abort_delay_s, deadline_s=budget.transport_deadline_s)
     GIT_INVOCATIONS[0] += 2  # rev-parse --show-object-format + cat-file --batch
     ok = False
     try:
@@ -269,6 +332,7 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
         if len(first) != 2 or first[0] != b"tree" or len(first[1]) != len(commit):
             raise CaptureRefused("commit_unparseable", commit)
         root_tree = first[1].decode("ascii")
+        identity = AcquisitionIdentity(reader.algorithm, commit, root_tree, budget.max_component_len)
         nodes: dict = {}
         stack = [(b"", root_tree, 0, (root_tree,))]
         while stack:
@@ -297,9 +361,11 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
                     nodes[path] = ("symlink", oid, reader.get(oid, "blob", budget))
                 else:  # gitlink (160000) and every non-canonical mode: explicit refusal, never a skip
                     raise CaptureRefused("unsupported_mode", f"{mode} {path!r}")
-        record = {p: (k, o) for p, (k, o, _v) in nodes.items()}
+        import types
+        record = types.MappingProxyType({p: (k, o) for p, (k, o, _v) in nodes.items()})
         ok = True
-        return Subject(reader.algorithm, commit, root_tree, nodes, record, budget, reader.objects_read, reader.bytes_read)
+        return Subject(reader.algorithm, commit, root_tree, nodes, record, identity, budget,
+                       reader.objects_read, reader.bytes_read)
     finally:
         reader.close() if ok else reader.abort()
 
@@ -318,9 +384,11 @@ def validate_sealed_subject(fd: int, subject: Subject) -> None:
     Tree bodies are not embedded, so tree oids are bound through the record, not re-hashed here."""
     data = os.pread(fd, os.fstat(fd).st_size, 0)
     algorithm, commit, root_tree, nodes = parse(data)
-    if algorithm != ALGORITHM_BY_HEXLEN.get(len(subject.commit)) or commit != subject.commit or root_tree != subject.root_tree:
+    ident = subject.identity  # the IMMUTABLE acquisition identity, never the mutable Subject header fields (R4-2)
+    if (algorithm, commit, root_tree) != (ident.algorithm, ident.commit, ident.root_tree) or \
+            algorithm != ALGORITHM_BY_HEXLEN.get(len(ident.commit)):
         raise CaptureRefused("sealed_identity_mismatch")
-    if {p: (k, o) for p, (k, o, _v) in nodes.items()} != subject.record:
+    if {p: (k, o) for p, (k, o, _v) in nodes.items()} != dict(subject.record):
         raise CaptureRefused("sealed_record_mismatch")
     for path, (kind, oid, payload) in nodes.items():
         if "/" in path.decode("utf-8", "surrogateescape"):

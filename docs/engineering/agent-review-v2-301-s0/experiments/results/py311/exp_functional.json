@@ -1,5 +1,11 @@
 {
  "cases": {
+  "S_G_digest_equals_architecture_A_record_on_this_corpus": {
+   "expected": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085",
+   "observed": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085",
+   "pass": true,
+   "note": "positive control: boundary changed (live repo -> private snapshot), observed S_G preserved on THIS corpus; not a proof of universal equivalence"
+  },
   "real_corpus_accepted_with_git_child_inside_envelope": {
    "expected": {
     "accepted": true,
@@ -10,7 +16,7 @@
     "within_envelope": true
    },
    "pass": true,
-   "git_children_maxrss_MiB": 14.7,
+   "git_children_maxrss_MiB": 21.3,
    "envelope_MiB": 128
   },
   "positive_E_result_equals_normal_path": {
@@ -176,8 +182,19 @@
    "git_bytes_read": 8713049,
    "git_subprocesses_counted": 2,
    "metadata_bytes_read": 52807,
-   "build_s": 0.176,
-   "serialize_seal_verify_s": 0.059,
+   "snapshot_s": 0.028,
+   "snapshot_identity": {
+    "object_format": "sha1",
+    "physical_bytes": 3646095,
+    "physical_entries": 2,
+    "object_dirs": 1,
+    "receipt_sha256": "44590f85cc84b933e51a2631db7b72d8af0818a4874296efe407f715bb06e9ee",
+    "storage_roots": [
+     "/work/toolrepo"
+    ]
+   },
+   "build_s": 0.148,
+   "serialize_seal_verify_s": 0.066,
    "producer_heap_peak_MiB_build_to_seal": 43.0,
    "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
   },
@@ -219,21 +236,21 @@
    "python_tag": "cp311",
    "payload_bytes": 9700542,
    "container_bytes": 9718908,
-   "build_seal_s": 0.091,
-   "producer_heap_peak_MiB": 45.8,
+   "build_seal_s": 0.095,
+   "producer_heap_peak_MiB": 45.6,
    "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
    "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
   },
   "E_child": {
-   "maxrss_kib": 87712,
+   "maxrss_kib": 88040,
    "inherited_sealed_fds_by_construction": 3,
    "native_memfds_created_in_child": 2,
    "result_channel": "socketpair",
-   "elapsed_s": 0.39
+   "elapsed_s": 0.393
   },
   "normal": {
-   "maxrss_kib": 87504,
-   "elapsed_s": 0.25224179099313915
+   "maxrss_kib": 88040,
+   "elapsed_s": 0.24210278398822993
   }
  },
  "census": {
@@ -410,7 +427,7 @@
   },
   "E_untampered": {
    "rc": 0,
-   "elapsed_s": 0.39,
+   "elapsed_s": 0.393,
    "stderr_tail": ""
   },
   "normal_source_tampered": {
@@ -419,7 +436,7 @@
   },
   "E_source_tampered": {
    "rc": 0,
-   "elapsed_s": 0.395,
+   "elapsed_s": 0.373,
    "stderr_tail": ""
   },
   "normal_warm_pycache": {
@@ -432,7 +449,7 @@
   },
   "E_pyc_planted": {
    "rc": 0,
-   "elapsed_s": 0.396,
+   "elapsed_s": 0.379,
    "stderr_tail": ""
   },
   "normal_venv_tampered": {
@@ -441,7 +458,7 @@
   },
   "E_venv_tampered": {
    "rc": 0,
-   "elapsed_s": 0.379,
+   "elapsed_s": 0.371,
    "stderr_tail": ""
   },
   "normal_plugin_planted": {
@@ -450,7 +467,7 @@
   },
   "E_plugin_planted": {
    "rc": 0,
-   "elapsed_s": 0.409,
+   "elapsed_s": 0.382,
    "stderr_tail": ""
   }
  },

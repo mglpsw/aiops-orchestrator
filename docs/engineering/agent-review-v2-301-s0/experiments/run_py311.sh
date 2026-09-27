@@ -70,6 +70,7 @@ docker run --rm --tmpfs /work:rw,exec,size=3g \
     run exp_bootstrap_env "$PY" /work/scr-boot
     run exp_resources /opt/toolrepo-tcb /work/scr-res "$PY"
     run exp_deps /work/scr-deps
+    run exp_snapshot /opt/toolrepo-tcb /work/scr-snap
     run exp_functional /work/toolrepo "$COMMIT" /work/wheels /work/venv \
         /opt/toolrepo-tcb/tests/agent_review/fixtures/v2/agent_escala /work/scr-func "$PY" /opt/toolrepo-tcb
     cp /work/out/* /results/ && chown -R "$HOST_UID:$HOST_GID" /results

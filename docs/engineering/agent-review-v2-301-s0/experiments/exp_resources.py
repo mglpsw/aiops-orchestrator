@@ -164,10 +164,11 @@ headers = {"negative": oid + b" blob -1\n", "plus": oid + b" blob +5\n", "nondec
            "overbudget": oid + b" blob 67108864\n", "truncated": oid + b" blob 100\n"}
 out = sys.stdout.buffer
 out.write(headers[mode]); out.flush()
-out.write(b"x" * (10 if mode == "truncated" else 64 << 20)); out.flush()
 if mode == "truncated":
+    out.write(b"x" * 10); out.flush()
     sys.exit(0)
-time.sleep(30)
+time.sleep(8)  # silent: a close-and-wait parent would wait here; only a kill ends it early
+out.write(b"x" * (64 << 20)); out.flush()
 """
 OID = "a" * 40
 EXPECT = {"negative": "transport_header_invalid", "plus": "transport_header_invalid", "nondecimal": "transport_header_invalid",
@@ -187,7 +188,26 @@ for mode, want in EXPECT.items():
     case(f"strict_transport_{mode}", {"result": "REFUSED:" + want, "child_reaped": True, "heap_under_1MiB": True,
                                       "no_wait_for_child": True},
          {"result": res, "child_reaped": reader.proc.returncode is not None, "heap_under_1MiB": peak < 2**20,
-          "no_wait_for_child": __import__("time").monotonic() - t0 < 10}, heap_peak_MiB=round(peak / 2**20, 2))
+          "no_wait_for_child": __import__("time").monotonic() - t0 < 4}, heap_peak_MiB=round(peak / 2**20, 2))
+
+# ABLATION of (iv): the round-3 close-and-wait refusal path waits for the silent transport
+reader = cap.VerifiedObjectReader(W, 40, argv=[PY, "-I", "-S", "-c", FAKE, OID, "negative"], address_space=None)
+
+
+def close_and_wait():  # the round-3 path: release both pipes, then wait (the child ends only on EPIPE after its sleep)
+    reader.proc.stdin.close()
+    reader.proc.stdout.close()
+    reader.proc.wait()
+
+
+reader.abort = close_and_wait
+t0 = __import__("time").monotonic()
+try:
+    reader.get(OID, "blob", admitted())
+except cap.CaptureRefused:
+    pass
+case("ABLATION_close_and_wait_refusal_path_waits_for_transport", True, __import__("time").monotonic() - t0 >= 7,
+     elapsed_s=round(__import__("time").monotonic() - t0, 1))
 
 # (3) depth budget applies to EVERY node kind (C3/R2 property), not only to trees
 deep = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"x"), b"leaf.py")])

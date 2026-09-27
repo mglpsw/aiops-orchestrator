@@ -36,6 +36,7 @@ def admitted(**kw):
 
 import s0_deps as deps  # noqa: E402
 import s0_launch as ln  # noqa: E402
+import s0_snapshot as snap  # noqa: E402
 
 out = {"cases": {}, "resources": {}, "census": {}}
 W.mkdir(parents=True, exist_ok=True)
@@ -76,8 +77,12 @@ INPUTS = {"target_root": str(target), "diff_text": DIFF, "pr_number": 101, "base
 fds_before = cap.open_fds()
 tracemalloc.start()
 t0 = time.perf_counter()
-subject = cap.build_subject(CLONE, COMMIT, budget=admitted())
-t_build = time.perf_counter() - t0
+# architecture B: the live checkout's object store is snapshotted first; git only ever reads the snapshot
+with snap.private_snapshot(CLONE, expected_commit=COMMIT, storage_roots=[CLONE]) as (SNAP_PATH, SNAP_ID):
+    t_snapshot = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    subject = cap.build_subject(SNAP_PATH, COMMIT, budget=admitted())
+    t_build = time.perf_counter() - t0
 t0 = time.perf_counter()
 import resource  # noqa: E402
 git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024  # only git has run so far
@@ -117,7 +122,7 @@ out["resources"]["S"] = {
     "payload_bytes_unique_blobs": sum(subject.budget.unique_payload.values()), "path_bytes": subject.budget.path_bytes,
     "git_objects_read": subject.objects_read, "git_bytes_read": subject.git_bytes_read,
     "git_subprocesses_counted": cap.GIT_INVOCATIONS[0], "metadata_bytes_read": subject.budget.metadata_bytes,
-    "build_s": round(t_build, 3), "serialize_seal_verify_s": round(t_seal, 3),
+    "snapshot_s": round(t_snapshot, 3), "snapshot_identity": vars(SNAP_ID), "build_s": round(t_build, 3), "serialize_seal_verify_s": round(t_seal, 3),
     "producer_heap_peak_MiB_build_to_seal": round(heap_peak_s / 2**20, 1), "sha256": s_digest}
 out["resources"]["D"] = {"wheels": d_manifest, "nodes_including_directories": len(d_nodes),
                          "members": sum(1 for k, _o, _v in d_nodes.values() if k != "tree"), "python_tag": PY_TAG, "payload_bytes": d_payload,
@@ -126,6 +131,10 @@ out["resources"]["D"] = {"wheels": d_manifest, "nodes_including_directories": le
                          "lock_sha256": hashlib.sha256(lock_bytes).hexdigest()}
 
 
+case("S_G_digest_equals_architecture_A_record_on_this_corpus",
+     "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085", s_digest,
+     note="positive control: boundary changed (live repo -> private snapshot), observed S_G preserved on THIS corpus; "
+          "not a proof of universal equivalence")
 case("real_corpus_accepted_with_git_child_inside_envelope", {"accepted": True, "within_envelope": True},
      {"accepted": len(subject.nodes) > 0, "within_envelope": 0 < git_children_maxrss <= subject.budget.child_address_space_bytes},
      git_children_maxrss_MiB=round(git_children_maxrss / 2**20, 1), envelope_MiB=subject.budget.child_address_space_bytes >> 20)

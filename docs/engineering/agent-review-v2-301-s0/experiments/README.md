@@ -34,6 +34,7 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | Arquivo | Papel |
 |---|---|
 | `s0_bootstrap.py` | dono único do formato do container, do compromisso de selo e da validação do consumidor; também é o bootstrap do filho (`-c`) |
+| `s0_snapshot.py` | **arquitetura B**: snapshot físico privado sem remoto (aquisição por descritor da G1C, esqueleto com formato de objeto, sem `verify-pack`), identidade do snapshot |
 | `s0_capture.py` | leitor de objetos com hash-on-read, construção de `S_G`, orçamentos por ocorrência |
 | `s0_deps.py` | `S_D`: lock (dentro de `S_G`) → wheel → membros verificados pelo RECORD |
 | `s0_launch.py` | launcher: interpretador absoluto, `env={}`, `-I -S`, `pass_fds`, socketpair |
@@ -46,6 +47,7 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | `exp_bootstrap_env.py` | configuração anterior ao 1º import; `-I` vs `-S`; piso root-owned |
 | `exp_functional.py` | engine real executada só de `S_G`/`S_D`; paridade; contramodelos; censo |
 | `exp_resources.py` | expansão, orçamentos, falhas e ownership |
+| `exp_snapshot.py` | arquitetura B: Spike B portado + prazo, forja de pack/`.idx`, sha256, identidade imutável, orçamentos, censo de órfãos |
 | `exp_deps.py` | recusas de S_D em wheels sintéticos (identidade, tags, RECORD, zip bomb, colisões, ELF) |
 | `results/py311/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |
 | `sd_future/` | **preservado para a futura slice S_D, não é evidência de S0**: spike do leitor único com cobrança e reprodução de R2-1/R2-8 sobre `s0_deps.py` congelado (execução no host 3.12; `python3 -I -S -B <arquivo> <experiments> <scratch>` para `repro_r2.py` — `<scratch>` precisa existir —, `<scratch>` para o spike) |

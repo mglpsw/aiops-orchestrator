@@ -7,7 +7,7 @@
    "unique_bytes": 65536,
    "per_occurrence_bytes": 131072000,
    "budget_bytes": 16777216,
-   "heap_peak_MiB": 17.75,
+   "heap_peak_MiB": 17.86,
    "fds_restored": true,
    "git_reaped": true
   },
@@ -21,7 +21,7 @@
    "expected": "REFUSED:tree_unrepresentable",
    "observed": "REFUSED:tree_unrepresentable",
    "pass": true,
-   "heap_peak_MiB": 0.21,
+   "heap_peak_MiB": 0.26,
    "unique_nodes": 41,
    "per_occurrence_nodes": 1640,
    "note": "every tree has 40 entries; only the cumulative count exceeds"
@@ -32,7 +32,7 @@
    "pass": true,
    "blob_bytes": 33554432,
    "budget_bytes": 8388608,
-   "heap_peak_MiB": 0.06,
+   "heap_peak_MiB": 0.07,
    "fds_restored": true,
    "git_reaped": true
   },
@@ -40,7 +40,7 @@
    "expected": "ACCEPTED",
    "observed": "ACCEPTED",
    "pass": true,
-   "heap_peak_MiB": 32.01,
+   "heap_peak_MiB": 99.72,
    "note": "heap ~ blob size: the carrier is in-memory by design; the budget bounds it"
   },
   "oversized_tree_refused_before_read": {
@@ -80,7 +80,7 @@
    "pass": true,
    "uncontained": {
     "result": "REFUSED:budget_tree_entries_pre_read",
-    "git_child_maxrss_MiB": 68.2
+    "git_child_maxrss_MiB": 68.1
    },
    "contained": {
     "result": "REFUSED:budget_tree_entries_pre_read",
@@ -102,11 +102,11 @@
    "pass": true,
    "uncontained": {
     "result": "REFUSED:budget_commit_bytes",
-    "git_child_maxrss_MiB": 68.0
+    "git_child_maxrss_MiB": 67.9
    },
    "contained": {
     "result": "REFUSED:budget_commit_bytes",
-    "git_child_maxrss_MiB": 11.0
+    "git_child_maxrss_MiB": 10.9
    },
    "envelope_MiB": 64
   },
@@ -129,7 +129,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_plus": {
    "expected": {
@@ -145,7 +145,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_nondecimal": {
    "expected": {
@@ -161,7 +161,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_overflow": {
    "expected": {
@@ -177,7 +177,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_toolong": {
    "expected": {
@@ -193,7 +193,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_unknowntype": {
    "expected": {
@@ -209,7 +209,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_wrongoid": {
    "expected": {
@@ -225,7 +225,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_overbudget": {
    "expected": {
@@ -241,7 +241,7 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
   },
   "strict_transport_truncated": {
    "expected": {
@@ -257,7 +257,13 @@
     "no_wait_for_child": true
    },
    "pass": true,
-   "heap_peak_MiB": 0.0
+   "heap_peak_MiB": 0.06
+  },
+  "ABLATION_close_and_wait_refusal_path_waits_for_transport": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "elapsed_s": 8.0
   },
   "depth_budget": {
    "expected": "REFUSED:budget_depth",
