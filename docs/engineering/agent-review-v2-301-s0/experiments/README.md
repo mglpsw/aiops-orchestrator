@@ -6,7 +6,8 @@ se chama `test_*`). Servem de evidência para [`../CONTRACT.md`](../CONTRACT.md)
 afirmação está em [`../EVIDENCE.md`](../EVIDENCE.md).
 
 ```yaml
-current_candidate: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT
+ratified_component_contract: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # applicable only under Applicable_SG (CONTRACT §2)
+experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d
 rejected_predecessors: [A_LIVE_GIT_TRANSPORT, B_MUTABLE_PRIVATE_SNAPSHOT]
 production_implementation: none
 ```

@@ -1,9 +1,10 @@
 # #301 S0 — contrato proposto do subject de execução autenticado (S) e da fronteira de confiança
 
 ```yaml
-status: PROPOSED_NOT_RATIFIED
-architecture_C_status: CANDIDATE_TERMINAL_CLOSURE   # K1-K4 + RC-5 closed once; no automatic patch loop after this head
-architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # current candidate; A and B are REJECTED PREDECESSORS
+status: S0_S_G_RATIFIED_AS_COMPONENT_CONTRACT     # S_D and E remain PROPOSED; nothing is implemented in production
+architecture_C_status: RATIFIED_AS_COMPONENT_CONTRACT   # maintainer ratification; applicability requires AuthorizedReaderExecutionContext
+experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d   # 216/216 there; the ratification commit changes documentation only
+architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # ratified component contract; A and B are REJECTED PREDECESSORS
 claim_scope: S_G_only
 slice: S0_contract_and_experimental_evidence   # nome de trabalho; não é claim normativa, milestone nem revisão CAEM
 work_owner: "#301"          # roadmap: #46; núcleo: #80
@@ -45,7 +46,7 @@ d_component_limit: {hardcoded_255: rejected, independent_fpathconf_in_S1: reject
                     selected: explicit_admission_parameter, C3_parity: conditional_on_same_limit}
 ```
 
-### Arquitetura de aquisição: histórico e candidata corrente (2026-09-27)
+### Arquitetura de aquisição: histórico e contrato ratificado (2026-09-27)
 
 ```yaml
 architecture:
@@ -53,15 +54,16 @@ architecture:
      # PR #355 comments 5852251027, 5852389024, 5852664959
   B: {name: MUTABLE_PRIVATE_SNAPSHOT, evidence: [Spike B 5852938161, candidate head 8c4842b],
       review: "B-1..B-4 (comment 5853311835)", status: REJECTED}
-  C: {name: PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT, evidence: ["Spike C 22/22 (comment 5858608157)", this head],
-      status: CANDIDATE}   # a successor architecture, not a later round of A or B
+  C: {name: PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT, evidence: ["Spike C 22/22 (comment 5858608157)", "34fc575 216/216"],
+      status: RATIFIED_AS_COMPONENT_CONTRACT}   # a successor architecture, not a later round of A or B
 ```
 
 A e B **não** foram consertadas: foram rejeitadas, e C é outra fronteira. A evidência de A/B não se
 transfere para C sem reexecução; o que C reutiliza (hash-on-read, parse estrito, selo e
-revalidação, orçamentos da closure) foi reexecutado na execução registrada deste head.
+revalidação, orçamentos da closure) foi reexecutado na execução registrada do head experimental
+`34fc575`.
 
-**Arquitetura C (candidata).** Dada uma capability de storage admitida e um produtor com separação
+**Arquitetura C (contrato de componente ratificado).** Dada uma capability de storage admitida e um produtor com separação
 de privilégio em relação ao runner, o produtor publica atomicamente um snapshot físico autocontido
 que o runner pode ler e não pode alterar. S_G é derivado de um commit esperado `C` usando **só** o
 snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos bytes autenticados de
@@ -85,10 +87,14 @@ snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos b
     production_provenance: NOT_QUALIFIED             # U3
   publication:
     staging: "staging/<id>, producer-only (0700)"
-    finalize: "files 0444, dirs 0555, owned by the producer identity, fsync"
+    finalize: "files 0444, dirs 0555, owned by the producer identity"
+    fsync_as_implemented: "each copied object file; the staging dir itself; committed/ after the rename"
+    not_fsynced: [HEAD, config, receipt, subdirectories]            # T-F6
     commit_point: "rename(staging/<id> -> committed/<id>)"
     crash_before_commit_point: staging garbage, never a committed snapshot   # StagingGarbage != CommittedSnapshot
     staging_gc: future obligation
+    S0_publication: {atomic_visibility: supported, crash_before_rename_does_not_publish: reproduced (SIGKILL, C10),
+                     full_power_loss_durability: NOT_QUALIFIED}   # successor: S1_PUBLISH_01
   receipt:   # traceability only: SnapshotReceipt != ObjectAuthenticityProof
     fields: [schema_version, object_format, physical_bytes, physical_entries, alternate_sources_count,
              storage_capability_binding, published_snapshot_identity]
@@ -108,24 +114,46 @@ snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos b
     supported: [sha1, sha256]
   reader:
     runs_as: unprivileged runner                     # required; otherwise STOP_301_C_READER_PRIVILEGE_DEPENDENCY (C11)
-    ReaderPrincipal:     # the credentials the filesystem USES and local Git INHERITS, read from /proc/self/status
-      expected_from: caller (launcher), never the reader's self-report   # ReaderPrincipalIdentity != ReaderSelfAssertion
-      uid_fields_equal_expected_runner: required     # real == effective == saved == filesystem
-      gid_fields_equal_expected_runner: required     # real == effective == saved == filesystem
-      supplementary_groups: recorded                 # not required empty; covered by the effective access check
-      CapEff: 0
-      CapPrm: 0
-      CapInh: 0
-      CapAmb: 0
-      CapBnd: recorded                               # not a held capability by itself
-      effective_write_access_to_snapshot: false      # faccessat AT_EACCESS + owner vs effective uid, every component
-    precondition: "ReaderPrincipalEstablished AND CanonicalSnapshotPath AND NoSymlinkComponent AND
-                   NOT EffectiveCredentialsCanMutateSnapshot"   # else refusal
+    AuthorizedReaderExecutionContext:   # EXTERNAL applicability precondition, established by the host/launcher (U3/S1/E)
+      principal:
+        expected_runner_identity: host/launcher-authorized
+        ruid_euid_suid_fsuid_consistent: required
+        rgid_egid_sgid_fsgid_consistent: required
+        supplementary_groups: recorded_and_authorized
+      namespace:
+        user_namespace_identity: host/launcher-authorized     # T-F2
+        mount_namespace_identity: host/launcher-authorized    # T-F1
+      privilege:
+        CapEff: 0
+        CapPrm: 0
+        CapInh: 0
+        CapAmb: 0
+        privilege_gain_on_exec: forbidden                     # X1; S1_CTX_01 (not implemented in S0)
+      snapshot:
+        producer_published_identity: required
+        canonical_publication_locator: required
+        identity_bound_to_authorized_mount_context: required  # T-F1
+    context_authority: "ReaderSelfReport != ReaderContextAuthority: the reader cannot prove by itself that its user or
+                        mount namespace is the authorized one; that provenance belongs to the future launcher/host"
+    reader_side_checks_at_34fc575:   # experimental defense in depth, NOT the authority of the context
+      - "uid/gid real == effective == saved == filesystem == expected (read from /proc/self/status)"
+      - "CapEff == CapPrm == CapInh == CapAmb == 0; CapBnd recorded"
+      - "absolute canonical path, no symlink component, no component/node owned by or writable (effective ids) for R"
+      - "T-F1 (read-only bind view of writable inodes) and T-F2 (other user namespace) pass these checks"
+    lessons: ["NumericUID != PrincipalIdentity", "NumericUIDInNamespaceA != SamePrincipalInNamespaceB",
+              "Path != KernelObjectIdentity", "ReadOnlyMountView != UnderlyingObjectNotWritableThroughAnotherView"]
+    activation_gate: "AuthorizedReaderExecutionContext not established -> S_G must not become trusted/consumable"
     subreaper: verified before git starts; a descendant surviving teardown -> refusal on success AND failure paths
     local_git: {target: committed immutable snapshot only, deadline: per object, parsing: strict header,
                 memory_envelope: RLIMIT_AS per process where supported, aggregate_memory: NOT_CLAIMED}
     process_lifetime: "reader is a child subreaper; teardown kills and reaps every descendant (setsid included)"
     related_owner: "#320"
+  applicability: |
+    Applicable_SG(A,P,S,R,C) := AuthorizedStorage(A) AND PrivilegeSeparatedProducer(P,R)
+                                AND ProducerPublishedSnapshot(P,S) AND AuthorizedReaderExecutionContext(R)
+                                AND NOT PrincipalCanMutate(R,S) AND ExpectedCommit(C)
+    Applicable_SG(...) AND SuccessfulCapture(C,S)  =>  AuthenticatedStableSubject(S_G)
+    nothing is claimed outside Applicable_SG
   S_G:
     authority: expected C + content-addressed object map
     root_tree: derived from the authenticated bytes of C
@@ -134,14 +162,15 @@ snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos b
     post_seal: seals read back, sealed bytes re-hashed, S_G re-derived from the map and compared with the sealed content
 ```
 
-**B-findings — disposição candidata** (nenhuma é "fechada" antes da revisão do exact head):
+**B-findings — disposição** (sob a ratificação, válida dentro de `Applicable_SG`):
 
 ```yaml
-B_findings_candidate_disposition:
+B_findings_disposition:
   B1: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # alternates injected after publish -> kernel EACCES (C3); source alternates only via capability (C9)
   B2: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # promisor config injected after publish -> EACCES (C4); no fetch (C4/C8)
                                               # review of a858dc9 (RC-1): reproduced again via a NON-canonical path handed to
-                                              # the reader; now refused at consumption (C11 counters); stays candidate
+                                              # the reader; refused by the reader checks, but TF1/TF2 show those checks are
+                                              # context-relative: elimination holds inside AuthorizedReaderExecutionContext
   B3: ELIMINATED_FROM_PHYSICAL_PRODUCER       # producer never inflates (C5); expansion only inside the contained reader unit
   B4: AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT   # C + content-addressed map; aux root has no effect, ablation changes S_G (C6)
   B5: DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL   # setsid grandchild: unit 0 survivors, process-group ablation leaves one (C7)
@@ -155,6 +184,19 @@ canônico publicado (symlink/ancestral gravável pelo runner). Isso **não** val
 o caminho parece canônico": a conclusão depende do `ReaderPrincipal` formalizado acima (K1). Um
 contramodelo em que o snapshot canônico publicado pelo produtor continue alterável pelo leitor sob o
 principal do runner ratificado é `STOP_301_C_BOUNDARY_RECURRENCE`.
+
+**Ratificação do mantenedor (revisão de `34fc575`).**
+
+```yaml
+architecture: {A: REJECTED, B: REJECTED, C: RATIFIED_AS_COMPONENT_CONTRACT}
+TF1: {established: true, architecture_C_boundary_recurrence: false, disposition: OUTSIDE_RATIFIED_READER_EXECUTION_CONTEXT}
+TF2: {established: true, architecture_C_boundary_recurrence: false, disposition: OUTSIDE_RATIFIED_READER_EXECUTION_CONTEXT}
+```
+
+Isso **não** quer dizer que TF1/TF2 sejam inválidos ou corrigidos: eles continuam falsificadores
+obrigatórios da ativação de S1 (§12). A razão é estreita. Nenhum principal aceito, no contexto do
+snapshot canônico publicado pelo produtor, alterou algo que o Git local consome. E nenhuma
+recorrência autenticar-X/consumir-Y foi estabelecida na identidade de S_G.
 
 **Relações com owners** (nenhuma absorvida):
 - **#331 / C2_B:** C prova só "dada a capability A, o produtor nunca sai de A" (C9). Quem autorizou
@@ -207,7 +249,7 @@ injetados mudavam o **comportamento** do Git). As qualificações de linguagem s
 **imutável ao runner**; o Git nunca lê o repositório vivo na captura de S_G. (b), (c) e (d)
 continuam.
 
-S0 propõe o contrato de **S_G** como componente, candidato sob a arquitetura C. S_D e E continuam **propostos**: a evidência
+S0 fecha o contrato de **S_G** como componente, ratificado sob a arquitetura C e aplicável só dentro de `Applicable_SG` (§2). S_D e E continuam **propostos**: a evidência
 deles aqui é de viabilidade, não de qualificação. Nenhuma obrigação foi apagada; as de S_D têm
 owner futuro e contramodelos obrigatórios (§7.3).
 
@@ -243,13 +285,13 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 
 ## 2. Claim de S0 (≤ 3 frases), propostas restantes e non-claims
 
-> **S_G-CLAIM (arquitetura C).** Dados uma capability de storage admitida (#331), um produtor com
-> separação de privilégio em relação ao runner e limites de admissão explícitos, o produtor publica
-> atomicamente um snapshot físico autocontido do object store — só bytes físicos, sem Git, sem
-> inflate e sem metadata da fonte — que o runner pode ler e não pode alterar
-> (`RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)`). Um leitor cujo **principal estabelecido
-> R** — as credenciais que o filesystem usa e que o Git local herda, iguais ao principal sem privilégio
-> do runner **esperado** — não pode alterar o snapshot (`¬RunnerPrincipalCanMutate`) deriva S_G de um commit esperado `C` (#319) usando só esse snapshot: Git local contido (prazo,
+> **S_G-CLAIM (arquitetura C, ratificada como contrato de componente).** Dados uma capability de
+> storage admitida (#331), um produtor com separação de privilégio em relação ao runner, um snapshot
+> canônico publicado por esse produtor — só bytes físicos, sem Git, sem inflate e sem metadata da
+> fonte — e um `AuthorizedReaderExecutionContext` autorizado pelo host/launcher (principal, user
+> namespace, mount namespace e política de exec), no qual o snapshot **não** é alterável pelo
+> principal do leitor, e limites de admissão explícitos, S_G é derivado de um commit esperado `C`
+> (#319) usando só esse snapshot: Git local contido (prazo,
 > memória por processo, subreaper com teardown da unidade inteira), cada objeto cobrado a partir de
 > um cabeçalho estrito antes de ser lido e autenticado **no instante da leitura** contra `C` pela
 > cadeia commit → tree → blob no formato de objeto de `C`, com a raiz derivada dos bytes
@@ -260,6 +302,28 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 > nenhum processo sem `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera bytes, índice ou tamanho
 > de S_G; o consumidor valida selos, digest e identidade `(algoritmo, C)` recebidos por canal
 > separado sobre o mesmo buffer que consome.
+
+```text
+Applicable_SG(A,P,S,R,C) := AuthorizedStorage(A) ∧ PrivilegeSeparatedProducer(P,R)
+                            ∧ ProducerPublishedSnapshot(P,S) ∧ AuthorizedReaderExecutionContext(R)
+                            ∧ ¬PrincipalCanMutate(R,S) ∧ ExpectedCommit(C)
+Applicable_SG(...) ∧ SuccessfulCapture(C,S)  ⇒  AuthenticatedStableSubject(S_G)
+```
+
+Nada é afirmado fora de `Applicable_SG`. `AuthorizedReaderExecutionContext` é uma **precondição
+externa de aplicabilidade**, estabelecida pelo host/launcher (U3/S1/E), e **não** uma propriedade
+que S0 impõe em runtime: `ReaderSelfReport != ReaderContextAuthority`. As checagens do leitor no
+head experimental `34fc575` (principal lido de `/proc/self/status`, capabilities, caminho canônico,
+escrita com credenciais efetivas) são defesa em profundidade e são **contornáveis fora do contexto
+autorizado**: T-F1 (vista read-only por bind mount de inodes graváveis por outro caminho) e T-F2
+(ids numéricos do runner vistos dentro de outro user namespace) passam por elas, e o Git executa o
+helper do runner. Por isso a unidade de aplicabilidade não é `uid == 2000` nem
+`access(snapshot, W_OK) == false`, e sim o contexto autorizado.
+
+**Portão de ativação (objetivo de produto de #301).** Uma ativação de produção (S1/E) **não pode**
+rodar nos contextos de T-F1 ou T-F2: `AuthorizedReaderExecutionContext` não estabelecido ⇒ S_G não
+pode se tornar confiável nem consumível. T-F1 e T-F2 são **falsificadores obrigatórios** da ativação
+de S1 (§12), não casos excluídos da prova.
 
 **Propostas que S0 não qualifica** (arquitetura preservada, prova futura):
 - **S_D**: dependências como segundo container selado vinculado ao lock em S_G (§4–§5, §7.3).
@@ -278,7 +342,9 @@ segunda pré-imagem** do SHA-1 para esse oid; a verificação usa `hashlib.sha1`
 equivalência com a detecção de colisão (sha1dc) do git. Endurecimento futuro possível: sha1dc ou
 admissão só sha256 — nova obrigação, não importada para S1.
 
-Non-claims: quem autorizou a capability (#331/C2_B); proveniência do commit (#319); proveniência do
+Non-claims: que o leitor, sozinho, estabeleça ou prove o `AuthorizedReaderExecutionContext`
+(principal, user namespace, mount namespace, não-escalada no `exec`); que uid/gid numéricos
+autentiquem um principal; durabilidade a queda de energia da publicação; quem autorizou a capability (#331/C2_B); proveniência do commit (#319); proveniência do
 produtor em produção (U3); qualificação de CT104; memória **agregada** da unidade Git (`RLIMIT_AS` é
 por processo); ausência universal de DoS; limpeza automática de staging após crash; prazo total da
 captura; S_D, E, proveniência de execução, G5 e prontidão de release; integridade do **processo**
@@ -379,21 +445,32 @@ C (esperado, via #319; expected_subject = {object_format, commit_oid, component_
   formato (ex.: `tmp_obj_*` do Git vivo) são ignorados e contados. Nada de `config`, remotos,
   promisor, hooks, `HEAD`, refs, `packed-refs` ou ponteiro de alternates da fonte atravessa: o
   produtor escreve `config` (só o formato de objeto), `HEAD → refs/heads/none`, `refs/heads` e
-  `objects/info` vazios e o recibo. Finalização: arquivos `0444`, diretórios `0555`, `fsync`; o
-  **commit point** é `rename(staging/<id> → committed/<id>)`. Antes dele o runner nem lista o
+  `objects/info` vazios e o recibo. Finalização: arquivos `0444`, diretórios `0555`; `fsync` só de
+  cada objeto copiado, do diretório de staging e de `committed/` depois do rename — HEAD, `config`,
+  recibo e subdiretórios **não** recebem `fsync` (T-F6). A publicação tem **visibilidade atômica**;
+  um crash (SIGKILL) antes do rename não publica (C10); durabilidade a queda de energia **não é
+  qualificada** (S1_PUBLISH_01). O **commit point** é `rename(staging/<id> → committed/<id>)`. Antes dele o runner nem lista o
   staging; um crash deixa lixo de staging, nunca snapshot publicado (C10). `PhysicalSnapshot !=
   AuthenticatedSubject`: nenhuma validação de conteúdo acontece aqui, e o recibo
-  (`SnapshotReceipt != ObjectAuthenticityProof`) não tem commit nem root_tree. A propriedade
+  (`SnapshotReceipt != ObjectAuthenticityProof`) não tem commit nem root_tree. Ele conta só o que de
+  fato conta: `physical_bytes`/`physical_entries` são os arquivos-fonte **cobrados** (inclusive um
+  objeto deduplicado entre fonte e alternate, que é cobrado mas não copiado de novo: T-F6), e
+  `physical_content_sha256` cobre os objetos copiados — não HEAD, `config`, o recibo nem
+  diretórios. A propriedade
   normativa é `RunnerCanRead ∧ ¬RunnerCanMutate`, estabelecida pelo kernel; `uid == 0` é só o
   mecanismo do experimento. Um objeto obrigatório ausente é recusa tipada (`object_missing`), sem
   busca: a política é `OfflineClosureComplete(C)` (C4/C8B), e um clone parcial com closure completa
   é admitido (C8A).
-- **Leitor como o runner (C11) e `ReaderPrincipal` (K1).** A derivação de S_G roda sem privilégio e
-  **verifica** a fronteira no consumo em vez de supô-la. Primeiro o **principal**: uid real,
+- **Leitor como o runner (C11), checagens do leitor (K1) e o contexto autorizado.** A derivação de
+  S_G roda sem privilégio. A aplicabilidade depende do `AuthorizedReaderExecutionContext`, que vem
+  do host/launcher. O leitor **não** o estabelece nem o prova: suas checagens são defesa em
+  profundidade e não substituem esse contexto (T-F1/T-F2 as contornam fora dele). No head
+  experimental `34fc575`, as checagens são estas. Primeiro o **principal**: uid real,
   efetivo, salvo e de filesystem, lidos de `/proc/self/status`, têm de ser iguais ao uid do runner
   **esperado** (dado pelo chamador), e o mesmo vale para os gids (`reader_principal_mismatch`);
   `CapEff`, `CapPrm`, `CapInh` e `CapAmb` têm de ser zero (`reader_has_capabilities`); grupos
-  suplementares e `CapBnd` são registrados. `ReaderPrincipalIdentity != ReaderSelfAssertion`:
+  suplementares e `CapBnd` são registrados. `ReaderPrincipalIdentity != ReaderSelfAssertion`, e
+  ids numéricos lidos no próprio processo continuam relativos ao user namespace (T-F2):
   `os.getuid()` não basta, porque o Git e as syscalls usam as credenciais efetivas/de filesystem, e um
   uid salvo ou uma capability permitida podem ser reativados depois da checagem (K1A/K1B/K1C: o
   contramodelo de cada um **altera** o snapshot, e o detector de `28a3b4a` o aceitava). O caminho recebido tem de ser absoluto,
@@ -404,7 +481,8 @@ C (esperado, via #319; expected_subject = {object_format, commit_oid, component_
   (`snapshot_mutable_by_reader`). A revisão de
   `a858dc9` mostrou que a checagem **lexical** anterior aceitava um caminho com symlink root-owned
   apontando para um diretório do runner, e o runner então trocava o snapshot e fazia o Git executar
-  o seu helper (mecanismo de B-2); ver EVIDENCE. Se a
+  o seu helper (mecanismo de B-2); ver EVIDENCE. A checagem de escrita também é relativa ao mount:
+  uma vista read-only de inodes graváveis por outro mount passa (T-F1). Se a
   derivação precisasse do privilégio do produtor, o resultado seria
   `STOP_301_C_READER_PRIVILEGE_DEPENDENCY`. Quem cria esse principal (o launcher) **não** é provado
   por S_G: a composição pertence a U3 / à futura composição de execução, e
@@ -533,7 +611,7 @@ limite · owner · evidência.
 
 | Grupo | Obrigações | Estado em S0 |
 |---|---|---|
-| 7.1 — S_G (claim de S0) | 301S-SNAP, PRIV, ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | candidatas sob a arquitetura C; qualificação após a revisão do exact head |
+| 7.1 — S_G (claim de S0) | 301S-SNAP, PRIV, ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | ratificadas como contrato de componente sob `Applicable_SG` (evidência: head experimental `34fc575`); obrigações sucessoras em §12 |
 | 7.2 — E (viabilidade) | 301S-BOOT, LOAD (confinamento observado), CHAN, DATA, CALLER | propostas; E é futura |
 | 7.3 — S_D (futura slice) | 301S-DEP, NAT, RES (S_D), completude do loader | `DEFINED`; contramodelos obrigatórios R2-1/2/3/7/8 |
 
@@ -550,19 +628,24 @@ limite · owner · evidência.
   snapshot publicado e staging ilegível pelo runner (C10); produtor sem inflate, VmHWM 21,7 MiB (C5);
   alternate autorizado achatado sem ponteiro, clone parcial com closure completa **admitido**,
   sha256 aceito; toda entrada **listada** (copiada ou ignorada) conta no orçamento de entradas
-  (`C5_producer_listing_charged_to_entry_budget`), **inclusive a sonda estrutural de um alternate**
+  (`C5_producer_listing_charged_to_entry_budget`), **inclusive a listagem da sonda estrutural de um
+  alternate**
   (K3: sonda experimental com o mesmo significado da G1C — `HEAD` irmão, `pack/`, `info/` em O(1), e
   a busca de fanout passando por `scanned()`; alternate com 3.000 entradas-lixo antes do fanout e
   orçamento 1.000 → `physical_budget_exceeded` com 1.001 entradas enumeradas, contra 4.002 na ablação
-  com a sonda da G1C; pool pequeno aceito); escritas curtas forçadas (4.093 B por `write`) publicam
+  com a sonda da G1C; pool pequeno aceito). K3 limita **a listagem de diretórios**, não toda a
+  família de alternates: a leitura do manifesto (até 64 KiB, truncado em silêncio acima disso) e a
+  resolução de ponteiros não são cobradas — X2/T-F4, 11.903 `open` contra 23 entradas cobradas;
+  S1_RES_01. Escritas curtas forçadas (4.093 B por `write`) publicam
   bytes idênticos à fonte e um recibo igual ao destino, e a ablação "uma escrita por bloco" publica
   bytes truncados (RC-5) · quem autorizou a capability é #331/C2_B; produtor de produção U3; GC do
   staging é obrigação futura; a sonda de produção da G1C **não** foi alterada (S1 exige uma sonda
   limitada aprovada pelo owner); R4-3: um pack maior que o envelope do leitor torna S_G
   indisponível — `ACCEPTED_S0_LIMITATION_REQUIRES_S1_PARAMETER_DECISION`, sem efeito sobre
   autenticidade · #301 (S_G), #331 · EXP-ARCH-C C2/C4/C5/C8/C9/C10/K3/RC5, `POSITIVE_sha256_runner_S_G`.
-- **301S-PRIV** — `RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)`, e o leitor roda como o
-  runner e confere isso no consumo · snapshot publicado · negação do kernel (DAC no experimento) +
+- **301S-PRIV** — `RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)` **dentro de um
+  `AuthorizedReaderExecutionContext`** (precondição externa do host/launcher); o leitor roda como o
+  runner e aplica checagens de defesa em profundidade no consumo · snapshot publicado · negação do kernel (DAC no experimento) +
   precondição do leitor · produtor → leitor · 12 mutações pelo runner (escrever `config`, criar
   alternates, reescrever/renomear loose, reescrever pack, `unlink`, `rename`, `mkdir`, `chmod` do
   snapshot e de objeto, renomear o snapshot, criar irmão em `committed/`); cópia do snapshot de
@@ -641,25 +724,33 @@ limite · owner · evidência.
   (`charge_node` durante a caminhada); **o parser de cada tree recebe o restante** do orçamento de nós,
   e não uma constante global (K4: `TreeParserExpansion <= RemainingClosureNodeBudget`; restante ≤ 0
   recusa antes de carregar a tree; 992 nós consumidos sob `max_nodes` 1.000 e uma tree compacta de 50
-  entradas → `budget_nodes` com teto 8 e 0 entradas materializadas além do restante, contra 50 na
+  entradas → `budget_nodes` com teto 8; o parser do C3 aplica o teto incrementalmente e materializa
+  no máximo restante+1 entradas antes de recusar (o contador "além do restante" do experimento mede
+  listas completas, 0), contra 50 na
   ablação com o teto global; mesma forma com 5 entradas aceita) · corpus real aceito com a unidade Git ≤ 14,8 MiB
   dentro do envelope de 128 MiB · valores de envelope e orçamentos (§8) ainda não adjudicados;
   memória **agregada** da unidade e prazo total **não** reivindicados (#320); `RLIMIT_AS` segue a
   semântica já usada por `trusted_check_supervisor_v2` · #301 · EXP-RES `git_child_contained_*`,
   `strict_transport_*`; EXP-ARCH-C C5 (inclusive `C5_blob_charged_per_occurrence_refused`,
-  `C5_path_bytes_budget_enforced_during_walk`), K4; EXP-FUNC. O C3 reporta o estouro de entradas com o
-  mesmo código de alguns nomes irrepresentáveis; como o teto que o leitor lhe passa é o restante, o
-  leitor atribui a recusa a `budget_nodes` (S1: pedir ao owner do C3 uma razão distinta). Os casos de EXP-RES exercitam o caminho
+  `C5_path_bytes_budget_enforced_during_walk`), K4; EXP-FUNC. O leitor de `34fc575` converte
+  **toda** recusa do C3 numa tree abaixo da raiz em `budget_nodes` (`..`, `a/b`, tree truncada ou
+  malformada: T-F3), não só o estouro de entradas. A decisão de recusar está certa; a causa
+  reportada está errada quando a causa autoritativa é conhecida (S1_SEM_01:
+  `RefusalDecisionAuthority = RefusalCauseAuthority`). Os casos de EXP-RES exercitam o caminho
   `build_subject`, **não** o leitor de C; só os casos de EXP-ARCH-C valem para C.
 - **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial nem snapshot publicado;
   filho sem resposta não vira sucesso; nada do transporte sobrevive à captura · produtor/leitor/
   launcher · FD/processos contados antes e depois; o leitor é *child subreaper* e o teardown da
   unidade mata e colhe **todos** os descendentes; o leitor confere que é subreaper antes de iniciar o
   Git (`subreaper_required`) e um descendente que sobreviva ao prazo do teardown vira recusa
-  (`unit_teardown_incomplete`) **em qualquer desfecho**, sucesso ou falha, com precedência sobre a
+  (`unit_teardown_incomplete`) em qualquer desfecho **depois do `try`**, sucesso ou falha, com
+  precedência sobre a
   falha primária, que fica registrada como diagnóstico experimental (K2: transporte que falha +
   teardown que reporta sobrevivente → `unit_teardown_incomplete`, falha primária
-  `transport_header_invalid`; a ablação "só no sucesso" esconde o sobrevivente); staging só vira snapshot no commit point · — ·
+  `transport_header_invalid`; a ablação "só no sucesso" esconde o sobrevivente). Não cobre a janela
+  entre o spawn do Git e o `try` (T-F5: uma exceção de construção deixa o Git vivo) nem um `kill`
+  com EPERM depois de ganho de privilégio no `exec` (X1: `PrivilegeGainCanBreakKillAuthority`) —
+  S1_LIFE_01 e S1_CTX_01. Staging só vira snapshot no commit point · — ·
   ferramenta falsa → filho → neto com `setsid` → `sleep` infinito; SIGKILL do produtor no meio do
   staging; falha de escrita (EFBIG), de selo (injetada), de hash no meio da captura, falha do
   launcher antes do spawn, filho travado, filho com rc 0 sem resposta · unidade: `transport_deadline`
@@ -852,7 +943,7 @@ Perguntas **abertas que bloqueiam E** (não S1):
    recebido e da identidade `(algoritmo, C)`. Paridade funcional e 0 aberturas em checkout/venv são
    viabilidade de E, não parte da claim. Disposição conservadora: qualquer falha recusa e
    **nenhum** S parcial é emitido; resultado ausente não é sucesso.
-2. **Autoridade.** Fronteira de aquisição → arquitetura C (candidata; A e B rejeitadas): a
+2. **Autoridade.** Fronteira de aquisição → arquitetura C (ratificada como contrato de componente; A e B rejeitadas): a
    imutabilidade do snapshot é autoridade do **kernel** sobre um produtor com separação de
    privilégio (DAC no experimento); a abertura do storage por descritor dentro da capability reusa
    primitivas da G1C (`trusted_object_authority_v2`) **sem** o inflate de loose, `verify-pack` ou
@@ -975,8 +1066,86 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
   envelope (R4-3) (§8); (ii) aceite do owner de C3 para expor a interpretação de tree sobre bytes
   fornecidos, com o teto de entradas **restante** e uma razão distinta para estouro de entradas
   (interface derivada; não muda o comportamento dos consumidores atuais do C3); (iii) o launcher
-  (U3) fornece o `ReaderPrincipal` **esperado** e cria o processo leitor com ele; S_G não prova quem
-  criou esse principal.
+  (U3) estabelece o `AuthorizedReaderExecutionContext` (principal, user namespace, mount namespace,
+  não-escalada no `exec`) e cria o processo leitor nele; S_G não prova quem criou esse contexto.
+
+### Obrigações sucessoras de S1 (ratificação de S0-C; nenhuma implementada)
+
+S0 ratificado significa `ContractReady`, **não** `ProductionReady`. Os contramodelos abaixo são **falsificadores obrigatórios** da ativação de S1. Uma ativação que não os derrote não pode tornar S_G confiável nem consumível.
+
+```yaml
+activation_countermodels:
+  TF1:
+    countermodel: {readonly_mount_view: {accepted_by_old_detector: true, backing_inode_writable_through_other_mount: true,
+                                         git_helper_execution_reproduced: true}}
+    lesson: "ReadOnlyView != NoWritableAlias"
+    future_owner: S1/U3 activation binding
+    required_future_property: "snapshot identity and mount namespace come from the authorized launcher/host context,
+                               not only from pathname-level writability tests"
+  TF2:
+    countermodel: {numeric_runner_ids_visible_inside_other_userns: true, accepted_by_old_detector: true,
+                   helper_execution_reproduced: true}
+    lesson: "NumericCredentialValues != HostPrincipalIdentity"
+    future_owner: S1/U3 activation binding
+    required_future_property: "user namespace identity is bound by the authorized launcher/host"
+    note: "not 'user namespaces forbidden forever'; S1 may choose to restrict itself to the initial user namespace"
+S1_obligations:
+  S1_CTX_01:
+    name: EXEC_PRIVILEGE_NON_ESCALATION
+    proposition: "local Git and every helper executed by the reader cannot acquire credentials or capabilities beyond
+                  the AuthorizedReaderExecutionContext"
+    minimum_candidate_control: PR_SET_NO_NEW_PRIVS before exec
+    countermodels: [setuid executable, setgid executable, file capabilities, X1]
+    lifecycle_effect: PrivilegeGainCanBreakKillAuthority      # killpg -> EPERM can defeat teardown
+    owner: S1 / U3
+    status: NOT_IMPLEMENTED
+  S1_RES_01:
+    name: ALTERNATE_RESOLUTION_BUDGET
+    proposition: "all attacker-controlled work incurred while reading and resolving alternates is charged before
+                  expansion beyond the admitted physical acquisition budget"
+    resource_dimensions: [manifest_bytes, manifest_lines, pointer_count, descriptor_opens, alternate_depth]
+    countermodels: [X2, TF4]
+    note: "K3 bounded the directory probe listing only"
+    status: NOT_IMPLEMENTED
+  S1_SEM_01:
+    name: C3_REFUSAL_CAUSE_PRESERVATION
+    proposition: "a refusal issued by the C3 structural authority is not converted into budget_nodes when the
+                  authoritative cause is known"
+    invariant: "RefusalDecisionAuthority = RefusalCauseAuthority (when the cause is known)"
+    countermodels: [dotdot, malformed_tree, truncated_tree, duplicate_name, actual_budget_exhaustion]
+    evidence: TF3
+    status: NOT_IMPLEMENTED
+  S1_LIFE_01:
+    name: TRANSPORT_OWNERSHIP_FROM_SPAWN
+    proposition: "from the first instant a local Git process exists, a lifecycle owner is responsible for teardown on
+                  every exit path; no spawn -> unowned -> try/finally window"
+    countermodel: exception_between_spawn_and_try              # TF5
+    status: NOT_IMPLEMENTED
+  S1_PUBLISH_01:
+    name: DURABLE_SNAPSHOT_PUBLICATION
+    open_requirements: [object_file_fsync, producer_config_fsync, receipt_fsync, relevant_directory_fsync,
+                        parent_fsync_before_or_after_atomic_rename_as_required]
+    evidence: TF6
+    status: NOT_IMPLEMENTED
+  R4_3:
+    established: true
+    affects_authenticity: false
+    affects_availability: true
+    S0_disposition: ACCEPTED_LIMITATION
+    successor_owner: [S1, "#320"]
+    required: "harmonize SnapshotAdmissionBudget <-> LocalGitExecutionEnvelope (no new limits chosen in S0)"
+```
+
+Antes da primeira implementação, o plano de S1 (grant separado, "#301-S1 IMPLEMENTATION PLAN") precisa reconciliar:
+- `AuthorizedReaderExecutionContext` + `no_new_privs`;
+- implantação e proveniência do produtor (U3);
+- política de storage do host (#331);
+- proveniência de `C` na ativação (#319);
+- orçamento completo de alternates;
+- política de recursos do Git local (#320, R4-3);
+- ciclo de vida desde o spawn;
+- publicação durável e GC do staging;
+- local de produção e handoff da capability.
 
 Cortes seguintes derivados desta arquitetura (não é sequência universal): **slice S_D** — leitor
 único com cobrança (spike), identidade/tags/ELF e completude do loader, com R2-1/2/3/7/8 e o corpus

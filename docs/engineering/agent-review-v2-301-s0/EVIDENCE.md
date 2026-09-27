@@ -4,7 +4,7 @@
 contrato e para os artefatos; não o repete. Hashes provam integridade dos arquivos, não autoridade
 nem suficiência.
 
-## Subject e ambiente da execução registrada
+## Subject e ambiente da execução registrada (head experimental `34fc575`)
 
 ```yaml
 engine_subject: {commit: 9abcde6420a59b814b5faaff10ca5904c5d23370, tree: 93143d70ed410771776f5f2cdb48d7f8e3f5ed9b}
@@ -26,10 +26,10 @@ reproduction: própria (esta sessão); não é reprodução independente
 
 Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
 ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
-deste head; as dos heads `3d426e1`, `1e2453e`, `1299b00` e `cf69fbf` (arquitetura A) continuam no histórico git. O Spike B (host 3.12/git 2.43) e o Spike C (comentário 5858608157; container efêmero, PID ns com
+do head experimental `34fc575`; as dos heads `3d426e1`, `1e2453e`, `1299b00` e `cf69fbf` (arquitetura A) continuam no histórico git. O Spike B (host 3.12/git 2.43) e o Spike C (comentário 5858608157; container efêmero, PID ns com
 `CAP_SYS_ADMIN`) foram evidência de viabilidade e **não** são transferidos: a execução registrada
-aqui reexecuta C1–C10 e o novo C11 com o código deste head. O registro de `8c4842b` (arquitetura B,
-171/171) fica no histórico git; os resultados de `exp_snapshot.json` deste head reexecutam o código
+aqui reexecuta C1–C10 e o novo C11 com o código do head experimental `34fc575`. O registro de `8c4842b` (arquitetura B,
+171/171) fica no histórico git; os resultados de `exp_snapshot.json` do head experimental `34fc575` reexecutam o código
 de B, que continua **rejeitado**, e só sustentam as linhas que dizem respeito a componentes que C
 reutiliza (hash-on-read, prazo por objeto).
 
@@ -89,7 +89,44 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Falhas sem S parcial; ownership linear | `write_failure_*`, `seal_failure_*`, `mid_capture_*`, `launcher_pre_spawn_*`, `hung_*`, `consumer_exits_rc0_*` | conforme esperado | aqui | falha de selo por injeção |
 | Caller real, runner, targets | forge: AgentEscala `develop@8537eb18`; listagem de workflows de caem/sacr-as | CT104 self-hosted; sem v2 em CAEM/SACR-AS | leitura de fonte | não executado |
 
-## Arquitetura C (candidata) — EXP-ARCH-C
+## Ratificação da arquitetura C (commit documental sobre `34fc575`)
+
+```yaml
+experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d   # 216/216 aqui, runtime declarado; experimentos inalterados desde então
+ratification_subject: the docs-only commit that follows 34fc575    # muda só CONTRACT/EVIDENCE/README; nenhum experimento reexecutado
+architecture: {A: REJECTED, B: REJECTED, C: RATIFIED_AS_COMPONENT_CONTRACT}
+candidate_evidence (bound to 34fc575): {K1: corrected_and_discriminated, K2: corrected_and_discriminated,
+                                        K3: corrected_and_discriminated, K4: corrected_and_discriminated,
+                                        RC5: corrected_and_discriminated}
+applicability: Applicable_SG   # CONTRACT §2; requires AuthorizedReaderExecutionContext, a host/launcher precondition
+```
+
+"216/216" vale para o head **experimental** `34fc575`; o commit de ratificação muda só documentação.
+
+Achados da revisão do exact head `34fc575` (comentário 5859932046), registrados aqui com a disposição do mantenedor. **Nenhum foi corrigido.**
+
+| Achado | Estabelecido | Disposição | Dono sucessor |
+|---|---|---|---|
+| **TF1**: vista read-only por bind mount de inodes graváveis por outro mount é aceita pelas checagens do leitor; o runner grava `config` pelo caminho rw e o Git executa o helper dele | reproduzido (revisão adversarial) | `OUTSIDE_RATIFIED_READER_EXECUTION_CONTEXT`; não é recorrência de fronteira; contramodelo obrigatório de ativação | S1/U3 |
+| **TF2**: dentro de outro user namespace, ids numéricos `[2000]*4` e caps 0 são aceitos sobre um snapshot do runner; o helper do runner executa | reproduzido (revisão adversarial) | `OUTSIDE_RATIFIED_READER_EXECUTION_CONTEXT`; contramodelo obrigatório de ativação | S1/U3 |
+| **X1**: Git setuid/setgid ou com file caps pode ganhar credenciais no `exec` (sem `PR_SET_NO_NEW_PRIVS`); `killpg` → EPERM não é tratado | leitura de código (Codex P1, 4116964963) | `VALID_SUCCESSOR_OWNED`, não corrigido | S1_CTX_01 |
+| **X2/TF4**: manifesto de alternates (≤ 64 KiB, truncado em silêncio acima disso) e resolução de ponteiros não são cobrados; 11.903 `open` contra 23 entradas cobradas | reproduzido + Codex P2 (4116964966) | `VALID_SUCCESSOR_OWNED`; K3 cobre só a listagem | S1_RES_01 |
+| **TF3**: toda recusa do C3 abaixo da raiz é reportada como `budget_nodes` | reproduzido | causa de recusa errada, decisão certa | S1_SEM_01 |
+| **TF5**: exceção entre o spawn do Git e o `try` deixa o Git vivo | reproduzido (por erro de construção) | K2 "qualquer desfecho" vale só depois do `try` | S1_LIFE_01 |
+| **TF6**: HEAD, `config`, recibo e subdiretórios sem `fsync`; o recibo cobra objeto deduplicado | reproduzido (dedupe) + leitura de código | visibilidade atômica sim, durabilidade a queda de energia `NOT_QUALIFIED`; texto corrigido | S1_PUBLISH_01 |
+| **R4-3**: pack acima do envelope torna S_G indisponível | reproduzido (revisão de `a858dc9`) | `ACCEPTED_LIMITATION` (disponibilidade, não autenticidade) | S1 + #320 |
+
+**Correções de texto** (sem mudar mecanismo nem experimento). Estas afirmações superestimavam a evidência e ficaram assim:
+- "`ReaderPrincipal` = credenciais que o filesystem usa" é agora defesa em profundidade dentro de um `AuthorizedReaderExecutionContext` estabelecido pelo host/launcher.
+- "K3: nenhuma enumeração ilimitada precede a limitada" vale **só para a listagem de diretórios**.
+- "K2: em qualquer desfecho" vale **depois do `try`**.
+- "K4: 0 entradas além do restante" passa a "no máximo restante+1 materializadas pelo parser; o contador mede listas completas".
+- "finalize … fsync" passa ao conjunto exato de `fsync`.
+- O recibo conta só o que de fato conta.
+
+**Portão de ativação.** S1 de produção **não** pode rodar nos contextos de TF1/TF2: sem o `AuthorizedReaderExecutionContext` estabelecido, S_G não se torna confiável nem consumível (CONTRACT §2, §12).
+
+## Arquitetura C — EXP-ARCH-C (head experimental `34fc575`)
 
 `exp_arch_c.json` (45/45, `evidence: REPRODUCED` em cada caso; 7 casos novos após a revisão de `a858dc9` e 14 no corte terminal — K1–K4, RC-5). O orquestrador roda como root no
 container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader_c.py`) roda
@@ -142,13 +179,13 @@ continua candidata e depende da precondição corrigida (C11 contra-controles).
 | R4-2 / B-4 | raiz derivada dos bytes autenticados de `C`, sem autoridade independente; discriminado por C6 |
 | R4-3 | aberto (parâmetro do envelope) |
 
-## Corte terminal da arquitetura C (este head): K1–K4, RC-5, R4-3
+## Corte terminal da arquitetura C (`34fc575`): K1–K4, RC-5, R4-3
 
 Grant do mantenedor ("ARCHITECTURE C — TERMINAL CONTRACT CLOSURE CUT"). Subject revalidado antes de qualquer mutação: head `28a3b4a`, base `9abcde6`, sem drift. É **um** commit corretivo. Depois dele vale `NO_AUTOMATIC_PATCH_LOOP`: achado material novo vai para adjudicação humana.
 
 **Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`, condicionada ao `ReaderPrincipal` (K1). Ver CONTRACT, topo.
 
-| Item | Correção | Discriminadores (`exp_arch_c.json`, este head) | Resultado | Limite |
+| Item | Correção | Discriminadores (`exp_arch_c.json`, `34fc575`) | Resultado | Limite |
 |---|---|---|---|---|
 | **K1** — o principal do leitor era autodeclarado (`os.getuid()`, `access` pelo id real) | `ReaderPrincipal` lido de `/proc/self/status` e comparado ao runner **esperado**. Exige uid e gid real = efetivo = salvo = filesystem, e `CapEff`, `CapPrm`, `CapInh`, `CapAmb` = 0. Escrita checada com credenciais **efetivas** (`effective_ids=True`). | `K1_POSITIVE_established_runner_principal_accepted`, `K1A_real_runner_effective_snapshot_owner_refused`, `K1B_saved_uid_of_snapshot_owner_refused`, `K1C_permitted_capability_with_CapEff_0_refused` | **Positivo:** uid/gid 2000 nos 4 campos, caps 0 → aceito sobre um snapshot do produtor não-root uid 3000. **K1A:** `Uid 2000 3000 3000 3000` → `reader_principal_mismatch`. **K1B:** `Uid 2000 2000 3000 2000` → `reader_principal_mismatch`. **K1C:** `CapPrm a80425fb`, `CapEff 0` → `reader_has_capabilities`. Em K1A/K1B/K1C: **contramodelo exercitado** (o processo altera o snapshot com o que possui; em K1C, via `capset`) e a checagem de `28a3b4a` o aceitava. | K1A/K1B/K1C constroem as credenciais **no próprio processo** (setresuid/KEEPCAPS e depois `runpy` do leitor), porque o `exec` iguala o uid salvo ao efetivo. Grupos suplementares só registrados. |
 | **K2** — sobrevivente ignorado quando a captura já falhava | Qualquer descendente restante → `unit_teardown_incomplete` em **qualquer** desfecho. A falha primária fica como diagnóstico. | `K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete`, `K2_ABLATION_success_only_rule_hides_the_survivor` | Transporte que falha + teardown que reporta sobrevivente → `unit_teardown_incomplete`, primária `transport_header_invalid`. A unidade real termina vazia. A ablação devolve `transport_header_invalid` e esconde o sobrevivente. | `real_D_state: NOT_TESTED`: o teardown é um stub. C7 (filho + neto `setsid` reais) preservado. |
@@ -157,7 +194,7 @@ Grant do mantenedor ("ARCHITECTURE C — TERMINAL CONTRACT CLOSURE CUT"). Subjec
 | **RC-5** — escrita curta | Laço de escrita (em `28a3b4a`), agora com **discriminador causal** | `RC5_forced_short_writes_publish_exact_bytes`, `RC5_ABLATION_one_write_per_chunk_publishes_mismatch` | `write` forçado a ≤ 4.093 B: os 10 arquivos publicados são iguais à fonte, o recibo é igual ao recalculado do destino e o leitor aceita. Ablação "uma escrita por bloco": bytes e recibo divergem. | Escritas curtas forçadas por wrapper sobre o `os.write` real, não por quota de disco. |
 | **R4-3 / RC-6** — pack acima do envelope | Nenhuma correção nesta rodada. | — (reproduzido pela revisão de `a858dc9`) | `ACCEPTED_S0_LIMITATION_REQUIRES_S1_PARAMETER_DECISION`: afeta disponibilidade, não autenticidade nem a identidade de S0. | Nenhum número novo inventado. |
 
-**Suíte deste head:** 216/216 (10 scripts; `exp_arch_c` 45/45). Os scripts foram hasheados **antes** da execução registrada e conferidos depois. Três ensaios não registrados antecederam a execução:
+**Suíte do head experimental `34fc575`:** 216/216 (10 scripts; `exp_arch_c` 45/45). Os scripts foram hasheados **antes** da execução registrada e conferidos depois. Três ensaios não registrados antecederam a execução:
 - 1º: `KeyError` no runner (`os.walk` usa `scandir`, e o proxy de contagem não era iterador);
 - 2º: `NameError` ao reintroduzir o proxy, que removeu a classe `Refused` do produtor; além disso, no tmpfs deste kernel a listagem sai da mais nova para a mais antiga, e a fixture de K3 pôs o fanout antes do lixo, invalidando a ablação;
 - 3º: 216/216.
