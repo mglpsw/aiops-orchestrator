@@ -33,11 +33,11 @@
     "physical_entries": 4,
     "alternate_sources_count": 1,
     "storage_capability_binding": [
-     "/work/ar301c-1e15b59b/altpool",
-     "/work/ar301c-1e15b59b/src"
+     "/work/ar301c-26b55e66/altpool",
+     "/work/ar301c-26b55e66/src"
     ],
     "published_snapshot_identity": {
-     "snapshot_id": "45d3c05392193f664a1dcce5-1e941892",
+     "snapshot_id": "45d3c05392193f664a1dcce5-5f7fad8c",
      "physical_content_sha256": "45d3c05392193f664a1dcce58469181b981781df5863398cb4186961b3c3eb40"
     },
     "skipped_non_object_files": 1
@@ -211,7 +211,7 @@
    },
    "pass": true,
    "evidence": "REPRODUCED",
-   "producer_vmhwm_MiB": 21.4,
+   "producer_vmhwm_MiB": 21.7,
    "producer_heap_MiB": 2.62,
    "physical_bytes": 261293,
    "inflated_bytes": 268435456
@@ -312,8 +312,8 @@
    "evidence": "REPRODUCED",
    "survivors": [
     [
-     300905,
-     "22832472"
+     300906,
+     "23270056"
     ]
    ]
   },
@@ -330,6 +330,368 @@
    "evidence": "REPRODUCED",
    "runner_listing_staging": "DENIED 13",
    "commit_point": "rename(staging/<id> -> committed/<id>) after modes + fsync"
+  },
+  "K1_POSITIVE_established_runner_principal_accepted": {
+   "expected": {
+    "result": "ACCEPTED",
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "caps_zero": true
+   },
+   "observed": {
+    "result": "ACCEPTED",
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "caps_zero": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "snapshot_owner": 3000,
+   "principal_observed": {
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1A_real_runner_effective_snapshot_owner_refused": {
+   "expected": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "3000",
+     "3000",
+     "3000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "0000000000000000"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     3000,
+     3000,
+     3000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1B_saved_uid_of_snapshot_owner_refused": {
+   "expected": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "2000",
+     "3000",
+     "2000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "0000000000000000"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     2000,
+     3000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1C_permitted_capability_with_CapEff_0_refused": {
+   "expected": {
+    "result": "REFUSED:reader_has_capabilities",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_has_capabilities",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "00000000a80425fb"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "00000000a80425fb",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete": {
+   "expected": {
+    "outcome": "REFUSED:unit_teardown_incomplete",
+    "primary_failure_recorded": true,
+    "real_unit_after_empty": true
+   },
+   "observed": {
+    "outcome": "REFUSED:unit_teardown_incomplete",
+    "primary_failure_recorded": true,
+    "real_unit_after_empty": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "primary_failure": "transport_header_invalid",
+   "real_D_state": "NOT_TESTED (stub teardown reports the survivor)"
+  },
+  "K2_ABLATION_success_only_rule_hides_the_survivor": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_outcome": "REFUSED:transport_header_invalid"
+  },
+  "K3_alternate_probe_charged_to_entry_budget": {
+   "expected": {
+    "result": "REFUSED:physical_budget_exceeded",
+    "enumerated_within_budget": true
+   },
+   "observed": {
+    "result": "REFUSED:physical_budget_exceeded",
+    "enumerated_within_budget": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "dir_entries_enumerated": 1001,
+   "junk_entries": 3000,
+   "max_entries": 1000
+  },
+  "K3_ABLATION_unbounded_G1C_probe_enumerates_beyond_budget": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_result": "REFUSED:physical_budget_exceeded",
+   "mutant_dir_entries_enumerated": 4002,
+   "fanout_listing_position": 3000
+  },
+  "K3_POSITIVE_small_standalone_pool_accepted": {
+   "expected": {
+    "producer": "ok",
+    "reader": "ACCEPTED",
+    "alternate_sources": 1
+   },
+   "observed": {
+    "producer": "ok",
+    "reader": "ACCEPTED",
+    "alternate_sources": 1
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "K4_tree_parser_bounded_by_remaining_node_budget": {
+   "expected": {
+    "result": "REFUSED:budget_nodes",
+    "materialized_beyond_remaining": 0
+   },
+   "observed": {
+    "result": "REFUSED:budget_nodes",
+    "materialized_beyond_remaining": 0
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "parser_cap_at_refusal": 8
+  },
+  "K4_ABLATION_global_cap_materializes_beyond_remaining": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_result": "REFUSED:budget_nodes",
+   "mutant_materialized": 50
+  },
+  "K4_POSITIVE_same_shape_within_remaining_budget_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "RC5_forced_short_writes_publish_exact_bytes": {
+   "expected": {
+    "published_equals_source": true,
+    "receipt_matches_destination": true
+   },
+   "observed": {
+    "published_equals_source": true,
+    "receipt_matches_destination": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "files": 10,
+   "max_write": 4093,
+   "reader": "ACCEPTED"
+  },
+  "RC5_ABLATION_one_write_per_chunk_publishes_mismatch": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant": {
+    "published_equals_source": false,
+    "receipt_matches_destination": false,
+    "files": 10
+   }
   },
   "POSITIVE_sha256_runner_S_G": {
    "expected": {
@@ -385,8 +747,7 @@
   "total-capture deadline",
   "production staging GC",
   "R4-3 envelope vs mapped packs (reproduced by review F3 as unavailability, not re-run here)",
-  "teardown with a descendant in uninterruptible sleep (fail-closed path by code reading only)",
-  "producer short write (retry by code reading only)"
+  "real descendant in uninterruptible (D) sleep: the K2 branch is discriminated with a stub teardown"
  ],
  "resource_vector": {
   "physical_snapshot": {
@@ -394,12 +755,12 @@
    "entry_count": 2,
    "alternate_depth": 0,
    "producer_heap_MiB": 3.81,
-   "producer_rss_MiB_vmhwm": 23.2,
+   "producer_rss_MiB_vmhwm": 23.3,
    "io": {
-    "rchar": 5625991,
+    "rchar": 5632037,
     "wchar": 3646583
    },
-   "time_s": 0.06,
+   "time_s": 0.061,
    "producer_uid": 0
   },
   "subject_closure": {
@@ -410,14 +771,14 @@
    "metadata_bytes": 51346,
    "path_bytes": 54726,
    "reader_heap_MiB": 36.69,
-   "reader_rss_MiB_vmhwm": 58.0,
+   "reader_rss_MiB_vmhwm": 58.2,
    "local_git_processes": 1,
    "per_object_deadline_s": 30,
    "time_s": 0.295,
    "reader_uid": 2000
   },
   "local_git_unit": {
-   "rss_MiB_upper_bound": 14.5,
+   "rss_MiB_upper_bound": 14.8,
    "envelope": "RLIMIT_AS 128 MiB per process",
    "aggregate_memory": "NOT_TESTED (no cgroup)"
   }

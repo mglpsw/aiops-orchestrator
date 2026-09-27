@@ -4,18 +4,24 @@ Runs as the unprivileged runner over a COMMITTED snapshot published by the privi
 (s0_snapshot_c.py). Producer owns immutability; runner owns subject derivation.
 
   expected_subject = {object_format, commit_oid, component_policy}   # the only external identity
-  precondition     : the reader refuses a snapshot it could mutate: the path must be absolute and canonical
-                     with NO symlink in any component (so the path git re-resolves is the path checked), and
-                     no component from / down, nor any node below, may be owned by or writable for the reader;
-                     a reader holding any effective capability is refused (it must run as the runner) --
-                     the boundary is checked at consumption, not assumed
+  reader principal : the credentials the FILESYSTEM uses and git INHERITS, read from /proc/self/status and
+                     compared with an EXPECTED runner principal given by the caller (never self-reported):
+                     real == effective == saved == filesystem uid == expected uid, same for gids, and
+                     CapEff == CapPrm == CapInh == CapAmb == 0 (ReaderPrincipalIdentity != ReaderSelfAssertion)
+  precondition     : the reader refuses a snapshot its principal could mutate: the path must be absolute and
+                     canonical with NO symlink in any component (so the path git re-resolves is the path checked),
+                     and no component from / down, nor any node below, may be owned by the effective uid or be
+                     writable under EFFECTIVE credentials (faccessat AT_EACCESS: euid, egid, supplementary groups)
+                     -- the boundary is checked at consumption, not assumed
   object format    : from expected_subject; checked against the commit id length and the producer-authored
                      snapshot config (the live repository is never asked)
   local git        : `git -c safe.directory=* cat-file --batch` on the snapshot only; own session, RLIMIT_AS,
                      per-object deadline, strict header (s0_capture.VerifiedObjectReader); the reader is a
                      CHILD SUBREAPER (verified before git starts), so every descendant (setsid included)
                      re-parents to it and the unit teardown kills and reaps the whole subtree; a descendant
-                     that survives the teardown deadline turns the capture into a refusal
+                     that survives the teardown deadline turns the capture into a refusal on EVERY path
+                     (success or failure): unit_teardown_incomplete takes precedence, the first failure is kept
+                     as primary_failure
   identity         : C + a content-addressed object map; root tree T DERIVED from the authenticated commit
                      bytes; one walk fetches and derives; seal; re-derive and compare with the SEALED bytes
 """
@@ -37,9 +43,38 @@ PR_GET_CHILD_SUBREAPER = 37
 
 
 class Refused(Exception):
-    def __init__(self, reason, detail=""):
+    def __init__(self, reason, detail="", **debug):
         super().__init__(reason + (": " + detail if detail else ""))
         self.reason = reason
+        self.debug = debug   # experimental diagnostics only (no production schema)
+
+
+PARSE_STATS = {"largest_tree_list": 0, "last_parser_cap": None, "materialized_beyond_remaining": 0}   # instrumentation (K4)
+
+
+def reader_principal() -> dict:
+    """The process credentials as the KERNEL reports them (not os.getuid())."""
+    f = {}
+    for line in open("/proc/self/status"):
+        k, _, v = line.partition(":")
+        f[k] = v.split()
+    return {"uid": [int(x) for x in f["Uid"]], "gid": [int(x) for x in f["Gid"]],
+            "groups": sorted(int(x) for x in f.get("Groups", [])),
+            "caps": {c: f[c][0] for c in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")}}
+
+
+def establish_reader_principal(expected: dict) -> dict:
+    """ReaderPrincipalEstablished: real/effective/saved/filesystem ids all equal the EXPECTED runner principal,
+    and no capability is held or re-activatable. CapBnd is recorded, not required to be empty."""
+    if not expected or "uid" not in expected or "gid" not in expected:
+        raise Refused("reader_principal_unspecified")
+    p = reader_principal()
+    if any(u != int(expected["uid"]) for u in p["uid"]) or any(g != int(expected["gid"]) for g in p["gid"]):
+        raise Refused("reader_principal_mismatch", f"uid={p['uid']} gid={p['gid']} expected={expected}", principal=p)
+    held = {c: v for c, v in p["caps"].items() if c != "CapBnd" and int(v, 16) != 0}
+    if held:
+        raise Refused("reader_has_capabilities", json.dumps(held), principal=p)
+    return p
 
 
 def become_subreaper() -> None:
@@ -94,25 +129,29 @@ def teardown_unit(deadline_s: float = 5.0) -> dict:
     return {"killed": len(killed), "remaining": descendants(os.getpid())}
 
 
-def require_immutable_to_me(snapshot: Path) -> None:
-    """RunnerCanRead AND NOT RunnerCanMutate, checked by the reader itself (C11).
+def require_immutable_to_me(snapshot: Path, expected_principal: dict) -> dict:
+    """ReaderPrincipalEstablished AND CanonicalSnapshotPath AND NoSymlinkComponent AND
+    NOT EffectiveCredentialsCanMutateSnapshot -- checked by the reader itself (C11, K1).
 
-    The check is only meaningful if git later resolves the SAME objects: an absolute, canonical path with no
-    symlink component cannot be re-pointed by a reader that owns and can write none of its components."""
-    cap_eff = next(l.split()[1] for l in open("/proc/self/status") if l.startswith("CapEff:"))
-    if int(cap_eff, 16) != 0:
-        raise Refused("reader_has_capabilities", cap_eff)
+    The check is only meaningful if git later resolves the SAME objects with the SAME credentials: the principal
+    has no capability and no other uid to switch to, and an absolute, canonical path with no symlink component
+    cannot be re-pointed by a principal that owns and can write none of its components."""
+    principal = establish_reader_principal(expected_principal)
     raw = os.fspath(snapshot)
     if not os.path.isabs(raw) or os.path.normpath(raw) != raw or raw.startswith("//"):
         raise Refused("snapshot_path_not_canonical", raw)
-    me = os.getuid()
+    me = principal["uid"][1]   # effective == filesystem uid (established above)
+
+    def mutable(p: str, st) -> bool:
+        return st.st_uid == me or os.access(p, os.W_OK, effective_ids=True)
+
     prefix = "/"
     for part in [""] + raw.strip("/").split("/"):
         prefix = os.path.join(prefix, part) if part else "/"
         st = os.lstat(prefix)
         if stat.S_ISLNK(st.st_mode):
             raise Refused("snapshot_path_not_canonical", "symlink component: " + prefix)
-        if st.st_uid == me or os.access(prefix, os.W_OK):
+        if mutable(prefix, st):
             raise Refused("snapshot_mutable_by_reader", prefix)
 
     def unreadable(exc: OSError) -> None:
@@ -122,8 +161,9 @@ def require_immutable_to_me(snapshot: Path) -> None:
         for name in dirnames + filenames:
             p = os.path.join(dirpath, name)
             st = os.lstat(p)
-            if st.st_uid == me or stat.S_ISLNK(st.st_mode) or os.access(p, os.W_OK):
+            if stat.S_ISLNK(st.st_mode) or mutable(p, st):
                 raise Refused("snapshot_mutable_by_reader", p)
+    return principal
 
 
 def snapshot_format(snapshot: Path) -> str:
@@ -145,7 +185,8 @@ def git_object_hash(alg: str, kind: str, body: bytes) -> str:
     return h.hexdigest()
 
 
-def walk(commit: str, load, *, component_limit: int, root_override: str | None = None, budget=None):
+def walk(commit: str, load, *, component_limit: int, root_override: str | None = None, budget=None,
+         _ablation_global_tree_cap: bool = False):
     """ONE walk used to fetch and to derive. root_override exists ONLY as the ablation mutant.
 
     With a budget (fetch phase) every logical node is charged: node count, depth and cumulative path bytes
@@ -161,7 +202,27 @@ def walk(commit: str, load, *, component_limit: int, root_override: str | None =
     while stack:
         prefix, tree_oid, depth = stack.pop()
         seen = set()
-        for mode, obj_type, oid, name in cap._parse_tree(load(tree_oid, "tree"), len(commit) // 2, 100_000):
+        # K4: TreeParserExpansion <= RemainingClosureNodeBudget (not a global constant)
+        remaining = 100_000 - count
+        if budget is not None:
+            remaining = min(remaining, budget.max_nodes - budget.nodes)
+        if remaining <= 0:
+            raise Refused("budget_nodes", "no remaining node budget before parsing tree " + tree_oid)
+        cap_entries = 100_000 if _ablation_global_tree_cap else remaining
+        PARSE_STATS["last_parser_cap"] = cap_entries
+        try:
+            entries = cap._parse_tree(load(tree_oid, "tree"), len(commit) // 2, cap_entries)
+        except cap.CaptureRefused as exc:
+            if exc.reason == "tree_unrepresentable" and cap_entries < 100_000:
+                # C3 reports entry overflow with the same code as some unrepresentable names; the cap it was
+                # fed is the remaining closure budget, so the refusal is attributed to that budget (S1: ask the
+                # C3 owner for a distinct overflow reason)
+                raise Refused("budget_nodes", f"tree {tree_oid} exceeds remaining node budget {cap_entries}") from exc
+            raise
+        PARSE_STATS["largest_tree_list"] = max(PARSE_STATS["largest_tree_list"], len(entries))
+        if len(entries) > remaining:   # only reachable under the ablation: a list beyond the remaining budget
+            PARSE_STATS["materialized_beyond_remaining"] = max(PARSE_STATS["materialized_beyond_remaining"], len(entries))
+        for mode, obj_type, oid, name in entries:
             if name in seen:
                 raise Refused("tree_duplicate_name")
             seen.add(name)
@@ -197,9 +258,10 @@ def check_expected_subject(snapshot: Path, expected: dict) -> tuple:
 
 
 def fetch_objects(snapshot: Path, expected: dict, *, envelope=128 << 20, deadline_s=30.0, payload_budget=64 << 20,
-                  argv=None, abort_delay_s=0.0, contain_unit=True, budget_overrides=None):
+                  argv=None, abort_delay_s=0.0, contain_unit=True, budget_overrides=None, expected_principal=None,
+                  teardown=None, _ablation_teardown_success_only=False, _ablation_global_tree_cap=False):
     import s0_capture as cap
-    require_immutable_to_me(snapshot)
+    principal = require_immutable_to_me(snapshot, expected_principal)
     if contain_unit and not is_subreaper():
         raise Refused("subreaper_required")
     fmt, commit, limit = check_expected_subject(snapshot, expected)
@@ -214,17 +276,21 @@ def fetch_objects(snapshot: Path, expected: dict, *, envelope=128 << 20, deadlin
             elif kind == "blob":
                 budget.charge_payload(oid, len(objmap[oid][1]))       # repeated occurrence: charged again
             return objmap[oid][1]
-        walk(commit, load, component_limit=limit, budget=budget)
+        walk(commit, load, component_limit=limit, budget=budget, _ablation_global_tree_cap=_ablation_global_tree_cap)
         ok = True
         return objmap, {"objects_read": reader.objects_read, "unique_objects": len(objmap),
                         "payload_bytes": budget.payload_bytes, "metadata_bytes": budget.metadata_bytes,
-                        "path_bytes_charged": budget.path_bytes}
+                        "path_bytes_charged": budget.path_bytes, "reader_principal": principal}
     finally:
+        primary = sys.exc_info()[1]
         reader.close() if ok else reader.abort()
         if contain_unit:
-            unit = teardown_unit()
-            if unit["remaining"] and ok:
-                raise Refused("unit_teardown_incomplete", str(unit["remaining"]))
+            unit = (teardown or teardown_unit)()
+            # K2: any surviving transport descendant is an independent, still-active failure on EVERY path
+            if unit["remaining"] and (ok or not _ablation_teardown_success_only):
+                raise Refused("unit_teardown_incomplete", str(unit["remaining"]),
+                              primary_failure=(getattr(primary, "reason", type(primary).__name__) if primary else None),
+                              teardown_failure=unit)
 
 
 def commit_sg(expected: dict, objmap: dict, *, root_override: str | None = None):
@@ -271,7 +337,9 @@ if __name__ == "__main__":
         if mode == "acquire":
             objmap, acq = fetch_objects(snapshot, args["expected"], abort_delay_s=args.get("abort_delay_s", 0.0),
                                         payload_budget=args.get("payload_budget", 64 << 20),
-                                        budget_overrides=args.get("budget_overrides"))
+                                        budget_overrides=args.get("budget_overrides"),
+                                        expected_principal=args.get("expected_principal"),
+                                        _ablation_global_tree_cap=args.get("ablation_global_tree_cap", False))
             fd, digest, root, nodes = commit_sg(args["expected"], objmap)
             os.close(fd)
             result = {"s_g_sha256": digest, "root_tree_derived": root, "nodes": len(nodes),
@@ -282,7 +350,7 @@ if __name__ == "__main__":
                       "path_bytes": sum(len(p) for p in nodes), **acq,
                       "object_format_origin": "expected_subject; checked vs commit id length and producer-authored snapshot config"}
         elif mode == "c6":
-            objmap, _ = fetch_objects(snapshot, args["expected"])
+            objmap, _ = fetch_objects(snapshot, args["expected"], expected_principal=args.get("expected_principal"))
             fd, dg, root, _n = commit_sg(args["expected"], objmap)
             os.close(fd)
             aux = {"root_tree": args["other_tree"]}   # mutable auxiliary record / identity pointing at another REAL tree
@@ -301,6 +369,20 @@ if __name__ == "__main__":
                 forged_result = "REFUSED:" + exc.reason
             result = {"root": root, "root_with_aux_records_present": root2, "digest_stable": dg == dg2,
                       "ablation_root": root3, "ablation_changes_S_G": dg3 != dg and root3 != root, "forged_map": forged_result}
+        elif mode == "k2":
+            # a transport that FAILS, and a teardown that REPORTS a surviving descendant (real D state is not
+            # constructible here): the branch logic is what is discriminated
+            try:
+                fetch_objects(snapshot, args["expected"], expected_principal=args.get("expected_principal"),
+                              argv=args["argv"], deadline_s=2.0,
+                              teardown=lambda: {"killed": 0, "remaining": [[424242, "stub-survivor"]]},
+                              _ablation_teardown_success_only=args.get("ablation_success_only", False))
+                res = {"outcome": "ACCEPTED"}
+            except Refused as exc:
+                res = {"outcome": "REFUSED:" + exc.reason, **exc.debug}
+            except Exception as exc:  # noqa: BLE001
+                res = {"outcome": "REFUSED:" + getattr(exc, "reason", type(exc).__name__)}
+            result = {**res, "real_unit_after": teardown_unit()}
         elif mode == "c7":
             import s0_capture as cap
             reader = cap.VerifiedObjectReader(Path(args["cwd"]), 40, argv=args["argv"], address_space=None, deadline_s=2.0)
@@ -313,8 +395,10 @@ if __name__ == "__main__":
             result = {"reader": res, "unit": unit}
         status = "ok"
     except Exception as exc:  # noqa: BLE001
-        result, status = {"reason": getattr(exc, "reason", type(exc).__name__), "detail": str(exc)[:200]}, "refused"
+        result, status = {"reason": getattr(exc, "reason", type(exc).__name__), "detail": str(exc)[:200],
+                          **getattr(exc, "debug", {})}, "refused"
     _, peak = tracemalloc.get_traced_memory()
-    print(json.dumps({"status": status, "result": result, "uid": os.getuid(), "time_s": round(time.perf_counter() - t0, 3),
+    print(json.dumps({"status": status, "result": result, "uid": os.getuid(), "parse_stats": PARSE_STATS,
+                      "principal_observed": reader_principal(), "time_s": round(time.perf_counter() - t0, 3),
                       "heap_peak_MiB": round(peak / 2**20, 2), "rss_MiB": _vmhwm(),
                       "git_unit_rss_MiB_upper_bound": round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)}))

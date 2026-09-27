@@ -12,7 +12,8 @@ The producer only handles PHYSICAL bytes (PhysicalSnapshot != AuthenticatedSubje
   - no git, no zlib, no verify-pack, no semantic object validation;
   - no source config, remote, promisor, hooks, HEAD, refs, packed-refs;
   - physical budget charged from fstat BEFORE each file is read; every LISTED entry counts against the entry
-    budget (copied or skipped); short writes are retried;
+    budget (copied or skipped), INCLUDING the structural probe of an alternate candidate (K3: no unbounded
+    enumeration precedes the bounded one); short writes are retried until the whole chunk is written (RC-5);
   - staging/<id> (0700) -> finalize (files 0444, dirs 0555, fsync) -> atomic rename into committed/<id>:
     the COMMIT POINT. A crash before it leaves staging garbage, never a committed snapshot.
 """
@@ -32,6 +33,36 @@ FORMATS = {"sha1": 40, "sha256": 64}
 PACK_NAME = re.compile(r"^pack-[0-9a-f]{40,64}\.(pack|idx)$")
 RECEIPT_NAME = "S0_SNAPSHOT_RECEIPT.json"
 RECEIPT_SCHEMA = "ar301-s0-c.snapshot-receipt.v1"
+ENUMERATED = {"entries": 0}   # experiment instrumentation: directory entries yielded by os.scandir in this process
+
+
+def _counting_scandir(real):
+    class Counting:
+        """Iterator proxy over a real scandir iterator (os.walk and the G1C primitives use it too)."""
+
+        def __init__(self, it):
+            self._it = it
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self._it)
+            ENUMERATED["entries"] += 1
+            return entry
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+
+        def close(self):
+            self._it.close()
+
+    def scandir(*a, **kw):
+        return Counting(real(*a, **kw))
+    return scandir
 
 
 class Refused(Exception):
@@ -41,7 +72,9 @@ class Refused(Exception):
 
 
 def produce(repo_root: str, object_format: str, storage_roots: list, out_base: str, *, max_bytes: int = 256 << 20,
-            max_entries: int = 200_000, max_alt_depth: int = 8, slow_s: float = 0.0) -> dict:
+            max_entries: int = 200_000, max_alt_depth: int = 8, slow_s: float = 0.0,
+            _test_max_write: int | None = None, _ablation_single_write: bool = False,
+            _ablation_unbounded_alternate_probe: bool = False) -> dict:
     """object_format comes from the ADMITTED expected subject (not from the live repository)."""
     from app.agent_review import trusted_object_authority_v2 as g1c
 
@@ -59,6 +92,39 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
                 raise Refused("physical_budget_exceeded", f"scanned {stats['scanned']} entries")
             yield entry
     records = []
+
+    def write(out: int, view) -> int:
+        # _test_max_write forces SHORT writes (RC-5 discriminator); the real syscall is still used
+        return os.write(out, view[:_test_max_write] if _test_max_write else view)
+
+    def bounded_objects_dir_probe(objects_fd: int) -> bool:
+        """K3: the G1C probe's semantics (sibling HEAD, pack/, info/, or a two-hex fanout) with O(1) probes first
+        and the fanout search charged to the SAME entry budget, stopping when it is exhausted."""
+        try:
+            parent_fd = os.open("..", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=objects_fd)
+        except OSError:
+            parent_fd = None
+        if parent_fd is not None:
+            try:
+                head = g1c._try_open_file_no_follow_v2(parent_fd, "HEAD")
+                if head is not None:
+                    os.close(head)
+                    return True
+            except g1c.TrustedObjectAuthorityError:
+                pass
+            finally:
+                os.close(parent_fd)
+        for name in ("pack", "info"):
+            probe = g1c._try_open_dir_no_follow_v2(objects_fd, name)
+            if probe is not None:
+                os.close(probe)
+                return True
+        with os.scandir(objects_fd) as it:
+            for entry in scanned(it):
+                if len(entry.name) == 2 and all(c in "0123456789abcdef" for c in entry.name) \
+                        and entry.is_dir(follow_symlinks=False):
+                    return True
+        return False
 
     def copy_raw(fd: int, dest: Path) -> None:
         try:
@@ -81,8 +147,10 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
                     if not chunk:
                         raise Refused("physical_truncated", str(dest))
                     view = memoryview(chunk)
-                    while view:  # a short write is retried, never recorded as written
-                        view = view[os.write(out, view):]
+                    while view:  # a short write is retried, never recorded as written (RC-5)
+                        view = view[write(out, view):]
+                        if _ablation_single_write:
+                            break          # mutant: one write per chunk, the remainder silently dropped
                     h.update(chunk)
                     left -= len(chunk)
                 if os.read(fd, 1):
@@ -104,7 +172,8 @@ def produce(repo_root: str, object_format: str, storage_roots: list, out_base: s
                 return
             if depth > max_alt_depth:
                 raise Refused("alternate_depth_exceeded", str(depth))
-            if depth > 0 and not g1c._looks_like_git_objects_directory_fd_v2(src_fd):
+            probe = g1c._looks_like_git_objects_directory_fd_v2 if _ablation_unbounded_alternate_probe else bounded_objects_dir_probe
+            if depth > 0 and not probe(src_fd):
                 raise Refused("alternate_not_an_objects_directory")
             visited.add(key)
             stats["object_dirs"] += 1
@@ -219,6 +288,7 @@ if __name__ == "__main__":  # separately measured producer process
     import tracemalloc
     args = json.loads(sys.argv[1])
     sys.path[:0] = args.pop("paths")
+    os.scandir = _counting_scandir(os.scandir)   # instrumentation only: counts every enumerated entry
     tracemalloc.start()
     t0 = time.perf_counter()
     try:
@@ -231,4 +301,5 @@ if __name__ == "__main__":  # separately measured producer process
                       "heap_peak_MiB": round(peak / 2**20, 2),
                       "rss_MiB": round(int(next(l.split()[1] for l in open("/proc/self/status") if l.startswith("VmHWM"))) / 1024, 1),
                       "io": {"rchar": int(io["rchar"]), "wchar": int(io["wchar"])},
+                      "dir_entries_enumerated": ENUMERATED["entries"],
                       "uid": os.getuid()}))

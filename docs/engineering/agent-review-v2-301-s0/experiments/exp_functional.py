@@ -92,7 +92,7 @@ if C_SNAPSHOT is not None:
     SNAP_ID = types.SimpleNamespace(**json.loads((C_SNAPSHOT / "S0_SNAPSHOT_RECEIPT.json").read_text()))
     t0 = time.perf_counter()
     EXPECTED = {"object_format": "sha1", "commit_oid": COMMIT, "component_policy": {"max_component_len": 255}}
-    objmap, acq = rc.fetch_objects(C_SNAPSHOT, EXPECTED)
+    objmap, acq = rc.fetch_objects(C_SNAPSHOT, EXPECTED, expected_principal={"uid": 2000, "gid": 2000})  # the declared runner
     t_build = time.perf_counter() - t0
     git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
     t0 = time.perf_counter()

@@ -39,7 +39,7 @@
       "rev-parse",
       "--show-object-format"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_2b05vjn_"
+     "cwd": "/tmp/ar301_s0b_snapshot_23953a_a"
     },
     {
      "argv": [
@@ -47,7 +47,7 @@
       "cat-file",
       "--batch"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_2b05vjn_"
+     "cwd": "/tmp/ar301_s0b_snapshot_23953a_a"
     },
     {
      "argv": [
@@ -55,7 +55,7 @@
       "rev-parse",
       "--show-object-format"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_2b05vjn_"
+     "cwd": "/tmp/ar301_s0b_snapshot_23953a_a"
     },
     {
      "argv": [
@@ -63,7 +63,7 @@
       "cat-file",
       "--batch"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_2b05vjn_"
+     "cwd": "/tmp/ar301_s0b_snapshot_23953a_a"
     }
    ]
   },

@@ -17,7 +17,7 @@ wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
 scripts: experiments/results/py311/SCRIPTS.sha256   # hashes gravados ANTES da execução registrada e conferidos depois (sha256sum -c)
-outcome: 202/202 casos com expectativa passaram (10 scripts; captura pela arquitetura C; exp_arch_c 31/31);
+outcome: 216/216 casos com expectativa passaram (10 scripts; captura pela arquitetura C; exp_arch_c 45/45);
          2 observações sem expectativa em exp_process_channel e 1 em exp_structure
          (non_utf8_name_S_vs_C3); único stderr = aviso esperado do zipfile no fixture de membro
          duplicado (exp_deps.stderr)
@@ -61,7 +61,7 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Corpus real capturado pela arquitetura C | `exp_functional.json` `S_G_digest_equals_architecture_A_record_on_this_corpus` (`capture_architecture: C`) | `95504743…` igual ao registro anterior; paridade funcional de E mantida | aqui; produtor uid 0 (`producer_functional.json`), leitor no processo de EXP-FUNC | controle positivo **neste corpus**, não equivalência universal |
 | **B/iv** — kill vs fechar-e-esperar (R4-4) | `exp_resources.json` `ABLATION_close_and_wait_refusal_path_waits_for_transport` | mutante espera 8,0 s; kill < 4 s | aqui | — |
 | **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
-| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 15,6 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
+| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 16,0 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
 | **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
 | **C** — o objeto comprometido é o autenticado (**S_G**) | `exp_capture_stability.json` `authenticate_A_substitute_B_*`, `ABLATION_no_post_seal_revalidation_*`, `node_not_in_acquisition_record_refused`, `mutate_unsealed_S_then_seal_refused` | `sealed_binding_mismatch`; ablação compromete `EVIL`; `sealed_record_mismatch`; `sealed_content_mismatch` | aqui | tree oids vinculados pelo registro, não re-hasheados pós-selo |
 | **D** — limite de componente explícito (**S_G**) | `exp_structure.json` `component_256_*`, `C3_parity_under_same_limit_300`, `C3_also_refuses_*`, `no_admission_limit_refused` | 300 admite, 255 recusa, C3 igual sob o mesmo limite; ausência recusada | aqui | — |
@@ -91,7 +91,7 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 
 ## Arquitetura C (candidata) — EXP-ARCH-C
 
-`exp_arch_c.json` (31/31, `evidence: REPRODUCED` em cada caso; 7 casos novos após a revisão de `a858dc9`). O orquestrador roda como root no
+`exp_arch_c.json` (45/45, `evidence: REPRODUCED` em cada caso; 7 casos novos após a revisão de `a858dc9` e 14 no corte terminal — K1–K4, RC-5). O orquestrador roda como root no
 container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader_c.py`) roda
 **sempre** como uid 2000 via `setpriv --reuid=2000 --regid=2000 --clear-groups`. A propriedade é
 `RunnerCanRead ∧ ¬RunnerCanMutate`; uid 0 é o mecanismo deste container, não a primitiva.
@@ -104,7 +104,7 @@ container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader
 | **C4/C8B** objeto ausente | `C4_C8B_missing_required_object_no_network` | `object_missing`; marcador de busca ausente; pré-condição (objeto ausente na fonte) verificada | — |
 | **C8A** clone parcial completo | `C8A_partial_clone_complete_closure_accepted` | aceito; marcador ausente; pré-condição `rev-list --missing=print` verificada | Git do fixture roda como o runner |
 | **C9** alternates | `C9_authorized_alternate_flattened_no_pointer`, `C9_unauthorized_alternate_typed_refusal` | autorizado: achatado, sem ponteiro, 1 fonte alternativa; fora da capability: `alternate_outside_authorized_storage` | quem autorizou a capability: #331/C2_B |
-| **C5** bomba | `C5_producer_never_inflates`, `C5_unrelated_bomb_does_not_affect_runner_S_G`, `C5_bomb_in_closure_runner_bounded_refusal` | loose de 256 MiB inflados (261.293 B físicos): produtor VmHWM 21,4 MiB, heap 2,62 MiB; fora da closure → S_G aceito; na closure → `budget_payload_bytes`, unidade Git ≤ 14,8 MiB | envelope por processo; agregado não testado; bomba fora da closure só como **loose** (um pack acima do envelope torna S_G indisponível: F3) |
+| **C5** bomba | `C5_producer_never_inflates`, `C5_unrelated_bomb_does_not_affect_runner_S_G`, `C5_bomb_in_closure_runner_bounded_refusal` | loose de 256 MiB inflados (261.293 B físicos): produtor VmHWM 21,7 MiB, heap 2,62 MiB; fora da closure → S_G aceito; na closure → `budget_payload_bytes`, unidade Git ≤ 14,8 MiB | envelope por processo; agregado não testado; bomba fora da closure só como **loose** (um pack acima do envelope torna S_G indisponível: F3) |
 | **C5 (leitor de C)** orçamento por ocorrência e de paths; listagem do produtor | `C5_blob_charged_per_occurrence_refused`, `C5_POSITIVE_repeated_blob_within_budget_accepted`, `C5_path_bytes_budget_enforced_during_walk`, `C5_producer_listing_charged_to_entry_budget` | 1 MiB × 100 paths com 8 MiB → `budget_payload_bytes` (controle 4 paths aceito); ~18,6 MB de paths → `budget_path_bytes`; 1.200 nomes não-objeto com 1.000 entradas → `physical_budget_exceeded` | o mutante é `a858dc9`, que aceitou os três (reprodução da revisão) |
 | **C6** autoridade da raiz (`aux_record_no_effect` vale **por construção**: `commit_sg` não recebe raiz; discriminam a ablação e o mapa forjado) | `C6_root_derived_from_authenticated_commit_only`, `C6_ABLATION_trusting_aux_root_changes_S_G`, `C6_forged_object_map_entry_refused` | raiz `a3ab46d8…` derivada de `C`; registro auxiliar sem efeito; ablação `root_override` → raiz `6a638b87…` (S_G muda); mapa forjado → `object_map_binding_mismatch` | integridade do processo leitor: **P** |
 | **C7** tempo de vida da unidade | `C7_runner_unit_teardown_0_survivors`, `C7_ABLATION_process_group_only_leaves_setsid_survivor` | ferramenta falsa → filho → neto `setsid` → `sleep`: `transport_deadline`, 3 mortos, 0 restantes, leitor uid 2000; ablação: 1 sobrevivente, limpo por pid + starttime + nonce | — |
@@ -117,11 +117,11 @@ container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader
 
 ```yaml
 physical_snapshot: {compressed_bytes: 3646095, entries: 2, alternate_depth: 0, producer_heap_MiB: 3.81,
-                    producer_vmhwm_MiB: 23.2, io: {rchar: 5625991, wchar: 3646583}, time_s: 0.060, producer_uid: 0}
+                    producer_vmhwm_MiB: 23.3, io: {rchar: 5632037, wchar: 3646583}, time_s: 0.061, producer_uid: 0}
 subject_closure:   {unique_objects: 933, object_reads: 933, nodes: 1001, payload_bytes_charged_per_occurrence: 8660242,
-                    metadata_bytes: 51346, path_bytes: 54726, reader_heap_MiB: 36.69, reader_vmhwm_MiB: 58.0,
+                    metadata_bytes: 51346, path_bytes: 54726, reader_heap_MiB: 36.69, reader_vmhwm_MiB: 58.2,
                     local_git_processes: 1, per_object_deadline_s: 30, time_s: 0.295, reader_uid: 2000}
-local_git_unit:    {rss_MiB_upper_bound: 14.5, envelope: "RLIMIT_AS 128 MiB per process", aggregate_memory: NOT_TESTED}
+local_git_unit:    {rss_MiB_upper_bound: 14.8, envelope: "RLIMIT_AS 128 MiB per process", aggregate_memory: NOT_TESTED}
 ```
 
 **Classes de evidência:** OBSERVED — ambiente, privilégio do container; REPRODUCED — C1–C11,
@@ -142,7 +142,31 @@ continua candidata e depende da precondição corrigida (C11 contra-controles).
 | R4-2 / B-4 | raiz derivada dos bytes autenticados de `C`, sem autoridade independente; discriminado por C6 |
 | R4-3 | aberto (parâmetro do envelope) |
 
-## Revisão do exact head `a858dc9` → correção proporcional única (este head)
+## Corte terminal da arquitetura C (este head): K1–K4, RC-5, R4-3
+
+Grant do mantenedor ("ARCHITECTURE C — TERMINAL CONTRACT CLOSURE CUT"). Subject revalidado antes de qualquer mutação: head `28a3b4a`, base `9abcde6`, sem drift. É **um** commit corretivo. Depois dele vale `NO_AUTOMATIC_PATCH_LOOP`: achado material novo vai para adjudicação humana.
+
+**Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`, condicionada ao `ReaderPrincipal` (K1). Ver CONTRACT, topo.
+
+| Item | Correção | Discriminadores (`exp_arch_c.json`, este head) | Resultado | Limite |
+|---|---|---|---|---|
+| **K1** — o principal do leitor era autodeclarado (`os.getuid()`, `access` pelo id real) | `ReaderPrincipal` lido de `/proc/self/status` e comparado ao runner **esperado**. Exige uid e gid real = efetivo = salvo = filesystem, e `CapEff`, `CapPrm`, `CapInh`, `CapAmb` = 0. Escrita checada com credenciais **efetivas** (`effective_ids=True`). | `K1_POSITIVE_established_runner_principal_accepted`, `K1A_real_runner_effective_snapshot_owner_refused`, `K1B_saved_uid_of_snapshot_owner_refused`, `K1C_permitted_capability_with_CapEff_0_refused` | **Positivo:** uid/gid 2000 nos 4 campos, caps 0 → aceito sobre um snapshot do produtor não-root uid 3000. **K1A:** `Uid 2000 3000 3000 3000` → `reader_principal_mismatch`. **K1B:** `Uid 2000 2000 3000 2000` → `reader_principal_mismatch`. **K1C:** `CapPrm a80425fb`, `CapEff 0` → `reader_has_capabilities`. Em K1A/K1B/K1C: **contramodelo exercitado** (o processo altera o snapshot com o que possui; em K1C, via `capset`) e a checagem de `28a3b4a` o aceitava. | K1A/K1B/K1C constroem as credenciais **no próprio processo** (setresuid/KEEPCAPS e depois `runpy` do leitor), porque o `exec` iguala o uid salvo ao efetivo. Grupos suplementares só registrados. |
+| **K2** — sobrevivente ignorado quando a captura já falhava | Qualquer descendente restante → `unit_teardown_incomplete` em **qualquer** desfecho. A falha primária fica como diagnóstico. | `K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete`, `K2_ABLATION_success_only_rule_hides_the_survivor` | Transporte que falha + teardown que reporta sobrevivente → `unit_teardown_incomplete`, primária `transport_header_invalid`. A unidade real termina vazia. A ablação devolve `transport_header_invalid` e esconde o sobrevivente. | `real_D_state: NOT_TESTED`: o teardown é um stub. C7 (filho + neto `setsid` reais) preservado. |
+| **K3** — sonda de alternate da G1C enumerava sem limite antes da caminhada limitada | Sonda experimental com a mesma semântica: `HEAD` irmão, `pack/` e `info/` em O(1); a busca de fanout passa por `scanned()`. **A G1C de produção não foi alterada.** | `K3_alternate_probe_charged_to_entry_budget`, `K3_ABLATION_unbounded_G1C_probe_enumerates_beyond_budget`, `K3_POSITIVE_small_standalone_pool_accepted` | 3.000 entradas-lixo antes do fanout, orçamento 1.000 → `physical_budget_exceeded` com 1.001 entradas enumeradas no processo. Ablação (sonda da G1C): 4.002. Pool pequeno aceito pelo produtor e pelo leitor. | Precondição registrada: fanout na posição 3.000 da listagem. S1 exige uma sonda limitada aprovada pelo owner. |
+| **K4** — parser de tree com teto global | Teto = **restante** do orçamento de nós; restante ≤ 0 recusa antes de carregar a tree. | `K4_tree_parser_bounded_by_remaining_node_budget`, `K4_ABLATION_global_cap_materializes_beyond_remaining`, `K4_POSITIVE_same_shape_within_remaining_budget_accepted` | 992 nós consumidos, `max_nodes` 1.000, tree compacta de 50 entradas → `budget_nodes`, teto 8, 0 entradas materializadas além do restante. Ablação: 50 materializadas. Com 5 entradas: aceito. | O C3 usa o mesmo código para estouro e alguns nomes; o leitor atribui a recusa a `budget_nodes` porque o teto passado é o restante. |
+| **RC-5** — escrita curta | Laço de escrita (em `28a3b4a`), agora com **discriminador causal** | `RC5_forced_short_writes_publish_exact_bytes`, `RC5_ABLATION_one_write_per_chunk_publishes_mismatch` | `write` forçado a ≤ 4.093 B: os 10 arquivos publicados são iguais à fonte, o recibo é igual ao recalculado do destino e o leitor aceita. Ablação "uma escrita por bloco": bytes e recibo divergem. | Escritas curtas forçadas por wrapper sobre o `os.write` real, não por quota de disco. |
+| **R4-3 / RC-6** — pack acima do envelope | Nenhuma correção nesta rodada. | — (reproduzido pela revisão de `a858dc9`) | `ACCEPTED_S0_LIMITATION_REQUIRES_S1_PARAMETER_DECISION`: afeta disponibilidade, não autenticidade nem a identidade de S0. | Nenhum número novo inventado. |
+
+**Suíte deste head:** 216/216 (10 scripts; `exp_arch_c` 45/45). Os scripts foram hasheados **antes** da execução registrada e conferidos depois. Três ensaios não registrados antecederam a execução:
+- 1º: `KeyError` no runner (`os.walk` usa `scandir`, e o proxy de contagem não era iterador);
+- 2º: `NameError` ao reintroduzir o proxy, que removeu a classe `Refused` do produtor; além disso, no tmpfs deste kernel a listagem sai da mais nova para a mais antiga, e a fixture de K3 pôs o fanout antes do lixo, invalidando a ablação;
+- 3º: 216/216.
+
+Esses defeitos de harness foram corrigidos **sem** mudar expectativas.
+
+**Host 3.12** (fora do runtime declarado): na revisão de `a858dc9`, `tests/agent_review` teve 3 falhas. Duas também falham na base limpa neste host (registrado antes). A terceira, `test_install_script_produces_a_working_minimal_venv`, falhou por hash do pip. Ela é **correlacionada ao ambiente e fora do write-set**, mas **não foi comprovada na base** (a base não foi reexecutada). O CI 3.11 verde é a evidência principal do runtime declarado.
+
+## Revisão do exact head `a858dc9` → correção proporcional única (`28a3b4a`)
 
 Revisores do exact head `a858dc9`:
 - **Codex:** review 5331717758, com 5 comentários inline.

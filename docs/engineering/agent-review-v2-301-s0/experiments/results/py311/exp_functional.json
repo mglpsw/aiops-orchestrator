@@ -16,7 +16,7 @@
     "within_envelope": true
    },
    "pass": true,
-   "git_children_maxrss_MiB": 15.6,
+   "git_children_maxrss_MiB": 16.0,
    "envelope_MiB": 128
   },
   "positive_E_result_equals_normal_path": {
@@ -190,7 +190,7 @@
     "physical_entries": 2,
     "published_snapshot_identity": {
      "physical_content_sha256": "a7e73d18a2d3cb79320a41157cb41334986393167ef64b65b388a81d8fd59a6f",
-     "snapshot_id": "a7e73d18a2d3cb79320a4115-a8db7c2f"
+     "snapshot_id": "a7e73d18a2d3cb79320a4115-72a2855d"
     },
     "schema_version": "ar301-s0-c.snapshot-receipt.v1",
     "skipped_non_object_files": 0,
@@ -198,8 +198,8 @@
      "/work/toolrepo"
     ]
    },
-   "build_s": 0.175,
-   "serialize_seal_verify_s": 0.1,
+   "build_s": 0.17,
+   "serialize_seal_verify_s": 0.102,
    "producer_heap_peak_MiB_build_to_seal": 34.7,
    "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
   },
@@ -241,21 +241,21 @@
    "python_tag": "cp311",
    "payload_bytes": 9700542,
    "container_bytes": 9718908,
-   "build_seal_s": 0.1,
+   "build_seal_s": 0.099,
    "producer_heap_peak_MiB": 54.2,
    "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
    "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
   },
   "E_child": {
-   "maxrss_kib": 88860,
+   "maxrss_kib": 88608,
    "inherited_sealed_fds_by_construction": 3,
    "native_memfds_created_in_child": 2,
    "result_channel": "socketpair",
-   "elapsed_s": 0.386
+   "elapsed_s": 0.391
   },
   "normal": {
-   "maxrss_kib": 88860,
-   "elapsed_s": 0.24644372600596398
+   "maxrss_kib": 88608,
+   "elapsed_s": 0.2506646459805779
   }
  },
  "census": {
@@ -433,7 +433,7 @@
   },
   "E_untampered": {
    "rc": 0,
-   "elapsed_s": 0.386,
+   "elapsed_s": 0.391,
    "stderr_tail": ""
   },
   "normal_source_tampered": {
@@ -442,7 +442,7 @@
   },
   "E_source_tampered": {
    "rc": 0,
-   "elapsed_s": 0.371,
+   "elapsed_s": 0.392,
    "stderr_tail": ""
   },
   "normal_warm_pycache": {
@@ -455,7 +455,7 @@
   },
   "E_pyc_planted": {
    "rc": 0,
-   "elapsed_s": 0.384,
+   "elapsed_s": 0.387,
    "stderr_tail": ""
   },
   "normal_venv_tampered": {
@@ -464,7 +464,7 @@
   },
   "E_venv_tampered": {
    "rc": 0,
-   "elapsed_s": 0.376,
+   "elapsed_s": 0.387,
    "stderr_tail": ""
   },
   "normal_plugin_planted": {
@@ -473,7 +473,7 @@
   },
   "E_plugin_planted": {
    "rc": 0,
-   "elapsed_s": 0.365,
+   "elapsed_s": 0.393,
    "stderr_tail": ""
   }
  },
