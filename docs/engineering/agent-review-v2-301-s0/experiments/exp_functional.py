@@ -4,6 +4,9 @@ usage: python -I -S -B exp_functional.py <toolrepo_clone> <expected_commit> <whe
                                       <target_fixture_dir> <scratch_dir> <base_interpreter> <producer_src>
 <toolrepo_clone> is the MUTABLE checkout (git objects read through hash-on-read; normal-path runs);
 <producer_src> is the root-owned copy the producer imports C3's tree rule from (declared TCB).
+[<c_snapshot>] (architecture C, current candidate): a snapshot already PUBLISHED by the privilege-separated
+producer (s0_snapshot_c.py); when given, S_G is derived from it by the runner-side reader (s0_reader_c.py)
+running as this unprivileged process. Without it, the rejected architecture-B helper is used (history).
 Positive: E's result equals the normal (checkout + venv) run on untampered inputs.
 Countermodels: after capture, tamper the checkout source, plant a .pyc behind an intact source,
 tamper the venv, plant a pydantic plugin distribution -- the normal path executes each, E none.
@@ -25,6 +28,7 @@ HERE = Path(__file__).resolve().parent
 CLONE, COMMIT, WHEELS, VENV, TARGET_FIXTURE, W, BASE, PRODUCER_SRC = (
     Path(sys.argv[1]).resolve(), sys.argv[2], Path(sys.argv[3]).resolve(), Path(sys.argv[4]).resolve(),
     Path(sys.argv[5]).resolve(), Path(sys.argv[6]).resolve(), sys.argv[7], Path(sys.argv[8]).resolve())
+C_SNAPSHOT = Path(sys.argv[9]) if len(sys.argv) > 9 else None
 sys.path.insert(0, str(HERE))
 sys.path.insert(1, str(PRODUCER_SRC))  # producer-side only: C3's _parse_tree_data, from the root-owned copy
 
@@ -77,17 +81,39 @@ INPUTS = {"target_root": str(target), "diff_text": DIFF, "pr_number": 101, "base
 fds_before = cap.open_fds()
 tracemalloc.start()
 t0 = time.perf_counter()
-# architecture B: the live checkout's object store is snapshotted first; git only ever reads the snapshot
-with snap.private_snapshot(CLONE, expected_commit=COMMIT, storage_roots=[CLONE]) as (SNAP_PATH, SNAP_ID):
-    t_snapshot = time.perf_counter() - t0
-    t0 = time.perf_counter()
-    subject = cap.build_subject(SNAP_PATH, COMMIT, budget=admitted())
-    t_build = time.perf_counter() - t0
-t0 = time.perf_counter()
 import resource  # noqa: E402
-git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024  # only git has run so far
+if C_SNAPSHOT is not None:
+    # architecture C: the producer (another privilege) already published an immutable snapshot; THIS
+    # unprivileged process derives S_G from it (reader refuses a snapshot it could mutate)
+    import types
+    import s0_reader_c as rc
+    rc.become_subreaper()
+    t_snapshot = 0.0  # producer time is recorded by the producer, not here
+    SNAP_ID = types.SimpleNamespace(**json.loads((C_SNAPSHOT / "S0_SNAPSHOT_RECEIPT.json").read_text()))
+    t0 = time.perf_counter()
+    EXPECTED = {"object_format": "sha1", "commit_oid": COMMIT, "component_policy": {"max_component_len": 255}}
+    objmap, acq = rc.fetch_objects(C_SNAPSHOT, EXPECTED)
+    t_build = time.perf_counter() - t0
+    git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
+    t0 = time.perf_counter()
+    s_fd, s_digest, c_root, c_nodes = rc.commit_sg(EXPECTED, objmap)
+    budget_c = types.SimpleNamespace(payload_bytes=None, unique_payload={"all": acq["payload_bytes"]},
+                                     path_bytes=sum(len(p) for p in c_nodes), metadata_bytes=acq["metadata_bytes"],
+                                     child_address_space_bytes=128 << 20)
+    subject = types.SimpleNamespace(algorithm="sha1", commit=COMMIT, root_tree=c_root, nodes=c_nodes, budget=budget_c,
+                                    objects_read=acq["objects_read"], git_bytes_read=None)
+    cap.GIT_INVOCATIONS[0] = 1  # one cat-file unit; no rev-parse on the C path
+else:
+    # architecture B (REJECTED; kept only to reproduce its history)
+    with snap.private_snapshot(CLONE, expected_commit=COMMIT, storage_roots=[CLONE]) as (SNAP_PATH, SNAP_ID):
+        t_snapshot = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        subject = cap.build_subject(SNAP_PATH, COMMIT, budget=admitted())
+        t_build = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024  # only git has run so far
+    s_fd, s_digest = cap.commit_subject(subject)  # seal + post-seal revalidation of the final object
 s_bytes = cap.serialize(subject.algorithm, subject.commit, subject.root_tree, subject.nodes)
-s_fd, s_digest = cap.commit_subject(subject)  # seal + post-seal revalidation of the final object
 t_seal = time.perf_counter() - t0
 _, heap_peak_s = tracemalloc.get_traced_memory()
 tracemalloc.reset_peak()
@@ -119,7 +145,7 @@ empty_trees = sum(1 for p, (k, _o, _v) in subject.nodes.items()
 out["resources"]["S"] = {
     "commit": COMMIT, "algorithm": subject.algorithm, "nodes": len(subject.nodes), "by_kind": kinds,
     "empty_trees": empty_trees, "container_bytes": len(s_bytes), "payload_bytes_per_occurrence": subject.budget.payload_bytes,
-    "payload_bytes_unique_blobs": sum(subject.budget.unique_payload.values()), "path_bytes": subject.budget.path_bytes,
+    "payload_bytes_unique_blobs": sum(v for v in subject.budget.unique_payload.values()), "path_bytes": subject.budget.path_bytes,
     "git_objects_read": subject.objects_read, "git_bytes_read": subject.git_bytes_read,
     "git_subprocesses_counted": cap.GIT_INVOCATIONS[0], "metadata_bytes_read": subject.budget.metadata_bytes,
     "snapshot_s": round(t_snapshot, 3), "snapshot_identity": vars(SNAP_ID), "build_s": round(t_build, 3), "serialize_seal_verify_s": round(t_seal, 3),
@@ -131,6 +157,7 @@ out["resources"]["D"] = {"wheels": d_manifest, "nodes_including_directories": le
                          "lock_sha256": hashlib.sha256(lock_bytes).hexdigest()}
 
 
+out["capture_architecture"] = "C (runner-side reader over producer-published immutable snapshot)" if C_SNAPSHOT else "B (rejected)"
 case("S_G_digest_equals_architecture_A_record_on_this_corpus",
      "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085", s_digest,
      note="positive control: boundary changed (live repo -> private snapshot), observed S_G preserved on THIS corpus; "

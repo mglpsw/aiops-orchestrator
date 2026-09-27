@@ -71,8 +71,16 @@ docker run --rm --tmpfs /work:rw,exec,size=3g \
     run exp_resources /opt/toolrepo-tcb /work/scr-res "$PY"
     run exp_deps /work/scr-deps
     run exp_snapshot /opt/toolrepo-tcb /work/scr-snap
+    # architecture C: the privileged side (container uid 0 = the experiment MECHANISM) publishes an
+    # immutable snapshot of the runner checkout; the runner then derives S_G from it (exp_functional)
+    NONCE="ar301c-$(head -c4 /dev/urandom | od -An -tx1 | tr -d " \n")"
+    install -d -m 0755 "/srv/$NONCE-func" "/srv/$NONCE-func/committed"; install -d -m 0700 "/srv/$NONCE-func/staging"
+    CSNAP="$($PY -I -S -B /exp/s0_snapshot_c.py "{\"paths\": [\"/exp\", \"/opt/toolrepo-tcb\"], \"repo_root\": \"/work/toolrepo\", \"object_format\": \"sha1\", \"storage_roots\": [\"/work/toolrepo\"], \"out_base\": \"/srv/$NONCE-func\"}" | tee /work/out/producer_functional.json | $PY -c "import json,sys; print(json.load(sys.stdin)[\"result\"][\"snapshot\"])")"
     run exp_functional /work/toolrepo "$COMMIT" /work/wheels /work/venv \
-        /opt/toolrepo-tcb/tests/agent_review/fixtures/v2/agent_escala /work/scr-func "$PY" /opt/toolrepo-tcb
+        /opt/toolrepo-tcb/tests/agent_review/fixtures/v2/agent_escala /work/scr-func "$PY" /opt/toolrepo-tcb "$CSNAP"
+    # architecture C discriminators C1..C11 (the reader always runs as the runner; see exp_arch_c.py)
+    timeout 1200 "$PY" -I -S -B /exp/exp_arch_c.py /opt/toolrepo-tcb /work/toolrepo "$COMMIT" "$NONCE" \
+        > /work/out/exp_arch_c.json 2> /work/out/exp_arch_c.stderr || echo "{\"harness_rc\": $?}" >> /work/out/exp_arch_c.rc
     cp /work/out/* /results/ && chown -R "$HOST_UID:$HOST_GID" /results
   '
 echo "results in $RESULTS"

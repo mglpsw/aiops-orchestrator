@@ -39,7 +39,7 @@
       "rev-parse",
       "--show-object-format"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+     "cwd": "/tmp/ar301_s0b_snapshot_y0mwaq0j"
     },
     {
      "argv": [
@@ -47,7 +47,7 @@
       "cat-file",
       "--batch"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+     "cwd": "/tmp/ar301_s0b_snapshot_y0mwaq0j"
     },
     {
      "argv": [
@@ -55,7 +55,7 @@
       "rev-parse",
       "--show-object-format"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+     "cwd": "/tmp/ar301_s0b_snapshot_y0mwaq0j"
     },
     {
      "argv": [
@@ -63,7 +63,7 @@
       "cat-file",
       "--batch"
      ],
-     "cwd": "/tmp/ar301_s0b_snapshot_o76gpn_j"
+     "cwd": "/tmp/ar301_s0b_snapshot_y0mwaq0j"
     }
    ]
   },
@@ -147,7 +147,7 @@
    "expected": "REFUSED:snapshot_refused",
    "observed": "REFUSED:snapshot_refused",
    "pass": true,
-   "store_bytes": 50348664,
+   "store_bytes": 50348663,
    "subject": "1 tiny blob"
   },
   "Q7_subject_budget_is_a_separate_class": {

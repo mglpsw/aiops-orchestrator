@@ -10,20 +10,28 @@ nem suficiência.
 engine_subject: {commit: 9abcde6420a59b814b5faaff10ca5904c5d23370, tree: 93143d70ed410771776f5f2cdb48d7f8e3f5ed9b}
 runtime: {image: "python:3.11-bookworm@sha256:b99029c95d3d37fb1e4e76d287f7984373dca77c665885986e31b2c95260c13c",
           python: 3.11.16, git: 2.39.5, glibc: 2.36, kernel: 6.18.33.2-microsoft-standard-WSL2,
-          work_fs: tmpfs, yama_ptrace_scope: 1, actor_uid: 2000, tcb_owner: root}
+          work_fs: tmpfs, yama_ptrace_scope: 1, actor_uid: 2000, tcb_owner: root,
+          privilege: "container uid 0 = real uid 0 (docker without userns-remap); runner = uid 2000"}
+architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # producer uid 0 publishes; reader runs as uid 2000
 wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
-scripts: experiments/results/py311/SCRIPTS.sha256   # os arquivos que produziram estes resultados
-outcome: 171/171 casos com expectativa passaram (9 scripts; arquitetura B); 2 observações sem expectativa em
-         exp_process_channel e 1 em exp_structure (non_utf8_name_S_vs_C3); único stderr = aviso
-         esperado do zipfile no fixture de membro duplicado (exp_deps.stderr)
+scripts: experiments/results/py311/SCRIPTS.sha256   # hashes gravados ANTES da execução registrada e conferidos depois (sha256sum -c)
+outcome: 195/195 casos com expectativa passaram (10 scripts; captura pela arquitetura C; exp_arch_c 24/24);
+         2 observações sem expectativa em exp_process_channel e 1 em exp_structure
+         (non_utf8_name_S_vs_C3); único stderr = aviso esperado do zipfile no fixture de membro
+         duplicado (exp_deps.stderr)
 reproduction: própria (esta sessão); não é reprodução independente
 ```
 
 Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
 ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
-deste head; as dos heads `3d426e1`, `1e2453e`, `1299b00` e `cf69fbf` (arquitetura A) continuam no histórico git. O Spike B (host 3.12/git 2.43) foi evidência de viabilidade; a execução registrada aqui é o runtime declarado (3.11/git 2.39).
+deste head; as dos heads `3d426e1`, `1e2453e`, `1299b00` e `cf69fbf` (arquitetura A) continuam no histórico git. O Spike B (host 3.12/git 2.43) e o Spike C (comentário 5858608157; container efêmero, PID ns com
+`CAP_SYS_ADMIN`) foram evidência de viabilidade e **não** são transferidos: a execução registrada
+aqui reexecuta C1–C10 e o novo C11 com o código deste head. O registro de `8c4842b` (arquitetura B,
+171/171) fica no histórico git; os resultados de `exp_snapshot.json` deste head reexecutam o código
+de B, que continua **rejeitado**, e só sustentam as linhas que dizem respeito a componentes que C
+reutiliza (hash-on-read, prazo por objeto).
 
 **Escopo após a decisão do mantenedor (CONTRACT, topo):** as linhas marcadas **S_G** sustentam a
 claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qualificação.
@@ -43,17 +51,17 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui | kernel 6.18 |
 | Janela pré-selo; selo estranho; mapeamento retido | `pre_seal_*`, `ABLATION_no_post_seal_rehash_*` | detectado / `seal_failed`; mutante `COMMITTED` | aqui | — |
 | M mutado após captura; consumidor não lê M | `M_mutated_*`, `consumer_*` | digest igual; `trusted`; 0 aberturas | aqui | `cwd=M`, `PYTHONPATH=M` oferecidos |
-| **SNAP** — snapshot sem Git e sem busca (**S_G**) | `exp_snapshot.json` `Q1_snapshot_runs_no_git_and_no_fetch`, `Q2_*`, `Q6_*` | 0 processos Git no snapshot; marcador de `uploadpack` ausente; sem remoto no snapshot; `object_missing` tipado; clone parcial com closure completa admitido; o leitor roda só `rev-parse`/`cat-file` com cwd no snapshot | aqui | autorização do host para as raízes: #331 |
-| **SNAP** — snapshot adulterado depois de tirado (**S_G**) | `Q3_*` | loose trocado → `object_hash_mismatch`; objeto malformado → `transport_deadline` em 3,0 s; **ablação sem prazo trava** (morto aos 15 s); `.idx` forjado → `object_hash_mismatch`; pack corrompido → `object_truncated` | aqui | sem `verify-pack` no caminho de S_G |
-| **SNAP** — identidade de aquisição imutável (R4-2) | `Q4_*` | root_tree/commit trocados após a aquisição → `sealed_identity_mismatch`; `Subject` congelado; controle comprometido | aqui | integridade do registro sob a premissa **P** do produtor |
-| **SNAP** — sha256 pelo snapshot | `SHA256_*` | captura aceita com snapshot `sha256`; adulteração recusada | aqui | — |
-| **SNAP** — duas classes de orçamento | `Q7_*` | store de 50,3 MB / subject de 1 blob → `snapshot_refused`; subject de 48 MiB → `budget_payload_bytes` com snapshot aceito | aqui | — |
-| **SNAP** — identidade do snapshot (rastreabilidade) | `snapshot_identity_distinguishes_snapshot_from_S_G` | mesmo store → mesmo recibo; store alterado → recibo diferente, S_G igual | aqui | recibo não é trust root |
-| **SNAP** — censo de órfãos | `no_orphan_processes_or_listeners_remain` | nenhum processo nem socket em escuta novo | aqui, namespace de PID do container | no host o censo vê outras sessões |
-| **SNAP** — corpus real pelo snapshot | `exp_functional.json` `S_G_digest_equals_architecture_A_record_on_this_corpus` | `95504743…` igual ao registro da arquitetura A; paridade funcional de E mantida | aqui | controle positivo **neste corpus**, não equivalência universal |
+| **SNAP (código de B, rejeitado; reexecutado)** — snapshot sem Git e sem busca (**S_G**) | `exp_snapshot.json` `Q1_snapshot_runs_no_git_and_no_fetch`, `Q2_*`, `Q6_*` | 0 processos Git no snapshot; marcador de `uploadpack` ausente; sem remoto no snapshot; `object_missing` tipado; clone parcial com closure completa admitido; o leitor roda só `rev-parse`/`cat-file` com cwd no snapshot | aqui | autorização do host para as raízes: #331 |
+| **SNAP (código de B, rejeitado; reexecutado)** — snapshot adulterado depois de tirado (**S_G**) | `Q3_*` | loose trocado → `object_hash_mismatch`; objeto malformado → `transport_deadline` em 3,0 s; **ablação sem prazo trava** (morto aos 15 s); `.idx` forjado → `object_hash_mismatch`; pack corrompido → `object_truncated` | aqui | sem `verify-pack` no caminho de S_G |
+| **SNAP (código de B, rejeitado; reexecutado)** — identidade de aquisição imutável (R4-2) | `Q4_*` | root_tree/commit trocados após a aquisição → `sealed_identity_mismatch`; `Subject` congelado; controle comprometido | aqui | integridade do registro sob a premissa **P** do produtor |
+| **SNAP (código de B, rejeitado; reexecutado)** — sha256 pelo snapshot | `SHA256_*` | captura aceita com snapshot `sha256`; adulteração recusada | aqui | — |
+| **SNAP (código de B, rejeitado; reexecutado)** — duas classes de orçamento | `Q7_*` | store de 50,3 MB / subject de 1 blob → `snapshot_refused`; subject de 48 MiB → `budget_payload_bytes` com snapshot aceito | aqui | — |
+| **SNAP (código de B, rejeitado; reexecutado)** — identidade do snapshot (rastreabilidade) | `snapshot_identity_distinguishes_snapshot_from_S_G` | mesmo store → mesmo recibo; store alterado → recibo diferente, S_G igual | aqui | recibo não é trust root |
+| **SNAP (código de B, rejeitado; reexecutado)** — censo de órfãos | `no_orphan_processes_or_listeners_remain` | nenhum processo nem socket em escuta novo | aqui, namespace de PID do container | no host o censo vê outras sessões |
+| Corpus real capturado pela arquitetura C | `exp_functional.json` `S_G_digest_equals_architecture_A_record_on_this_corpus` (`capture_architecture: C`) | `95504743…` igual ao registro anterior; paridade funcional de E mantida | aqui; produtor uid 0 (`producer_functional.json`), leitor no processo de EXP-FUNC | controle positivo **neste corpus**, não equivalência universal |
 | **B/iv** — kill vs fechar-e-esperar (R4-4) | `exp_resources.json` `ABLATION_close_and_wait_refusal_path_waits_for_transport` | mutante espera 8,0 s; kill < 4 s | aqui | — |
 | **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
-| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito; filho 14,7 MiB ≤ 128 MiB | aqui | — |
+| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 15,8 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
 | **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
 | **C** — o objeto comprometido é o autenticado (**S_G**) | `exp_capture_stability.json` `authenticate_A_substitute_B_*`, `ABLATION_no_post_seal_revalidation_*`, `node_not_in_acquisition_record_refused`, `mutate_unsealed_S_then_seal_refused` | `sealed_binding_mismatch`; ablação compromete `EVIL`; `sealed_record_mismatch`; `sealed_content_mismatch` | aqui | tree oids vinculados pelo registro, não re-hasheados pós-selo |
 | **D** — limite de componente explícito (**S_G**) | `exp_structure.json` `component_256_*`, `C3_parity_under_same_limit_300`, `C3_also_refuses_*`, `no_admission_limit_refused` | 300 admite, 255 recusa, C3 igual sob o mesmo limite; ausência recusada | aqui | — |
@@ -81,6 +89,56 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Falhas sem S parcial; ownership linear | `write_failure_*`, `seal_failure_*`, `mid_capture_*`, `launcher_pre_spawn_*`, `hung_*`, `consumer_exits_rc0_*` | conforme esperado | aqui | falha de selo por injeção |
 | Caller real, runner, targets | forge: AgentEscala `develop@8537eb18`; listagem de workflows de caem/sacr-as | CT104 self-hosted; sem v2 em CAEM/SACR-AS | leitura de fonte | não executado |
 
+## Arquitetura C (candidata) — EXP-ARCH-C
+
+`exp_arch_c.json` (24/24, `evidence: REPRODUCED` em cada caso). O orquestrador roda como root no
+container; o produtor (`s0_snapshot_c.py`) roda como uid 0; o leitor (`s0_reader_c.py`) roda
+**sempre** como uid 2000 via `setpriv --reuid=2000 --regid=2000 --clear-groups`. A propriedade é
+`RunnerCanRead ∧ ¬RunnerCanMutate`; uid 0 é o mecanismo deste container, não a primitiva.
+
+| Discriminador | Casos | Resultado | Limite |
+|---|---|---|---|
+| **C1** mutação pelo runner | `C1_runner_mutations_denied_by_kernel`, `C1_POSITIVE_runner_reads_snapshot` | 12 syscalls: EACCES (escrever `config`, criar alternates, reescrever/renomear loose, reescrever pack, `unlink`, `rename`, `mkdir`, renomear o snapshot, criar irmão em `committed/`), EPERM (`chmod` do snapshot e de objeto); leitura ok; dono/modo `0:0o555` | DAC deste container |
+| **C2** metadata da fonte | `C2_source_metadata_does_not_cross` | fonte com remote, promisor, hooks, alternates, refs: topo do snapshot = `HEAD`, recibo, `config`, `objects`, `refs`; nada da fonte | — |
+| **C3/C4** injeção após publicação | `C3_inject_alternates_after_publish_kernel_refused`, `C4_inject_promisor_config_after_publish_kernel_refused` | EACCES (recusa do kernel, não "Git ignora") | — |
+| **C4/C8B** objeto ausente | `C4_C8B_missing_required_object_no_network` | `object_missing`; marcador de busca ausente; pré-condição (objeto ausente na fonte) verificada | — |
+| **C8A** clone parcial completo | `C8A_partial_clone_complete_closure_accepted` | aceito; marcador ausente; pré-condição `rev-list --missing=print` verificada | Git do fixture roda como o runner |
+| **C9** alternates | `C9_authorized_alternate_flattened_no_pointer`, `C9_unauthorized_alternate_typed_refusal` | autorizado: achatado, sem ponteiro, 1 fonte alternativa; fora da capability: `alternate_outside_authorized_storage` | quem autorizou a capability: #331/C2_B |
+| **C5** bomba | `C5_producer_never_inflates`, `C5_unrelated_bomb_does_not_affect_runner_S_G`, `C5_bomb_in_closure_runner_bounded_refusal` | loose de 256 MiB inflados (261.293 B físicos): produtor VmHWM 21,2 MiB, heap 2,62 MiB; fora da closure → S_G aceito; na closure → `budget_payload_bytes`, unidade Git ≤ 14,4 MiB | envelope por processo; agregado não testado |
+| **C6** autoridade da raiz | `C6_root_derived_from_authenticated_commit_only`, `C6_ABLATION_trusting_aux_root_changes_S_G`, `C6_forged_object_map_entry_refused` | raiz `a3ab46d8…` derivada de `C`; registro auxiliar sem efeito; ablação `root_override` → raiz `6a638b87…` (S_G muda); mapa forjado → `object_map_binding_mismatch` | integridade do processo leitor: **P** |
+| **C7** tempo de vida da unidade | `C7_runner_unit_teardown_0_survivors`, `C7_ABLATION_process_group_only_leaves_setsid_survivor` | ferramenta falsa → filho → neto `setsid` → `sleep`: `transport_deadline`, 3 mortos, 0 restantes, leitor uid 2000; ablação: 1 sobrevivente, limpo por pid + starttime + nonce | — |
+| **C10** crash antes do commit point | `C10_sigkill_before_publish_no_committed_snapshot` | SIGKILL no staging: nenhum snapshot novo em `committed/`; lixo de staging presente; runner lista `staging/` → EACCES | GC do staging: futuro |
+| **C11** leitor como o runner | `C11_unprivileged_reader_derives_S_G_structure`, `C11_COUNTER_reader_refuses_runner_mutable_snapshot`, `C11_expected_format_mismatch_refused`, `C11_POSITIVE_real_toolrepo_runner_derived_S_G_equals_prior_record` | uid 2000 deriva o mapa declarado (vazio, executável, symlink `pkg/../main.py`, aninhado); cópia de posse do runner → `snapshot_mutable_by_reader`; formato divergente → `snapshot_format_mismatch`; toolrepo real → `95504743…` | igualdade do digest é controle positivo **neste** subject |
+| Positivos | `POSITIVE_sha256_runner_S_G`, C9 autorizado, C8A, C11 | sha256 aceito; sha1 no corpus real | — |
+| Lifecycle | `LIFECYCLE_no_survivors_no_listeners` | sem processos nem sockets em escuta | namespace de PID do container |
+
+**Vetor de recursos (`resource_vector`, dois domínios):**
+
+```yaml
+physical_snapshot: {compressed_bytes: 3646095, entries: 2, alternate_depth: 0, producer_heap_MiB: 3.81,
+                    producer_vmhwm_MiB: 23.1, io: {rchar: 5624669, wchar: 3646583}, time_s: 0.061, producer_uid: 0}
+subject_closure:   {unique_objects: 933, object_reads: 933, nodes: 1001, unique_payload_bytes: 8642394,
+                    metadata_bytes: 51346, path_bytes: 54726, reader_heap_MiB: 36.68, reader_vmhwm_MiB: 58.0,
+                    local_git_processes: 1, per_object_deadline_s: 30, time_s: 0.294, reader_uid: 2000}
+local_git_unit:    {rss_MiB_upper_bound: 14.5, envelope: "RLIMIT_AS 128 MiB per process", aggregate_memory: NOT_TESTED}
+```
+
+**Classes de evidência:** OBSERVED — ambiente, privilégio do container; REPRODUCED — C1–C11,
+positivos, lifecycle; INFERRED — a necessidade do envelope no C5 vem da ablação de EXP-RES (filho
+sem contenção 68 MiB); aqui só o lado contido foi medido; NOT_TESTED — ver abaixo.
+
+**B-findings sob C (disposição candidata; nenhuma "fechada" antes da revisão do exact head):** B1/B2
+`ELIMINATED_BY_PRIVILEGE_BOUNDARY` (C1/C3/C4/C8), B3 `ELIMINATED_FROM_PHYSICAL_PRODUCER` (C5), B4
+`AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT` (C6), B5 `DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL`
+(C7), B6 `PARTIAL` (`tmp_obj_*` ignorado pelo nome; o resto não retestado).
+
+| Item de A/B | Estado sob C |
+|---|---|
+| R4-1 mecanismo original | eliminado por construção (o Git nunca lê o repositório vivo) |
+| R4-1 família (recursos do Git local) | **aberta**, owner #320; prazo por objeto, `RLIMIT_AS` por processo, subreaper; agregado e prazo total não reivindicados |
+| R4-2 / B-4 | raiz derivada dos bytes autenticados de `C`, sem autoridade independente; discriminado por C6 |
+| R4-3 | aberto (parâmetro do envelope) |
+
 ## Herdado e não reexecutado
 
 - Spike EXP-Q1 (permissões/FD mantido contra uma época C3 viva): citado apenas como motivação
@@ -92,7 +150,13 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 
 - CT104: versão/ABI/ownership do interpretador, Yama, provisionamento root → U2/U3 continuam premissas.
 - Runners hospedados com `setup-python` → piso 2 presumivelmente não atendido; não observado.
-- Objetos em pack, alternates, repositório parcial → autenticação por argumento.
+- Objetos em pack, alternates, repositório parcial → autenticação por argumento (C8A/C9 exercitam
+  aceitação, não adulteração dentro de pack).
+- **Arquitetura C:** CT104; serviço, identidade e proveniência do produtor em produção (U3);
+  proveniência da política do host / C2_B (#331); proveniência do anchor (#319); memória agregada
+  da unidade Git sob cgroup; prazo total da captura; GC do lixo de staging em produção; R4-3
+  (envelope × packs mapeados); `select` com fd ≥ 1024 (B-6); forja de pack/`.idx` e pack
+  corrompido **pelo leitor de C** (reexecutados só pelo código de B).
 - memfd sob limite de memcg/OOM; outros kernels.
 - Sinais de mesmo UID contra produtor/launcher/filho; integridade de processo do produtor e do launcher.
 - Execução de programas por configuração do git durante `cat-file`.
@@ -100,16 +164,18 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 - Interpretador não oficial (Debian `/usr/bin/python3.11`), musl.
 - Reprodução independente por outro operador/máquina.
 
-## Arquitetura A rejeitada após a rodada 4 → Spike B → arquitetura B (este head)
+## Arquitetura A rejeitada após a rodada 4 → Spike B → arquitetura B (`8c4842b`, depois REJEITADA)
 
 Rodada 4 em `cf69fbf`: duas recorrências admitidas **dentro** do mecanismo ratificado. R4-1: o
 transporte `git` é uma árvore de processos (busca lazy de clone parcial antes do cabeçalho). R4-2:
 a identidade da raiz fora do registro de aquisição. Pela regra de parada acordada, não houve rodada
 5: a arquitetura A (transporte Git vivo) foi **rejeitada** (comentário 5852664959). O mantenedor
 escolheu a opção 2. O Spike B foi favorável às 7 perguntas (comentário 5852938161), com as
-qualificações do topo de CONTRACT. Este head é o **corte sucessor** documental/experimental.
+qualificações do topo de CONTRACT. `8c4842b` foi o corte de B; a revisão de B (comentário
+5853311835) estabeleceu recorrência (B-1/B-2) e rejeitou B. A tabela abaixo é o estado **em
+`8c4842b`**, preservado; o estado sob C está na seção anterior.
 
-| Item | Estado neste head |
+| Item | Estado em `8c4842b` (histórico) |
 |---|---|
 | R4-1 mecanismo original (busca lazy / árvore de processos do repo vivo) | **eliminado por construção** (SNAP Q1/Q2) |
 | R4-1 família (CPU/memória/tempo do Git local sobre o snapshot) | **aberta**, owner #320; prazo, `RLIMIT_AS` e grupo de processos no protótipo; o Spike B e EXP-SNAP reproduziram uma instância de travamento sem prazo |
@@ -206,3 +272,21 @@ Nenhum mudou uma expectativa para acomodar resultado da engine ou do kernel, sal
 8. **Sobre-recusa detectada pelo corpus positivo**: a checagem de tags não expandia a tag comprimida
    que o maturin grava no `WHEEL` do `pydantic_core` → expansão igual à do nome do arquivo.
 9. Linha vazia em `/proc/self/maps`; `ldconfig` fora do PATH do usuário → caminho absoluto.
+10. (Spike C) `ru_maxrss` herda o RSS pré-`exec` do pai (533,7 MiB idêntico em todo subprocesso) →
+    VmHWM de `/proc/self/status`; o valor contaminado ficou registrado no comentário do spike.
+11. (Spike C) Git do fixture C8A rodando como root sobre repositório do runner foi recusado pela
+    checagem de ownership (o transporte local limpa `GIT_CONFIG_*`) → closure incompleta, recusada
+    corretamente pela fronteira. Corrigido: Git do fixture como o runner + pré-condição
+    `rev-list --missing=print` verificada antes do caso.
+12. (Este head) `run_py311.sh` quebrava num apóstrofo de comentário dentro de `bash -c '…'` →
+    comentário reescrito.
+13. (Este head) **Erro meu de contagem** em C11: a expectativa estrutural foi escrita como 9 nós; a
+    árvore declarada tem 8. A primeira execução falhou só nesse caso (preservada no scratch, não
+    registrada). A expectativa passou a ser o mapa **declarado** caminho → tipo mais o target do
+    symlink, escrito antes da nova execução; o resultado do leitor não foi copiado para a
+    expectativa.
+14. (Este head; mudança de mecanismo, não de expectativa) o Spike C continha a unidade Git num PID
+    namespace criado com privilégio. O leitor de C roda como o runner, que não cria user/PID
+    namespace sob o seccomp padrão do Docker; exigir isso seria dependência de privilégio (C11). A
+    contenção passou a ser *child subreaper* + teardown da subárvore, com a mesma ablação (grupo de
+    processos) e o mesmo critério de 0 sobreviventes.

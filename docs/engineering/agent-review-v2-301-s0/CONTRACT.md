@@ -2,12 +2,14 @@
 
 ```yaml
 status: PROPOSED_NOT_RATIFIED
-architecture: B_PRIVATE_REMOTELESS_SNAPSHOT   # candidate after Spike B; A (live git transport) rejected after round 4
+architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # current candidate; A and B are REJECTED PREDECESSORS
+claim_scope: S_G_only
 slice: S0_contract_and_experimental_evidence   # nome de trabalho; não é claim normativa, milestone nem revisão CAEM
 work_owner: "#301"          # roadmap: #46; núcleo: #80
 base: 9abcde6420a59b814b5faaff10ca5904c5d23370   # tree 93143d70ed410771776f5f2cdb48d7f8e3f5ed9b
 production_S_implemented: false
 production_E_implemented: false
+production_implementation: none   # architecture C exists only as experiments/ prototypes
 evidence_index: EVIDENCE.md
 experiments: experiments/            # opt-in; fora de app/, scripts/ e da descoberta do pytest
 ```
@@ -42,14 +44,114 @@ d_component_limit: {hardcoded_255: rejected, independent_fpathconf_in_S1: reject
                     selected: explicit_admission_parameter, C3_parity: conditional_on_same_limit}
 ```
 
-### Arquitetura de aquisição: A rejeitada, B candidata (2026-09-27)
+### Arquitetura de aquisição: histórico e candidata corrente (2026-09-27)
 
 ```yaml
 architecture:
+  A: {name: LIVE_GIT_TRANSPORT, rounds: [R1, R2 STOP, R3 STOP, R4 terminal recurrence], status: REJECTED}
+     # PR #355 comments 5852251027, 5852389024, 5852664959
+  B: {name: MUTABLE_PRIVATE_SNAPSHOT, evidence: [Spike B 5852938161, candidate head 8c4842b],
+      review: "B-1..B-4 (comment 5853311835)", status: REJECTED}
+  C: {name: PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT, evidence: ["Spike C 22/22 (comment 5858608157)", this head],
+      status: CANDIDATE}   # a successor architecture, not a later round of A or B
+```
+
+A e B **não** foram consertadas: foram rejeitadas, e C é outra fronteira. A evidência de A/B não se
+transfere para C sem reexecução; o que C reutiliza (hash-on-read, parse estrito, selo e
+revalidação, orçamentos da closure) foi reexecutado na execução registrada deste head.
+
+**Arquitetura C (candidata).** Dada uma capability de storage admitida e um produtor com separação
+de privilégio em relação ao runner, o produtor publica atomicamente um snapshot físico autocontido
+que o runner pode ler e não pode alterar. S_G é derivado de um commit esperado `C` usando **só** o
+snapshot imutável, autenticando cada objeto no consumo e derivando a raiz dos bytes autenticados de
+`C`; a representação selada é revalidada antes da entrega.
+
+```yaml
+301_S0_ARCHITECTURE_C:
+  claim_scope: S_G_only
+  boundary: "RunnerCanRead(Snapshot) AND NOT RunnerCanMutate(Snapshot)"   # not "uid == 0"
+  chain: [AdmittedStorageCapability, PrivilegeSeparatedProducer, PhysicalSnapshot(staging),
+          AtomicPublish(committed/<id>), RunnerReader(C11), AuthenticatedCommitBytes(C), DeriveRootTree(T),
+          AuthenticatedClosure, Build, Seal, Revalidate]
+  producer:
+    input: admitted storage capability (C2_A)        # who authorized it: #331/C2_B, not proven here
+    stage: physical_only                             # PhysicalSnapshot != AuthenticatedSubject
+    forbidden_in_physical_stage: [git, zlib inflate, semantic validation, hash proof, pack parsing, verify-pack]
+    copies: ["objects/ loose (raw, compressed)", "objects/pack/pack-*.{pack,idx}"]
+    authors: [config (object format only), "HEAD -> refs/heads/none", "empty refs/heads, objects/info", receipt]
+    never_copied: [source config, remotes, promisor, hooks, source HEAD, refs, packed-refs, alternates pointer]
+    alternates: {authorized: flattened, unauthorized: refusal alternate_outside_authorized_storage}
+    production_provenance: NOT_QUALIFIED             # U3
+  publication:
+    staging: "staging/<id>, producer-only (0700)"
+    finalize: "files 0444, dirs 0555, owned by the producer identity, fsync"
+    commit_point: "rename(staging/<id> -> committed/<id>)"
+    crash_before_commit_point: staging garbage, never a committed snapshot   # StagingGarbage != CommittedSnapshot
+    staging_gc: future obligation
+  receipt:   # traceability only: SnapshotReceipt != ObjectAuthenticityProof
+    fields: [schema_version, object_format, physical_bytes, physical_entries, alternate_sources_count,
+             storage_capability_binding, published_snapshot_identity]
+    contains_root_tree: false
+    contains_commit: false
+  budgets:   # two domains; neither is inferred from the other
+    snapshot_budget: {domain: physical store, units: [bytes, entries, alternate depth], charged: fstat before read}
+    closure_budget: {domain: subject closure, units: [nodes, payload, metadata, paths, component length],
+                     charged: strict transport header before read}
+  input_identity:
+    expected_subject: {object_format, commit_oid, component_policy}
+    independent_root_tree_authority: none            # reasons: R4-2, B-4
+  object_format:
+    source: expected_subject
+    cross_checks: [commit_oid length, producer-authored snapshot config]
+    live_repository_consulted: false
+    supported: [sha1, sha256]
+  reader:
+    runs_as: unprivileged runner                     # required; otherwise STOP_301_C_READER_PRIVILEGE_DEPENDENCY (C11)
+    precondition: refuse a snapshot the reader can mutate (owner or W_OK on any node or ancestor; symlink)
+    local_git: {target: committed immutable snapshot only, deadline: per object, parsing: strict header,
+                memory_envelope: RLIMIT_AS per process where supported, aggregate_memory: NOT_CLAIMED}
+    process_lifetime: "reader is a child subreaper; teardown kills and reaps every descendant (setsid included)"
+    related_owner: "#320"
+  S_G:
+    authority: expected C + content-addressed object map
+    root_tree: derived from the authenticated bytes of C
+    walk: one walk fetches and derives
+    build_rechecks: every object in the map re-hashed to its oid and kind before use
+    post_seal: seals read back, sealed bytes re-hashed, S_G re-derived from the map and compared with the sealed content
+```
+
+**B-findings — disposição candidata** (nenhuma é "fechada" antes da revisão do exact head):
+
+```yaml
+B_findings_candidate_disposition:
+  B1: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # alternates injected after publish -> kernel EACCES (C3); source alternates only via capability (C9)
+  B2: ELIMINATED_BY_PRIVILEGE_BOUNDARY        # promisor config injected after publish -> EACCES (C4); no fetch (C4/C8)
+  B3: ELIMINATED_FROM_PHYSICAL_PRODUCER       # producer never inflates (C5); expansion only inside the contained reader unit
+  B4: AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT   # C + content-addressed map; aux root has no effect, ablation changes S_G (C6)
+  B5: DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL   # setsid grandchild: unit 0 survivors, process-group ablation leaves one (C7)
+  B6: PARTIAL                                 # tmp_obj_* skipped by name (C2); select with fd >= 1024 and corrupted-pack ablation not retested
+```
+
+**Relações com owners** (nenhuma absorvida):
+- **#331 / C2_B:** C prova só "dada a capability A, o produtor nunca sai de A" (C9). Quem autorizou
+  A continua com #331.
+- **#319:** proveniência de `C`. C só autentica o fechamento **de** `C`.
+- **#320 (adendo):** "Git local sem prazo pode travar" é **candidato a mecanismo** registrado sob
+  #301 (Spike B, EXP-SNAP, C7); a família de disponibilidade/recurso do Git local continua com
+  #320, que **não** é fechada. P1b (NFS/FUSE) é outro mecanismo e não é tratado aqui.
+- **#354:** resíduo de ciclo de vida de descritor; S não o ativa (§8).
+- **U3:** proveniência do produtor em produção continua aberta: o produtor do experimento é o root
+  de um container efêmero (`SpikeContainerRoot != ProductionHostAuthority`).
+
+
+#### Predecessor B — decisão de fronteira registrada em `8c4842b` (REJECTED; preservada como histórico)
+
+```yaml
+architecture_as_recorded_at_8c4842b:
   A: {name: LIVE_GIT_TRANSPORT, rounds: [R1 corrected, R2 STOP (S_D narrowed), R3 STOP, R4 terminal recurrence],
       status: REJECTED_AFTER_R4}        # PR #355 comments 5852251027, 5852389024, 5852664959
   B: {name: PRIVATE_REMOTELESS_SNAPSHOT, evidence: Spike B (comment 5852938161) + this head,
-      status: CANDIDATE}                 # not "round 5" of A
+      status: CANDIDATE_AT_8c4842b}      # later REJECTED: PR #355 comment 5853311835 (B-1..B-4)
 301_S0_ACQUISITION_BOUNDARY_DECISION:
   live_git_against_subject_repo: {permitted_for_S_G_capture: false}
   physical_acquisition: {mechanism: descriptor_anchored_copy, git_invocations: none, network_completion: forbidden,
@@ -74,10 +176,14 @@ spike_B_adjudication_qualifications:
   - equal S_G digest across boundaries is a positive control on THIS corpus, not universal equivalence
 ```
 
-Decisão (a) acima continua valendo **só** para o Git local sobre o snapshot; o Git nunca mais lê o
-repositório vivo na captura de S_G. (b), (c) e (d) continuam.
+O bloco acima é **histórico**: registra a decisão que B tomou, e o motivo da rejeição está no
+comentário 5853311835 (o snapshot de B continuava gravável pelo mesmo UID; `config`/`alternates`
+injetados mudavam o **comportamento** do Git). As qualificações de linguagem sobre R4-1/R4-2 e
+`verify-pack` continuam válidas. Sob C, a decisão (a) vale **só** para o Git local sobre o snapshot
+**imutável ao runner**; o Git nunca lê o repositório vivo na captura de S_G. (b), (c) e (d)
+continuam.
 
-S0 fecha o contrato de **S_G** como componente. S_D e E continuam **propostos**: a evidência
+S0 propõe o contrato de **S_G** como componente, candidato sob a arquitetura C. S_D e E continuam **propostos**: a evidência
 deles aqui é de viabilidade, não de qualificação. Nenhuma obrigação foi apagada; as de S_D têm
 owner futuro e contramodelos obrigatórios (§7.3).
 
@@ -113,21 +219,22 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 
 ## 2. Claim de S0 (≤ 3 frases), propostas restantes e non-claims
 
-> **S_G-CLAIM.** Dado um commit esperado `C` fornecido por autoridade externa (#319), uma capability
-> de storage admitida (#331), um produtor íntegro e limites de admissão explícitos, um S_G admitido
-> é um objeto selado cujos bytes foram todos lidos de um **snapshot físico privado e sem remoto** do
-> object store — copiado por descritor, sem Git e sem rede —, obtidos por um Git local contido (prazo,
-> memória, grupo de processos) que só enxerga esse snapshot, cobrados a partir de um cabeçalho
-> estritamente parseado antes de serem lidos e autenticados **no instante da leitura** contra `C`
-> pela cadeia commit → tree → blob no formato de objeto de `C`, codificando sem perda as distinções
-> da contract A/A2 de C3 sobre a árvore de `C` sob esses mesmos limites. A capability só é emitida
-> depois do instante de compromisso — selos `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta,
-> conteúdo selado re-hasheado e o **objeto selado revalidado** contra o registro da aquisição
-> (identidade de aquisição imutável, nós e vínculo oid → payload de cada folha) — e a partir daí nenhum processo sem
-> `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera bytes, índice ou tamanho de S_G. Um consumidor
-> recebe S_G por descritor herdado e a identidade esperada `(algoritmo, C)` e o digest por canal
-> separado controlado pelo launcher, e valida selos, digest e identidade sobre o mesmo buffer que
-> consome.
+> **S_G-CLAIM (arquitetura C).** Dados uma capability de storage admitida (#331), um produtor com
+> separação de privilégio em relação ao runner e limites de admissão explícitos, o produtor publica
+> atomicamente um snapshot físico autocontido do object store — só bytes físicos, sem Git, sem
+> inflate e sem metadata da fonte — que o runner pode ler e não pode alterar
+> (`RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)`). Um leitor que roda **como o runner**
+> deriva S_G de um commit esperado `C` (#319) usando só esse snapshot: Git local contido (prazo,
+> memória por processo, subreaper com teardown da unidade inteira), cada objeto cobrado a partir de
+> um cabeçalho estrito antes de ser lido e autenticado **no instante da leitura** contra `C` pela
+> cadeia commit → tree → blob no formato de objeto de `C`, com a raiz derivada dos bytes
+> autenticados de `C`, codificando sem perda as distinções da contract A/A2 de C3 sob esses limites.
+> A capability só é emitida depois do instante de compromisso — selos
+> `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta, conteúdo selado re-hasheado e S_G **re-derivado**
+> do mapa de objetos endereçado por conteúdo e comparado com o conteúdo selado — e a partir daí
+> nenhum processo sem `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera bytes, índice ou tamanho
+> de S_G; o consumidor valida selos, digest e identidade `(algoritmo, C)` recebidos por canal
+> separado sobre o mesmo buffer que consome.
 
 **Propostas que S0 não qualifica** (arquitetura preservada, prova futura):
 - **S_D**: dependências como segundo container selado vinculado ao lock em S_G (§4–§5, §7.3).
@@ -135,8 +242,10 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
   S_D, com resultado idêntico ao caminho normal, é evidência de **viabilidade**, não claim de S0.
 
 Premissas (não impostas por S): kernel Linux com memfd seals (observado só em 6.18/WSL2); root e
-kernel confiáveis; `C` correto (#319); launcher/produtor/bootstrap vindos de local não gravável pelo
-UID do runner (§6, U3); a mesma premissa de integridade de processo de §3 vale para **produtor e
+kernel confiáveis; `C` correto (#319); a capability de storage admitida (#331); um produtor com
+separação de privilégio cuja **proveniência de produção** não é qualificada aqui (U3; o experimento
+usa o root de um container efêmero: `SpikeContainerRoot != ProductionHostAuthority`);
+launcher/leitor/bootstrap vindos de local não gravável pelo UID do runner (§6, U3); a mesma premissa de integridade de processo de §3 vale para **produtor e
 launcher** (o heap do produtor guarda bytes autenticados antes do selo; o launcher guarda os digests
 esperados); o kernel impõe `RLIMIT_AS` ao filho `git`. **SHA-1:** para repositórios sha1, a
 autenticação verifica igualdade com um oid fixo e ancorado externamente e assume **resistência a
@@ -144,8 +253,11 @@ segunda pré-imagem** do SHA-1 para esse oid; a verificação usa `hashlib.sha1`
 equivalência com a detecção de colisão (sha1dc) do git. Endurecimento futuro possível: sha1dc ou
 admissão só sha256 — nova obrigação, não importada para S1.
 
-Non-claims: integridade do **processo** além da premissa de §3; disponibilidade (um ator same-UID
-pode matar/esgotar recursos); integridade dos **dados do target** (§9 U4); autenticação do
+Non-claims: quem autorizou a capability (#331/C2_B); proveniência do commit (#319); proveniência do
+produtor em produção (U3); qualificação de CT104; memória **agregada** da unidade Git (`RLIMIT_AS` é
+por processo); ausência universal de DoS; limpeza automática de staging após crash; prazo total da
+captura; S_D, E, proveniência de execução, G5 e prontidão de release; integridade do **processo**
+além da premissa de §3; disponibilidade (um ator same-UID pode matar/esgotar recursos); integridade dos **dados do target** (§9 U4); autenticação do
 interpretador/stdlib (piso por ownership, §6); proveniência do anchor (#319); correção do
 comportamento da engine; portabilidade não-Linux; qualificação de CT104; modo Router conectado;
 relançamento de brokers/supervisor; confidencialidade de S (não é segredo).
@@ -164,8 +276,9 @@ integridade do processo consumidor; **R** = canal de resultado; **A** = disponib
 | Ator que altera configuração do processo (não o arquivo) | env (`LD_PRELOAD`, `PYTHON*`, `HOME`), cwd, `pyvenv.cfg`, user site, `.pth`, `sitecustomize` | launcher: interpretador root-owned por caminho absoluto, `env={}`, `-I -S`, `cwd=/` (EXP-BOOT) | se o ator **for** o launcher ou um ancestral |
 | Interferência no processo (ptrace, `/proc/pid/mem`) | com Yama `ptrace_scope ≥ 1`, não-ancestral não faz attach nem escreve memória; lista FDs enquanto dumpable | **P** somente sob a premissa Yama≥1 ∧ ator não-ancestral, para consumidor, produtor e launcher (EXP-PROC observou o consumidor) | ancestrais (runner/agent) são confiados; `ptrace_scope=0` quebra **P** |
 | Sinais (`kill`, `SIGINT`, `SIGSTOP`) de mesmo UID | interromper ou matar produtor, launcher ou filho | nenhum resultado parcial vira S/sucesso (301S-LIFE) | **A**; não testado com sinais reais |
-| `git` local sobre o snapshot | o repositório vivo (config, remotos, promisor, helpers) **não** é lido pelo Git na captura: o snapshot tem esqueleto próprio sem remoto | mecanismo R4-1 (busca lazy/árvore de processos do repo vivo) **eliminado por construção** (EXP-SNAP Q1/Q2: 0 processos Git no snapshot, marcador de `uploadpack` ausente); leitor com prazo, `RLIMIT_AS` e grupo de processos morto na recusa | família de recursos do Git local (CPU/memória/tempo sobre o snapshot) **aberta**, owner #320; o snapshot é gravável pelo mesmo UID (N1), por isso o hash-on-read no consumo |
-| Bootstrap, consumidor, produtor, futuro produtor de receipt | papéis TCB | ver §6 | auto-autenticação recursiva |
+| Runner (UID do runner) sobre o snapshot publicado (arquitetura C) | tentar escrever `config`, criar `objects/info/alternates`, reescrever/renomear objetos e packs, `unlink`, `mkdir`, `chmod`, renomear o snapshot, criar irmão em `committed/`, listar `staging/` | **negado pelo kernel** (EXP-ARCH-C C1/C3/C4/C10: EACCES/EPERM); o leitor recusa um snapshot que ele próprio poderia alterar (C11) | ator com outro privilégio sobre o storage (fora; produtor/root confiados); proveniência do produtor em produção (U3) |
+| `git` local sobre o snapshot | o repositório vivo (config, remotos, promisor, helpers) **não** é lido pelo Git na captura; config/HEAD/refs do snapshot são do produtor e imutáveis ao runner | mecanismo R4-1 **eliminado por construção**; B-1/B-2 (metadata mutável que muda o comportamento do Git) eliminados pela fronteira de privilégio (C2/C3/C4, C8: marcador de busca ausente); leitor com prazo, `RLIMIT_AS`, cabeçalho estrito e teardown da unidade inteira via subreaper (C7) | família de recursos do Git local (CPU/memória agregada/tempo total) **aberta**, owner #320 |
+| Bootstrap, consumidor, produtor, leitor, futuro produtor de receipt | papéis TCB; o produtor do snapshot tem privilégio **separado** do runner, e o leitor roda **como** o runner | ver §6 | auto-autenticação recursiva; proveniência do produtor em produção (U3) |
 | root / kernel | tudo | confiados (declarado) | — |
 | UID diferente | DAC | fora | — |
 
@@ -215,9 +328,12 @@ FD mantido aberto, ou repetir hashes sobre M (spike EXP-Q1; K03/K05 de #324).
 
 ```text
 capability de storage admitida (#331)
- └─ estágio 0: snapshot físico privado ── cópia por descritor, sem Git, sem rede; objetos ausentes ficam ausentes;
-                                        esqueleto próprio (formato de objeto do C esperado, sem remoto)
-C (esperado, via #319)                   └─ o Git local só lê o snapshot (prazo, RLIMIT_AS, grupo de processos)
+ └─ produtor (privilégio separado do runner): cópia física por descritor — sem Git, sem inflate, sem metadata
+    da fonte; alternates autorizados achatados; orçamento físico; staging → finalize → rename = commit point
+     └─ committed/<id>: RunnerCanRead ∧ ¬RunnerCanMutate (kernel)
+C (esperado, via #319; expected_subject = {object_format, commit_oid, component_policy})
+ └─ leitor COMO o runner: recusa snapshot mutável por ele; Git local só sobre committed/<id>
+    (prazo por objeto, RLIMIT_AS por processo, cabeçalho estrito, subreaper + teardown da unidade)
  └─ commit object  ── hash(type ‖ ' ' ‖ len ‖ NUL ‖ body) == C ; 1ª linha "tree <oid>"
      └─ tree objects ── mesmo hash; bytes interpretados por C3 `_parse_tree_data` (dono da regra)
          └─ blobs      ── mesmo hash; ESTE buffer é o payload embutido em S_G
@@ -228,23 +344,48 @@ C (esperado, via #319)                   └─ o Git local só lê o snapshot (
                              └─ S_D ; header vincula sha256(lock)
 ```
 
-- **Snapshot antes do subject (arquitetura B).** O object store sai do domínio vivo **antes** de
-  qualquer pergunta sobre `C`: a cópia reusa a aquisição por descritor da G1C (sem Git), achata
-  alternates e aplica um **orçamento físico** (bytes, entradas, profundidade de alternates),
-  proporcional ao store, e não ao subject. Um objeto obrigatório ausente é recusa tipada
-  (`object_missing`), sem busca: a política é `OfflineClosureComplete(C)`, não "recusar clone
-  parcial". O snapshot **não** é confiável como conteúdo na leitura (mesmo UID pode alterá-lo; N1),
-  e por isso cada objeto consumido é re-hasheado. `git verify-pack` e `rev-parse --git-dir`, que a
-  G1C roda, **não** estão no caminho de S_G: um pack ou `.idx` forjado nunca produz falso positivo,
-  porque o hash-on-read é o truth-maker (EXP-SNAP). Um papel separado de disponibilidade ou de
-  detecção precoce de corrupção não é negado. O esqueleto declara o formato de objeto implicado
-  pelo `C` esperado (sha1 ou sha256), nunca o da config viva.
-- **Algoritmo** vem do comprimento do `C` esperado (40 → sha1, 64 → sha256) e é conferido com
-  `git rev-parse --show-object-format` sobre o snapshot; divergência recusa (`object_format_mismatch`). Nada de
-  SHA fixo por conveniência; a regra JSON de self-hash do produto não se aplica a objetos Git.
-- `git cat-file --batch` **sobre o snapshot** é **transporte não confiável e contido** (decisão a,
-  restrita ao snapshot): grupo de processos próprio morto na recusa e **prazo por objeto** (um objeto
-  malformado trava o `cat-file`; sem prazo a captura não termina — EXP-SNAP, com ablação). O spike e EXP-N1
+- **Snapshot físico com separação de privilégio (arquitetura C).** O object store sai do domínio
+  vivo **antes** de qualquer pergunta sobre `C`, e sai para um lugar que o runner **não** escreve:
+  o produtor abre o storage por descritor dentro da capability admitida (primitivas da G1C,
+  reutilizadas **sem** o inflate de loose nem `verify-pack`), copia objetos loose na forma
+  comprimida original e `pack-*.pack/.idx`, achata só alternates autorizados (fora da capability →
+  `alternate_outside_authorized_storage`) e cobra um **orçamento físico** (bytes, entradas,
+  profundidade de alternates) pelo `fstat`, antes de ler cada arquivo. Nomes que não são objeto do
+  formato (ex.: `tmp_obj_*` do Git vivo) são ignorados e contados. Nada de `config`, remotos,
+  promisor, hooks, `HEAD`, refs, `packed-refs` ou ponteiro de alternates da fonte atravessa: o
+  produtor escreve `config` (só o formato de objeto), `HEAD → refs/heads/none`, `refs/heads` e
+  `objects/info` vazios e o recibo. Finalização: arquivos `0444`, diretórios `0555`, `fsync`; o
+  **commit point** é `rename(staging/<id> → committed/<id>)`. Antes dele o runner nem lista o
+  staging; um crash deixa lixo de staging, nunca snapshot publicado (C10). `PhysicalSnapshot !=
+  AuthenticatedSubject`: nenhuma validação de conteúdo acontece aqui, e o recibo
+  (`SnapshotReceipt != ObjectAuthenticityProof`) não tem commit nem root_tree. A propriedade
+  normativa é `RunnerCanRead ∧ ¬RunnerCanMutate`, estabelecida pelo kernel; `uid == 0` é só o
+  mecanismo do experimento. Um objeto obrigatório ausente é recusa tipada (`object_missing`), sem
+  busca: a política é `OfflineClosureComplete(C)` (C4/C8B), e um clone parcial com closure completa
+  é admitido (C8A).
+- **Leitor como o runner (C11).** A derivação de S_G roda sem privilégio, no UID do runner, e
+  **verifica** a fronteira no consumo em vez de supô-la: recusa (`snapshot_mutable_by_reader`) se
+  qualquer nó do snapshot ou qualquer ancestral for dele, gravável por ele ou symlink. Se a
+  derivação precisasse do privilégio do produtor, o resultado seria
+  `STOP_301_C_READER_PRIVILEGE_DEPENDENCY`.
+- **Algoritmo** vem **só** do `expected_subject.object_format` (sha1 ou sha256) e é conferido com o
+  comprimento de `C` (`expected_subject_invalid`) e com o `config` escrito pelo produtor
+  (`snapshot_format_mismatch`); o repositório vivo nunca é consultado. Nada de SHA fixo por
+  conveniência; a regra JSON de self-hash do produto não se aplica a objetos Git.
+- **Identidade de entrada = `expected_subject {object_format, commit_oid, component_policy}`.** Não
+  existe autoridade independente de root_tree (R4-2, B-4): a raiz é **derivada** da primeira linha
+  do corpo autenticado de `C`. Os objetos lidos ficam num mapa endereçado por conteúdo; uma única
+  caminhada busca e deriva; na construção, cada entrada do mapa é re-hasheada ao seu oid e tipo
+  (`object_map_binding_mismatch`); depois do selo, S_G é re-derivado do mapa e comparado ao conteúdo
+  selado (`sealed_derivation_mismatch`). Um registro auxiliar apontando outra tree não tem efeito; a
+  ablação que confia nele muda S_G (C6).
+- `git cat-file --batch` **sobre o snapshot imutável** é **transporte não confiável e contido**
+  (decisão a, restrita ao snapshot): sessão própria, **prazo por objeto** (um objeto malformado trava
+  o `cat-file`; sem prazo a captura não termina — EXP-SNAP, com ablação) e **tempo de vida da
+  unidade inteira**: o leitor é *child subreaper*, então todo descendente, inclusive um que faça
+  `setsid`, volta a ele, e o teardown mata e colhe a subárvore até não restar nenhum (C7: 0
+  sobreviventes; a ablação que só mata o grupo de processos deixa o neto `setsid` vivo). A limpeza
+  do experimento usa pid + starttime + nonce, nunca só o PID. O spike e EXP-N1
   mostram que ele serve, com rc 0, bytes que não hasheiam ao oid pedido. A autenticação é do buffer
   lido, logo independe do storage (loose, pack, alternates) — argumento, observado apenas para
   loose. O filho roda sob `RLIMIT_AS` aplicado antes do `exec`; o cabeçalho é lido com limite e
@@ -351,34 +492,48 @@ limite · owner · evidência.
 
 | Grupo | Obrigações | Estado em S0 |
 |---|---|---|
-| 7.1 — S_G (claim de S0) | 301S-ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | a qualificar nesta PR |
+| 7.1 — S_G (claim de S0) | 301S-SNAP, PRIV, ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | candidatas sob a arquitetura C; qualificação após a revisão do exact head |
 | 7.2 — E (viabilidade) | 301S-BOOT, LOAD (confinamento observado), CHAN, DATA, CALLER | propostas; E é futura |
 | 7.3 — S_D (futura slice) | 301S-DEP, NAT, RES (S_D), completude do loader | `DEFINED`; contramodelos obrigatórios R2-1/2/3/7/8 |
 
 ### 7.1 — S_G (claim de S0)
 
-- **301S-SNAP** — S_G é adquirido de um snapshot físico privado, sem remoto e autocontido, e o Git
-  nunca lê o repositório vivo na captura · repositórios Linux sob uma capability de storage
-  admitida · cópia por descritor (G1C, sem Git), esqueleto próprio com o formato de objeto do `C`
-  esperado, sem remoto nem promisor · produtor → leitor da closure · clone parcial com remoto
-  promisor e helper `uploadpack` com marcador; objeto obrigatório ausente; store físico acima do
-  orçamento · 0 processos Git e nenhuma busca durante o snapshot; recusa `object_missing`; clone
-  parcial com closure completa **admitido**; recusa `snapshot_refused` por tamanho do store (não do
-  subject); captura sha256 aceita · a autorização do host para as raízes é de #331, não provada aqui;
-  o snapshot continua gravável pelo mesmo UID (N1) · #301 (S_G), #331 (proveniência do storage) ·
-  EXP-SNAP Q1/Q2/Q7/SHA256.
+- **301S-SNAP** — S_G é adquirido só de um snapshot físico publicado por um produtor com separação
+  de privilégio, autocontido, sem metadata da fonte, e o Git nunca lê o repositório vivo na captura ·
+  repositórios Linux sob uma capability de storage admitida · cópia física por descritor (G1C, sem
+  Git, sem inflate); esqueleto e `config` do produtor; staging → finalize → `rename` como commit
+  point · produtor → leitor · fonte com remote, promisor + `extensions.partialClone`, `hooksPath` +
+  hook, alternates, refs e `tmp_obj_*`; alternate fora da capability; objeto obrigatório ausente;
+  SIGKILL do produtor durante o staging; loose-bomba de 256 MiB · nada da fonte atravessa (C2);
+  `alternate_outside_authorized_storage` (C9); `object_missing` sem marcador de busca (C4/C8B); 0
+  snapshot publicado e staging ilegível pelo runner (C10); produtor sem inflate, VmHWM 21,2 MiB (C5);
+  alternate autorizado achatado sem ponteiro, clone parcial com closure completa **admitido**,
+  sha256 aceito · quem autorizou a capability é #331/C2_B; produtor de produção U3; GC do staging é
+  obrigação futura · #301 (S_G), #331 · EXP-ARCH-C C2/C4/C5/C8/C9/C10, `POSITIVE_sha256_runner_S_G`.
+- **301S-PRIV** — `RunnerCanRead(Snapshot) ∧ ¬RunnerCanMutate(Snapshot)`, e o leitor roda como o
+  runner e confere isso no consumo · snapshot publicado · negação do kernel (DAC no experimento) +
+  precondição do leitor · produtor → leitor · 12 mutações pelo runner (escrever `config`, criar
+  alternates, reescrever/renomear loose, reescrever pack, `unlink`, `rename`, `mkdir`, `chmod` do
+  snapshot e de objeto, renomear o snapshot, criar irmão em `committed/`); cópia do snapshot de
+  posse do runner; formato esperado divergente · todas EACCES/EPERM, leitura positiva ok (C1);
+  `snapshot_mutable_by_reader` (C11 contra-controle); `snapshot_format_mismatch`; leitor com uid
+  2000 deriva a estrutura declarada (árvore vazia, executável, symlink com target em bytes,
+  subárvore) e o S_G do toolrepo real · a propriedade é do kernel no domínio do experimento
+  (container sem userns-remap); CT104 e o serviço de produção não testados · #301, U3 ·
+  EXP-ARCH-C C1/C3/C4/C11.
 - **301S-ID** — S carrega `subject_identity = (algoritmo, C)`, `container_digest` e (para S_D)
-  `dependency_identity` como fatos distintos; o algoritmo aceito é o implicado pelo `C` **esperado**,
-  não o rótulo do container. A **identidade de aquisição** `(formato, C, root_tree, limite de
-  componente, contrato do container)` é imutável, criada dentro da caminhada a partir do corpo
-  autenticado do commit, e é contra ela — não contra campos do `Subject` — que o cabeçalho selado é
-  revalidado (R4-2). A **identidade do snapshot** (formato, bytes e entradas físicos, diretórios de
-  objetos, recibo, raízes) serve só para rastreabilidade capability → snapshot → registro → S_G · captura/handoff · cabeçalho selado + digest · produtor → bootstrap ·
-  bytes certos e commit errado; commit certo com rótulo de algoritmo incoerente (R2-4) · identidade
-  correta aceita · — · #301 · EXP-CAPTURE `binding_right_bytes_wrong_subject_identity`,
-  `binding_right_commit_wrong_algorithm_label`; EXP-SNAP `Q4_*` (root_tree/commit trocados após a
-  aquisição → `sealed_identity_mismatch`; `Subject` congelado), `snapshot_identity_distinguishes_*`
-  (mesmo store → mesmo recibo; store alterado → recibo diferente com S_G igual).
+  `dependency_identity` como fatos distintos; a **única** identidade de entrada é `expected_subject
+  {object_format, commit_oid, component_policy}`, e o algoritmo aceito é o dela, não o rótulo do
+  container nem a config viva. A raiz é **derivada** dos bytes autenticados de `C`; não há autoridade
+  independente de root_tree. A revalidação pós-selo **re-deriva** S_G do mapa de objetos endereçado
+  por conteúdo e compara com o conteúdo selado (substitui o registro de aquisição em memória de B,
+  cuja falsificação coerente passava: B-4). O recibo do snapshot serve só para rastreabilidade
+  capability → snapshot → S_G · captura/handoff · cabeçalho selado + digest · produtor → leitor →
+  bootstrap · bytes certos e commit errado; commit certo com rótulo de algoritmo incoerente (R2-4);
+  registro auxiliar apontando outra tree real; entrada forjada no mapa · identidade correta aceita ·
+  a integridade do processo leitor continua premissa (**P**) · #301 · EXP-CAPTURE
+  `binding_right_bytes_wrong_subject_identity`, `binding_right_commit_wrong_algorithm_label`;
+  EXP-ARCH-C C6 (raiz derivada; ablação `root_override` muda S_G; `object_map_binding_mismatch`).
 - **301S-AUTH** — todo objeto que contribui para S é autenticado no consumo · commit/tree/blob,
   sha1 e sha256 · hash-on-read sobre o buffer usado · produtor · troca de objeto commit, tree ou
   blob após a aquisição · bytes legítimos aceitos; restaurar volta a aceitar · pack/alternates só
@@ -407,32 +562,36 @@ limite · owner · evidência.
   launcher → bootstrap · arquivo regular idêntico, memfd atacante, sem `F_SEAL_WRITE`, sem identidade
   esperada, fd não herdado · handoff correto · número de FD em receipt não é prova · #301 ·
   EXP-CAPTURE `binding_*`.
-- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão, **no produtor e no
-  transporte local**, com **duas classes de orçamento que não se misturam**: física do snapshot
-  (bytes, entradas, profundidade de alternates; proporcional ao store) e da closure do subject (nós,
-  payload, metadados, paths) · por ocorrência, para commit, tree **e** blob; **prazo por objeto** no
-  leitor (ablação sem prazo: a captura trava num objeto malformado) · (i) o filho `git` roda num envelope
-  de memória do kernel (`RLIMIT_AS`, aplicado antes do `exec`); (ii) o cabeçalho é lido com limite e
-  parseado estritamente; (iii) todo corpo é cobrado a partir desse cabeçalho antes de ser lido
-  (commit: teto próprio; tree: limite pré-leitura do C3 com o orçamento restante e orçamento de
-  metadados; blob: orçamento de payload); (iv) toda recusa mata e colhe o filho · produtor +
-  kernel · filho sem contenção com pai lento vai a 68 MiB, contido fica em 11 MiB (envelope de teste
-  64 MiB); 9 cabeçalhos hostis (negativo, `+`, não decimal, overflow, sem fim de linha, tipo
-  desconhecido, oid errado, acima do orçamento, corpo truncado); subárvore compartilhada 2.000×;
-  blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB; profundidade 110; contagem cumulativa de nós ·
-  corpus real aceito com o filho em 14,7 MiB dentro do envelope de 128 MiB · valores de envelope e
-  orçamentos (§8) ainda não adjudicados; `RLIMIT_AS` segue a semântica já usada por
-  `trusted_check_supervisor_v2`; o orçamento cumulativo de nós é imposto pelo cap por árvore do C3
-  alimentado com o **restante** · #301 · EXP-RES `git_child_contained_*`, `strict_transport_*`,
-  EXP-FUNC `real_corpus_accepted_with_git_child_inside_envelope`.
-- **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial; filho sem resposta não
-  vira sucesso; nada do transporte sobrevive à captura · produtor/launcher · FD/processos contados
-  antes e depois; o leitor roda num **grupo de processos próprio**, morto inteiro na recusa (ablação
-  "fechar e esperar": 8,0 s contra menos de 4 s com o kill); **censo de órfãos** (processos e
-  sockets em escuta) no fim de EXP-SNAP, no namespace de PID isolado do container · — · falha de escrita
-  (EFBIG), de selo (injetada), de hash no meio da captura, falha do launcher antes do spawn, filho
-  travado, filho com rc 0 sem resposta · FDs restaurados, git reapado, ambos os lados do socketpair
-  fechados · #354 não é ativado (§8) · #301 · EXP-RES.
+- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão, com **dois domínios de
+  orçamento que não se misturam nem se inferem um do outro**: `snapshot_budget` (físico: bytes,
+  entradas, profundidade de alternates; cobrado pelo `fstat` antes da leitura, no produtor, que
+  nunca infla) e `closure_budget` (subject: nós, payload, metadados, paths, componente; cobrado pelo
+  cabeçalho estrito do transporte, no leitor) · por ocorrência, para commit, tree **e** blob; **prazo
+  por objeto** no leitor (ablação sem prazo: a captura trava num objeto malformado) · (i) o filho
+  `git` roda num envelope de memória do kernel por processo (`RLIMIT_AS`, aplicado antes do `exec`);
+  (ii) o cabeçalho é lido com limite e parseado estritamente; (iii) todo corpo é cobrado a partir
+  desse cabeçalho antes de ser lido (commit: teto próprio; tree: limite pré-leitura do C3 com o
+  orçamento restante e orçamento de metadados; blob: orçamento de payload); (iv) toda recusa mata e
+  colhe a unidade · produtor + leitor + kernel · filho sem contenção com pai lento vai a 68 MiB,
+  contido fica em 11 MiB (envelope de teste 64 MiB); 9 cabeçalhos hostis; subárvore compartilhada
+  2.000×; blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB; profundidade 110; contagem cumulativa de
+  nós; loose-bomba fora da closure (S_G aceito, produtor sem inflate) e dentro da closure
+  (`budget_payload_bytes`, unidade Git ≤ 14,4 MiB) · corpus real aceito com a unidade Git ≤ 14,5 MiB
+  dentro do envelope de 128 MiB · valores de envelope e orçamentos (§8) ainda não adjudicados;
+  memória **agregada** da unidade e prazo total **não** reivindicados (#320); `RLIMIT_AS` segue a
+  semântica já usada por `trusted_check_supervisor_v2` · #301 · EXP-RES `git_child_contained_*`,
+  `strict_transport_*`; EXP-ARCH-C C5; EXP-FUNC.
+- **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial nem snapshot publicado;
+  filho sem resposta não vira sucesso; nada do transporte sobrevive à captura · produtor/leitor/
+  launcher · FD/processos contados antes e depois; o leitor é *child subreaper* e o teardown da
+  unidade mata e colhe **todos** os descendentes; staging só vira snapshot no commit point · — ·
+  ferramenta falsa → filho → neto com `setsid` → `sleep` infinito; SIGKILL do produtor no meio do
+  staging; falha de escrita (EFBIG), de selo (injetada), de hash no meio da captura, falha do
+  launcher antes do spawn, filho travado, filho com rc 0 sem resposta · unidade: `transport_deadline`
+  e 0 sobreviventes (C7), **ablação** "só grupo de processos": o neto `setsid` sobrevive (limpo depois
+  por pid + starttime + nonce); FDs restaurados; censo final sem processos nem sockets em escuta ·
+  lixo de staging após crash exige GC futuro; #354 não é ativado (§8) · #301 · EXP-RES, EXP-ARCH-C
+  C7/C10/`LIFECYCLE_*`.
 
 ### 7.2 — E (viabilidade; E é futura)
 
@@ -496,27 +655,29 @@ protótipo `s0_deps.py` fica **congelado** no estado de `1e2453e`, com esses def
 
 ## 8. Recursos e lifecycle
 
-Medidos no corpus real (`C = 9abcde64`) em CPython 3.11.16 / tmpfs (EXP-FUNC); números valem
+Medidos no corpus real (`C = 9abcde64`) em CPython 3.11.16 / git 2.39.5 / tmpfs, captura pela
+arquitetura C (produtor uid 0 do container, leitor uid 2000; EXP-FUNC e EXP-ARCH-C); números valem
 **para este ambiente/corpus**, não são tetos universais (K06 de #324):
 
 | Vetor | S_G | S_D | E (filho) |
 |---|---|---|---|
 | Entradas lógicas | 1.001 nós (206 tree, 776 regular, 19 exec, 0 symlink, 0 vazios) | 186 nós = 164 membros + diretórios | 35 módulos de S, 66 de S_D, 2 nativos |
-| Bytes únicos vs por ocorrência | 8.642.394 / 8.660.242 (blobs); 52.807 B de corpos commit/tree | 9.700.542 (payload) | — |
+| Bytes únicos vs por ocorrência | 8.642.394 (blobs únicos); 51.346 B de corpos commit/tree | 9.700.542 (payload) | — |
 | Bytes de paths (soma dos comprimentos) | 54.726 B | — | — |
 | Container (RAM-backed) | 8.769.133 B | 9.718.908 B | 2 memfds nativos no filho |
-| Snapshot físico (arquitetura B) | 3.646.095 B em 2 entradas (1 pack + idx), 1 diretório de objetos, 0,028 s, 0 processos Git | — | — |
-| Heap de pico do produtor | 43,0 MiB (build → selo → revalidação pós-selo) | 45,6 MiB | maxrss 88.040 KiB (normal: 88.040) |
-| Memória do transporte `git` local | pico 21,3 MiB, envelope `RLIMIT_AS` 128 MiB | — | — |
+| Snapshot físico (arquitetura C, domínio `snapshot_budget`) | 3.646.095 B em 2 entradas (1 pack + idx), 0 alternates; produtor uid 0: heap 3,81 MiB, VmHWM 23,1 MiB, rchar 5.624.669 / wchar 3.646.583, 0,061 s, 0 processos Git | — | — |
+| Closure (domínio `closure_budget`, leitor uid 2000) | 933 objetos únicos lidos 1× cada; heap do leitor 36,68 MiB, VmHWM 58,0 MiB, 0,294 s | — | — |
+| Heap de pico build → selo → revalidação | 34,7 MiB (EXP-FUNC) | 54,2 MiB | maxrss 88.624 KiB (normal: 88.624) |
+| Memória da unidade `git` local | ≤ 14,5 MiB (limite superior medido), envelope `RLIMIT_AS` 128 MiB **por processo**; agregado **não testado** (sem cgroup) | — | — |
 | FDs | 1 por container | 1 | 3 herdados (por construção) + 1 socket + 2 nativos |
-| Subprocessos | 2 `git` sobre o snapshot (object format + cat-file); 0 no snapshot | 0 | 0 (audit hook) |
-| I/O | 1.003 objetos, 8.713.049 B lidos do git | 6 wheels lidos 1× | 0 aberturas em checkout/venv |
-| Tempo | snapshot 0,028 s; build 0,148 s; serialize+selo+revalidação 0,066 s | 0,091 s | 0,39 s (normal 0,24 s) |
+| Subprocessos | 1 unidade `git cat-file` sobre o snapshot (formato conferido na config do produtor, sem `rev-parse`); 0 no produtor | 0 | 0 (audit hook) |
+| I/O | 933 objetos únicos do `git` (payload 8.642.394 B + metadados 51.346 B) | 6 wheels lidos 1× | 0 aberturas em checkout/venv |
+| Tempo | snapshot 0,061 s (processo separado); build 0,183 s; serialize+selo+revalidação 0,095 s | 0,096 s | 0,38 s (normal 0,26 s) |
 
-**Duas classes de orçamento** (não se misturam): física do snapshot — `SnapshotBudget` proposto de
-256 MiB, 200.000 entradas, profundidade de alternates 8, proporcional ao **store** (EXP-SNAP Q7:
-store de 50 MB com subject de 1 blob pequeno → recusa `snapshot_refused` a 8 MiB) — e da closure do
-subject (abaixo). **Prazo** proposto por objeto no leitor: 30 s (#320 é owner da família de timeouts
+**Dois domínios de orçamento** (não se misturam nem se inferem um do outro): `snapshot_budget`
+proposto de 256 MiB, 200.000 entradas, profundidade de alternates 8, proporcional ao **store** e
+cobrado pelo `fstat` antes da leitura (a loose-bomba de 256 MiB inflados é cobrada pelos 261.293 B
+físicos e **nunca** inflada pelo produtor: EXP-ARCH-C C5) — e `closure_budget` do subject (abaixo). **Prazo** proposto por objeto no leitor: 30 s (#320 é owner da família de timeouts
 do Git local). Envelope **proposto** do transporte local: `RLIMIT_AS` = 128 MiB (a base do `git cat-file` é ~8 MB de
 VM; o envelope precisa admitir o maior corpo que a política admite). Limites **propostos** (para
 adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,
@@ -537,7 +698,10 @@ as cópias herdadas até o filho terminar; o filho possui os memfds nativos que 
 **#354.** Os sítios com a forma `open(next, dir_fd=cur)`/`close(cur)` estão em
 `_open_directory_relative_v2` (G1/Q) e, em C3, em `_fd_rmtree` e na materialização
 (`git_commit_subject_v2.py` ~300, ~1516, ~1828). O percurso de S usa `_parse_tree_data` (puro) e
-`git cat-file`; bootstrap e launcher não abrem diretórios. **S não ativa #354.** Se uma
+`git cat-file`; bootstrap e launcher não abrem diretórios. O produtor da arquitetura C abre
+diretórios do storage com as primitivas da G1C (`_open_dir_no_follow_v2` fecha cada fanout no
+`finally`; alternates passam por `_open_dir_by_segments_no_follow_v2`, cuja contabilidade de fd já
+foi corrigida na G1C) — não pelo sítio `_open_directory_relative_v2`. **S não ativa #354.** Se uma
 implementação futura reutilizar materialização ou a verificação Q no percurso de E, #354 passa a ser
 obrigação do consumidor.
 
@@ -604,11 +768,14 @@ Perguntas **abertas que bloqueiam E** (não S1):
    recebido e da identidade `(algoritmo, C)`. Paridade funcional e 0 aberturas em checkout/venv são
    viabilidade de E, não parte da claim. Disposição conservadora: qualquer falha recusa e
    **nenhum** S parcial é emitido; resultado ausente não é sucesso.
-2. **Autoridade.** Fronteira de aquisição → arquitetura B (decisão do mantenedor): a aquisição
-   física por descritor é a da G1C (`trusted_object_authority_v2`), **reusada como arquitetura**; a
-   implementação precisa de uma variante só-snapshot (esqueleto com formato de objeto, sem
-   `verify-pack`/`rev-parse` no caminho de S_G, sem refs). Autorização do host para as raízes →
-   #331; timeouts do Git local → #320. Formato de objeto Git (hash por tipo/tamanho/conteúdo) → S **deriva** dele.
+2. **Autoridade.** Fronteira de aquisição → arquitetura C (candidata; A e B rejeitadas): a
+   imutabilidade do snapshot é autoridade do **kernel** sobre um produtor com separação de
+   privilégio (DAC no experimento); a abertura do storage por descritor dentro da capability reusa
+   primitivas da G1C (`trusted_object_authority_v2`) **sem** o inflate de loose, `verify-pack` ou
+   `rev-parse` — uma variante só-física exige decisão do owner da G1C. Autorização do host para a
+   capability → #331/C2_B; proveniência do produtor em produção → U3; timeouts/recursos do Git local
+   → #320. Formato de objeto Git (hash por tipo/tamanho/conteúdo) → S **deriva** dele; o formato
+   aceito vem do `expected_subject`.
    Regras de árvore → C3: `_parse_tree_data` (usada diretamente pelo protótipo) e o builder
    hierárquico `_build_canonical_trie_hierarchical` (duplicado, round-trip, ciclo, profundidade 100,
    componente, limite pré-leitura). O protótipo **espelha** estas últimas — são cópias, portanto hoje
@@ -643,18 +810,27 @@ Perguntas **abertas que bloqueiam E** (não S1):
    `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no domínio/corpus declarados;
    `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB (inclusive a revalidação pós-selo: a ablação
    compromete B) e para a contenção de 301S-RES (S_G) (o transporte sem envelope, com pai lento, é o
-   mutante: 68 MiB contra 11 MiB); os cabeçalhos estritos e 301S-ID são `MECHANICALLY_VERIFIED` no
-   corpus declarado. S_D: `DEFINED`; 301S-RES
+   mutante: 68 MiB contra 11 MiB). Arquitetura C: `MUTATION_DISCRIMINATED` para a raiz derivada de
+   301S-ID (a ablação que confia no registro auxiliar muda S_G: C6), para o teardown de 301S-LIFE (a
+   ablação "só grupo de processos" deixa o neto `setsid` vivo: C7) e para a precondição de 301S-PRIV
+   (o contra-controle de posse do runner é recusado: C11); a negação do kernel em 301S-PRIV/SNAP
+   (C1/C3/C4/C10) é `EMPIRICALLY_SUPPORTED` só neste container; os cabeçalhos estritos são
+   `MECHANICALLY_VERIFIED` no corpus declarado. S_D: `DEFINED`; 301S-RES
    (S_D) é `REFUTED` no protótipo `1e2453e` (R2-1). Os instrumentos de medição também são
    discriminados: a auditoria de aberturas e o probe do piso têm controles positivos que os métodos
    da rodada 2 teriam falhado (R2-5, R2-6). `PROVED` não.
 6. **Premissas entre camadas.** "git serve os bytes do oid" → **falso** (EXP-N1 HOR), por isso
-   hash-on-read. "O cabeçalho do `git` é bem formado" → falso sob pipe reabrível (R3-2), por isso parse
+   hash-on-read. "Um snapshot privado e sem remoto não muda o comportamento do Git" → **falso** se o
+   runner pode escrevê-lo (B-1/B-2), por isso a separação de privilégio e a recusa do leitor diante de
+   um snapshot mutável por ele (C1/C11). "Matar o grupo de processos mata a unidade" → **falso** para
+   um descendente com `setsid` (C7 ablação), por isso o subreaper. "O cabeçalho do `git` é bem formado" → falso sob pipe reabrível (R3-2), por isso parse
    estrito. "Recusar pelo cabeçalho limita a expansão" → falso: o filho expande sozinho; "matar
    rápido" é corrida, por isso envelope do kernel (R3-1). "`-I -S` isola o startup" → falso para `pyvenv.cfg`/`LD_PRELOAD` (EXP-BOOT), por
    isso interpretador root-owned + `env={}`. "O lock autentica a venv" → falso (EXP-FUNC). "Yama
    impede ptrace" → verdadeiro neste host (`ptrace_scope=1`), premissa em CT104 (U2).
-7. **Snapshot/ownership.** Uma decisão, um buffer: cada objeto é hasheado e incorporado da mesma
+7. **Snapshot/ownership.** O produtor é dono da imutabilidade (publica ou nada); o leitor, como o
+   runner, é dono da derivação de S_G; o recibo do snapshot é rastreabilidade, não prova. Uma
+   decisão, um buffer: cada objeto é hasheado e incorporado da mesma
    leitura; o consumidor valida e parseia o mesmo `pread`. Nenhum outro consumidor relê M em E.
    Segunda cópia de regra: checagem de nome duplicado (acima). Dados do target: **duas leituras por
    path** (U4) — fora de S, registrado.
@@ -668,27 +844,33 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
 **S1 — captura autenticada e selada do subject Git (WHAT apenas).**
 
 - Entradas: uma **capability de storage admitida** (tipo C2_A; quem autoriza as raízes é #331),
-  `repo_root` (locator dentro dela), `C` esperado (40/64 hex), orçamento **físico** do snapshot,
+  `repo_root` (locator dentro dela), o `expected_subject {object_format, commit_oid,
+  component_policy}`, um **produtor com separação de privilégio** já implantado (U3/#331) e o
+  diretório de publicação dele, `snapshot_budget` físico,
   limites de admissão **explícitos** da closure
   (inclusive o limite de componente; quando composto com C3, o mesmo valor que o C3 admitiu, vindo da
   capability/receipt do C3 — se ainda não exposto, uma pequena interface derivada, nunca um novo
   `fpathconf`), envelope e prazo do Git local.
-- Saída: capability com memfd selado de `S_G` + identidade de aquisição imutável + `container_digest`
-  + identidade do snapshot (rastreabilidade); função pura de parse/validação do consumidor sobre um
+- Saída: capability com memfd selado de `S_G` + `(algoritmo, C)` + `container_digest` + recibo do
+  snapshot (rastreabilidade); função pura de parse/validação do consumidor sobre um
   descritor recebido.
 - Consumidor previsto: o futuro launcher de E; nenhum caller de produção nesta slice.
-- Write-set esperado: um módulo novo em `app/agent_review/` com (1) o **snapshot privado**: variante
-  só-snapshot da aquisição física da G1C, com formato de objeto e sem `verify-pack` no caminho de
-  S_G; exige decisão do owner da G1C sobre expor essa variante; (2) a **capability de aquisição**
-  sobre o snapshot (Git local num grupo de processos próprio sob `RLIMIT_AS`, prazo por objeto,
-  cabeçalho estrito, abort = kill do grupo + reap),
+- Write-set esperado: (1) o **produtor** físico com separação de privilégio (variante só-física da
+  aquisição por descritor da G1C: sem inflate, sem `verify-pack`, sem metadata da fonte; staging →
+  finalize → `rename`); **onde** ele roda e sob qual identidade é decisão de U3/#331, não de S1;
+  (2) um módulo novo em `app/agent_review/` com o **leitor** que roda como o runner: precondição de
+  imutabilidade, Git local só sobre o snapshot publicado (sessão própria sob `RLIMIT_AS`, prazo por
+  objeto, cabeçalho estrito, subreaper + teardown da unidade), mapa endereçado por conteúdo e raiz
+  derivada de `C`,
   construção do container, selo e **revalidação pós-selo**, validação do consumidor; no C3, uma
   interface derivada que interpreta bytes de tree **fornecidos** (sem processo `git` nem spool
   próprios), consumida em vez de cópias; **sem** `BoundedBlobCarrierV2` no caminho; testes em
   `tests/agent_review/` portando EXP-N1/STRUCT/CAPTURE/RES e o corpus CM-333 aplicável.
-- Aceite: todos os casos das famílias N1/STRUCT/CAPTURE/RES/**SNAP** com os mesmos contramodelos e mutantes
-  (clone parcial com promisor sem busca, `OfflineClosureComplete`, forja de pack/`.idx` sem falso
-  positivo, prazo com ablação, identidade de aquisição imutável, sha256 pelo snapshot, censo de órfãos),
+- Aceite: todos os casos das famílias N1/STRUCT/CAPTURE/RES/**ARCH-C** com os mesmos contramodelos e
+  mutantes (C1–C11: mutações negadas pelo kernel, metadata da fonte ausente, injeções pós-publicação,
+  `OfflineClosureComplete`, loose-bomba sem inflate, raiz derivada com ablação, neto `setsid` com
+  ablação, crash antes do commit point, leitor como o runner com contra-controle; forja de
+  pack/`.idx` sem falso positivo; prazo com ablação; sha256 pelo snapshot; censo de órfãos),
   inclusive contenção medida **no filho** com pai lento, os 9 cabeçalhos hostis, "autenticar A e
   entregar B" e o domínio do limite de componente; paridade com C3 sob o mesmo limite, no corpus
   sintético e no corpus real; orçamentos e envelope adjudicados aplicados antes da expansão; FDs e
@@ -701,8 +883,10 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
   checkout gravável pelo UID do runner, nenhum consumidor pode tratar a saída de S1 como proteção de
   #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301 protegido".
 - **Decisões de adjudicação necessárias antes do grant de S1** (não são fatos desconhecidos):
-  (o) o owner da G1C aceita expor uma variante só-snapshot; (i) valores dos orçamentos físico e da
-  closure, do prazo e do envelope do Git local (§8); (ii) aceite do owner de C3 para expor
+  (o) o owner da G1C aceita expor uma variante só-física (sem inflate); (p) U3/#331 decidem o
+  serviço, a identidade e o provisionamento do produtor, e quem limpa o lixo de staging; (i) valores
+  de `snapshot_budget` e `closure_budget`, do prazo por objeto, do prazo total e do envelope do Git
+  local, e se a memória agregada da unidade exige cgroup (#320) (§8); (ii) aceite do owner de C3 para expor
   a interpretação de tree sobre bytes fornecidos (interface derivada; não muda o comportamento dos
   consumidores atuais do C3).
 
@@ -710,5 +894,5 @@ Cortes seguintes derivados desta arquitetura (não é sequência universal): **s
 único com cobrança (spike), identidade/tags/ELF e completude do loader, com R2-1/2/3/7/8 e o corpus
 de `exp_deps.py` como contramodelos obrigatórios (depende de U2); launcher/E (depende de U1, U3; U4 decide se dados entram); receipt de execução
 (depois de E). Nenhum deles fecha #301 sozinho; G5 (#350) e a composição operacional ficam com seus
-owners. Outros owners inalterados: #319 (anchor), #331 (storage do host), #354 (transferência de
-descritor), #298, #314, #350.
+owners. Outros owners inalterados: #319 (anchor), #331 (storage do host), #320 (disponibilidade/recurso do Git
+local), #354 (transferência de descritor), #298, #314, #350.

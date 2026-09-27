@@ -16,7 +16,7 @@
     "within_envelope": true
    },
    "pass": true,
-   "git_children_maxrss_MiB": 21.3,
+   "git_children_maxrss_MiB": 15.8,
    "envelope_MiB": 128
   },
   "positive_E_result_equals_normal_path": {
@@ -175,27 +175,32 @@
    },
    "empty_trees": 0,
    "container_bytes": 8769133,
-   "payload_bytes_per_occurrence": 8660242,
+   "payload_bytes_per_occurrence": null,
    "payload_bytes_unique_blobs": 8642394,
    "path_bytes": 54726,
-   "git_objects_read": 1003,
-   "git_bytes_read": 8713049,
-   "git_subprocesses_counted": 2,
-   "metadata_bytes_read": 52807,
-   "snapshot_s": 0.028,
+   "git_objects_read": 933,
+   "git_bytes_read": null,
+   "git_subprocesses_counted": 1,
+   "metadata_bytes_read": 51346,
+   "snapshot_s": 0.0,
    "snapshot_identity": {
+    "alternate_sources_count": 0,
     "object_format": "sha1",
     "physical_bytes": 3646095,
     "physical_entries": 2,
-    "object_dirs": 1,
-    "receipt_sha256": "44590f85cc84b933e51a2631db7b72d8af0818a4874296efe407f715bb06e9ee",
-    "storage_roots": [
+    "published_snapshot_identity": {
+     "physical_content_sha256": "a7e73d18a2d3cb79320a41157cb41334986393167ef64b65b388a81d8fd59a6f",
+     "snapshot_id": "a7e73d18a2d3cb79320a4115-6819abf9"
+    },
+    "schema_version": "ar301-s0-c.snapshot-receipt.v1",
+    "skipped_non_object_files": 0,
+    "storage_capability_binding": [
      "/work/toolrepo"
     ]
    },
-   "build_s": 0.148,
-   "serialize_seal_verify_s": 0.066,
-   "producer_heap_peak_MiB_build_to_seal": 43.0,
+   "build_s": 0.183,
+   "serialize_seal_verify_s": 0.095,
+   "producer_heap_peak_MiB_build_to_seal": 34.7,
    "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
   },
   "D": {
@@ -236,21 +241,21 @@
    "python_tag": "cp311",
    "payload_bytes": 9700542,
    "container_bytes": 9718908,
-   "build_seal_s": 0.095,
-   "producer_heap_peak_MiB": 45.6,
+   "build_seal_s": 0.096,
+   "producer_heap_peak_MiB": 54.2,
    "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
    "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
   },
   "E_child": {
-   "maxrss_kib": 88040,
+   "maxrss_kib": 88624,
    "inherited_sealed_fds_by_construction": 3,
    "native_memfds_created_in_child": 2,
    "result_channel": "socketpair",
-   "elapsed_s": 0.393
+   "elapsed_s": 0.377
   },
   "normal": {
-   "maxrss_kib": 88040,
-   "elapsed_s": 0.24210278398822993
+   "maxrss_kib": 88624,
+   "elapsed_s": 0.255265223007882
   }
  },
  "census": {
@@ -420,6 +425,7 @@
    "pwd"
   ]
  },
+ "capture_architecture": "C (runner-side reader over producer-published immutable snapshot)",
  "runs": {
   "normal_untampered": {
    "rc": 0,
@@ -427,7 +433,7 @@
   },
   "E_untampered": {
    "rc": 0,
-   "elapsed_s": 0.393,
+   "elapsed_s": 0.377,
    "stderr_tail": ""
   },
   "normal_source_tampered": {
@@ -436,7 +442,7 @@
   },
   "E_source_tampered": {
    "rc": 0,
-   "elapsed_s": 0.373,
+   "elapsed_s": 0.411,
    "stderr_tail": ""
   },
   "normal_warm_pycache": {
@@ -449,7 +455,7 @@
   },
   "E_pyc_planted": {
    "rc": 0,
-   "elapsed_s": 0.379,
+   "elapsed_s": 0.373,
    "stderr_tail": ""
   },
   "normal_venv_tampered": {
@@ -458,7 +464,7 @@
   },
   "E_venv_tampered": {
    "rc": 0,
-   "elapsed_s": 0.371,
+   "elapsed_s": 0.372,
    "stderr_tail": ""
   },
   "normal_plugin_planted": {
@@ -467,7 +473,7 @@
   },
   "E_plugin_planted": {
    "rc": 0,
-   "elapsed_s": 0.382,
+   "elapsed_s": 0.375,
    "stderr_tail": ""
   }
  },

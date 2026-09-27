@@ -5,6 +5,12 @@ importa estes arquivos, e o pytest não os descobre (`pytest.ini: testpaths = te
 se chama `test_*`). Servem de evidência para [`../CONTRACT.md`](../CONTRACT.md); o índice por
 afirmação está em [`../EVIDENCE.md`](../EVIDENCE.md).
 
+```yaml
+current_candidate: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT
+rejected_predecessors: [A_LIVE_GIT_TRANSPORT, B_MUTABLE_PRIVATE_SNAPSHOT]
+production_implementation: none
+```
+
 ## Reproduzir
 
 Requer Docker e rede (imagem + wheels do lock). Não instala nada no host; só escreve em `<results>`.
@@ -24,7 +30,12 @@ O runner:
    - `/work/toolrepo`, `/work/venv` — checkout e venv **do usuário 2000**, criados pelo script do
      próprio repositório (`install-agent-review-toolrepo.sh --toolrepo-sha`);
 3. executa cada `exp_*.py` como o usuário 2000 com `python3.11 -I -S -B`, ambiente vazio; o produtor
-   importa a regra de árvore do C3 só de `/opt/toolrepo-tcb`.
+   importa a regra de árvore do C3 só de `/opt/toolrepo-tcb`;
+4. arquitetura C: como root (uid 0 do container = produtor com privilégio separado), cria
+   `/srv/<nonce>-func/{committed (0755), staging (0700)}`, publica o snapshot do toolrepo com
+   `s0_snapshot_c.py` (`producer_functional.json`) e passa o caminho publicado a
+   `exp_functional.py`, cujo leitor roda como o usuário 2000; depois roda `exp_arch_c.py` como root,
+   que chama o produtor como uid 0 e o leitor **sempre** como uid 2000 (`setpriv`).
 
 Cada script imprime JSON com `expected`, `observed` e `pass` por caso; `pass` é calculado, não
 declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_C3`) são observações.
@@ -34,7 +45,9 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | Arquivo | Papel |
 |---|---|
 | `s0_bootstrap.py` | dono único do formato do container, do compromisso de selo e da validação do consumidor; também é o bootstrap do filho (`-c`) |
-| `s0_snapshot.py` | **arquitetura B**: snapshot físico privado sem remoto (aquisição por descritor da G1C, esqueleto com formato de objeto, sem `verify-pack`), identidade do snapshot |
+| `s0_snapshot_c.py` | **arquitetura C (candidata)**: produtor físico com privilégio separado — cópia por descritor sem Git/inflate/metadata da fonte, alternates autorizados achatados, orçamento físico, staging → finalize → `rename` (commit point), recibo |
+| `s0_reader_c.py` | **arquitetura C (candidata)**: leitor que roda como o runner — recusa snapshot mutável por ele, Git local contido (prazo, `RLIMIT_AS`, subreaper + teardown), raiz derivada de `C`, mapa endereçado por conteúdo, selo + re-derivação |
+| `s0_snapshot.py` | **arquitetura B (REJEITADA; histórico)**: snapshot físico privado sem remoto (aquisição por descritor da G1C, esqueleto com formato de objeto, sem `verify-pack`), identidade do snapshot |
 | `s0_capture.py` | leitor de objetos com hash-on-read, construção de `S_G`, orçamentos por ocorrência |
 | `s0_deps.py` | `S_D`: lock (dentro de `S_G`) → wheel → membros verificados pelo RECORD |
 | `s0_launch.py` | launcher: interpretador absoluto, `env={}`, `-I -S`, `pass_fds`, socketpair |
@@ -45,15 +58,18 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | `exp_capture_stability.py` | selos, janela pré-selo, M mutado, substituição de binding |
 | `exp_process_channel.py` | integridade de processo e canal de resultado |
 | `exp_bootstrap_env.py` | configuração anterior ao 1º import; `-I` vs `-S`; piso root-owned |
-| `exp_functional.py` | engine real executada só de `S_G`/`S_D`; paridade; contramodelos; censo |
+| `exp_functional.py` | engine real executada só de `S_G`/`S_D`; paridade; contramodelos; censo; com o 9º argumento, a captura de `S_G` passa pelo leitor de C sobre o snapshot publicado |
 | `exp_resources.py` | expansão, orçamentos, falhas e ownership |
-| `exp_snapshot.py` | arquitetura B: Spike B portado + prazo, forja de pack/`.idx`, sha256, identidade imutável, orçamentos, censo de órfãos |
+| `exp_arch_c.py` | **arquitetura C**: C1–C11 (mutação negada pelo kernel, metadata da fonte, injeções, objeto ausente, bomba, raiz derivada, neto `setsid`, clone parcial, alternates, crash antes do commit point, leitor como o runner), positivos, vetor de recursos em dois domínios, censo |
+| `exp_snapshot.py` | arquitetura B (**REJEITADA**; reexecutado como histórico): Spike B portado + prazo, forja de pack/`.idx`, sha256, identidade imutável, orçamentos, censo de órfãos |
 | `exp_deps.py` | recusas de S_D em wheels sintéticos (identidade, tags, RECORD, zip bomb, colisões, ELF) |
 | `results/py311/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |
 | `sd_future/` | **preservado para a futura slice S_D, não é evidência de S0**: spike do leitor único com cobrança e reprodução de R2-1/R2-8 sobre `s0_deps.py` congelado (execução no host 3.12; `python3 -I -S -B <arquivo> <experiments> <scratch>` para `repro_r2.py` — `<scratch>` precisa existir —, `<scratch>` para o spike) |
 
 ## Limites
 
-Ambiente único (WSL2 6.18, container Debian 12, CPython 3.11.16, git 2.39.5, Yama=1). Nenhum
+Ambiente único (WSL2 6.18, container Debian 12, CPython 3.11.16, git 2.39.5, Yama=1). A separação
+de privilégio é o uid 0 de um container efêmero (`SpikeContainerRoot != ProductionHostAuthority`):
+nada aqui qualifica o produtor de produção (U3) nem a política do host (#331). Nenhum
 resultado aqui qualifica CT104, runners hospedados, outro kernel ou outra build do interpretador.
 Um timeout protege o harness; não prova limite de complexidade.

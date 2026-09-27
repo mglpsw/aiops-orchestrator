@@ -1,0 +1,377 @@
+{
+ "cases": {
+  "C2_source_metadata_does_not_cross": {
+   "expected": {
+    "remote": false,
+    "promisor": false,
+    "hooks": false,
+    "source_config": false,
+    "refs": [],
+    "alternates_pointer": false
+   },
+   "observed": {
+    "remote": false,
+    "promisor": false,
+    "hooks": false,
+    "source_config": false,
+    "refs": [],
+    "alternates_pointer": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "top_level": [
+    "HEAD",
+    "S0_SNAPSHOT_RECEIPT.json",
+    "config",
+    "objects",
+    "refs"
+   ],
+   "receipt": {
+    "schema_version": "ar301-s0-c.snapshot-receipt.v1",
+    "object_format": "sha1",
+    "physical_bytes": 1908,
+    "physical_entries": 4,
+    "alternate_sources_count": 1,
+    "storage_capability_binding": [
+     "/work/ar301c-e753c8d1/altpool",
+     "/work/ar301c-e753c8d1/src"
+    ],
+    "published_snapshot_identity": {
+     "snapshot_id": "45d3c05392193f664a1dcce5-28267ba2",
+     "physical_content_sha256": "45d3c05392193f664a1dcce58469181b981781df5863398cb4186961b3c3eb40"
+    },
+    "skipped_non_object_files": 1
+   }
+  },
+  "C1_runner_mutations_denied_by_kernel": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "syscall_results": {
+    "write_config": "EACCES",
+    "create_alternates": "EACCES",
+    "replace_loose_object_by_write": "EACCES",
+    "replace_loose_object_by_rename": "EACCES",
+    "replace_pack": "EACCES",
+    "unlink_file": "EACCES",
+    "rename_object": "EACCES",
+    "mkdir_inside": "EACCES",
+    "chmod_snapshot": "EPERM",
+    "chmod_object": "EPERM",
+    "rename_snapshot_dir": "EACCES",
+    "create_sibling_in_committed": "EACCES",
+    "POSITIVE_read": "ok"
+   },
+   "snapshot_owner_mode": "0:0o555"
+  },
+  "C1_POSITIVE_runner_reads_snapshot": {
+   "expected": "ok",
+   "observed": "ok",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_unprivileged_reader_derives_S_G_structure": {
+   "expected": {
+    "status": "ok",
+    "uid": 2000,
+    "node_kinds": {
+     "alt.txt": "regular",
+     "empty": "tree",
+     "link": "symlink",
+     "main.py": "regular",
+     "nested": "tree",
+     "nested/inner": "tree",
+     "nested/inner/__init__.py": "regular",
+     "run.sh": "executable"
+    },
+    "symlink_targets": {
+     "link": "pkg/../main.py"
+    }
+   },
+   "observed": {
+    "status": "ok",
+    "uid": 2000,
+    "node_kinds": {
+     "alt.txt": "regular",
+     "empty": "tree",
+     "link": "symlink",
+     "main.py": "regular",
+     "nested": "tree",
+     "nested/inner": "tree",
+     "nested/inner/__init__.py": "regular",
+     "run.sh": "executable"
+    },
+    "symlink_targets": {
+     "link": "pkg/../main.py"
+    }
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "note": "explicit declared tree: empty explicit tree, executable bit, symlink target bytes, nested trees, authorized-alternate blob"
+  },
+  "C9_authorized_alternate_flattened_no_pointer": {
+   "expected": {
+    "accepted": true,
+    "pointer": false,
+    "alternate_sources": 1
+   },
+   "observed": {
+    "accepted": true,
+    "pointer": false,
+    "alternate_sources": 1
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_COUNTER_reader_refuses_runner_mutable_snapshot": {
+   "expected": "REFUSED:snapshot_mutable_by_reader",
+   "observed": "REFUSED:snapshot_mutable_by_reader",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_expected_format_mismatch_refused": {
+   "expected": "REFUSED:snapshot_format_mismatch",
+   "observed": "REFUSED:snapshot_format_mismatch",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C3_inject_alternates_after_publish_kernel_refused": {
+   "expected": "EACCES",
+   "observed": "EACCES",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C4_inject_promisor_config_after_publish_kernel_refused": {
+   "expected": "EACCES",
+   "observed": "EACCES",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C4_C8B_missing_required_object_no_network": {
+   "expected": {
+    "result": "REFUSED:object_missing",
+    "fetch_marker": false
+   },
+   "observed": {
+    "result": "REFUSED:object_missing",
+    "fetch_marker": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "precondition_object_absent_in_source": true
+  },
+  "C8A_partial_clone_complete_closure_accepted": {
+   "expected": {
+    "result": "ACCEPTED",
+    "fetch_marker": false
+   },
+   "observed": {
+    "result": "ACCEPTED",
+    "fetch_marker": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "precondition_closure_complete_in_source": true
+  },
+  "C9_unauthorized_alternate_typed_refusal": {
+   "expected": "REFUSED:alternate_outside_authorized_storage",
+   "observed": "REFUSED:alternate_outside_authorized_storage",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_producer_never_inflates": {
+   "expected": {
+    "status": "ok",
+    "producer_vmhwm_under_64MiB": true
+   },
+   "observed": {
+    "status": "ok",
+    "producer_vmhwm_under_64MiB": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "producer_vmhwm_MiB": 21.2,
+   "producer_heap_MiB": 2.62,
+   "physical_bytes": 261293,
+   "inflated_bytes": 268435456
+  },
+  "C5_unrelated_bomb_does_not_affect_runner_S_G": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_bomb_in_closure_runner_bounded_refusal": {
+   "expected": {
+    "refused": true,
+    "git_unit_under_128MiB_envelope": true
+   },
+   "observed": {
+    "refused": true,
+    "git_unit_under_128MiB_envelope": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "reason": "budget_payload_bytes",
+   "git_unit_rss_MiB_upper_bound": 14.4
+  },
+  "C6_root_derived_from_authenticated_commit_only": {
+   "expected": {
+    "root": "a3ab46d85a54c588a4873f04422378bf2de4c893",
+    "aux_record_no_effect": true
+   },
+   "observed": {
+    "root": "a3ab46d85a54c588a4873f04422378bf2de4c893",
+    "aux_record_no_effect": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C6_ABLATION_trusting_aux_root_changes_S_G": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "ablation_root": "6a638b87e6680a811e87291d46457067be33056d"
+  },
+  "C6_forged_object_map_entry_refused": {
+   "expected": "REFUSED:object_map_binding_mismatch",
+   "observed": "REFUSED:object_map_binding_mismatch",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C7_runner_unit_teardown_0_survivors": {
+   "expected": {
+    "reader": "REFUSED:transport_deadline",
+    "survivors": []
+   },
+   "observed": {
+    "reader": "REFUSED:transport_deadline",
+    "survivors": []
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "unit": {
+    "killed": 3,
+    "remaining": []
+   },
+   "reader_uid": 2000
+  },
+  "C7_ABLATION_process_group_only_leaves_setsid_survivor": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "survivors": [
+    [
+     300777,
+     "22657737"
+    ]
+   ]
+  },
+  "C10_sigkill_before_publish_no_committed_snapshot": {
+   "expected": {
+    "new_committed": [],
+    "staging_garbage": true
+   },
+   "observed": {
+    "new_committed": [],
+    "staging_garbage": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "runner_listing_staging": "DENIED 13",
+   "commit_point": "rename(staging/<id> -> committed/<id>) after modes + fsync"
+  },
+  "POSITIVE_sha256_runner_S_G": {
+   "expected": {
+    "snapshot_format": "sha256",
+    "result": "ACCEPTED"
+   },
+   "observed": {
+    "snapshot_format": "sha256",
+    "result": "ACCEPTED"
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_POSITIVE_real_toolrepo_runner_derived_S_G_equals_prior_record": {
+   "expected": {
+    "uid": 2000,
+    "s_g": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
+   },
+   "observed": {
+    "uid": 2000,
+    "s_g": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "note": "positive equivalence control on this exact subject; the producer only published the snapshot"
+  },
+  "LIFECYCLE_no_survivors_no_listeners": {
+   "expected": {
+    "processes": {},
+    "listeners": []
+   },
+   "observed": {
+    "processes": {},
+    "listeners": []
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  }
+ },
+ "observed": {
+  "privilege": {
+   "producer_uid": 0,
+   "runner_uid": 2000,
+   "note": "container uid 0 is the experiment's mechanism; the contract property is RunnerCanRead AND NOT RunnerCanMutate"
+  }
+ },
+ "not_tested": [
+  "CT104",
+  "production producer/service and its provenance (U3)",
+  "C2_B host policy provenance (#331)",
+  "#319 anchor provenance",
+  "cgroup aggregate memory of the git unit",
+  "total-capture deadline",
+  "production staging GC",
+  "R4-3 envelope vs mapped packs"
+ ],
+ "resource_vector": {
+  "physical_snapshot": {
+   "compressed_bytes": 3646095,
+   "entry_count": 2,
+   "alternate_depth": 0,
+   "producer_heap_MiB": 3.81,
+   "producer_rss_MiB_vmhwm": 23.1,
+   "io": {
+    "rchar": 5624669,
+    "wchar": 3646583
+   },
+   "time_s": 0.061,
+   "producer_uid": 0
+  },
+  "subject_closure": {
+   "object_count_unique": 933,
+   "object_reads": 933,
+   "nodes": 1001,
+   "unique_payload_bytes": 8642394,
+   "metadata_bytes": 51346,
+   "path_bytes": 54726,
+   "reader_heap_MiB": 36.68,
+   "reader_rss_MiB_vmhwm": 58.0,
+   "local_git_processes": 1,
+   "per_object_deadline_s": 30,
+   "time_s": 0.294,
+   "reader_uid": 2000
+  },
+  "local_git_unit": {
+   "rss_MiB_upper_bound": 14.5,
+   "envelope": "RLIMIT_AS 128 MiB per process",
+   "aggregate_memory": "NOT_TESTED (no cgroup)"
+  }
+ },
+ "all_pass": true
+}
