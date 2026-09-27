@@ -1,7 +1,9 @@
 """EXP-FUNC: the real engine percurso executed ONLY from S (engine) + D (dependencies).
 
-usage: python -I -S exp_functional.py <toolrepo_clone> <expected_commit> <wheels_dir> <venv_dir>
-                                      <target_fixture_dir> <scratch_dir> <base_interpreter>
+usage: python -I -S -B exp_functional.py <toolrepo_clone> <expected_commit> <wheels_dir> <venv_dir>
+                                      <target_fixture_dir> <scratch_dir> <base_interpreter> <producer_src>
+<toolrepo_clone> is the MUTABLE checkout (git objects read through hash-on-read; normal-path runs);
+<producer_src> is the root-owned copy the producer imports C3's tree rule from (declared TCB).
 Positive: E's result equals the normal (checkout + venv) run on untampered inputs.
 Countermodels: after capture, tamper the checkout source, plant a .pyc behind an intact source,
 tamper the venv, plant a pydantic plugin distribution -- the normal path executes each, E none.
@@ -20,11 +22,11 @@ import tracemalloc
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CLONE, COMMIT, WHEELS, VENV, TARGET_FIXTURE, W, BASE = (
+CLONE, COMMIT, WHEELS, VENV, TARGET_FIXTURE, W, BASE, PRODUCER_SRC = (
     Path(sys.argv[1]).resolve(), sys.argv[2], Path(sys.argv[3]).resolve(), Path(sys.argv[4]).resolve(),
-    Path(sys.argv[5]).resolve(), Path(sys.argv[6]).resolve(), sys.argv[7])
+    Path(sys.argv[5]).resolve(), Path(sys.argv[6]).resolve(), sys.argv[7], Path(sys.argv[8]).resolve())
 sys.path.insert(0, str(HERE))
-sys.path.insert(1, str(CLONE))  # producer-side only: C3's _parse_tree_data (see s0_capture)
+sys.path.insert(1, str(PRODUCER_SRC))  # producer-side only: C3's _parse_tree_data, from the root-owned copy
 
 import s0_capture as cap  # noqa: E402
 import s0_deps as deps  # noqa: E402
@@ -78,10 +80,16 @@ s_fd = cap.seal_committed(s_bytes)
 t_seal = time.perf_counter() - t0
 _, heap_peak_s = tracemalloc.get_traced_memory()
 tracemalloc.reset_peak()
-lock_bytes = subject.nodes[b"requirements-agent-review.lock"][2]
+lock_bytes = cap.lock_bytes(subject.nodes)
+TARGET = json.loads(subprocess.run(
+    [BASE, "-I", "-S", "-c", "import json,sys,importlib.machinery as m;"
+     "print(json.dumps(['cp%d%d' % sys.version_info[:2], m.EXTENSION_SUFFIXES]))"],
+    env={}, capture_output=True, text=True, check=True).stdout)
+PY_TAG, EXT_SUFFIXES = TARGET[0], tuple(TARGET[1])
+D_ALG = "wheelset-sha256/" + PY_TAG
 t0 = time.perf_counter()
-d_nodes, d_manifest, d_payload = deps.build_dependencies(lock_bytes, WHEELS)
-d_bytes = cap.serialize("wheelset-sha256", hashlib.sha256(lock_bytes).hexdigest(),
+d_nodes, d_manifest, d_payload = deps.build_dependencies(lock_bytes, WHEELS, python_tag=PY_TAG, ext_suffixes=EXT_SUFFIXES)
+d_bytes = cap.serialize(D_ALG, hashlib.sha256(lock_bytes).hexdigest(),
                         hashlib.sha256(json.dumps(d_manifest, sort_keys=True).encode()).hexdigest(), d_nodes)
 d_digest = hashlib.sha256(d_bytes).hexdigest()
 d_fd = cap.seal_committed(d_bytes)
@@ -101,10 +109,12 @@ out["resources"]["S"] = {
     "commit": COMMIT, "algorithm": subject.algorithm, "nodes": len(subject.nodes), "by_kind": kinds,
     "empty_trees": empty_trees, "container_bytes": len(s_bytes), "payload_bytes_per_occurrence": subject.budget.payload_bytes,
     "payload_bytes_unique_blobs": sum(subject.budget.unique_payload.values()), "path_bytes": subject.budget.path_bytes,
-    "git_objects_read": subject.objects_read, "git_bytes_read": subject.git_bytes_read, "git_subprocesses": 2,
+    "git_objects_read": subject.objects_read, "git_bytes_read": subject.git_bytes_read,
+    "git_subprocesses_counted": cap.GIT_INVOCATIONS[0], "metadata_bytes_read": subject.budget.metadata_bytes,
     "build_s": round(t_build, 3), "serialize_seal_verify_s": round(t_seal, 3),
     "producer_heap_peak_MiB_build_to_seal": round(heap_peak_s / 2**20, 1), "sha256": s_digest}
-out["resources"]["D"] = {"wheels": d_manifest, "nodes": len(d_nodes), "payload_bytes": d_payload,
+out["resources"]["D"] = {"wheels": d_manifest, "nodes_including_directories": len(d_nodes),
+                         "members": sum(1 for k, _o, _v in d_nodes.values() if k != "tree"), "python_tag": PY_TAG, "payload_bytes": d_payload,
                          "container_bytes": len(d_bytes), "build_seal_s": round(t_deps, 3),
                          "producer_heap_peak_MiB": round(heap_peak_d / 2**20, 1), "sha256": d_digest,
                          "lock_sha256": hashlib.sha256(lock_bytes).hexdigest()}
@@ -177,6 +187,7 @@ out["census"]["E_modules_by_origin"] = {k: (v if not k.startswith(("stdlib", "bu
                                         for k, v in (e0.get("modules_by_origin") or {}).items()}
 out["census"]["E_opens_outside_usr_proc_dev"] = (e0.get("observed") or {}).get("opens_other")
 out["census"]["E_native_memfds"] = e0.get("native_fds")
+out["census"]["E_import_pwd_stack"] = (e0.get("observed") or {}).get("import_pwd_stack")
 out["census"]["E_flags_self_report"] = e0.get("flags")
 out["census"]["normal_modules_by_origin_counts"] = {k: len(v) for k, v in (normal0.get("modules_by_origin") or {}).items()}
 e_mods = {m for v in (e0.get("modules_by_origin") or {}).values() for m in v}
@@ -184,7 +195,7 @@ n_mods = {m for v in (normal0.get("modules_by_origin") or {}).values() for m in 
 out["census"]["modules_only_in_normal"] = sorted(n_mods - e_mods)
 out["census"]["modules_only_in_E"] = sorted(e_mods - n_mods)
 out["resources"]["E_child"] = {"maxrss_kib": (e0.get("result") or {}).get("maxrss_kib"),
-                               "inherited_sealed_fds": 3, "native_memfds_created_in_child": e0.get("native_fds"),
+                               "inherited_sealed_fds_by_construction": 3, "native_memfds_created_in_child": e0.get("native_fds"),
                                "result_channel": "socketpair", "elapsed_s": out["runs"]["E_untampered"].get("elapsed_s")}
 out["resources"]["normal"] = {"maxrss_kib": (normal0.get("result") or {}).get("maxrss_kib"),
                               "elapsed_s": normal0.get("elapsed_s")}
@@ -244,7 +255,7 @@ shutil.rmtree(di)
 
 # (e) D bound to S: a D built from a different lock is refused before any import
 other_lock = lock_bytes + b"\n# drift\n"
-bad_d = cap.serialize("wheelset-sha256", hashlib.sha256(other_lock).hexdigest(), "0" * 64, d_nodes)
+bad_d = cap.serialize(D_ALG, hashlib.sha256(other_lock).hexdigest(), "0" * 64, d_nodes)
 bad_fd = cap.seal_committed(bad_d)
 r = ln.launch(BASE, {"s": {"fd": s_fd, "sha256": s_digest, "commit": COMMIT},
                      "d": {"fd": bad_fd, "sha256": hashlib.sha256(bad_d).hexdigest()},
@@ -262,6 +273,46 @@ rep = r["reply"] or {}
 case("D_absent_no_fallback", {"status": "driver_failed", "error_is_missing_dependency": True, "venv_opens": []},
      {"status": rep.get("status"), "error_is_missing_dependency": "No module named" in str((rep.get("result") or {}).get("error")),
       "venv_opens": (rep.get("observed") or {}).get("opens_watched")})
+
+# (g) loader confinement: a D that tries to add submodules to S's package and to stdlib packages,
+#     and a top-level module that would shadow stdlib -- none may be importable from D
+INJECT = {b"app/extra.py": b"VALUE = 'D-in-app'\n", b"json/injected.py": b"VALUE = 'D-in-json'\n",
+          b"encodings/s0evil.py": b"import codecs\ndef getregentry():\n    return codecs.lookup('utf-8')\n",
+          b"json.py": b"VALUE = 'D-shadows-stdlib-json'\n"}
+inj_nodes = dict(d_nodes)
+for path, data in INJECT.items():
+    inj_nodes[path] = ("regular", hashlib.sha256(data).hexdigest(), data)
+    parts = path.split(b"/")
+    for k in range(1, len(parts)):
+        inj_nodes.setdefault(b"/".join(parts[:k]), ("tree", "", b""))
+inj = cap.serialize(D_ALG, hashlib.sha256(lock_bytes).hexdigest(), "0" * 64, inj_nodes)
+inj_fd = cap.seal_committed(inj)
+PROBE = b"""
+def run(inputs):
+    import codecs, importlib, json
+    out = {"json_is_stdlib": not hasattr(json, "VALUE")}
+    for name in ("app.extra", "json.injected", "encodings.s0evil"):
+        try:
+            importlib.import_module(name); out[name] = "IMPORTED"
+        except ImportError as exc:
+            out[name] = type(exc).__name__
+    try:
+        codecs.lookup("s0evil"); out["codec_s0evil"] = "FOUND"
+    except LookupError:
+        out["codec_s0evil"] = "LookupError"
+    return out
+"""
+probe_fd = cap.seal_committed(PROBE)
+r = ln.launch(BASE, {"s": {"fd": s_fd, "sha256": s_digest, "commit": COMMIT},
+                     "d": {"fd": inj_fd, "sha256": hashlib.sha256(inj).hexdigest()},
+                     "x": {"fd": probe_fd, "sha256": hashlib.sha256(PROBE).hexdigest()}, "roots": ["app"], "inputs": {}},
+              (s_fd, inj_fd, probe_fd), timeout=60)
+case("D_cannot_extend_S_or_stdlib_packages",
+     {"json_is_stdlib": True, "app.extra": "ModuleNotFoundError", "json.injected": "ModuleNotFoundError",
+      "encodings.s0evil": "ModuleNotFoundError", "codec_s0evil": "LookupError"},
+     ((r["reply"] or {}).get("result")), reviewer_repro_of="F3 (finder ignored `path`)")
+os.close(inj_fd)
+os.close(probe_fd)
 
 for fd in (s_fd, d_fd, x_fd):
     os.close(fd)

@@ -38,13 +38,17 @@ def _recv_all(sock: socket.socket, deadline: float) -> bytes:
 def launch(interpreter: str, spec: dict, fds: tuple[int, ...], *, env: dict | None = None,
            cwd: str = "/", timeout: float = 120.0, flags: tuple[str, ...] = ("-I", "-S")) -> dict:
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    spec = dict(spec, result_fd=child.fileno())
     t0 = time.monotonic()
-    proc = subprocess.Popen(
-        [interpreter, *flags, "-c", BOOTSTRAP_SOURCE, json.dumps(spec)],
-        pass_fds=(*fds, child.fileno()), env=env if env is not None else {}, cwd=cwd,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    try:  # until the child exists, the launcher is the single owner of BOTH endpoints
+        argv = [interpreter, *flags, "-c", BOOTSTRAP_SOURCE, json.dumps(dict(spec, result_fd=child.fileno()))]
+        proc = subprocess.Popen(
+            argv, pass_fds=(*fds, child.fileno()), env=env if env is not None else {}, cwd=cwd,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        parent.close()
+        child.close()
+        return {"pid": None, "rc": None, "reply": None, "spawn_error": type(exc).__name__}
     child.close()
     outcome: dict = {"pid": proc.pid}
     try:

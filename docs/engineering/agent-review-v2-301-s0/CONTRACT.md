@@ -54,8 +54,11 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 > esperada por canal separado controlado pelo launcher, valida selos e digest sobre o mesmo buffer
 > que consome e não lê checkout, venv ou M.
 
-Premissas (não impostas por S): kernel Linux com memfd seals; root e kernel confiáveis; `C` correto
-(#319); launcher/produtor/bootstrap vindos de local não gravável pelo UID do runner (§6).
+Premissas (não impostas por S): kernel Linux com memfd seals (observado só em 6.18/WSL2); root e
+kernel confiáveis; `C` correto (#319); launcher/produtor/bootstrap vindos de local não gravável pelo
+UID do runner (§6, U3); a mesma premissa de integridade de processo de §3 vale para **produtor e
+launcher** (o heap do produtor guarda bytes autenticados antes do selo; o launcher guarda os digests
+esperados).
 
 Non-claims: integridade do **processo** além da premissa de §3; disponibilidade (um ator same-UID
 pode matar/esgotar recursos); integridade dos **dados do target** (§9 U4); autenticação do
@@ -75,7 +78,9 @@ integridade do processo consumidor; **R** = canal de resultado; **A** = disponib
 | Writer de filesystem mesmo UID (não-ancestral) | reescrever/renomear checkout, `.git/objects`, venv, `__pycache__`, `pyvenv.cfg`, `.pth`, wheels, dados do target; abrir `/proc/<pid>/fd/N` de processos *dumpable*; escrever em pipe reaberto; tocar memfd **antes** do selo; adicionar selo estranho; manter mapeamento | **O**: pós-compromisso nenhuma escrita/grow/shrink/punch/mmap-write/mprotect (EXP-CAPTURE); pré-compromisso detectado ou recusado; adulteração de objeto Git recusada por hash (EXP-N1). **R**: socketpair não reabrível (EXP-PROC). Bytes carregados independem de M/venv/pyc/plugins (EXP-FUNC) | **A** (kill, OOM, disco); leitura de S (não secreto); dados do target lidos por path |
 | Worker legítimo concorrente | mesmo que acima, benigno | S não compartilha estado mutável | — |
 | Ator que altera configuração do processo (não o arquivo) | env (`LD_PRELOAD`, `PYTHON*`, `HOME`), cwd, `pyvenv.cfg`, user site, `.pth`, `sitecustomize` | launcher: interpretador root-owned por caminho absoluto, `env={}`, `-I -S`, `cwd=/` (EXP-BOOT) | se o ator **for** o launcher ou um ancestral |
-| Interferência no processo (ptrace, `/proc/pid/mem`) | com Yama `ptrace_scope ≥ 1`, não-ancestral não faz attach nem escreve memória; lista FDs enquanto dumpable | **P** somente sob a premissa Yama≥1 ∧ ator não-ancestral (EXP-PROC) | ancestrais (runner/agent) são confiados; `ptrace_scope=0` quebra **P** |
+| Interferência no processo (ptrace, `/proc/pid/mem`) | com Yama `ptrace_scope ≥ 1`, não-ancestral não faz attach nem escreve memória; lista FDs enquanto dumpable | **P** somente sob a premissa Yama≥1 ∧ ator não-ancestral, para consumidor, produtor e launcher (EXP-PROC observou o consumidor) | ancestrais (runner/agent) são confiados; `ptrace_scope=0` quebra **P** |
+| Sinais (`kill`, `SIGINT`, `SIGSTOP`) de mesmo UID | interromper ou matar produtor, launcher ou filho | nenhum resultado parcial vira S/sucesso (301S-LIFE) | **A**; não testado com sinais reais |
+| `git` filho do produtor | config do repositório (mesmo UID) pode fazer o git executar programas (ex.: busca de promisor) | bytes servidos são verificados por hash; o filho não é ancestral do produtor | **A**; código same-UID já está no domínio; não testado |
 | Bootstrap, consumidor, produtor, futuro produtor de receipt | papéis TCB | ver §6 | auto-autenticação recursiva |
 | root / kernel | tudo | confiados (declarado) | — |
 | UID diferente | DAC | fora | — |
@@ -145,6 +150,19 @@ C (esperado, via #319)
   caminho normal).
 - Uma cópia selada com digest próprio **não** autentica a origem: o digest de `S_G` só significa
   algo porque cada nó foi verificado contra `C`, e `C` vem de #319.
+- **O lock precisa ser nó `regular` de `S_G`**; o texto-alvo de um symlink nunca autoriza S_D
+  (produtor e consumidor verificam).
+- **Identidade do wheel vem de dentro dos bytes autenticados**, não do nome do arquivo: stem do
+  `.dist-info`, `Name`/`Version` do `METADATA` e tags do `WHEEL` (expandidas como no nome, pois
+  geradores como maturin gravam tags comprimidas) têm de coincidir com a entrada do lock; as tags
+  têm de ser compatíveis com o interpretador alvo, cuja tag (`cp311`) fica no cabeçalho selado de S_D
+  e é reconferida pelo consumidor.
+- O lock é lido de forma **mais estrita que o pip**: nome duplicado, marker/extra e hash fora de
+  token `--hash=` (inclusive em comentário) são recusados, nunca mesclados.
+- Tamanho de cada membro é checado pelo `ZipInfo` **antes** de descomprimir; colisões
+  arquivo/diretório (no mesmo wheel ou entre wheels) são recusadas.
+- Nativos: a seção dinâmica ELF é inspecionada; `RPATH`/`RUNPATH` ou `DT_NEEDED` com `/` são
+  recusados, de modo que a closure nativa fique no caminho do ld.so root-owned (TCB).
 
 ## 6. Closure, dependências e TCB
 
@@ -165,10 +183,10 @@ consome como dado); reaquisição da PR e teto de rollout são do adapter. Resul
 | `app`, `app.agent_review` + 31 submódulos, `app.common`, `app.common.strict_json` | commit `C` do toolrepo | driver/adapter | inicial, imports da engine | toda a lógica | 35 módulos-fonte | #319 (anchor) + hash-on-read | **S_G** (raiz importável `app`) |
 | demais arquivos de `C` (scripts, tests, docs, lock) | `C` | produtor (lock); ninguém importa | — | fidelidade de G; lock | árvore completa | idem | **S_G** como dado; raízes importáveis restritas a `app` |
 | `pydantic` (42 módulos), `annotated_types`, `typing_extensions`, `typing_inspection` | wheels do lock | engine | inicial + lazy (`pydantic._migration`, `plugin._loader`) | modelos/validação | fontes `.py` | lock ∈ `C` + RECORD | **S_D** |
-| `pydantic_core._pydantic_core` (nativo) | wheel cp311 manylinux | pydantic | inicial | validação | `.so`; NEEDED: libgcc_s, librt, libpthread, libm, libc, ld-linux; sem RPATH | lock + RECORD | **S_D**; carregado de memfd selado **no filho** via `/proc/self/fd/N` |
+| `pydantic_core._pydantic_core` (nativo) | wheel cp311 manylinux | pydantic | inicial | validação | `.so`; NEEDED: libgcc_s, librt, libpthread, libm, libc, ld-linux; sem RPATH/RUNPATH (verificado pelo produtor) | lock + RECORD + identidade/tags | **S_D**; carregado de memfd selado **no filho** via `/proc/self/fd/N` |
 | `yaml` + `yaml._yaml` (Cython) | wheel PyYAML | profile loader | inicial (`yaml.cyaml`) | engine usa só `SafeLoader` (Python); `_yaml` é inicializado mas não usado | `.so`; cria `_cython_3_0_11`, `cython_runtime` | lock + RECORD | **S_D** (incluído por paridade; exclusão exigiria decisão explícita) |
 | metadata de distribuição (`*.dist-info`) | wheels | `importlib.metadata` (pydantic plugin loader) | tardio, 1ª criação de validator | nenhum no percurso | presentes em S_D como dados | — | **recusado como canal**: E não expõe distribuições; plugins pydantic **não suportados** |
-| interpretador CPython 3.11 | host (root-owned) | launcher | antes de tudo | — | `/usr/local/bin/python3.11` no experimento | ownership/DAC | **TCB** |
+| interpretador CPython 3.11 (+ `libpython3.11.so.1.0`) | host (root-owned) | launcher | antes de tudo | — | `/usr/local/bin/python3.11` no experimento | ownership/DAC | **TCB** |
 | stdlib (103 fonte, 27 ext, 41 builtin/frozen) | host (root-owned) | engine, bootstrap | inicial | — | `sys.base_prefix/lib/python3.11` | ownership/DAC | **TCB** |
 | ld.so, glibc, libgcc_s | host (root-owned) | carga nativa | antes do `main` e no dlopen | — | ld.so.cache | ownership + launcher fecha `LD_*` | **TCB** |
 | `site`, `.pth` (inclusive `_distutils_hack` da venv), `sitecustomize`, user site, `pyvenv.cfg` | venv/usuário | startup | antes do 1º import | nenhum | mutáveis same-UID | — | **recusado** (`-I -S`, sem venv) |
@@ -178,9 +196,12 @@ consome como dado); reaquisição da PR e teto de rollout são do adapter. Resul
 | adapter do target, Router client | checkout base do target | `__main__` do processo | inicial | orquestração, rede | — | target | **fora de S; aberto (U1)** |
 | brokers/supervisor (`__file__` para relançar) | `C` | executor de checks | fora do percurso | relançar por path | `BROKER_PATH_V2`, `SUPERVISOR_PATH_V2` | — | **não suportado no 1º corte** (sem `__file__`, sem subprocesso em E) |
 | `git` (produtor) | host | produtor | captura | transporte | — | nenhuma para integridade (hash-on-read) | **dependência de disponibilidade**, não TCB de integridade |
-| `pwd` (stdlib) | TCB | desconhecido (env vazio) | tardio | nenhum observado | — | — | TCB; chamador não atribuído, não material |
+| `pwd` (stdlib) | TCB | `zoneinfo._tzpath` → `sysconfig._getuserbase` → `expanduser` sem `HOME` (pilha registrada) | tardio | resolve home pelo passwd (NSS nativo, `/etc/passwd` root-owned) | — | — | TCB; mostra que o ambiente é entrada: `env={}` muda o caminho da stdlib, sem efeito no resultado (paridade) |
 
-Subprocessos no percurso: **0** (audit hook). Aberturas em checkout/venv durante E: **0**.
+Subprocessos no percurso: **0**; aberturas em checkout/venv durante E: **0**. Ambas as contagens vêm
+do audit hook do próprio bootstrap: veem só eventos em nível Python (`open`, `subprocess.Popen`,
+`os.system`, `os.spawn`, `os.exec`, `os.posix_spawn`, `os.fork`, `pty.spawn`), não aberturas feitas
+por código nativo, e valem sob **P**.
 
 ### 6.2 Piso de TCB proposto
 
@@ -194,8 +215,10 @@ Subprocessos no percurso: **0** (audit hook). Aberturas em checkout/venv durante
 4. Anchor `C`: #319.
 
 "Fica no TCB" não é dispensa: cada item acima nomeia autoridade (ownership/DAC ou #319), forma de
-aquisição (instalação root), mutabilidade (nenhuma pelo UID do runner), validação (stat/escrita
-negada, EXP-BOOT floor) e consequência por target:
+aquisição (instalação root), mutabilidade (nenhuma pelo UID do runner), validação (EXP-BOOT
+`floor`: 23 caminhos — interpretador, stdlib, `lib-dynload`, cada `.so` mapeado pelo interpretador,
+as libs `NEEDED` do `pydantic_core` resolvidas pelo `ld.so.cache`, e todos os ancestrais — uid 0 e
+escrita negada ao ator; **só neste container**) e consequência por target:
 
 | Target | Situação observada | Consequência |
 |---|---|---|
@@ -220,8 +243,12 @@ limite · owner · evidência.
   árvores Git suportadas por C3 · paridade com árvore declarada **e** com o enumerador C3 ·
   produtor · 7 contramodelos (diretório vazio ±, aninhado, exec bit, target de symlink, tipo,
   vazio→arquivo) · paridade exata · nomes não-UTF-8 aceitos como bytes pelos dois · C3 (regra) /
-  #301 (uso) · EXP-STRUCT (mutante com perda colide em 5/7).
-- **301S-STAB** — após compromisso, S é imutável para não-root · memfd em Linux · selos + re-hash
+  #301 (uso) · EXP-STRUCT (mutante com perda colide em 5/7). O protótipo **espelha** regras que o
+  C3 já possui no builder hierárquico (duplicado, round-trip `fsdecode/fsencode`, ciclo,
+  profundidade ≤ 100, componente ≤ 255, limite pré-leitura `size // 295`); S1 deve obtê-las do
+  próprio C3, não dessas cópias.
+- **301S-STAB** — após compromisso, S é imutável para não-root · memfd; observado só no kernel
+  6.18/WSL2 · selos + re-hash
   pós-selo · produtor → todos · bateria de 9 operações de escrita por outro processo; escritor
   pré-selo; selo estranho; mapeamento gravável retido · conteúdo idêntico, compromisso sem atacante
   · disponibilidade não coberta · #301 · EXP-CAPTURE.
@@ -230,35 +257,52 @@ limite · owner · evidência.
   launcher → bootstrap · arquivo regular idêntico, memfd atacante, sem `F_SEAL_WRITE`, sem identidade
   esperada, fd não herdado · handoff correto · número de FD em receipt não é prova · #301 ·
   EXP-CAPTURE `binding_*`.
-- **301S-DEP** — dependências vêm só de S_D, vinculado ao lock dentro de S_G · lock atual ·
-  sha256 do wheel ∈ lock, RECORD, vínculo `sha256(lock)` · produtor → finder de E · D de outro lock;
-  D ausente (sem fallback); venv adulterada; plugin plantado · paridade funcional · wheels de outra
-  plataforma exigem regenerar o lock · #301 · EXP-FUNC.
-- **301S-NAT** — extensões nativas executam só bytes de S_D · `.so` do lock · memfd selado criado e
-  re-hasheado **no filho**, `ExtensionFileLoader` em `/proc/self/fd/N` · bootstrap · — (coberto por
-  301S-DEP) · `pydantic_core` e `yaml._yaml` carregados de memfd · bibliotecas de sistema resolvidas
-  pelo ld.so do TCB; RPATH/`$ORIGIN` quebraria (não há hoje) · #301 · EXP-FUNC census.
+- **301S-DEP** — dependências vêm só de S_D, vinculado ao lock (nó regular) dentro de S_G · lock
+  atual · sha256 do wheel ∈ lock, identidade interna e tags, RECORD, tamanho antes de inflar,
+  colisões, vínculo `sha256(lock)` e tag do interpretador no cabeçalho · produtor → finder de E ·
+  25 casos sintéticos (renomeado, tags, ABI, duplicado, RECORD, `.pth`, `.data`, `..`, symlink,
+  colisões, hash/lock ausentes, lock duplicado/marker/hash em comentário, zip bomb de 200 MiB) + D de
+  outro lock, D ausente, venv adulterada, plugin plantado · controle sintético aceito e paridade
+  funcional · a checagem do consumidor é de **rótulo** (digest do lock e tag); a autenticação por
+  membro aconteceu no produtor (TCB) · #301 · EXP-DEPS, EXP-FUNC.
+- **301S-NAT** — extensões nativas executam só bytes de S_D, e sua closure dinâmica fica no TCB ·
+  `.so` do lock · ELF inspecionado pelo produtor; memfd selado criado e re-hasheado **no filho**,
+  `ExtensionFileLoader` em `/proc/self/fd/N` · produtor → bootstrap · `.so` com `RPATH`, `RUNPATH` ou
+  `DT_NEEDED` absoluto · `.so` sem caminhos aceito; `pydantic_core` e `yaml._yaml` carregados de
+  memfd · as sonames resolvem pelo `ld.so.cache` root-owned; `LD_*` fechado pelo launcher · #301 ·
+  EXP-DEPS `native_*`, EXP-FUNC census.
 - **301S-BOOT** — nenhuma configuração controlada por outro ator age antes do 1º import ·
   launcher · interpretador root-owned absoluto, `env={}`, `-I -S`, `cwd=/` · launcher · `pyvenv.cfg`
   editado (executa sob `-I -S`), `LD_PRELOAD`, `PYTHONPATH`, módulo no cwd, `.pth` de user site ·
   controles sem payload · observação por marcador externo, não autorrelato · #301 · EXP-BOOT.
-- **301S-LOAD** — semântica de import explícita · E · raízes S = {`app`} antes do `PathFinder`
-  (espelha `PYTHONPATH`); S_D depois (stdlib precede site-packages); pacote > módulo > extensão (só
-  D) > namespace PEP 420 de nó `tree`; symlink em S é dado, **não** caminho de import; sem
-  `__file__`; `get_source` servido de S; nenhum `.pyc` lido/escrito; nenhuma distribuição visível ·
-  bootstrap · fallback a checkout/venv/pyc · 0 aberturas em checkout/venv; mesmo resultado · proibir
-  um caso necessário exige decisão de produto · #301 · EXP-FUNC, EXP-CAPTURE.
+- **301S-LOAD** — semântica de import explícita · E · top-level: S só para suas raízes {`app`},
+  antes do `PathFinder` (espelha `PYTHONPATH`); S_D depois (stdlib precede site-packages).
+  Submódulos: cada finder só responde dentro de pacotes que ele próprio criou (o `__path__` desses
+  pacotes contém apenas o marcador do finder), como o `__path__` confina o `FileFinder`. Ordem por
+  nome: diretório com `__init__.py` > extensão (só D) > fonte `.py` > namespace PEP 420 de nó
+  `tree`. Symlink em S é dado, **não** caminho de import; nenhum `.pyc` lido/escrito; nenhuma
+  distribuição visível · bootstrap · fallback a checkout/venv/pyc; D tentando estender `app`,
+  `json`, `encodings` ou sombrear `json` · 0 aberturas em checkout/venv; mesmo resultado; injeções
+  recusadas · **não suportado, explicitamente**: `__file__`, `inspect.getsource`,
+  `importlib.resources`, `pkgutil.iter_modules` sobre pacotes de S/D (a engine não os usa hoje;
+  proibir um caso necessário exige decisão de produto) · #301 · EXP-FUNC, EXP-CAPTURE.
 - **301S-CHAN** — o resultado só chega por canal não reabrível por terceiros · socketpair herdado ·
   ENXIO ao reabrir via `/proc` · bootstrap → launcher · pipe reaberto injeta resultado forjado ·
   resultado genuíno · o conteúdo ainda é autorrelato do filho (vale sob **P**) · #301 · EXP-PROC.
-- **301S-RES** — S e sua captura são limitados antes da expansão · por ocorrência · orçamento
-  cobrado pelo header do objeto antes do corpo · produtor · subárvore compartilhada 2.000× (125 MiB
-  por ocorrência de 64 KiB únicos); blob de 32 MiB com orçamento de 8 MiB; profundidade · corpus real
-  aceito · limites propostos (§8) ainda não adjudicados · #301 · EXP-RES.
+- **301S-RES** — S e sua captura são limitados antes da expansão · por ocorrência, para commit,
+  tree **e** blob · todo corpo é cobrado pelo header antes de ser lido (commit: teto próprio; tree:
+  limite pré-leitura do C3 com o orçamento restante e orçamento de metadados; blob: orçamento de
+  payload); membros de wheel pelo `ZipInfo` antes de inflar · produtor · subárvore compartilhada
+  2.000× (125 MiB por ocorrência de 64 KiB únicos); blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB;
+  zip bomb 200 MiB; profundidade 110; contagem cumulativa de nós · corpus real aceito · limites
+  propostos (§8) ainda não adjudicados; o orçamento cumulativo de nós é imposto pelo cap por árvore
+  do C3 alimentado com o **restante** (o `budget_nodes` próprio é redundante) · #301 · EXP-RES,
+  EXP-DEPS.
 - **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial; filho sem resposta não
   vira sucesso · produtor/launcher · FD/processos contados antes e depois · — · falha de escrita
-  (EFBIG), de selo, de hash no meio da captura, filho travado, filho com rc 0 sem resposta · FDs
-  restaurados, git reapado · #354 não é ativado (§8) · #301 · EXP-RES.
+  (EFBIG), de selo (injetada), de hash no meio da captura, falha do launcher antes do spawn, filho
+  travado, filho com rc 0 sem resposta · FDs restaurados, git reapado, ambos os lados do socketpair
+  fechados · #354 não é ativado (§8) · #301 · EXP-RES.
 - **301S-DATA** (aberta) — dados do target consumidos por E não retornam a bytes mutáveis · hoje
   #200-G4B relê por path e declara same-UID fora de escopo · owner a decidir (#301-E / #331) · U4.
 - **301S-CALLER** (aberta) — onde roda o adapter do target e como o Router é chamado sem pôr
@@ -271,22 +315,24 @@ Medidos no corpus real (`C = 9abcde64`) em CPython 3.11.16 / tmpfs (EXP-FUNC); n
 
 | Vetor | S_G | S_D | E (filho) |
 |---|---|---|---|
-| Entradas lógicas | 1.001 nós (206 tree, 776 regular, 19 exec, 0 symlink, 0 vazios) | 186 membros + diretórios | 35 módulos de S, 66 de S_D, 2 nativos |
-| Bytes únicos vs por ocorrência | 8.642.394 / 8.660.242 | 9.700.542 (payload) | — |
-| Heap de paths | 54.726 B | — | — |
-| Container (RAM-backed) | 8.769.133 B | 9.718.902 B | 2 memfds nativos no filho |
-| Heap de pico do produtor | 26,1 MiB (build → selo) | 45,6 MiB | maxrss 87.100 KiB (normal: 76.872) |
-| FDs | 1 por container | 1 | 3 herdados + 1 socket + 2 nativos |
-| Subprocessos | 2 `git` (object format + cat-file) | 0 | 0 |
+| Entradas lógicas | 1.001 nós (206 tree, 776 regular, 19 exec, 0 symlink, 0 vazios) | 186 nós = 164 membros + diretórios | 35 módulos de S, 66 de S_D, 2 nativos |
+| Bytes únicos vs por ocorrência | 8.642.394 / 8.660.242 (blobs); 52.807 B de corpos commit/tree | 9.700.542 (payload) | — |
+| Bytes de paths (soma dos comprimentos) | 54.726 B | — | — |
+| Container (RAM-backed) | 8.769.133 B | 9.718.908 B | 2 memfds nativos no filho |
+| Heap de pico do produtor | 25,9 MiB (build → selo) | 45,6 MiB | maxrss 87.216 KiB (normal: 78.076) |
+| FDs | 1 por container | 1 | 3 herdados (por construção) + 1 socket + 2 nativos |
+| Subprocessos | 2 `git` (contados: object format + cat-file) | 0 | 0 (audit hook) |
 | I/O | 1.003 objetos, 8.713.049 B lidos do git | 6 wheels lidos 1× | 0 aberturas em checkout/venv |
-| Tempo | build 0,159 s; serialize+selo+verificação 0,025 s | 0,09 s | 0,40 s (normal 0,26 s) |
+| Tempo | build 0,164 s; serialize+selo+verificação 0,028 s | 0,096 s | 0,41 s (normal 0,26 s) |
 
-Limites **propostos** (para adjudicação), aplicados antes da expansão: `max_payload_bytes` por
-ocorrência = 64 MiB (≈7× o corpus atual; memfd é RAM/shmem, então o orçamento de disco de C3 de
-2 GiB **não** se transfere); `max_nodes` = 100.000 (C3); `max_depth` = 64 para todo tipo de nó;
-`max_path_bytes` = 16 MiB; `max_component_len` = 255; cap por árvore = o de C3 (`_parse_tree_data`);
-`S_D` ≤ 64 MiB. Cobrança pelo header do `cat-file` antes de ler o corpo (EXP-RES: recusa com
-heap de 0,06 MiB para um blob de 32 MiB). O memfd é contabilizado como shmem no memcg do processo;
+Limites **propostos** (para adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,
+por ocorrência) = 64 MiB (≈7× o corpus atual; memfd é RAM/shmem, então o orçamento de disco de C3
+de 2 GiB **não** se transfere); `max_metadata_bytes` (corpos commit+tree) = 64 MiB;
+`max_commit_bytes` = 1 MiB; `max_path_bytes` = 16 MiB; `S_D` ≤ 64 MiB (por `ZipInfo.file_size`,
+antes de inflar). Valores que pertencem ao C3 e devem vir dele: entradas 100.000, profundidade 100,
+componente 255, limite pré-leitura `size // 295`. Todo corpo é cobrado pelo header do `cat-file`
+antes de ser lido (EXP-RES: blob de 32 MiB, tree de 16,7 MB e commit de 16 MiB recusados com heap
+de 0,06 MiB; EXP-DEPS: zip bomb de 200 MiB recusado com 0,27 MiB). O memfd é contabilizado como shmem no memcg do processo;
 comportamento sob limite de memcg **não testado**.
 
 Ownership: produtor possui o memfd até retornar; em falha fecha uma vez e propaga. Launcher possui
@@ -313,6 +359,9 @@ entrada admitida (C via #319, lock ∈ C) + política (orçamentos, raízes) + a
   → resultado pelo socketpair; ausência ≠ sucesso                              [301S-CHAN/LIFE]
 ```
 
+- **Vínculo S_D ↔ S_G no consumidor é de rótulo**: confere `sha256(lock)` e a tag do interpretador
+  gravados no cabeçalho selado de S_D; a autenticação por membro foi feita pelo produtor, sob a
+  premissa de TCB do launcher.
 - **Descritor recebido ≠ número de FD num receipt.** O que o consumidor validou é o objeto que o
   kernel entregou; um número escrito num receipt não identifica objeto algum depois do close.
 - **Origem das observações.** Fatos que o launcher produziu (digest calculado, fds passados, argv,
@@ -360,25 +409,32 @@ Perguntas **abertas que bloqueiam E** (não S1):
    aberturas em checkout/venv. Disposição conservadora: qualquer falha recusa e **nenhum** S
    parcial é emitido; resultado ausente não é sucesso.
 2. **Autoridade.** Formato de objeto Git (hash por tipo/tamanho/conteúdo) → S **deriva** dele.
-   Regra de árvore → C3 `_parse_tree_data` (derivada, não reimplementada; a implementação deve
-   inserir a verificação no leitor de objetos do C3 — `_list_single_tree_entries_v2` lê o corpo e
-   parseia sem hashear — em vez de um enumerador paralelo). Autorização de wheels → lock em `C`.
-   Anchor → #319. Autoridades para a regra de árvore: 1 antes, 1 depois. A checagem de nome
-   duplicado do protótipo é uma segunda regra e deve migrar para o dono (C3) na implementação.
+   Regras de árvore → C3: `_parse_tree_data` (usada diretamente pelo protótipo) e o builder
+   hierárquico `_build_canonical_trie_hierarchical` (duplicado, round-trip, ciclo, profundidade 100,
+   componente, limite pré-leitura). O protótipo **espelha** estas últimas — são cópias, portanto hoje
+   há duas instâncias dessas regras no protótipo; S1 deve ter **uma**: inserir a verificação de hash
+   no leitor de objetos do C3 (`_list_single_tree_entries_v2` lê o corpo e parseia sem hashear) e
+   consumir o builder do C3, sem enumerador paralelo. Autorização de wheels → lock em `C`; formato
+   de wheel → PEP 427/RECORD/METADATA/WHEEL (derivados). Anchor → #319.
 3. **Linguagem/capacidade.** Aceita: objetos sha1/sha256; modos `040000/100644/100755/120000`;
-   nomes em bytes; wheels puros e nativos cp311 manylinux sem RPATH. Recusa explícita: gitlink,
-   modos não canônicos, `..`, duplicados, `.pth`, `.data/`, symlink em wheel, plugins pydantic,
-   import através de symlink, `__file__`, relançamento por path. Implícito restante: nenhum
-   conhecido; U1–U4 são perguntas de E, não de S.
+   nomes em bytes; wheels puros e nativos cp311 manylinux sem RPATH/RUNPATH. Recusa explícita:
+   gitlink, modos não canônicos, `..`, duplicados, lock não regular, lock com duplicado/marker,
+   identidade/tag de wheel divergente, `.pth`, `.data/`, symlink em wheel, colisão arquivo/diretório,
+   nativo com caminho de busca, plugins pydantic, import através de symlink, `__file__`,
+   `inspect.getsource`, `importlib.resources`, `pkgutil.iter_modules`, relançamento por path.
+   U1–U4 são perguntas de E; U3 também condiciona o **significado operacional** de S1 (§12).
 4. **Corpus.** Negativo: EXP-N1, EXP-STRUCT §4, EXP-CAPTURE, EXP-BOOT, EXP-RES. Positivo **com
    igualdade**: paridade com árvore declarada, com C3 (`list_commit_tree_structure_v2` +
    `read_commit_blobs_v2`) e com o resultado da engine no caminho normal. Limite: corpus sintético
    pequeno + o próprio toolrepo em `C`.
 5. **Evidência/mutação.** Mutantes executados e observados: verificação de hash desligada
    (aceita blob adulterado), hash-então-relê (incorpora outros bytes), sem re-hash pós-selo
-   (compromete conteúdo adulterado), projeção com perda (colide em 5/7). Predicados admitidos
-   (vocabulário do preflight): `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no
-   domínio/corpus declarados, `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB; `PROVED` não.
+   (compromete conteúdo adulterado), projeção com perda (colide em 5/7). O finder anterior (head
+   `3d426e1`, que ignorava `path`) funciona como mutante de 301S-LOAD: a revisão reproduziu nele a
+   injeção que o finder corrigido recusa. Predicados admitidos (vocabulário do preflight):
+   `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no domínio/corpus declarados;
+   `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB; para as recusas de S_D e para 301S-RES só
+   `MECHANICALLY_VERIFIED` sobre o corpus sintético (sem mutantes executados); `PROVED` não.
 6. **Premissas entre camadas.** "git serve os bytes do oid" → **falso** (EXP-N1 HOR), por isso
    hash-on-read. "`-I -S` isola o startup" → falso para `pyvenv.cfg`/`LD_PRELOAD` (EXP-BOOT), por
    isso interpretador root-owned + `env={}`. "O lock autentica a venv" → falso (EXP-FUNC). "Yama
@@ -388,7 +444,9 @@ Perguntas **abertas que bloqueiam E** (não S1):
    Segunda cópia de regra: checagem de nome duplicado (acima). Dados do target: **duas leituras por
    path** (U4) — fora de S, registrado.
 
-**Unknown material:** nenhum para S1 (§12). U1–U4 bloqueiam E/ativação e ficam nomeados acima.
+**Unknown material:** nenhum fato desconhecido para a propriedade de componente de S1; U3 condiciona
+o que o resultado de S1 significa em operação e está declarado como precondição (§12). U1–U4
+bloqueiam E/ativação.
 
 ## 12. Handoff — menor implementação seguinte
 
@@ -408,6 +466,14 @@ Perguntas **abertas que bloqueiam E** (não S1):
 - Falsificadores: objeto adulterado aceito; nó de contract A perdido; S parcial retornado;
   escrita pós-compromisso; leak de FD/processo.
 - Teto: sem launcher, sem loader, sem S_D, sem receipt, sem G5; **novo grant necessário**.
+- **Precondição declarada (U3):** a propriedade de S1 é de componente — "dado um processo produtor
+  íntegro, S_G é autêntico e estável". Como a cópia implantada de `app/agent_review/` hoje é o
+  checkout gravável pelo UID do runner, nenhum consumidor pode tratar a saída de S1 como proteção de
+  #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301 protegido".
+- **Decisões de adjudicação necessárias antes do grant de S1** (não são fatos desconhecidos):
+  (i) valores dos orçamentos de §8; (ii) aceite do owner de C3 para inserir verificação de hash e
+  novas razões de recusa no leitor de objetos do C3 (muda comportamento do C3 para todos os seus
+  consumidores).
 
 Cortes seguintes derivados desta arquitetura (não é sequência universal): S_D + loader fechado
 (depende de U2); launcher/E (depende de U1, U3; U4 decide se dados entram); receipt de execução

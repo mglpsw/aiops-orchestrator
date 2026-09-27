@@ -62,15 +62,16 @@ docker run --rm --tmpfs /work:rw,exec,size=3g \
       echo "\"wheels_sha256\": \"$(cd /work/wheels && sha256sum *.whl | tr "\n" ";")\""
       echo "}"
     } > /work/out/environment.json
-    run() { local name="$1"; shift; R timeout 900 "$PY" -I -S "/exp/$name.py" "$@" > "/work/out/$name.json" 2> "/work/out/$name.stderr" || echo "{\"harness_rc\": $?}" >> "/work/out/$name.rc"; }
+    run() { local name="$1"; shift; R timeout 900 "$PY" -I -S -B "/exp/$name.py" "$@" > "/work/out/$name.json" 2> "/work/out/$name.stderr" || echo "{\"harness_rc\": $?}" >> "/work/out/$name.rc"; }
     run exp_n1_auth /opt/toolrepo-tcb /work/scr-n1
     run exp_structure /opt/toolrepo-tcb /work/scr-struct
     run exp_capture_stability /opt/toolrepo-tcb /work/scr-cap "$PY"
     run exp_process_channel "$PY"
     run exp_bootstrap_env "$PY" /work/scr-boot
     run exp_resources /opt/toolrepo-tcb /work/scr-res "$PY"
+    run exp_deps /work/scr-deps
     run exp_functional /work/toolrepo "$COMMIT" /work/wheels /work/venv \
-        /opt/toolrepo-tcb/tests/agent_review/fixtures/v2/agent_escala /work/scr-func "$PY"
+        /opt/toolrepo-tcb/tests/agent_review/fixtures/v2/agent_escala /work/scr-func "$PY" /opt/toolrepo-tcb
     cp /work/out/* /results/ && chown -R "$HOST_UID:$HOST_GID" /results
   '
 echo "results in $RESULTS"

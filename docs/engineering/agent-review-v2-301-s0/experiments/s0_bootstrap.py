@@ -144,7 +144,11 @@ def _main(spec):
     import json
 
     watch = tuple(spec.get("watch", ()))
-    observed = {"opens_watched": [], "opens_other": [], "dlopen": [], "subprocess": []}
+    observed = {"opens_watched": [], "opens_other": [], "dlopen": [], "subprocess": [], "import_pwd_stack": []}
+    # Python-level audit only: opens performed by native code and anything before this line are
+    # invisible to it. It is the consumer's own observation and is worth what process integrity is.
+    spawn_events = ("subprocess.Popen", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty",
+                    "os.system", "os.spawn", "pty.spawn")
 
     def audit(event, args):
         if event == "open" and args and isinstance(args[0], (str, bytes)):
@@ -155,8 +159,13 @@ def _main(spec):
                 observed["opens_other"].append(p)
         elif event == "ctypes.dlopen":
             observed["dlopen"].append(str(args[0]))
-        elif event in ("subprocess.Popen", "os.exec", "os.posix_spawn", "os.fork"):
+        elif event in spawn_events:
             observed["subprocess"].append(event)
+        elif event == "import" and args and args[0] == "pwd" and not observed["import_pwd_stack"]:
+            f = sys._getframe(1)
+            while f is not None and len(observed["import_pwd_stack"]) < 12:
+                observed["import_pwd_stack"].append("%s:%d:%s" % (f.f_code.co_filename, f.f_lineno, f.f_code.co_name))
+                f = f.f_back
 
     sys.addaudithook(audit)
     if spec.get("dumpable") is False:
@@ -179,10 +188,15 @@ def _main(spec):
         D = {}
         if spec.get("d"):
             d_raw = open_sealed(spec["d"].get("fd"), spec["d"].get("sha256"))
-            _alg, lock_digest, _wheels, D = parse(d_raw)
+            d_alg, lock_digest, _wheels, D = parse(d_raw)
             lock = S.get(spec.get("lock_path", "requirements-agent-review.lock").encode())
-            if lock is None or hashlib.sha256(lock[2]).hexdigest() != lock_digest:
+            if lock is None or lock[0] != "regular":
+                raise CaptureRefused("dependency_lock_not_regular_file")
+            # a label check: the per-member authentication happened in the producer (launcher TCB)
+            if hashlib.sha256(lock[2]).hexdigest() != lock_digest:
                 raise CaptureRefused("dependency_lock_binding_mismatch")
+            if d_alg != "wheelset-sha256/cp%d%d" % sys.version_info[:2]:
+                raise CaptureRefused("interpreter_abi_mismatch", d_alg)
         x_raw = open_sealed(spec["x"].get("fd"), spec["x"].get("sha256"))
     except CaptureRefused as exc:
         reply({"status": "refused", "reason": exc.reason, "detail": exc.detail})
@@ -198,20 +212,34 @@ def _main(spec):
 
         def __init__(self, label, nodes, roots=None):
             self.label, self.nodes, self.roots = label, nodes, roots
+            self.marker = "<s0:%s>" % label  # the ONLY search location of packages this finder made
 
         def find_spec(self, name, path=None, target=None):
-            if self.roots is not None and name.split(".")[0] not in self.roots:
-                return None
+            if path is None:  # top level: S answers only for its declared roots
+                if self.roots is not None and name not in self.roots:
+                    return None
+            elif self.marker not in list(path):
+                return None  # a submodule of a package this finder did not create (stdlib, other map)
             rel = name.replace(".", "/").encode()
-            for cand, pkg in ((rel + b"/__init__.py", True), (rel + b".py", False)):
+
+            def source_spec(cand, pkg):
                 node = self.nodes.get(cand)
-                if node is not None:
-                    if node[0] == "symlink":
-                        raise ImportError("%s: symlink node is not importable (policy)" % name)
-                    if node[0] in ("regular", "executable"):
-                        return importlib.util.spec_from_loader(
-                            name, self, origin="s0:%s:%s" % (self.label, cand.decode()), is_package=pkg)
-            for suffix in ext_suffixes if self.label == "D" else ():  # native code only from D
+                if node is None:
+                    return None
+                if node[0] == "symlink":
+                    raise ImportError("%s: symlink node is not importable (policy)" % name)
+                if node[0] not in ("regular", "executable"):
+                    return None
+                spec = importlib.util.spec_from_loader(
+                    name, self, origin="s0:%s:%s" % (self.label, cand.decode()), is_package=pkg)
+                if pkg:
+                    spec.submodule_search_locations = [self.marker]
+                return spec
+
+            found = source_spec(rel + b"/__init__.py", True)  # FileFinder: package directory first
+            if found is not None:
+                return found
+            for suffix in ext_suffixes if self.label == "D" else ():  # then extensions (native only from D)
                 node = self.nodes.get(rel + suffix.encode())
                 if node is not None and node[0] in ("regular", "executable"):
                     fd = seal_committed(node[2], name="ar-301-s0-native")
@@ -219,10 +247,13 @@ def _main(spec):
                     where = "/proc/self/fd/%d" % fd
                     return importlib.machinery.ModuleSpec(
                         name, importlib.machinery.ExtensionFileLoader(name, where), origin=where)
+            found = source_spec(rel + b".py", False)  # then source
+            if found is not None:
+                return found
             node = self.nodes.get(rel)
             if node is not None and node[0] == "tree":
                 spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
-                spec.submodule_search_locations = []
+                spec.submodule_search_locations = [self.marker]
                 return spec
             if node is not None and node[0] == "symlink":
                 raise ImportError("%s: symlink node is not importable (policy)" % name)
@@ -239,11 +270,15 @@ def _main(spec):
             exec(compile(source, module.__spec__.origin, "exec", dont_inherit=True), module.__dict__)
 
         def get_source(self, fullname):
-            spec = self.find_spec(fullname)
-            return None if spec is None else self.nodes[self._rel(spec)][2].decode("utf-8")
+            mod = sys.modules.get(fullname)
+            spec = getattr(mod, "__spec__", None)
+            if spec is None or not str(spec.origin).startswith("s0:%s:" % self.label):
+                return None
+            return self.nodes[self._rel(spec)][2].decode("utf-8")
 
     path_finder_index = next(i for i, f in enumerate(sys.meta_path) if f is importlib.machinery.PathFinder)
-    sys.meta_path.insert(path_finder_index, ClosedFinder("S", S, set(spec.get("roots", ["app"]))))
+    s_finder = ClosedFinder("S", S, set(spec.get("roots", ["app"])))
+    sys.meta_path.insert(path_finder_index, s_finder)
     if D:
         sys.meta_path.append(ClosedFinder("D", D))  # after PathFinder: stdlib precedes site-packages
     sys.path_importer_cache.clear()
@@ -266,7 +301,7 @@ def _main(spec):
             cls = "S_source"
         elif origin.startswith("s0:D:"):
             cls = "D_source"
-        elif origin.startswith("/proc/self/fd/"):
+        elif origin.startswith("/proc/self/fd/") and type(getattr(mspec, "loader", None)).__name__ == "ExtensionFileLoader":
             cls = "D_native_memfd"
         elif origin in ("built-in", "frozen") or loader in ("BuiltinImporter", "FrozenImporter"):
             cls = "builtin_or_frozen"

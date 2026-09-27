@@ -23,10 +23,11 @@ O runner:
      regra de árvore de C3 que o produtor importa);
    - `/work/toolrepo`, `/work/venv` — checkout e venv **do usuário 2000**, criados pelo script do
      próprio repositório (`install-agent-review-toolrepo.sh --toolrepo-sha`);
-3. executa cada `exp_*.py` como o usuário 2000 com `python3.11 -I -S`, ambiente vazio.
+3. executa cada `exp_*.py` como o usuário 2000 com `python3.11 -I -S -B`, ambiente vazio; o produtor
+   importa a regra de árvore do C3 só de `/opt/toolrepo-tcb`.
 
 Cada script imprime JSON com `expected`, `observed` e `pass` por caso; `pass` é calculado, não
-declarado. Casos sem `expected` (em `exp_process_channel`) são observações.
+declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_C3`) são observações.
 
 ## Arquivos
 
@@ -45,7 +46,8 @@ declarado. Casos sem `expected` (em `exp_process_channel`) são observações.
 | `exp_bootstrap_env.py` | configuração anterior ao 1º import; `-I` vs `-S`; piso root-owned |
 | `exp_functional.py` | engine real executada só de `S_G`/`S_D`; paridade; contramodelos; censo |
 | `exp_resources.py` | expansão, orçamentos, falhas e ownership |
-| `results/py311-20260926/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |
+| `exp_deps.py` | recusas de S_D em wheels sintéticos (identidade, tags, RECORD, zip bomb, colisões, ELF) |
+| `results/py311/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |
 
 ## Limites
 

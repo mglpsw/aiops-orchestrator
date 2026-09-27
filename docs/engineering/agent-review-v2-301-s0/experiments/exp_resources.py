@@ -70,14 +70,19 @@ case("shared_subtree_expansion_refused_per_occurrence", "REFUSED:budget_payload_
      unique_bytes=65536, per_occurrence_bytes=2000 * 65536, budget_bytes=16 * 2**20, heap_peak_MiB=peak,
      fds_restored=fds_ok, git_reaped=kids_ok)
 res, _, _, _ = measured(lambda: cap.build_subject(repo, dag, budget=cap.Budget(max_nodes=1000)))
-case("single_tree_entry_cap_is_C3s", "REFUSED:tree_unrepresentable", res,
-     note="2,000 entries in ONE tree: refused by C3's own per-tree cap (_parse_tree_data), not by S's node budget")
+case("single_tree_entry_cap_rule_is_C3s", "REFUSED:tree_unrepresentable", res,
+     note="2,000 entries in ONE tree vs S's node budget 1000: the RULE is C3's (_parse_tree_data entry cap); "
+          "the VALUE passed to it is S's remaining node budget. The body (~80 KB) is below the pre-read bound.")
 small = fx.blob(repo, b"s\n")
 sub40 = fx.mktree(repo, [("100644", "blob", small, b"f%02d" % i) for i in range(40)])
 dag40 = fx.commit(repo, fx.mktree(repo, [("040000", "tree", sub40, b"d%02d" % i) for i in range(40)]))
-res, peak, _, _ = measured(lambda: cap.build_subject(repo, dag40, budget=cap.Budget(max_nodes=1000)))
-case("shared_subtree_node_budget_per_occurrence", "REFUSED:budget_nodes", res, heap_peak_MiB=peak,
-     unique_nodes=41, per_occurrence_nodes=40 + 40 * 40, note="every tree < 1000 entries; only the occurrence count exceeds")
+# 1010 = 40 root entries + 24 whole subtrees + 10: the 25th subtree passes the pre-read bound
+# (remaining 10 >= size//295 = 4); its 40 entries then exceed the REMAINING node budget, which S passes
+# as C3's per-tree entry cap. So the cumulative (per-occurrence) node budget is enforced by C3's rule;
+# S's own `budget_nodes` check is redundant defence and is not the mechanism observed here.
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, dag40, budget=cap.Budget(max_nodes=1010)))
+case("shared_subtree_node_budget_per_occurrence", "REFUSED:tree_unrepresentable", res, heap_peak_MiB=peak,
+     unique_nodes=41, per_occurrence_nodes=40 + 40 * 40, note="every tree has 40 entries; only the cumulative count exceeds")
 
 # (2) one oversized blob: refused from the object HEADER, before the body is read
 huge = fx.blob(repo, os.urandom(32 * 2**20))
@@ -89,9 +94,23 @@ res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_huge))
 case("CONTROL_same_blob_within_default_budget", "ACCEPTED", res, heap_peak_MiB=peak,
      note="heap ~ blob size: the carrier is in-memory by design; the budget bounds it")
 
+# (2b) a huge TREE body and a huge COMMIT body: refused from the header, before the body is read
+names = [("100644", "blob", fx.blob(repo, b"t"), (b"%06d" % i) + b"n" * 244) for i in range(60000)]
+big_tree = fx.mktree(repo, names)
+c_big_tree = fx.commit(repo, big_tree)
+tree_size = int(fx.git(repo, "cat-file", "-s", big_tree))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_big_tree, budget=cap.Budget(max_nodes=10)))
+case("oversized_tree_refused_before_read", "REFUSED:budget_tree_entries_pre_read", res, tree_bytes=tree_size,
+     heap_peak_MiB=peak, fds_restored=fds_ok, git_reaped=kids_ok)
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_big_tree, budget=cap.Budget(max_metadata_bytes=4 * 2**20)))
+case("tree_bytes_charged_to_metadata_budget", "REFUSED:budget_metadata_bytes", res, tree_bytes=tree_size, heap_peak_MiB=peak)
+big_msg_commit = fx.git(repo, "commit-tree", fx.empty_tree(repo), "-F", "-", data=b"m" * (16 * 2**20))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, big_msg_commit))
+case("oversized_commit_refused_before_read", "REFUSED:budget_commit_bytes", res, commit_bytes=16 * 2**20, heap_peak_MiB=peak)
+
 # (3) depth budget applies to EVERY node kind (C3/R2 property), not only to trees
 deep = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"x"), b"leaf.py")])
-for i in range(70):
+for i in range(110):
     deep = fx.mktree(repo, [("040000", "tree", deep, b"n")])
 res, _, _, _ = measured(lambda: cap.build_subject(repo, fx.commit(repo, deep)))
 case("depth_budget", "REFUSED:budget_depth", res)
@@ -154,6 +173,10 @@ r = ln.launch(PY, dict(spec, x={"fd": x2, "sha256": hashlib.sha256(crash).hexdig
 case("consumer_exits_rc0_without_reply_is_not_success", {"rc": 0, "reply": None}, {"rc": r["rc"], "reply": r["reply"]})
 for fd in (s_fd, x_fd, x2):
     os.close(fd)
+fds1 = cap.open_fds()
+r = ln.launch("/nonexistent/python", spec, (), timeout=5)
+case("launcher_pre_spawn_failure_releases_both_socket_ends", {"spawn_error": "FileNotFoundError", "reply": None, "fds_restored": True},
+     {"spawn_error": r.get("spawn_error"), "reply": r.get("reply"), "fds_restored": cap.open_fds() == fds1})
 case("harness_fds_restored", fds0, cap.open_fds())
 out["all_pass"] = all(c.get("pass") for c in out["cases"].values())
 print(json.dumps(out, indent=1, default=str))

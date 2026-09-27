@@ -96,6 +96,24 @@
    },
    "pass": true
   },
+  "D_cannot_extend_S_or_stdlib_packages": {
+   "expected": {
+    "json_is_stdlib": true,
+    "app.extra": "ModuleNotFoundError",
+    "json.injected": "ModuleNotFoundError",
+    "encodings.s0evil": "ModuleNotFoundError",
+    "codec_s0evil": "LookupError"
+   },
+   "observed": {
+    "app.extra": "ModuleNotFoundError",
+    "codec_s0evil": "LookupError",
+    "encodings.s0evil": "ModuleNotFoundError",
+    "json.injected": "ModuleNotFoundError",
+    "json_is_stdlib": true
+   },
+   "pass": true,
+   "reviewer_repro_of": "F3 (finder ignored `path`)"
+  },
   "producer_fds_restored": {
    "expected": [
     0,
@@ -129,10 +147,11 @@
    "path_bytes": 54726,
    "git_objects_read": 1003,
    "git_bytes_read": 8713049,
-   "git_subprocesses": 2,
-   "build_s": 0.159,
-   "serialize_seal_verify_s": 0.025,
-   "producer_heap_peak_MiB_build_to_seal": 26.1,
+   "git_subprocesses_counted": 2,
+   "metadata_bytes_read": 52807,
+   "build_s": 0.164,
+   "serialize_seal_verify_s": 0.028,
+   "producer_heap_peak_MiB_build_to_seal": 25.9,
    "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
   },
   "D": {
@@ -168,24 +187,26 @@
      "bytes": 14611
     }
    ],
-   "nodes": 186,
+   "nodes_including_directories": 186,
+   "members": 164,
+   "python_tag": "cp311",
    "payload_bytes": 9700542,
-   "container_bytes": 9718902,
-   "build_seal_s": 0.09,
+   "container_bytes": 9718908,
+   "build_seal_s": 0.096,
    "producer_heap_peak_MiB": 45.6,
-   "sha256": "f808aa0cba81e59dd0becf6f40bc3e7037c79b4ecfb05ca0cdd49d4605707c21",
+   "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
    "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
   },
   "E_child": {
-   "maxrss_kib": 87100,
-   "inherited_sealed_fds": 3,
+   "maxrss_kib": 87216,
+   "inherited_sealed_fds_by_construction": 3,
    "native_memfds_created_in_child": 2,
    "result_channel": "socketpair",
-   "elapsed_s": 0.399
+   "elapsed_s": 0.408
   },
   "normal": {
-   "maxrss_kib": 76872,
-   "elapsed_s": 0.26051230399752967
+   "maxrss_kib": 78076,
+   "elapsed_s": 0.2551267300150357
   }
  },
  "census": {
@@ -319,6 +340,20 @@
    "/work/scr-func/target/contracts/domain-contracts.yaml"
   ],
   "E_native_memfds": 2,
+  "E_import_pwd_stack": [
+   "<frozen posixpath>:246:expanduser",
+   "/usr/local/lib/python3.11/sysconfig.py:119:joinuser",
+   "/usr/local/lib/python3.11/sysconfig.py:129:_getuserbase",
+   "/usr/local/lib/python3.11/sysconfig.py:131:<module>",
+   "<frozen importlib._bootstrap>:241:_call_with_frames_removed",
+   "<frozen importlib._bootstrap_external>:940:exec_module",
+   "<frozen importlib._bootstrap>:690:_load_unlocked",
+   "<frozen importlib._bootstrap>:1147:_find_and_load_unlocked",
+   "<frozen importlib._bootstrap>:1176:_find_and_load",
+   "/usr/local/lib/python3.11/zoneinfo/_tzpath.py:2:<module>",
+   "<frozen importlib._bootstrap>:241:_call_with_frames_removed",
+   "<frozen importlib._bootstrap_external>:940:exec_module"
+  ],
   "E_flags_self_report": {
    "ignore_environment": 1,
    "isolated": 1,
@@ -348,7 +383,7 @@
   },
   "E_untampered": {
    "rc": 0,
-   "elapsed_s": 0.399,
+   "elapsed_s": 0.408,
    "stderr_tail": ""
   },
   "normal_source_tampered": {
@@ -357,7 +392,7 @@
   },
   "E_source_tampered": {
    "rc": 0,
-   "elapsed_s": 0.403,
+   "elapsed_s": 0.401,
    "stderr_tail": ""
   },
   "normal_warm_pycache": {
@@ -370,7 +405,7 @@
   },
   "E_pyc_planted": {
    "rc": 0,
-   "elapsed_s": 0.402,
+   "elapsed_s": 0.381,
    "stderr_tail": ""
   },
   "normal_venv_tampered": {
@@ -379,7 +414,7 @@
   },
   "E_venv_tampered": {
    "rc": 0,
-   "elapsed_s": 0.395,
+   "elapsed_s": 0.375,
    "stderr_tail": ""
   },
   "normal_plugin_planted": {
@@ -388,7 +423,7 @@
   },
   "E_plugin_planted": {
    "rc": 0,
-   "elapsed_s": 0.449,
+   "elapsed_s": 0.405,
    "stderr_tail": ""
   }
  },

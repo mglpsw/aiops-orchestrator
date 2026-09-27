@@ -13,15 +13,17 @@ runtime: {image: "python:3.11-bookworm@sha256:b99029c95d3d37fb1e4e76d287f7984373
           work_fs: tmpfs, yama_ptrace_scope: 1, actor_uid: 2000, tcb_owner: root}
 wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
-results: experiments/results/py311-20260926/
-scripts: experiments/results/py311-20260926/SCRIPTS.sha256
-outcome: 93/93 casos com expectativa passaram; 0 stderr; 2 observações sem expectativa (exp_process_channel)
-reproduction: própria (esta sessão, 2026-09-26); não é reprodução independente
+results: experiments/results/py311/
+scripts: experiments/results/py311/SCRIPTS.sha256   # os arquivos que produziram estes resultados
+outcome: 123/123 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
+         exp_process_channel e 1 em exp_structure (non_utf8_name_S_vs_C3); único stderr = aviso
+         esperado do zipfile no fixture de membro duplicado (exp_deps.stderr)
+reproduction: própria (esta sessão); não é reprodução independente
 ```
 
-Os valores esperados estão escritos em cada script antes da execução registrada. Durante a
-construção houve execuções de ensaio em CPython 3.12.3 no host; elas **não** são evidência
-registrada, e os defeitos de harness que revelaram estão listados abaixo.
+Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
+ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
+deste head; a do head `3d426e1` continua no histórico git.
 
 ## Afirmações → evidência
 
@@ -29,76 +31,97 @@ registrada, e os defeitos de harness que revelaram estão listados abaixo.
 |---|---|---|---|---|
 | `git cat-file` serve bytes que não hasheiam ao oid (rc 0) | `exp_n1_auth.json` `*_HOR_git_itself_serves_swapped_blob_rc0` | sha1 e sha256: sim | reproduzida aqui (spike HOR herdado, 3.12) | objetos loose |
 | Adulteração de commit/tree/blob recusada pelo mismatch do objeto certo | `*_blob_swapped_*`, `*_tree_swapped`, `*_commit_swapped` | `object_hash_mismatch/{blob,tree,commit}` | aqui | loose; pack/alternates só por argumento |
-| Discriminador é o hash, não falha incidental | `*_ABLATION_verify_disabled_*` | mutante aceita e incorpora `EVIL` | aqui | — |
+| Discriminador é o hash | `*_ABLATION_verify_disabled_*` | mutante aceita e incorpora `EVIL` | aqui | — |
 | Hash de uma leitura + cópia de outra reabre a janela | `MUTANT_verify_then_reread_embeds_other_bytes` | bytes diferentes | aqui | — |
-| Formato do objeto vem do `C` esperado | `expected_sha256_id_against_sha1_repo`, casos `sha256_*` | `object_format_mismatch`; sha256 completo aceito | aqui | git 2.39 |
-| N1 contra G1/Q no master integrado | `INHERITED_N1_G1_Q_accepts_EVIL_after_private_copy_swap` | `SUCCESS` para `EVIL` | **reexecutada** (spike PR352#5848970869, 3.12, base 9a5cf35) | viola a quiescência de Q; testemunha para S, não defeito de Q |
-| Fidelidade A/A2: paridade com árvore declarada e com C3 | `exp_structure.json` `parity_*` | igualdade exata | aqui (spike EXP-S1 herdado) | fixture sintética |
-| 7 distinções materiais preservadas; mutante com perda colide | `countermodel_*` | 7/7 distinguidos; mutante colide 5/7 | aqui | — |
-| Recusas explícitas | `gitlink_refused`, `noncanonical_mode_100664_refused`, `dotdot_name_refused_by_C3_rule`, `duplicate_name_refused` | recusados | aqui | duplicado: regra no protótipo, deve migrar para C3 |
-| Nome não-UTF-8 | `non_utf8_name_S_vs_C3` | S e C3 aceitam (C3 via surrogateescape) | aqui | observação |
-| Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui (spike EXP-S1 parcial herdado) | kernel 6.18 |
-| Janela pré-selo detectada; ablação compromete adulterado | `pre_seal_write_detected_at_commit`, `ABLATION_no_post_seal_rehash_*` | `sealed_content_mismatch`; mutante `COMMITTED` | aqui | — |
-| Selo estranho / mapeamento gravável retido | `pre_seal_foreign_*` | `seal_failed` | aqui | — |
-| M mutado após captura não altera S; consumidor não lê M | `M_mutated_after_capture_S_unchanged`, `consumer_imports_trusted_bytes_from_S`, `consumer_opens_under_M` | digest igual; `trusted`/`NamespaceLoader`/`ModuleNotFoundError`; 0 aberturas | aqui (spike EXP-S2/S3 herdados) | `cwd=M` e `PYTHONPATH=M` oferecidos |
-| Substituição de binding recusada antes do driver | `binding_*` (6) | cada razão esperada; driver não executou | aqui | — |
-| Pipe de resultado é forjável; socketpair não | `exp_process_channel.json` | `INJECTED`/`FORGED`; `ENXIO`/`genuine` | aqui | — |
-| Não-ancestral mesmo UID: sem attach/`/proc/pid/mem`; lista FDs se dumpable | `same_uid_non_ancestor_vs_*` | observado | aqui | Yama=1 neste host |
-| `pyvenv.cfg` editado executa código antes do `-c` sob `-I -S` | `exp_bootstrap_env.json` `venv_python_I_S_same_uid_edited_pyvenv_cfg` | payload executou | **reexecutada** (spike EXP-F1, 3.12) | stdlib copiado para prefixo do atacante |
-| `LD_PRELOAD` age sob `-I -S`; `env={}` fecha | `LD_PRELOAD_with_I_S`, `empty_environment_I_S` | sim / não | aqui | — |
-| `-I` e `-S` fecham portas diferentes | matriz `S_only_*`, `E_S_*`, `I_only_*`, `I_S_*`, `no_flags_*` | conforme esperado | aqui | — |
-| Piso: interpretador/stdlib root-owned, não graváveis pelo ator | `floor` | uid 0, escrita negada | aqui | **só neste container**; CT104 não observado |
-| Engine real executa só de S_G/S_D com paridade | `exp_functional.json` `positive_E_result_equals_normal_path` | `bundle_sha256` igual; `ready`; 2 chunks | aqui | Router substituído por resposta sintética |
-| E: 0 aberturas em checkout/venv, 0 subprocessos, 0 distribuições | `E_no_*`, `E_distribution_metadata_visible` | vazios | aqui | auditoria do próprio bootstrap (vale sob **P**) |
-| Checkout, `.pyc`, venv e plugin afetam o caminho normal e não E | `checkout_source_tampered`, `pyc_planted_source_matches_commit`, `venv_installed_file_tampered`, `pydantic_plugin_distribution_planted` | normal executa; E inalterado | aqui | — |
-| S_D vinculado ao lock de S_G; sem fallback | `D_not_bound_to_S_lock_refused`, `D_absent_no_fallback` | recusa; `No module named`, 0 aberturas na venv | aqui | — |
-| Censo por origem | `census` | 35 S, 66 D, 2 nativos em memfd, 103/27/41 stdlib/ext/builtin; só no normal: `site`, `_sitebuiltins`, `_distutils_hack`; só em E: `pwd` | aqui | um percurso |
-| Dados do target: 2 aberturas por arquivo, por path | `census.E_opens_outside_usr_proc_dev` + rastreio de pilha (sessão) | validate → relê | aqui | U4 |
-| Números de recursos | `resources` | ver CONTRACT §8 | aqui (substitui RES do spike em 3.12) | este corpus/ambiente |
-| Expansão por ocorrência e blob grande recusados antes | `exp_resources.json` | `budget_payload_bytes` (heap 17,7 / 0,06 MiB), `budget_nodes`, `budget_depth` | aqui | — |
-| Cap por árvore é o de C3 | `single_tree_entry_cap_is_C3s` | `tree_unrepresentable` | aqui | — |
-| Falhas sem S parcial; FDs/processos lineares; ausência ≠ sucesso | `write_failure_*`, `seal_failure_*`, `mid_capture_*`, `hung_consumer_*`, `consumer_exits_rc0_*`, `harness_fds_restored` | conforme esperado | aqui | falha de selo por injeção (monkeypatch) |
-| `pydantic_core` sem RPATH; NEEDED só de sistema | `readelf -d` no wheel do lock (sessão, não persistido em JSON) | libgcc_s, librt, libpthread, libm, libc, ld-linux | aqui | cp311 manylinux2014 |
-| Caller real e runner | forge: AgentEscala `develop@8537eb18` `agent-review-v2-analysis.yml`, `scripts/aiops/agent_review_v2_run.py` | `runs-on: [self-hosted, …, ct104, …]`; venv + `PYTHONPATH` | leitura de fonte | não executado |
-| CAEM/SACR-AS sem workflow v2 | forge: listagem de `.github/workflows` | nenhum arquivo com review/agent | leitura | estado em 2026-09-26 |
+| Formato do objeto vem do `C` esperado | `expected_sha256_id_against_sha1_repo`, `sha256_*` | `object_format_mismatch`; sha256 aceito | aqui | git 2.39 |
+| N1 contra G1/Q no master integrado | `INHERITED_N1_G1_Q_accepts_EVIL_after_private_copy_swap` | `SUCCESS` para `EVIL` | **reexecutada** (spike PR352#5848970869) | viola a quiescência de Q; testemunha para S |
+| Fidelidade A/A2 | `exp_structure.json` `parity_*`, `countermodel_*` | paridade exata com árvore declarada e com C3; 7/7 distinções; mutante com perda colide 5/7 | aqui | fixture sintética |
+| Recusas estruturais | `gitlink_refused`, `noncanonical_mode_*`, `dotdot_*`, `duplicate_name_refused` | recusados | aqui | regras espelhadas do C3 (CONTRACT §11.2) |
+| Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui | kernel 6.18 |
+| Janela pré-selo; selo estranho; mapeamento retido | `pre_seal_*`, `ABLATION_no_post_seal_rehash_*` | detectado / `seal_failed`; mutante `COMMITTED` | aqui | — |
+| M mutado após captura; consumidor não lê M | `M_mutated_*`, `consumer_*` | digest igual; `trusted`; 0 aberturas | aqui | `cwd=M`, `PYTHONPATH=M` oferecidos |
+| Substituição de binding | `binding_*` (6) | recusas esperadas; driver não executou | aqui | — |
+| Pipe forjável; socketpair não | `exp_process_channel.json` | `FORGED` / `ENXIO` | aqui | — |
+| Não-ancestral mesmo UID vs consumidor | `same_uid_non_ancestor_vs_*` | sem attach/`/proc/pid/mem`; lista FDs se dumpable | aqui | Yama=1; produtor/launcher não observados |
+| Startup: `pyvenv.cfg`, `LD_PRELOAD`, `-I` vs `-S` | `exp_bootstrap_env.json` | conforme esperado (14 casos) | EXP-F1 **reexecutada** + novos | — |
+| Piso root-owned | `floor` (23 caminhos), `floor_all_root_owned_and_not_writable` | `true` | aqui | **só neste container** |
+| S_D: 25 recusas e controles | `exp_deps.json` | todas as razões esperadas; controle puro e nativo sem caminho aceitos | aqui (novo nesta rodada) | wheels sintéticos; `cc` do container |
+| Zip bomb recusado antes de inflar | `compressed_member_refused_before_inflate` | 200 MiB recusado, heap 0,27 MiB | aqui | — |
+| Engine real só de S_G/S_D com paridade | `exp_functional.json` `positive_E_result_equals_normal_path` | `bundle_sha256` igual; `ready`; 2 chunks | aqui | Router → resposta sintética |
+| E: 0 aberturas em checkout/venv, 0 subprocessos, 0 distribuições | `E_no_*`, `E_distribution_metadata_visible` | vazios | aqui | audit do bootstrap: só nível Python; vale sob **P** |
+| Checkout, `.pyc`, venv, plugin afetam só o caminho normal | `checkout_source_tampered`, `pyc_planted_*`, `venv_installed_*`, `pydantic_plugin_*` | normal executa; E inalterado | aqui | — |
+| D vinculado ao lock; sem fallback | `D_not_bound_*`, `D_absent_no_fallback` | recusa; `No module named` | aqui | vínculo de rótulo |
+| D não estende pacotes de S/stdlib nem sombreia stdlib | `D_cannot_extend_S_or_stdlib_packages` | `ModuleNotFoundError` ×3, `LookupError`, `json` da stdlib | aqui; **defeito reproduzido pela revisão no head `3d426e1`** | — |
+| Produtor importa C3 só da cópia root-owned | `run_py311.sh` (arg `/opt/toolrepo-tcb`), `exp_functional.py` | — | construção | observado por configuração, não por auditoria |
+| Censo por origem; `pwd` atribuído | `census` | 35 S, 66 D, 2 nativos; `pwd` via `zoneinfo`→`sysconfig`→`expanduser` | aqui | um percurso |
+| Recursos de S/D/E | `resources` | CONTRACT §8 | aqui | este corpus/ambiente |
+| Commit/tree/blob/expansão/profundidade limitados antes | `exp_resources.json` | tree 16,7 MB, commit 16 MiB, blob 32 MiB recusados com heap 0,06 MiB; expansão 125 MiB recusada em 17,8 MiB; profundidade 110 | aqui | — |
+| Falhas sem S parcial; ownership linear | `write_failure_*`, `seal_failure_*`, `mid_capture_*`, `launcher_pre_spawn_*`, `hung_*`, `consumer_exits_rc0_*` | conforme esperado | aqui | falha de selo por injeção |
+| Caller real, runner, targets | forge: AgentEscala `develop@8537eb18`; listagem de workflows de caem/sacr-as | CT104 self-hosted; sem v2 em CAEM/SACR-AS | leitura de fonte | não executado |
 
 ## Herdado e não reexecutado
 
-- Spike EXP-Q1 (0700/0444/`/proc/pid/fd`/`PR_SET_DUMPABLE` contra uma época C3 viva): citado apenas
-  como motivação de "permissão/FD mantido ≠ imutabilidade" (PR352#5848970869).
-- Censo do spike de que nenhum caller de produção de C3/G1 existe: não refeito como busca; o
-  percurso de E aqui não usa C3/G1.
-- Registros de #324/#353 (AR-C3-C4Q-KD-20260926-R1): usados como índice, não como reprodução.
+- Spike EXP-Q1 (permissões/FD mantido contra uma época C3 viva): citado apenas como motivação
+  (PR352#5848970869).
+- Censo do spike de que não existe caller de produção de C3/G1: não refeito como busca.
+- Registros de #324/#353 (AR-C3-C4Q-KD-20260926-R1): usados como índice.
 
 ## NOT_TESTED (e consequência)
 
 - CT104: versão/ABI/ownership do interpretador, Yama, provisionamento root → U2/U3 continuam premissas.
-- Runners hospedados com `setup-python` (toolcache do UID do runner) → piso 2 presumivelmente não
-  atendido; não observado.
-- Objetos em pack, alternates, repositório parcial → autenticação por argumento (buffer lido).
-- memfd sob limite de memcg / OOM; kernels sem `F_SEAL_*` ou com outra semântica.
-- Execução de programas por configuração do git durante `cat-file` (git é tratado como transporte
-  não confiável; efeito possível seria disponibilidade ou código same-UID já presumido).
-- Modo Router conectado; relançamento de brokers; `importlib.resources`; threads no bootstrap.
+- Runners hospedados com `setup-python` → piso 2 presumivelmente não atendido; não observado.
+- Objetos em pack, alternates, repositório parcial → autenticação por argumento.
+- memfd sob limite de memcg/OOM; outros kernels.
+- Sinais de mesmo UID contra produtor/launcher/filho; integridade de processo do produtor e do launcher.
+- Execução de programas por configuração do git durante `cat-file`.
+- Modo Router conectado; relançamento de brokers; threads no bootstrap.
 - Interpretador não oficial (Debian `/usr/bin/python3.11`), musl.
 - Reprodução independente por outro operador/máquina.
 
+## Rodada de revisão 1 (head `3d426e1`) → correções neste head
+
+Revisores: Codex (`chatgpt-codex-connector`, 8 comentários inline no head exato) e um subagente de
+revisão adversarial com contexto limpo (mesmo modelo; independência limitada). Todos os achados foram
+reproduzidos ou confirmados por leitura de código; a adjudicação e as respostas às três perguntas de
+recorrência estão no corpo da PR.
+
+| Achado | Materialidade | Correção | Evidência nova |
+|---|---|---|---|
+| Corpos de commit/tree lidos sem limite (Codex P1; revisão F1) | material a 301S-RES | cobrança pelo header para commit/tree; limite pré-leitura do C3 | `oversized_tree_*`, `tree_bytes_*`, `oversized_commit_*` |
+| Zip bomb inflado antes do limite de S_D (Codex P1) | material a 301S-RES | `ZipInfo.file_size` antes de ler | `compressed_member_refused_before_inflate` |
+| Lock como symlink autorizaria S_D (Codex P1) | material a 301S-DEP | exigir nó `regular` no produtor e no consumidor | `lock_bytes()`; checagem no bootstrap |
+| Nativo com RPATH/`DT_NEEDED` absoluto (Codex P1) | material a 301S-NAT | inspeção ELF | `native_*` |
+| Identidade do wheel pelo nome do arquivo (Codex P1; revisão Q5) | material a 301S-DEP | `.dist-info`, `METADATA`, `WHEEL`, tags vs interpretador; tag no cabeçalho de D | `wheel_renamed_*`, `wheel_tag_*`, `wheel_other_interpreter_abi` |
+| Colisão arquivo/diretório (Codex P2) | material a 301S-DEP | recusa | `file_directory_prefix_collision_one_wheel` |
+| Produtor importava C3 do checkout gravável (Codex P2; revisão F4) | material ao piso de TCB | argumento `producer_src` root-owned; `-B` | configuração do runner |
+| Socketpair vazava em falha pré-spawn (Codex P2) | material a 301S-LIFE | posse dos dois lados até o spawn | `launcher_pre_spawn_*` |
+| Finder ignorava `path` (revisão F3) | material a 301S-LOAD | marcador por finder; ordem como `FileFinder` | `D_cannot_extend_S_or_stdlib_packages` |
+| Regras do C3 copiadas com valores diferentes; duplicado já é do C3 (revisão F2) | material ao §11.2 | valores alinhados (profundidade 100), texto corrigido, S1 consome o builder do C3 | — |
+| Nenhuma recusa de S_D exercitada (revisão F5) | material à evidência | `exp_deps.py` | 25 casos |
+| `inspect`/`importlib.resources`/`pkgutil` implícitos (F6) | menor | declarados não suportados | — |
+| Números rotulados de forma imprecisa (F7) | menor | contagens medidas ou rotuladas "por construção" | `resources` |
+| Piso checava 4 caminhos (F8) | menor | 23 caminhos | `floor` |
+| Limite do audit hook (F9) | menor | mais eventos; limite declarado | — |
+| Vínculo S_D↔lock é de rótulo (F10) | menor | texto | — |
+| `parse_lock` divergia do pip (F11) | menor | duplicado/marker/comentário recusados | `lock_*` |
+| `pwd` não atribuído (Q2) | menor | pilha registrada | `census.E_import_pwd_stack` |
+| Premissa **P** do produtor/launcher; sinais; git filho (Q1, Q4) | menor | tabela de atores | — |
+| U3 afeta S1; decisões de orçamento e do owner C3 (F4, Q3) | material ao handoff | precondição e decisões explícitas em §12 | — |
+
 ## Defeitos do harness corrigidos durante a construção
 
-Registrados para que a história não pareça linear. Nenhum mudou uma expectativa para acomodar um
-resultado da engine ou do kernel.
+Nenhum mudou uma expectativa para acomodar resultado da engine ou do kernel, salvo onde dito.
 
-1. Canal socket testado no número de FD errado (ENOENT) → número herdado real (ENXIO esperado mantido).
-2. Marcador residual de um caso anterior creditado ao seguinte → limpeza antes de cada execução.
-3. Payload de startup usava `open` antes de existir em `encodings/__init__` (o código **executou**,
-   o marcador não foi gravado) → `posix.open`.
-4. Caso de orçamento de nós media o cap por árvore de C3, não o orçamento por ocorrência → fixture
-   com árvores pequenas; o cap de C3 virou caso próprio.
-5. Bundle inacessível ao usuário 2000; fallback que criaria ref no checkout de origem substituído por
-   repositório bare temporário.
-6. C3 recusou overlayfs como workspace (`_require_workspace_name_semantics_v2`) → `/work` em tmpfs
-   (domínio admitido de C3).
-
-## Revisão
-
-Registrada no corpo da Draft PR e nos seus comentários, com o head exato revisado; não repetida aqui.
+1. Canal socket testado no número de FD errado → número herdado real.
+2. Marcador residual creditado ao caso seguinte → limpeza antes de cada execução.
+3. Payload de startup usava `open` antes de existir (o código **executou**) → `posix.open`.
+4. Caso de orçamento de nós media outro mecanismo → fixtures separadas; na rodada 2 o mecanismo
+   observado passou a ser o cap do C3 alimentado com o orçamento restante, e a expectativa registra
+   esse mecanismo (a mudança veio da correção de 301S-RES, não do resultado).
+5. Bundle inacessível ao usuário 2000; fallback que criaria ref no checkout de origem substituído.
+6. C3 recusou overlayfs como workspace → `/work` em tmpfs (domínio admitido de C3).
+7. Fixture ELF com `DT_NEEDED` absoluto não tinha a dependência (linker `--as-needed`) →
+   `--no-as-needed` e verificação do próprio fixture.
+8. **Sobre-recusa detectada pelo corpus positivo**: a checagem de tags não expandia a tag comprimida
+   que o maturin grava no `WHEEL` do `pydantic_core` → expansão igual à do nome do arquivo.
+9. Linha vazia em `/proc/self/maps`; `ldconfig` fora do PATH do usuário → caminho absoluto.

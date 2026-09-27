@@ -1,0 +1,140 @@
+{
+ "cases": {
+  "control_pure_wheel_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "wheel_renamed_dist_info_mismatch": {
+   "expected": "REFUSED:wheel_identity_mismatch",
+   "observed": "REFUSED:wheel_identity_mismatch",
+   "pass": true
+  },
+  "wheel_renamed_metadata_mismatch": {
+   "expected": "REFUSED:wheel_identity_mismatch",
+   "observed": "REFUSED:wheel_identity_mismatch",
+   "pass": true
+  },
+  "wheel_tag_differs_from_WHEEL": {
+   "expected": "REFUSED:wheel_tag_mismatch",
+   "observed": "REFUSED:wheel_tag_mismatch",
+   "pass": true
+  },
+  "wheel_other_interpreter_abi": {
+   "expected": "REFUSED:wheel_incompatible_with_interpreter",
+   "observed": "REFUSED:wheel_incompatible_with_interpreter",
+   "pass": true
+  },
+  "wheel_member_duplicate": {
+   "expected": "REFUSED:wheel_duplicate_member",
+   "observed": "REFUSED:wheel_duplicate_member",
+   "pass": true
+  },
+  "wheel_record_mismatch": {
+   "expected": "REFUSED:wheel_record_mismatch",
+   "observed": "REFUSED:wheel_record_mismatch",
+   "pass": true
+  },
+  "wheel_member_absent_from_record": {
+   "expected": "REFUSED:wheel_record_mismatch",
+   "observed": "REFUSED:wheel_record_mismatch",
+   "pass": true
+  },
+  "wheel_pth_member": {
+   "expected": "REFUSED:wheel_pth_unsupported",
+   "observed": "REFUSED:wheel_pth_unsupported",
+   "pass": true
+  },
+  "wheel_data_scheme": {
+   "expected": "REFUSED:wheel_data_scheme_unsupported",
+   "observed": "REFUSED:wheel_data_scheme_unsupported",
+   "pass": true
+  },
+  "wheel_dotdot_member": {
+   "expected": "REFUSED:wheel_member_path",
+   "observed": "REFUSED:wheel_member_path",
+   "pass": true
+  },
+  "wheel_symlink_member": {
+   "expected": "REFUSED:wheel_symlink_unsupported",
+   "observed": "REFUSED:wheel_symlink_unsupported",
+   "pass": true
+  },
+  "file_directory_prefix_collision_one_wheel": {
+   "expected": "REFUSED:dependency_file_directory_collision",
+   "observed": "REFUSED:dependency_file_directory_collision",
+   "pass": true
+  },
+  "path_collision_across_wheels": {
+   "expected": "REFUSED:dependency_path_collision",
+   "observed": "REFUSED:dependency_path_collision",
+   "pass": true
+  },
+  "wheel_hash_not_in_lock": {
+   "expected": "REFUSED:wheel_hash_not_authorized",
+   "observed": "REFUSED:wheel_hash_not_authorized",
+   "pass": true
+  },
+  "wheel_not_in_lock": {
+   "expected": "REFUSED:wheel_not_in_lock",
+   "observed": "REFUSED:wheel_not_in_lock",
+   "pass": true
+  },
+  "lock_entry_without_wheel": {
+   "expected": "REFUSED:lock_entry_without_wheel",
+   "observed": "REFUSED:lock_entry_without_wheel",
+   "pass": true
+  },
+  "lock_duplicate_entry_refused_not_last_wins": {
+   "expected": "REFUSED:lock_duplicate_entry",
+   "observed": "REFUSED:lock_duplicate_entry",
+   "pass": true
+  },
+  "lock_environment_marker_refused": {
+   "expected": "REFUSED:lock_entry_unsupported_token",
+   "observed": "REFUSED:lock_entry_unsupported_token",
+   "pass": true
+  },
+  "lock_hash_in_comment_carries_no_authority": {
+   "expected": "REFUSED:lock_entry_unparseable",
+   "observed": "REFUSED:lock_entry_unparseable",
+   "pass": true
+  },
+  "compressed_member_refused_before_inflate": {
+   "expected": "REFUSED:budget_dependency_bytes",
+   "observed": "REFUSED:budget_dependency_bytes",
+   "pass": true,
+   "wheel_bytes": 204814,
+   "inflated_bytes": 209715200,
+   "budget": 8388608,
+   "heap_peak_MiB": 0.27
+  },
+  "native_plain": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "native_rpath": {
+   "expected": "REFUSED:native_search_path_outside_tcb",
+   "observed": "REFUSED:native_search_path_outside_tcb",
+   "pass": true
+  },
+  "native_runpath": {
+   "expected": "REFUSED:native_search_path_outside_tcb",
+   "observed": "REFUSED:native_search_path_outside_tcb",
+   "pass": true
+  },
+  "native_absolute_needed": {
+   "expected": "REFUSED:native_search_path_outside_tcb",
+   "observed": "REFUSED:native_search_path_outside_tcb",
+   "pass": true
+  }
+ },
+ "python_tag": "cp311",
+ "elf_of_plain": {
+  "needed": [],
+  "rpath": [],
+  "runpath": []
+ },
+ "all_pass": true
+}

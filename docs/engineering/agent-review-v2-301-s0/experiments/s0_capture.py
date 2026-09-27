@@ -34,6 +34,7 @@ from s0_bootstrap import (  # noqa: F401  (re-exported for the exp_* scripts)
 )
 
 ALGORITHM_BY_HEXLEN = {40: "sha1", 64: "sha256"}
+GIT_INVOCATIONS = [0]  # counted per build, reported by EXP-FUNC
 GIT_ENV = {
     "PATH": os.defpath,
     "HOME": "/nonexistent",
@@ -46,13 +47,19 @@ GIT_ENV = {
 
 @dataclass
 class Budget:
+    # Values MIRROR C3 where C3 owns the rule (entries 100_000, depth 100, component 255); the
+    # byte budgets are S's own (RAM-backed; C3's 2 GiB is a disk budget and does not transfer).
+    # S1 must obtain the C3-owned rules from C3's hierarchical builder, not from these copies.
     max_nodes: int = 100_000
-    max_depth: int = 64
-    max_payload_bytes: int = 64 * 1024 * 1024  # per occurrence; RAM-backed, so NOT C3's 2 GiB disk budget
+    max_depth: int = 100
+    max_payload_bytes: int = 64 * 1024 * 1024  # blob bytes, per occurrence
+    max_metadata_bytes: int = 64 * 1024 * 1024  # commit + tree bodies, charged before reading
+    max_commit_bytes: int = 1024 * 1024
     max_path_bytes: int = 16 * 1024 * 1024
     max_component_len: int = 255
     nodes: int = 0
     payload_bytes: int = 0
+    metadata_bytes: int = 0
     path_bytes: int = 0
     unique_payload: dict = field(default_factory=dict)
 
@@ -65,6 +72,18 @@ class Budget:
         self.path_bytes += len(path)
         if self.path_bytes > self.max_path_bytes:
             raise CaptureRefused("budget_path_bytes", str(self.path_bytes))
+
+    def charge_metadata(self, kind: str, size: int) -> None:
+        """Charged from the object HEADER, before the commit/tree body is read."""
+        if kind == "commit" and size > self.max_commit_bytes:
+            raise CaptureRefused("budget_commit_bytes", str(size))
+        if kind == "tree" and size // 295 > self.max_nodes - self.nodes:
+            # C3's pre-read bound (`_list_single_tree_entries_v2`): an entry is at most 295 bytes, so a
+            # body this large cannot fit the remaining entry budget. Mirrored here; owned by C3.
+            raise CaptureRefused("budget_tree_entries_pre_read", str(size))
+        self.metadata_bytes += size
+        if self.metadata_bytes > self.max_metadata_bytes:
+            raise CaptureRefused("budget_metadata_bytes", str(self.metadata_bytes))
 
     def charge_payload(self, oid: str, size: int) -> None:
         # Charged from the object HEADER, before the body is read: an oversized or
@@ -113,8 +132,11 @@ class VerifiedObjectReader:
         kind, size = header[1].decode("ascii", "replace"), int(header[2])
         if kind != want:
             raise CaptureRefused("object_type_mismatch", f"{oid} want={want} got={kind}")
-        if budget is not None and want == "blob":
-            budget.charge_payload(oid, size)
+        if budget is not None:  # every body is charged from its header, before it is read
+            if want == "blob":
+                budget.charge_payload(oid, size)
+            else:
+                budget.charge_metadata(want, size)
         body = self.proc.stdout.read(size)
         if len(body) != size or self.proc.stdout.read(1) != b"\n":
             raise CaptureRefused("object_truncated", oid)
@@ -167,19 +189,23 @@ class Subject:
 def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, verify: bool = True) -> Subject:
     budget = budget or Budget()
     reader = VerifiedObjectReader(repo, len(commit), verify=verify)
+    GIT_INVOCATIONS[0] += 2  # rev-parse --show-object-format + cat-file --batch
     try:
-        commit_body = reader.get(commit, "commit")
+        commit_body = reader.get(commit, "commit", budget)
         first = commit_body.split(b"\n", 1)[0].split(b" ")
         if len(first) != 2 or first[0] != b"tree" or len(first[1]) != len(commit):
             raise CaptureRefused("commit_unparseable", commit)
         root_tree = first[1].decode("ascii")
         nodes: dict = {}
-        stack = [(b"", root_tree, 0)]
+        stack = [(b"", root_tree, 0, (root_tree,))]
         while stack:
-            prefix, tree_oid, depth = stack.pop()
-            raw = reader.get(tree_oid, "tree")
+            prefix, tree_oid, depth, ancestors = stack.pop()
+            raw = reader.get(tree_oid, "tree", budget)
             seen: set = set()
-            for mode, obj_type, oid, name in _parse_tree(raw, len(commit) // 2, budget.max_nodes):
+            for mode, obj_type, oid, name in _parse_tree(raw, len(commit) // 2, budget.max_nodes - budget.nodes):
+                # mirrors of C3 trie rules (_build_canonical_trie_hierarchical); owned by C3
+                if os.fsencode(os.fsdecode(name)) != name:
+                    raise CaptureRefused("tree_unrepresentable", "fs_round_trip")
                 if name in seen:
                     raise CaptureRefused("tree_duplicate_name", repr(prefix + name))
                 seen.add(name)
@@ -188,8 +214,10 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
                 path = prefix + name
                 budget.charge_node(path, depth + 1)
                 if obj_type == "tree":
+                    if oid in ancestors:  # unreachable under hash-on-read; kept as C3 mirror
+                        raise CaptureRefused("tree_cycle", oid)
                     nodes[path] = ("tree", oid, b"")
-                    stack.append((path + b"/", oid, depth + 1))
+                    stack.append((path + b"/", oid, depth + 1, ancestors + (oid,)))
                 elif mode in ("100644", "100755"):
                     nodes[path] = ("executable" if mode == "100755" else "regular", oid, reader.get(oid, "blob", budget))
                 elif mode == "120000":
@@ -199,6 +227,14 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
         return Subject(reader.algorithm, commit, root_tree, nodes, budget, reader.objects_read, reader.bytes_read)
     finally:
         reader.close()
+
+
+def lock_bytes(nodes: dict, path: bytes = b"requirements-agent-review.lock") -> bytes:
+    """The lock that authorizes S_D must be a REGULAR file node of S_G (not a symlink's target text)."""
+    node = nodes.get(path)
+    if node is None or node[0] != "regular":
+        raise CaptureRefused("dependency_lock_not_regular_file", repr(node[0] if node else None))
+    return node[2]
 
 
 def open_fds() -> list[int]:

@@ -7,24 +7,24 @@
    "unique_bytes": 65536,
    "per_occurrence_bytes": 131072000,
    "budget_bytes": 16777216,
-   "heap_peak_MiB": 17.72,
+   "heap_peak_MiB": 17.75,
    "fds_restored": true,
    "git_reaped": true
   },
-  "single_tree_entry_cap_is_C3s": {
+  "single_tree_entry_cap_rule_is_C3s": {
    "expected": "REFUSED:tree_unrepresentable",
    "observed": "REFUSED:tree_unrepresentable",
    "pass": true,
-   "note": "2,000 entries in ONE tree: refused by C3's own per-tree cap (_parse_tree_data), not by S's node budget"
+   "note": "2,000 entries in ONE tree vs S's node budget 1000: the RULE is C3's (_parse_tree_data entry cap); the VALUE passed to it is S's remaining node budget. The body (~80 KB) is below the pre-read bound."
   },
   "shared_subtree_node_budget_per_occurrence": {
-   "expected": "REFUSED:budget_nodes",
-   "observed": "REFUSED:budget_nodes",
+   "expected": "REFUSED:tree_unrepresentable",
+   "observed": "REFUSED:tree_unrepresentable",
    "pass": true,
    "heap_peak_MiB": 0.21,
    "unique_nodes": 41,
    "per_occurrence_nodes": 1640,
-   "note": "every tree < 1000 entries; only the occurrence count exceeds"
+   "note": "every tree has 40 entries; only the cumulative count exceeds"
   },
   "oversized_blob_refused_before_read": {
    "expected": "REFUSED:budget_payload_bytes",
@@ -42,6 +42,29 @@
    "pass": true,
    "heap_peak_MiB": 32.01,
    "note": "heap ~ blob size: the carrier is in-memory by design; the budget bounds it"
+  },
+  "oversized_tree_refused_before_read": {
+   "expected": "REFUSED:budget_tree_entries_pre_read",
+   "observed": "REFUSED:budget_tree_entries_pre_read",
+   "pass": true,
+   "tree_bytes": 16680000,
+   "heap_peak_MiB": 0.06,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "tree_bytes_charged_to_metadata_budget": {
+   "expected": "REFUSED:budget_metadata_bytes",
+   "observed": "REFUSED:budget_metadata_bytes",
+   "pass": true,
+   "tree_bytes": 16680000,
+   "heap_peak_MiB": 0.06
+  },
+  "oversized_commit_refused_before_read": {
+   "expected": "REFUSED:budget_commit_bytes",
+   "observed": "REFUSED:budget_commit_bytes",
+   "pass": true,
+   "commit_bytes": 16777216,
+   "heap_peak_MiB": 0.06
   },
   "depth_budget": {
    "expected": "REFUSED:budget_depth",
@@ -104,6 +127,19 @@
    "observed": {
     "rc": 0,
     "reply": null
+   },
+   "pass": true
+  },
+  "launcher_pre_spawn_failure_releases_both_socket_ends": {
+   "expected": {
+    "spawn_error": "FileNotFoundError",
+    "reply": null,
+    "fds_restored": true
+   },
+   "observed": {
+    "spawn_error": "FileNotFoundError",
+    "reply": null,
+    "fds_restored": true
    },
    "pass": true
   },

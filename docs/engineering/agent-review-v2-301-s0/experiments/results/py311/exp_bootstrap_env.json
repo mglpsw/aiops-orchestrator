@@ -167,8 +167,123 @@
    "mode": "0o644",
    "writable_by_this_uid": false
   },
+  "lib_dynload": {
+   "path": "/usr/local/lib/python3.11/lib-dynload",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:ld-linux-x86-64.so.2": {
+   "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:libc.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:libm.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "mapped:libpython3.11.so.1.0": {
+   "path": "/usr/local/lib/libpython3.11.so.1.0",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "needed:libgcc_s.so.1": {
+   "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:librt.so.1": {
+   "path": "/usr/lib/x86_64-linux-gnu/librt.so.1",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libpthread.so.0": {
+   "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libm.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libc.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/": {
+   "path": "/",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr": {
+   "path": "/usr",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/lib": {
+   "path": "/usr/lib",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/lib/x86_64-linux-gnu": {
+   "path": "/usr/lib/x86_64-linux-gnu",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local": {
+   "path": "/usr/local",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/bin": {
+   "path": "/usr/local/bin",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib": {
+   "path": "/usr/local/lib",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib/python3.11": {
+   "path": "/usr/local/lib/python3.11",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib/python3.11/encodings": {
+   "path": "/usr/local/lib/python3.11/encodings",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
   "this_uid": 2000
  },
+ "floor_all_root_owned_and_not_writable": true,
  "child_self_report_flags_I_S_informative_only": "1 1 True",
  "all_pass": true
 }

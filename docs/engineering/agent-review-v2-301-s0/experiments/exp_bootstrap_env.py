@@ -47,8 +47,22 @@ def case(name, expected_marker, marker, **extra):
 # --- the floor the design relies on: root-owned interpreter and stdlib ---------------------------
 stdlib = Path(subprocess.run([BASE, "-I", "-S", "-c", "import os;print(os.path.dirname(os.__file__))"],
                              env={}, capture_output=True, text=True).stdout.strip())
-for label, path in (("interpreter", Path(os.path.realpath(BASE))), ("interpreter_dir", Path(os.path.realpath(BASE)).parent),
-                    ("stdlib_dir", stdlib), ("stdlib_encodings", stdlib / "encodings" / "__init__.py")):
+floor_paths = [("interpreter", Path(os.path.realpath(BASE))), ("interpreter_dir", Path(os.path.realpath(BASE)).parent),
+               ("stdlib_dir", stdlib), ("stdlib_encodings", stdlib / "encodings" / "__init__.py"),
+               ("lib_dynload", stdlib / "lib-dynload")]
+# every shared object the interpreter itself maps, plus the sonames pydantic_core NEEDs (resolved by ld.so.cache)
+maps = subprocess.run([BASE, "-I", "-S", "-c", "print(open('/proc/self/maps').read())"], env={},
+                      capture_output=True, text=True).stdout
+for so in sorted({l.split()[-1] for l in maps.splitlines() if len(l.split()) >= 6 and ".so" in l.split()[-1]}):
+    floor_paths.append(("mapped:" + os.path.basename(so), Path(os.path.realpath(so))))
+cache = subprocess.run(["/sbin/ldconfig", "-p"], capture_output=True, text=True).stdout
+for soname in ("libgcc_s.so.1", "librt.so.1", "libpthread.so.0", "libm.so.6", "libc.so.6"):
+    hit = next((l.split("=>")[-1].strip() for l in cache.splitlines() if l.strip().startswith(soname + " ")), None)
+    if hit:
+        floor_paths.append(("needed:" + soname, Path(os.path.realpath(hit))))
+for anc in sorted({str(a) for _l, p in floor_paths for a in p.parents}):
+    floor_paths.append(("ancestor:" + anc, Path(anc)))
+for label, path in floor_paths:
     st = path.stat()
     try:
         probe = (path if path.is_dir() else path.parent) / ".s0-write-probe"
@@ -60,6 +74,8 @@ for label, path in (("interpreter", Path(os.path.realpath(BASE))), ("interpreter
     out["floor"][label] = {"path": str(path), "uid": st.st_uid, "mode": oct(st.st_mode & 0o7777),
                            "writable_by_this_uid": writable}
 out["floor"]["this_uid"] = os.getuid()
+out["floor_all_root_owned_and_not_writable"] = all(
+    v["uid"] == 0 and not v["writable_by_this_uid"] for k, v in out["floor"].items() if isinstance(v, dict))
 
 # --- venv interpreter: pyvenv.cfg is read before any Python code, -I -S do not disable it ---------
 evil_prefix = W / "evilprefix"
