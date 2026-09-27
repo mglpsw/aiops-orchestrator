@@ -101,7 +101,7 @@ candidate_evidence (bound to 34fc575): {K1: corrected_and_discriminated, K2: cor
 applicability: Applicable_SG   # CONTRACT §2; requires AuthorizedReaderExecutionContext, a host/launcher precondition
 ```
 
-"216/216" vale para o head **experimental** `34fc575`; o commit de ratificação muda só documentação.
+"216/216" vale para o head **experimental** `34fc575`; os commits posteriores (ratificação e reconciliação documental) mudam só documentação.
 
 Achados da revisão do exact head `34fc575` (comentário 5859932046), registrados aqui com a disposição do mantenedor. **Nenhum foi corrigido.**
 
@@ -113,7 +113,7 @@ Achados da revisão do exact head `34fc575` (comentário 5859932046), registrado
 | **X2/TF4**: manifesto de alternates (≤ 64 KiB, truncado em silêncio acima disso) e resolução de ponteiros não são cobrados; 11.903 `open` contra 23 entradas cobradas | reproduzido + Codex P2 (4116964966) | `VALID_SUCCESSOR_OWNED`; K3 cobre só a listagem | S1_RES_01 |
 | **TF3**: toda recusa do C3 abaixo da raiz é reportada como `budget_nodes` | reproduzido | causa de recusa errada, decisão certa | S1_SEM_01 |
 | **TF5**: exceção entre o spawn do Git e o `try` deixa o Git vivo | reproduzido (por erro de construção) | K2 "qualquer desfecho" vale só depois do `try` | S1_LIFE_01 |
-| **TF6**: HEAD, `config`, recibo e subdiretórios sem `fsync`; o recibo cobra objeto deduplicado | reproduzido (dedupe) + leitura de código | visibilidade atômica sim, durabilidade a queda de energia `NOT_QUALIFIED`; texto corrigido | S1_PUBLISH_01 |
+| **TF6**: HEAD, `config`, recibo e subdiretórios sem `fsync`; o recibo cobra objeto deduplicado | reproduzido (dedupe) + leitura de código | visibilidade atômica sim, durabilidade a queda de energia `NOT_QUALIFIED`; redação corrigida, mecanismo não | S1_PUBLISH_01 |
 | **R4-3**: pack acima do envelope torna S_G indisponível | reproduzido (revisão de `a858dc9`) | `ACCEPTED_LIMITATION` (disponibilidade, não autenticidade) | S1 + #320 |
 
 **Correções de texto** (sem mudar mecanismo nem experimento). Estas afirmações superestimavam a evidência e ficaram assim:
@@ -165,12 +165,13 @@ local_git_unit:    {rss_MiB_upper_bound: 14.8, envelope: "RLIMIT_AS 128 MiB per 
 positivos, lifecycle; INFERRED — a necessidade do envelope no C5 vem da ablação de EXP-RES (filho
 sem contenção 68 MiB); aqui só o lado contido foi medido; NOT_TESTED — ver abaixo.
 
-**B-findings sob C (disposição candidata; nenhuma "fechada" antes da revisão do exact head):** B1/B2
+**B-findings sob C (disposição válida só dentro de `Applicable_SG`, CONTRACT §2):** B1/B2
 `ELIMINATED_BY_PRIVILEGE_BOUNDARY` (C1/C3/C4/C8), B3 `ELIMINATED_FROM_PHYSICAL_PRODUCER` (C5), B4
 `AUTHORITY_REDUCED_TO_AUTHENTICATED_COMMIT` (C6), B5 `DISCRIMINATED_BY_DESCENDANT_SURVIVOR_CONTROL`
 (C7), B6 `PARTIAL` (`tmp_obj_*` ignorado pelo nome; o resto não retestado). Nota: a revisão de `a858dc9` reproduziu o
-mecanismo de B-2 por um caminho **não canônico** entregue ao leitor (RC-1); a disposição de B2
-continua candidata e depende da precondição corrigida (C11 contra-controles).
+mecanismo de B-2 por um caminho **não canônico** entregue ao leitor (RC-1), e TF1/TF2 o reproduzem
+fora do contexto autorizado; por isso a eliminação de B1/B2 vale dentro do
+`AuthorizedReaderExecutionContext`, não por causa das checagens do leitor.
 
 | Item de A/B | Estado sob C |
 |---|---|
@@ -183,14 +184,14 @@ continua candidata e depende da precondição corrigida (C11 contra-controles).
 
 Grant do mantenedor ("ARCHITECTURE C — TERMINAL CONTRACT CLOSURE CUT"). Subject revalidado antes de qualquer mutação: head `28a3b4a`, base `9abcde6`, sem drift. É **um** commit corretivo. Depois dele vale `NO_AUTOMATIC_PATCH_LOOP`: achado material novo vai para adjudicação humana.
 
-**Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`, condicionada ao `ReaderPrincipal` (K1). Ver CONTRACT, topo.
+**Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`, condicionada ao `AuthorizedReaderExecutionContext` (as checagens K1 do leitor são defesa em profundidade). Ver CONTRACT, topo.
 
 | Item | Correção | Discriminadores (`exp_arch_c.json`, `34fc575`) | Resultado | Limite |
 |---|---|---|---|---|
 | **K1** — o principal do leitor era autodeclarado (`os.getuid()`, `access` pelo id real) | `ReaderPrincipal` lido de `/proc/self/status` e comparado ao runner **esperado**. Exige uid e gid real = efetivo = salvo = filesystem, e `CapEff`, `CapPrm`, `CapInh`, `CapAmb` = 0. Escrita checada com credenciais **efetivas** (`effective_ids=True`). | `K1_POSITIVE_established_runner_principal_accepted`, `K1A_real_runner_effective_snapshot_owner_refused`, `K1B_saved_uid_of_snapshot_owner_refused`, `K1C_permitted_capability_with_CapEff_0_refused` | **Positivo:** uid/gid 2000 nos 4 campos, caps 0 → aceito sobre um snapshot do produtor não-root uid 3000. **K1A:** `Uid 2000 3000 3000 3000` → `reader_principal_mismatch`. **K1B:** `Uid 2000 2000 3000 2000` → `reader_principal_mismatch`. **K1C:** `CapPrm a80425fb`, `CapEff 0` → `reader_has_capabilities`. Em K1A/K1B/K1C: **contramodelo exercitado** (o processo altera o snapshot com o que possui; em K1C, via `capset`) e a checagem de `28a3b4a` o aceitava. | K1A/K1B/K1C constroem as credenciais **no próprio processo** (setresuid/KEEPCAPS e depois `runpy` do leitor), porque o `exec` iguala o uid salvo ao efetivo. Grupos suplementares só registrados. |
-| **K2** — sobrevivente ignorado quando a captura já falhava | Qualquer descendente restante → `unit_teardown_incomplete` em **qualquer** desfecho. A falha primária fica como diagnóstico. | `K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete`, `K2_ABLATION_success_only_rule_hides_the_survivor` | Transporte que falha + teardown que reporta sobrevivente → `unit_teardown_incomplete`, primária `transport_header_invalid`. A unidade real termina vazia. A ablação devolve `transport_header_invalid` e esconde o sobrevivente. | `real_D_state: NOT_TESTED`: o teardown é um stub. C7 (filho + neto `setsid` reais) preservado. |
-| **K3** — sonda de alternate da G1C enumerava sem limite antes da caminhada limitada | Sonda experimental com a mesma semântica: `HEAD` irmão, `pack/` e `info/` em O(1); a busca de fanout passa por `scanned()`. **A G1C de produção não foi alterada.** | `K3_alternate_probe_charged_to_entry_budget`, `K3_ABLATION_unbounded_G1C_probe_enumerates_beyond_budget`, `K3_POSITIVE_small_standalone_pool_accepted` | 3.000 entradas-lixo antes do fanout, orçamento 1.000 → `physical_budget_exceeded` com 1.001 entradas enumeradas no processo. Ablação (sonda da G1C): 4.002. Pool pequeno aceito pelo produtor e pelo leitor. | Precondição registrada: fanout na posição 3.000 da listagem. S1 exige uma sonda limitada aprovada pelo owner. |
-| **K4** — parser de tree com teto global | Teto = **restante** do orçamento de nós; restante ≤ 0 recusa antes de carregar a tree. | `K4_tree_parser_bounded_by_remaining_node_budget`, `K4_ABLATION_global_cap_materializes_beyond_remaining`, `K4_POSITIVE_same_shape_within_remaining_budget_accepted` | 992 nós consumidos, `max_nodes` 1.000, tree compacta de 50 entradas → `budget_nodes`, teto 8, 0 entradas materializadas além do restante. Ablação: 50 materializadas. Com 5 entradas: aceito. | O C3 usa o mesmo código para estouro e alguns nomes; o leitor atribui a recusa a `budget_nodes` porque o teto passado é o restante. |
+| **K2** — sobrevivente ignorado quando a captura já falhava | Qualquer descendente restante → `unit_teardown_incomplete` em qualquer desfecho **depois do `try`** (a janela entre spawn e `try` é TF5). A falha primária fica como diagnóstico. | `K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete`, `K2_ABLATION_success_only_rule_hides_the_survivor` | Transporte que falha + teardown que reporta sobrevivente → `unit_teardown_incomplete`, primária `transport_header_invalid`. A unidade real termina vazia. A ablação devolve `transport_header_invalid` e esconde o sobrevivente. | `real_D_state: NOT_TESTED`: o teardown é um stub. C7 (filho + neto `setsid` reais) preservado. |
+| **K3** — sonda de alternate da G1C enumerava sem limite antes da caminhada limitada | Sonda experimental com a mesma semântica: `HEAD` irmão, `pack/` e `info/` em O(1); a busca de fanout passa por `scanned()`. **A G1C de produção não foi alterada.** | `K3_alternate_probe_charged_to_entry_budget`, `K3_ABLATION_unbounded_G1C_probe_enumerates_beyond_budget`, `K3_POSITIVE_small_standalone_pool_accepted` | 3.000 entradas-lixo antes do fanout, orçamento 1.000 → `physical_budget_exceeded` com 1.001 entradas enumeradas no processo. Ablação (sonda da G1C): 4.002. Pool pequeno aceito pelo produtor e pelo leitor. Cobre só a **listagem**; manifesto e resolução de ponteiros não são cobrados (X2/TF4). | Precondição registrada: fanout na posição 3.000 da listagem. S1 exige uma sonda limitada aprovada pelo owner. |
+| **K4** — parser de tree com teto global | Teto = **restante** do orçamento de nós; restante ≤ 0 recusa antes de carregar a tree. | `K4_tree_parser_bounded_by_remaining_node_budget`, `K4_ABLATION_global_cap_materializes_beyond_remaining`, `K4_POSITIVE_same_shape_within_remaining_budget_accepted` | 992 nós consumidos, `max_nodes` 1.000, tree compacta de 50 entradas → `budget_nodes`, teto 8; o parser materializa no máximo restante+1 antes de recusar (o contador conta listas completas: 0). Ablação: 50 materializadas. Com 5 entradas: aceito. | O leitor converte **toda** recusa do C3 abaixo da raiz em `budget_nodes` (TF3; S1_SEM_01). |
 | **RC-5** — escrita curta | Laço de escrita (em `28a3b4a`), agora com **discriminador causal** | `RC5_forced_short_writes_publish_exact_bytes`, `RC5_ABLATION_one_write_per_chunk_publishes_mismatch` | `write` forçado a ≤ 4.093 B: os 10 arquivos publicados são iguais à fonte, o recibo é igual ao recalculado do destino e o leitor aceita. Ablação "uma escrita por bloco": bytes e recibo divergem. | Escritas curtas forçadas por wrapper sobre o `os.write` real, não por quota de disco. |
 | **R4-3 / RC-6** — pack acima do envelope | Nenhuma correção nesta rodada. | — (reproduzido pela revisão de `a858dc9`) | `ACCEPTED_S0_LIMITATION_REQUIRES_S1_PARAMETER_DECISION`: afeta disponibilidade, não autenticidade nem a identidade de S0. | Nenhum número novo inventado. |
 
@@ -287,15 +288,15 @@ A autenticação de S_G se manteve. Foi admitida recorrência sobre a correção
 corpos commit/tree). R3-1: o filho `git` expande; medido em 68,2 MiB. R3-2: um cabeçalho negativo
 anula a cobrança; reproduzido em 128 MiB com orçamento de 8 MiB. A pergunta 2 do preflight disparou
 (duas correções derrotadas: R2-1 e R3-1/2). Registro na PR #355, comentário 5852389024. O mantenedor
-decidiu (a)–(d) (topo de CONTRACT). Este head é o corte corretivo único.
+decidiu (a)–(d) (topo de CONTRACT). `cf69fbf` foi o corte corretivo único.
 
-| Achado | Destino neste head |
+| Achado | Destino em `cf69fbf` |
 |---|---|
 | R3-1 filho `git` expande | transporte contido por `RLIMIT_AS` antes do `exec` + kill/reap na recusa; discriminador A |
 | R3-2 cabeçalho negativo/injetado | parse estrito e `readline` limitado; discriminador B |
 | R3-3 limite de componente fixo | parâmetro explícito de admissão; paridade condicional; discriminador D |
 | R3-4 carrier do C3 relê spool | proposta retirada; aquisição ≠ interpretação; revalidação pós-selo; discriminador C |
-| R3-5 números antigos no §8 | §8 atualizado a partir deste head |
+| R3-5 números antigos no §8 | §8 atualizado a partir de `cf69fbf` |
 | R3-6 piso sem stdlib por arquivo | **preservado** (evidência de E, não S_G) |
 | R3-7 resíduos de redação; parse levanta exceções não tipadas; paridade C3 só sintética | preservados como menores; paridade no corpus real passou a ser aceite de S1 |
 | R3-Q1 SHA-1 sem sha1dc | premissa de segunda pré-imagem declarada; sha1dc não alegado; discriminador E |
@@ -372,14 +373,14 @@ Nenhum mudou uma expectativa para acomodar resultado da engine ou do kernel, sal
     checagem de ownership (o transporte local limpa `GIT_CONFIG_*`) → closure incompleta, recusada
     corretamente pela fronteira. Corrigido: Git do fixture como o runner + pré-condição
     `rev-list --missing=print` verificada antes do caso.
-12. (Este head) `run_py311.sh` quebrava num apóstrofo de comentário dentro de `bash -c '…'` →
+12. (Corte `a858dc9`) `run_py311.sh` quebrava num apóstrofo de comentário dentro de `bash -c '…'` →
     comentário reescrito.
-13. (Este head) **Erro meu de contagem** em C11: a expectativa estrutural foi escrita como 9 nós; a
+13. (Corte `a858dc9`) **Erro meu de contagem** em C11: a expectativa estrutural foi escrita como 9 nós; a
     árvore declarada tem 8. A primeira execução falhou só nesse caso (preservada no scratch, não
     registrada). A expectativa passou a ser o mapa **declarado** caminho → tipo mais o target do
     symlink, escrito antes da nova execução; o resultado do leitor não foi copiado para a
     expectativa.
-14. (Este head; mudança de mecanismo, não de expectativa) o Spike C continha a unidade Git num PID
+14. (Corte `a858dc9`; mudança de mecanismo, não de expectativa) o Spike C continha a unidade Git num PID
     namespace criado com privilégio. O leitor de C roda como o runner, que não cria user/PID
     namespace sob o seccomp padrão do Docker; exigir isso seria dependência de privilégio (C11). A
     contenção passou a ser *child subreaper* + teardown da subárvore, com a mesma ablação (grupo de

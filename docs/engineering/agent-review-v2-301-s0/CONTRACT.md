@@ -1,9 +1,9 @@
-# #301 S0 — contrato proposto do subject de execução autenticado (S) e da fronteira de confiança
+# #301 S0 — contrato do subject de execução autenticado (S) e da fronteira de confiança (S_G ratificado como contrato de componente; S_D e E propostos)
 
 ```yaml
 status: S0_S_G_RATIFIED_AS_COMPONENT_CONTRACT     # S_D and E remain PROPOSED; nothing is implemented in production
 architecture_C_status: RATIFIED_AS_COMPONENT_CONTRACT   # maintainer ratification; applicability requires AuthorizedReaderExecutionContext
-experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d   # 216/216 there; the ratification commit changes documentation only
+experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d   # 216/216 there; later commits (ratification, reconciliation) change documentation only
 architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # ratified component contract; A and B are REJECTED PREDECESSORS
 claim_scope: S_G_only
 slice: S0_contract_and_experimental_evidence   # nome de trabalho; não é claim normativa, milestone nem revisão CAEM
@@ -181,7 +181,8 @@ B_findings_disposition:
 `architecture_C_boundary_refuted: false`, `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`. O
 contramodelo só era admitido porque o leitor aceitava um locator que não correspondia ao snapshot
 canônico publicado (symlink/ancestral gravável pelo runner). Isso **não** vale como "corrigido porque
-o caminho parece canônico": a conclusão depende do `ReaderPrincipal` formalizado acima (K1). Um
+o caminho parece canônico": a conclusão depende do `AuthorizedReaderExecutionContext` formalizado acima;
+as checagens K1 do leitor são defesa em profundidade, não autoridade. Um
 contramodelo em que o snapshot canônico publicado pelo produtor continue alterável pelo leitor sob o
 principal do runner ratificado é `STOP_301_C_BOUNDARY_RECURRENCE`.
 
@@ -450,7 +451,8 @@ C (esperado, via #319; expected_subject = {object_format, commit_oid, component_
   recibo e subdiretórios **não** recebem `fsync` (T-F6). A publicação tem **visibilidade atômica**;
   um crash (SIGKILL) antes do rename não publica (C10); durabilidade a queda de energia **não é
   qualificada** (S1_PUBLISH_01). O **commit point** é `rename(staging/<id> → committed/<id>)`. Antes dele o runner nem lista o
-  staging; um crash deixa lixo de staging, nunca snapshot publicado (C10). `PhysicalSnapshot !=
+  staging; um crash **de processo** antes do rename deixa lixo de staging, nunca snapshot publicado
+  (C10; queda de energia depois do rename não é qualificada: TF6). `PhysicalSnapshot !=
   AuthenticatedSubject`: nenhuma validação de conteúdo acontece aqui, e o recibo
   (`SnapshotReceipt != ObjectAuthenticityProof`) não tem commit nem root_tree. Ele conta só o que de
   fato conta: `physical_bytes`/`physical_entries` são os arquivos-fonte **cobrados** (inclusive um
@@ -657,7 +659,8 @@ limite · owner · evidência.
   `snapshot_path_not_canonical` (symlink, relativo), com o contramodelo confirmado (o runner renomeia
   o snapshot); `snapshot_format_mismatch`; `reader_principal_mismatch` (K1A, K1B) e
   `reader_has_capabilities` (K1C), cada contramodelo **exercitado** (o processo altera o snapshot com o
-  que possui); principal estabelecido (uid/gid 2000 nos quatro campos, capabilities 0) aceito sobre um
+  que possui); processo com uid/gid 2000 nos quatro campos e capabilities 0 (checagem numérica do
+  leitor, que não autentica o principal nem o contexto) aceito sobre um
   snapshot de um produtor não-root (uid 3000); leitor com uid
   2000 deriva a estrutura declarada (árvore vazia, executável, symlink com target em bytes,
   subárvore) e o S_G do toolrepo real · a propriedade é do kernel no domínio do experimento
@@ -1021,7 +1024,8 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
 - Entradas: uma **capability de storage admitida** (tipo C2_A; quem autoriza as raízes é #331),
   `repo_root` (locator dentro dela), o `expected_subject {object_format, commit_oid,
   component_policy}`, um **produtor com separação de privilégio** já implantado (U3/#331) e o
-  diretório de publicação dele, `snapshot_budget` físico,
+  diretório de publicação dele, a expectativa do `AuthorizedReaderExecutionContext` fornecida pelo
+  launcher/host (U3), `snapshot_budget` físico,
   limites de admissão **explícitos** da closure
   (inclusive o limite de componente; quando composto com C3, o mesmo valor que o C3 admitiu, vindo da
   capability/receipt do C3 — se ainda não exposto, uma pequena interface derivada, nunca um novo
@@ -1033,8 +1037,10 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
 - Write-set esperado: (1) o **produtor** físico com separação de privilégio (variante só-física da
   aquisição por descritor da G1C: sem inflate, sem `verify-pack`, sem metadata da fonte; staging →
   finalize → `rename`); **onde** ele roda e sob qual identidade é decisão de U3/#331, não de S1;
-  (2) um módulo novo em `app/agent_review/` com o **leitor** que roda como o runner: precondição de
-  imutabilidade, Git local só sobre o snapshot publicado (sessão própria sob `RLIMIT_AS`, prazo por
+  (2) um módulo novo em `app/agent_review/` com o **leitor** que roda como o runner: comparação do
+  contexto observado com a expectativa do `AuthorizedReaderExecutionContext` vinda do launcher (o
+  leitor não a gera nem a prova), checagens de imutabilidade como defesa em profundidade, Git local
+  só sobre o snapshot publicado (sessão própria sob `RLIMIT_AS`, prazo por
   objeto, cabeçalho estrito, subreaper + teardown da unidade), mapa endereçado por conteúdo e raiz
   derivada de `C`,
   construção do container, selo e **revalidação pós-selo**, validação do consumidor; no C3, uma
@@ -1049,14 +1055,33 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
   inclusive contenção medida **no filho** com pai lento, os 9 cabeçalhos hostis, "autenticar A e
   entregar B" e o domínio do limite de componente; paridade com C3 sob o mesmo limite, no corpus
   sintético e no corpus real; orçamentos e envelope adjudicados aplicados antes da expansão; FDs e
-  processos lineares em toda falha; nenhum campo de wire novo sem decisão.
+  processos lineares em toda falha; nenhum campo de wire novo sem decisão. Além disso, os
+  **contramodelos de ativação** do registro abaixo, cada um derrotado pela obrigação que o possui
+  (nenhum foi corrigido por S0):
+  - TF1 (alias de mount) e TF2 (user namespace): ativação só num `AuthorizedReaderExecutionContext`
+    vinculado pelo launcher/host (owner: binding de ativação S1/U3, como no registro);
+  - X1 (ganho de privilégio no `exec`, inclusive `killpg` → EPERM): S1_CTX_01;
+  - X2/TF4 (manifesto e resolução de alternates): S1_RES_01;
+  - TF3 (causa de recusa do C3): S1_SEM_01;
+  - TF5 (janela entre spawn e `try`): S1_LIFE_01;
+  - TF6 (fsync e semântica do recibo): S1_PUBLISH_01;
+  - R4-3 (pack acima do envelope): política de S1 com #320.
 - Falsificadores: objeto adulterado aceito; nó de contract A perdido; S parcial retornado;
-  escrita pós-compromisso; leak de FD/processo.
+  escrita pós-compromisso; leak de FD/processo; S_G confiável ou consumível sem
+  `AuthorizedReaderExecutionContext` estabelecido (TF1, TF2); Git ou helper com credenciais além do
+  contexto (X1); trabalho de alternates antes da cobrança física (X2/TF4); causa de recusa do C3
+  substituída quando conhecida (TF3); processo Git sem dono em algum caminho de saída (TF5); snapshot
+  publicado sem a sequência de fsync declarada ou com recibo divergente do destino (TF6);
+  indisponibilidade por envelope reportada como outra causa (R4-3).
 - Teto: sem launcher, sem loader, sem S_D, sem receipt, sem G5; **novo grant necessário**.
-- **Precondição declarada (U3):** a propriedade de S1 é de componente — "dado um processo produtor
-  íntegro, S_G é autêntico e estável". Como a cópia implantada de `app/agent_review/` hoje é o
-  checkout gravável pelo UID do runner, nenhum consumidor pode tratar a saída de S1 como proteção de
-  #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301 protegido".
+- **Precondição declarada (U3):** a propriedade de S1 é de componente e vale só dentro de
+  `Applicable_SG` (§2): `AuthorizedStorage ∧ PrivilegeSeparatedProducer ∧ ProducerPublishedSnapshot ∧
+  AuthorizedReaderExecutionContext ∧ ¬PrincipalCanMutate ∧ ExpectedCommit` ⇒ S_G autêntico e
+  estável. Sem o `AuthorizedReaderExecutionContext` estabelecido pelo launcher/host, S_G **não pode**
+  se tornar confiável nem consumível; o leitor não prova o próprio contexto. Como a cópia implantada
+  de `app/agent_review/` hoje é o checkout gravável pelo UID do runner, nenhum consumidor pode tratar
+  a saída de S1 como proteção de #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301
+  protegido".
 - **Decisões de adjudicação necessárias antes do grant de S1** (não são fatos desconhecidos):
   (o) o owner da G1C aceita expor uma variante só-física (sem inflate) **e uma sonda de alternate
   limitada pelo orçamento de entradas** (a de produção enumera sem limite: K3); (p) U3/#331 decidem o
@@ -1076,14 +1101,14 @@ S0 ratificado significa `ContractReady`, **não** `ProductionReady`. Os contramo
 ```yaml
 activation_countermodels:
   TF1:
-    countermodel: {readonly_mount_view: {accepted_by_old_detector: true, backing_inode_writable_through_other_mount: true,
+    countermodel: {readonly_mount_view: {accepted_by_34fc575_reader_checks: true, backing_inode_writable_through_other_mount: true,
                                          git_helper_execution_reproduced: true}}
     lesson: "ReadOnlyView != NoWritableAlias"
     future_owner: S1/U3 activation binding
     required_future_property: "snapshot identity and mount namespace come from the authorized launcher/host context,
                                not only from pathname-level writability tests"
   TF2:
-    countermodel: {numeric_runner_ids_visible_inside_other_userns: true, accepted_by_old_detector: true,
+    countermodel: {numeric_runner_ids_visible_inside_other_userns: true, accepted_by_34fc575_reader_checks: true,
                    helper_execution_reproduced: true}
     lesson: "NumericCredentialValues != HostPrincipalIdentity"
     future_owner: S1/U3 activation binding
