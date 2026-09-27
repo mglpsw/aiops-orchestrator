@@ -1,0 +1,45 @@
+{
+ "cases": {
+  "pipe_result_channel_injectable": {
+   "expected": {
+    "inject": "INJECTED",
+    "first_line_read": "{\"result\":\"FORGED\"}"
+   },
+   "observed": {
+    "inject": "INJECTED",
+    "first_line_read": "{\"result\":\"FORGED\"}"
+   },
+   "pass": true
+  },
+  "socketpair_result_channel_not_reopenable": {
+   "expected": {
+    "inject": "denied:6",
+    "first_line_read": "{\"result\":\"genuine\"}"
+   },
+   "observed": {
+    "inject": "denied:6",
+    "first_line_read": "{\"result\":\"genuine\"}"
+   },
+   "pass": true,
+   "note": "errno 6 = ENXIO"
+  },
+  "same_uid_non_ancestor_vs_dumpable_child": {
+   "observed": {
+    "proc_mem_open_rdwr": "denied:13",
+    "ptrace_attach": "denied:1",
+    "proc_fd_list": "SUCCEEDED"
+   },
+   "interpretation": "with Yama ptrace_scope=1 a non-ancestor cannot attach or open /proc/pid/mem for write; it CAN list the child's descriptors while the child is dumpable (exec resets dumpable to 1)"
+  },
+  "same_uid_non_ancestor_vs_nodump_child": {
+   "observed": {
+    "proc_mem_open_rdwr": "denied:13",
+    "ptrace_attach": "denied:1",
+    "proc_fd_list": "denied:13"
+   }
+  }
+ },
+ "environment": {
+  "yama_ptrace_scope": "1"
+ }
+}

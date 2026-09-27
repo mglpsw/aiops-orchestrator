@@ -1,0 +1,127 @@
+{
+ "cases": {
+  "shared_subtree_expansion_refused_per_occurrence": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "unique_bytes": 65536,
+   "per_occurrence_bytes": 131072000,
+   "budget_bytes": 16777216,
+   "heap_peak_MiB": 17.72,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "single_tree_entry_cap_is_C3s": {
+   "expected": "REFUSED:tree_unrepresentable",
+   "observed": "REFUSED:tree_unrepresentable",
+   "pass": true,
+   "note": "2,000 entries in ONE tree: refused by C3's own per-tree cap (_parse_tree_data), not by S's node budget"
+  },
+  "shared_subtree_node_budget_per_occurrence": {
+   "expected": "REFUSED:budget_nodes",
+   "observed": "REFUSED:budget_nodes",
+   "pass": true,
+   "heap_peak_MiB": 0.21,
+   "unique_nodes": 41,
+   "per_occurrence_nodes": 1640,
+   "note": "every tree < 1000 entries; only the occurrence count exceeds"
+  },
+  "oversized_blob_refused_before_read": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "blob_bytes": 33554432,
+   "budget_bytes": 8388608,
+   "heap_peak_MiB": 0.06,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "CONTROL_same_blob_within_default_budget": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "heap_peak_MiB": 32.01,
+   "note": "heap ~ blob size: the carrier is in-memory by design; the budget bounds it"
+  },
+  "depth_budget": {
+   "expected": "REFUSED:budget_depth",
+   "observed": "REFUSED:budget_depth",
+   "pass": true
+  },
+  "write_failure_EFBIG_no_fd_leaked": {
+   "expected": [
+    "REFUSED:write_failed",
+    true
+   ],
+   "observed": [
+    "REFUSED:write_failed",
+    true
+   ],
+   "pass": true
+  },
+  "seal_failure_no_fd_leaked": {
+   "expected": [
+    "REFUSED:seal_failed",
+    true
+   ],
+   "observed": [
+    "REFUSED:seal_failed",
+    true
+   ],
+   "pass": true
+  },
+  "mid_capture_hash_failure_git_reaped_fds_restored": {
+   "expected": [
+    "REFUSED:object_hash_mismatch",
+    true,
+    true
+   ],
+   "observed": [
+    "REFUSED:object_hash_mismatch",
+    true,
+    true
+   ],
+   "pass": true
+  },
+  "hung_consumer_no_result_killed_reaped": {
+   "expected": {
+    "reply": null,
+    "timeout": true,
+    "reaped": true
+   },
+   "observed": {
+    "reply": null,
+    "timeout": true,
+    "reaped": true
+   },
+   "pass": true
+  },
+  "consumer_exits_rc0_without_reply_is_not_success": {
+   "expected": {
+    "rc": 0,
+    "reply": null
+   },
+   "observed": {
+    "rc": 0,
+    "reply": null
+   },
+   "pass": true
+  },
+  "harness_fds_restored": {
+   "expected": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "observed": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "pass": true
+  }
+ },
+ "all_pass": true
+}
