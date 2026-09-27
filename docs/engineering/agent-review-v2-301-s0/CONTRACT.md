@@ -181,8 +181,10 @@ B_findings_disposition:
 `architecture_C_boundary_refuted: false`, `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`. O
 contramodelo só era admitido porque o leitor aceitava um locator que não correspondia ao snapshot
 canônico publicado (symlink/ancestral gravável pelo runner). Isso **não** vale como "corrigido porque
-o caminho parece canônico": a conclusão depende do `AuthorizedReaderExecutionContext` formalizado acima;
-as checagens K1 do leitor são defesa em profundidade, não autoridade. Um
+o caminho parece canônico": na época (`a858dc9`), a conclusão foi condicionada ao `ReaderPrincipal`
+(K1); sob a ratificação posterior de S0-C (revisão de `34fc575`), essa condição é o
+`AuthorizedReaderExecutionContext` formalizado acima, e as checagens K1 do leitor passam a ser defesa
+em profundidade, não autoridade. Um
 contramodelo em que o snapshot canônico publicado pelo produtor continue alterável pelo leitor sob o
 principal do runner ratificado é `STOP_301_C_BOUNDARY_RECURRENCE`.
 
@@ -1064,20 +1066,25 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
   - X2/TF4 (manifesto e resolução de alternates): S1_RES_01;
   - TF3 (causa de recusa do C3): S1_SEM_01;
   - TF5 (janela entre spawn e `try`): S1_LIFE_01;
-  - TF6 (fsync e semântica do recibo): S1_PUBLISH_01;
-  - R4-3 (pack acima do envelope): política de S1 com #320.
+  - TF6 (sequência de fsync da publicação): S1_PUBLISH_01;
+  - R4-3 (coerência entre o que a admissão física do snapshot aceita e o que o envelope de execução
+    do Git local consegue processar): S1 com #320; limitação aceita de disponibilidade em S0, sem
+    efeito sobre autenticidade.
 - Falsificadores: objeto adulterado aceito; nó de contract A perdido; S parcial retornado;
   escrita pós-compromisso; leak de FD/processo; S_G confiável ou consumível sem
   `AuthorizedReaderExecutionContext` estabelecido (TF1, TF2); Git ou helper com credenciais além do
   contexto (X1); trabalho de alternates antes da cobrança física (X2/TF4); causa de recusa do C3
   substituída quando conhecida (TF3); processo Git sem dono em algum caminho de saída (TF5); snapshot
-  publicado sem a sequência de fsync declarada ou com recibo divergente do destino (TF6);
-  indisponibilidade por envelope reportada como outra causa (R4-3).
+  publicado sem a sequência de fsync exigida por S1_PUBLISH_01 (TF6);
+  incoerência material entre `SnapshotAdmissionBudget` e `LocalGitExecutionEnvelope` sem uma política
+  explícita (harmonização ou recusa tipada e proporcional) — por exemplo, um snapshot admitido que o
+  Git local não consegue processar, reportado como outra causa (R4-3).
 - Teto: sem launcher, sem loader, sem S_D, sem receipt, sem G5; **novo grant necessário**.
 - **Precondição declarada (U3):** a propriedade de S1 é de componente e vale só dentro de
   `Applicable_SG` (§2): `AuthorizedStorage ∧ PrivilegeSeparatedProducer ∧ ProducerPublishedSnapshot ∧
-  AuthorizedReaderExecutionContext ∧ ¬PrincipalCanMutate ∧ ExpectedCommit` ⇒ S_G autêntico e
-  estável. Sem o `AuthorizedReaderExecutionContext` estabelecido pelo launcher/host, S_G **não pode**
+  AuthorizedReaderExecutionContext ∧ ¬PrincipalCanMutate ∧ ExpectedCommit`, e a fórmula de §2
+  vale: `Applicable_SG(A,P,S,R,C) ∧ SuccessfulCapture(C,S) ⇒ AuthenticatedStableSubject(S_G)`.
+  Aplicabilidade não é execução bem-sucedida: uma captura ausente ou falha é recusa, nunca sucesso. Sem o `AuthorizedReaderExecutionContext` estabelecido pelo launcher/host, S_G **não pode**
   se tornar confiável nem consumível; o leitor não prova o próprio contexto. Como a cópia implantada
   de `app/agent_review/` hoje é o checkout gravável pelo UID do runner, nenhum consumidor pode tratar
   a saída de S1 como proteção de #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301

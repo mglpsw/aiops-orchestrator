@@ -184,7 +184,7 @@ fora do contexto autorizado; por isso a eliminação de B1/B2 vale dentro do
 
 Grant do mantenedor ("ARCHITECTURE C — TERMINAL CONTRACT CLOSURE CUT"). Subject revalidado antes de qualquer mutação: head `28a3b4a`, base `9abcde6`, sem drift. É **um** commit corretivo. Depois dele vale `NO_AUTOMATIC_PATCH_LOOP`: achado material novo vai para adjudicação humana.
 
-**Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`, condicionada ao `AuthorizedReaderExecutionContext` (as checagens K1 do leitor são defesa em profundidade). Ver CONTRACT, topo.
+**Disposição do mantenedor para RC-1:** `LOCAL_ENFORCEMENT_DEFECT_OF_READER_APPLICABILITY`, `boundary_recurrence: false`; na época condicionada ao `ReaderPrincipal` (K1) e, sob a ratificação posterior de S0-C, ao `AuthorizedReaderExecutionContext` (as checagens K1 do leitor passam a ser defesa em profundidade). Ver CONTRACT, topo.
 
 | Item | Correção | Discriminadores (`exp_arch_c.json`, `34fc575`) | Resultado | Limite |
 |---|---|---|---|---|
