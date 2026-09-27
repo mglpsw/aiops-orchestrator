@@ -15,7 +15,7 @@ wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
 scripts: experiments/results/py311/SCRIPTS.sha256   # os arquivos que produziram estes resultados
-outcome: 126/126 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
+outcome: 148/148 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
          exp_process_channel e 1 em exp_structure (non_utf8_name_S_vs_C3); único stderr = aviso
          esperado do zipfile no fixture de membro duplicado (exp_deps.stderr)
 reproduction: própria (esta sessão); não é reprodução independente
@@ -23,7 +23,7 @@ reproduction: própria (esta sessão); não é reprodução independente
 
 Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
 ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
-deste head; as dos heads `3d426e1` e `1e2453e` continuam no histórico git.
+deste head; as dos heads `3d426e1`, `1e2453e` e `1299b00` continuam no histórico git.
 
 **Escopo após a decisão do mantenedor (CONTRACT, topo):** as linhas marcadas **S_G** sustentam a
 claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qualificação.
@@ -43,6 +43,12 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui | kernel 6.18 |
 | Janela pré-selo; selo estranho; mapeamento retido | `pre_seal_*`, `ABLATION_no_post_seal_rehash_*` | detectado / `seal_failed`; mutante `COMMITTED` | aqui | — |
 | M mutado após captura; consumidor não lê M | `M_mutated_*`, `consumer_*` | digest igual; `trusted`; 0 aberturas | aqui | `cwd=M`, `PYTHONPATH=M` oferecidos |
+| **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
+| **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito; filho 14,7 MiB ≤ 128 MiB | aqui | — |
+| **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
+| **C** — o objeto comprometido é o autenticado (**S_G**) | `exp_capture_stability.json` `authenticate_A_substitute_B_*`, `ABLATION_no_post_seal_revalidation_*`, `node_not_in_acquisition_record_refused`, `mutate_unsealed_S_then_seal_refused` | `sealed_binding_mismatch`; ablação compromete `EVIL`; `sealed_record_mismatch`; `sealed_content_mismatch` | aqui | tree oids vinculados pelo registro, não re-hasheados pós-selo |
+| **D** — limite de componente explícito (**S_G**) | `exp_structure.json` `component_256_*`, `C3_parity_under_same_limit_300`, `C3_also_refuses_*`, `no_admission_limit_refused` | 300 admite, 255 recusa, C3 igual sob o mesmo limite; ausência recusada | aqui | — |
+| **E** — SHA | `exp_n1_auth.json` `sha1_*`, `sha256_*` | positivos e adulterações nos dois formatos | aqui | **nenhum teste de segunda pré-imagem**; sha1dc não alegado (CONTRACT §2) |
 | Substituição de binding (**S_G**) | `binding_*` (7) | recusas esperadas, inclusive rótulo de algoritmo incoerente (R2-4); driver não executou | aqui | — |
 | Pipe forjável; socketpair não | `exp_process_channel.json` | `FORGED` / `ENXIO` | aqui | — |
 | Não-ancestral mesmo UID vs consumidor | `same_uid_non_ancestor_vs_*` | sem attach/`/proc/pid/mem`; lista FDs se dumpable | aqui | Yama=1; produtor/launcher não observados |
@@ -85,7 +91,26 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 - Interpretador não oficial (Debian `/usr/bin/python3.11`), musl.
 - Reprodução independente por outro operador/máquina.
 
-## Rodada de revisão 2 (head `1e2453e`) → STOP/REDESIGN → decisão → correções neste head
+## Rodada de revisão 3 (head `1299b00`) → STOP/REDESIGN → decisões (a)–(d) → este head
+
+A autenticação de S_G se manteve. Foi admitida recorrência sobre a correção da rodada 1 (limite de
+corpos commit/tree). R3-1: o filho `git` expande; medido em 68,2 MiB. R3-2: um cabeçalho negativo
+anula a cobrança; reproduzido em 128 MiB com orçamento de 8 MiB. A pergunta 2 do preflight disparou
+(duas correções derrotadas: R2-1 e R3-1/2). Registro na PR #355, comentário 5852389024. O mantenedor
+decidiu (a)–(d) (topo de CONTRACT). Este head é o corte corretivo único.
+
+| Achado | Destino neste head |
+|---|---|
+| R3-1 filho `git` expande | transporte contido por `RLIMIT_AS` antes do `exec` + kill/reap na recusa; discriminador A |
+| R3-2 cabeçalho negativo/injetado | parse estrito e `readline` limitado; discriminador B |
+| R3-3 limite de componente fixo | parâmetro explícito de admissão; paridade condicional; discriminador D |
+| R3-4 carrier do C3 relê spool | proposta retirada; aquisição ≠ interpretação; revalidação pós-selo; discriminador C |
+| R3-5 números antigos no §8 | §8 atualizado a partir deste head |
+| R3-6 piso sem stdlib por arquivo | **preservado** (evidência de E, não S_G) |
+| R3-7 resíduos de redação; parse levanta exceções não tipadas; paridade C3 só sintética | preservados como menores; paridade no corpus real passou a ser aceite de S1 |
+| R3-Q1 SHA-1 sem sha1dc | premissa de segunda pré-imagem declarada; sha1dc não alegado; discriminador E |
+
+## Rodada de revisão 2 (head `1e2453e`) → STOP/REDESIGN → decisão → correções em `1299b00`
 
 Codex (review 5328675140) trouxe 8 achados, todos estabelecidos. R2-1 foi reproduzido e **admitido
 como recorrência** da correção do zip bomb da rodada 1, o que estabeleceu STOP/REDESIGN. O patching

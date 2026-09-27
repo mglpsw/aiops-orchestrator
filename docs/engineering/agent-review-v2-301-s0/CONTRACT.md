@@ -24,6 +24,23 @@ S0_decision:
   E: {remains_future: true}
 ```
 
+### Decisões do mantenedor após o STOP/REDESIGN da rodada 3 (2026-09-27)
+
+```yaml
+a_git_transport:   {decision: KEEP_GIT_BUT_CONTAIN_THE_CHILD, own_git_pack_reader: rejected,
+                    mechanism: [hardened git executable/env, memory rlimit applied before exec,
+                                strict bounded header, kill/reap on refusal],
+                    RLIMIT_DATA_spike: feasibility_only, S1_limit: RLIMIT_AS (focal validation required)}
+b_acquisition:     {current_C3_spool_as_truth_maker: rejected, second_structural_parser: rejected,
+                    selected: [one bounded acquisition path, same bytes authenticated AND interpreted,
+                               C3 remains tree-semantic authority, seal then revalidate the final S_G],
+                    invariant: VerifiedRepresentation == ConsumedRepresentation}
+c_sha1:            {supported: true, assumption: second_preimage_resistance_for_fixed_trusted_oid,
+                    sha1dc_equivalence_claimed: false, sha256_supported: true}
+d_component_limit: {hardcoded_255: rejected, independent_fpathconf_in_S1: rejected,
+                    selected: explicit_admission_parameter, C3_parity: conditional_on_same_limit}
+```
+
 S0 fecha o contrato de **S_G** como componente. S_D e E continuam **propostos**: a evidência
 deles aqui é de viabilidade, não de qualificação. Nenhuma obrigação foi apagada; as de S_D têm
 owner futuro e contramodelos obrigatórios (§7.3).
@@ -60,16 +77,19 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 
 ## 2. Claim de S0 (≤ 3 frases), propostas restantes e non-claims
 
-> **S_G-CLAIM.** Dado um commit esperado `C` fornecido por autoridade externa (#319) e um produtor
-> íntegro, um S_G admitido é um objeto selado cujos bytes foram todos autenticados **no instante
-> da leitura** contra `C`, pela cadeia commit → tree → blob no formato de objeto de `C`, e que
-> codifica sem perda as distinções da contract A/A2 de C3 sobre a árvore de `C`, com todo corpo de
-> objeto cobrado antes de ser lido. Depois do instante de compromisso (selos
-> `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta e conteúdo selado re-hasheado igual ao digest dos
-> bytes autenticados), nenhum processo sem `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera
-> bytes, índice ou tamanho de S_G. Um consumidor recebe S_G por descritor herdado e a identidade
-> esperada `(algoritmo, C)` e o digest por canal separado controlado pelo launcher, e valida selos,
-> digest e identidade sobre o mesmo buffer que consome.
+> **S_G-CLAIM.** Dado um commit esperado `C` fornecido por autoridade externa (#319), um produtor
+> íntegro e limites de admissão explícitos, um S_G admitido é um objeto selado cujos bytes foram
+> todos adquiridos por um transporte `git` contido pelo kernel, cobrados a partir de um cabeçalho
+> estritamente parseado antes de serem lidos e autenticados **no instante da leitura** contra `C`
+> pela cadeia commit → tree → blob no formato de objeto de `C`, codificando sem perda as distinções
+> da contract A/A2 de C3 sobre a árvore de `C` sob esses mesmos limites. A capability só é emitida
+> depois do instante de compromisso — selos `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta,
+> conteúdo selado re-hasheado e o **objeto selado revalidado** contra o registro da aquisição
+> (identidade, nós e vínculo oid → payload de cada folha) — e a partir daí nenhum processo sem
+> `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera bytes, índice ou tamanho de S_G. Um consumidor
+> recebe S_G por descritor herdado e a identidade esperada `(algoritmo, C)` e o digest por canal
+> separado controlado pelo launcher, e valida selos, digest e identidade sobre o mesmo buffer que
+> consome.
 
 **Propostas que S0 não qualifica** (arquitetura preservada, prova futura):
 - **S_D**: dependências como segundo container selado vinculado ao lock em S_G (§4–§5, §7.3).
@@ -80,7 +100,11 @@ Premissas (não impostas por S): kernel Linux com memfd seals (observado só em 
 kernel confiáveis; `C` correto (#319); launcher/produtor/bootstrap vindos de local não gravável pelo
 UID do runner (§6, U3); a mesma premissa de integridade de processo de §3 vale para **produtor e
 launcher** (o heap do produtor guarda bytes autenticados antes do selo; o launcher guarda os digests
-esperados).
+esperados); o kernel impõe `RLIMIT_AS` ao filho `git`. **SHA-1:** para repositórios sha1, a
+autenticação verifica igualdade com um oid fixo e ancorado externamente e assume **resistência a
+segunda pré-imagem** do SHA-1 para esse oid; a verificação usa `hashlib.sha1` e **não** alega
+equivalência com a detecção de colisão (sha1dc) do git. Endurecimento futuro possível: sha1dc ou
+admissão só sha256 — nova obrigação, não importada para S1.
 
 Non-claims: integridade do **processo** além da premissa de §3; disponibilidade (um ator same-UID
 pode matar/esgotar recursos); integridade dos **dados do target** (§9 U4); autenticação do
@@ -136,9 +160,15 @@ de wire/schema novo é proposto aqui**.
 
 **Instante de compromisso.** Antes dele a captura pode falhar livremente; nenhum descritor sai do
 produtor. Compromisso = `F_ADD_SEALS(WRITE|GROW|SHRINK|SEAL)` ok ∧ `F_GET_SEALS ⊇` esse conjunto ∧
-`sha256(pread(conteúdo selado)) == sha256(bytes autenticados)`. Falha em qualquer passo fecha o fd
-uma vez e não retorna nada. A re-verificação pós-selo é o discriminador contra o escritor da janela
-pré-selo (EXP-CAPTURE: ablação sem re-hash **compromete conteúdo adulterado**).
+`sha256(pread(conteúdo selado)) == sha256(bytes serializados)` ∧ **revalidação do objeto selado**:
+parse do conteúdo selado; identidade `(algoritmo implicado por C, C, root_tree)`; conjunto de nós,
+tipos e oids igual ao **registro da aquisição** (o que a caminhada autenticada admitiu); cada folha
+re-hasheia ao seu oid no formato de objeto Git; todo pai é nó `tree`. Falha em qualquer passo fecha
+o fd uma vez e não retorna nada. O re-hash pós-selo pega o escritor da janela pré-selo; só a
+revalidação pega "autenticar A e entregar B" antes da serialização, porque aí o digest do selo é
+calculado sobre B (EXP-CAPTURE: ablação sem revalidação **compromete B**). O objeto final — não um
+spool intermediário — é o truth-maker. Os corpos de tree não são embutidos: seus oids ficam
+vinculados pelo registro da aquisição, não re-hasheados após o selo.
 
 **Não** são substitutos de estabilidade: permissões `0700`/`0444`, mutex Python, path resolvido,
 FD mantido aberto, ou repetir hashes sobre M (spike EXP-Q1; K03/K05 de #324).
@@ -160,9 +190,13 @@ C (esperado, via #319)
 - **Algoritmo** vem do comprimento do `C` esperado (40 → sha1, 64 → sha256) e é conferido com
   `git rev-parse --show-object-format`; divergência recusa (`object_format_mismatch`). Nada de
   SHA fixo por conveniência; a regra JSON de self-hash do produto não se aplica a objetos Git.
-- `git cat-file --batch` é **transporte não confiável**: o spike e EXP-N1 mostram que ele serve,
-  com rc 0, bytes que não hasheiam ao oid pedido. A autenticação é do buffer lido, logo independe
-  do storage (loose, pack, alternates) — argumento, observado apenas para loose (§ EVIDENCE).
+- `git cat-file --batch` é **transporte não confiável e contido** (decisão a): o spike e EXP-N1
+  mostram que ele serve, com rc 0, bytes que não hasheiam ao oid pedido. A autenticação é do buffer
+  lido, logo independe do storage (loose, pack, alternates) — argumento, observado apenas para
+  loose. O filho roda sob `RLIMIT_AS` aplicado antes do `exec`; o cabeçalho é lido com limite e
+  parseado estritamente (oid exato, tipo conhecido, decimal não negativo de até 19 dígitos) antes de
+  qualquer cobrança; toda recusa mata e colhe o filho antes de propagar. Fechar o pipe e esperar
+  deixava o filho expandir o objeto; matar rápido sem limite é corrida, não bound (EXP-RES `git_child_contained_*`).
 - **Bytes autenticados = bytes incorporados.** Hash de uma leitura e cópia de outra reabre a janela
   (EXP-N1 `MUTANT_verify_then_reread`). A única transformação é a extração de membros do wheel, que
   preserva a equivalência pelo RECORD autenticado junto com o wheel; nomes duplicados, `..`,
@@ -278,33 +312,46 @@ limite · owner · evidência.
 - **301S-AUTH** — todo objeto que contribui para S é autenticado no consumo · commit/tree/blob,
   sha1 e sha256 · hash-on-read sobre o buffer usado · produtor · troca de objeto commit, tree ou
   blob após a aquisição · bytes legítimos aceitos; restaurar volta a aceitar · pack/alternates só
-  por argumento · #301 · EXP-N1 (21 casos, inclui ablação e testemunha herdada).
+  por argumento; sha1 sob a premissa de segunda pré-imagem, sem equivalência sha1dc (§2) · #301 ·
+  EXP-N1 (21 casos, inclui ablação e testemunha herdada; positivos sha1 **e** sha256). Nenhum teste
+  pretende provar resistência a segunda pré-imagem.
 - **301S-FID** — S preserva as distinções de contract A/A2 e recusa o resto explicitamente ·
   árvores Git suportadas por C3 · paridade com árvore declarada **e** com o enumerador C3 ·
   produtor · 7 contramodelos (diretório vazio ±, aninhado, exec bit, target de symlink, tipo,
   vazio→arquivo) · paridade exata · nomes não-UTF-8 aceitos como bytes pelos dois · C3 (regra) /
   #301 (uso) · EXP-STRUCT (mutante com perda colide em 5/7). O protótipo **espelha** regras que o
   C3 já possui no builder hierárquico (duplicado, round-trip `fsdecode/fsencode`, ciclo,
-  profundidade ≤ 100, componente ≤ 255, limite pré-leitura `size // 295`); S1 deve obtê-las do
-  próprio C3, não dessas cópias.
-- **301S-STAB** — após compromisso, S é imutável para não-root · memfd; observado só no kernel
-  6.18/WSL2 · selos + re-hash
-  pós-selo · produtor → todos · bateria de 9 operações de escrita por outro processo; escritor
-  pré-selo; selo estranho; mapeamento gravável retido · conteúdo idêntico, compromisso sem atacante
-  · disponibilidade não coberta · #301 · EXP-CAPTURE.
+  profundidade ≤ 100, limite pré-leitura `size // 295`); S1 deve obtê-las do próprio C3, não
+  dessas cópias. O limite de componente é **parâmetro explícito de admissão** (sem default; ausência
+  recusa): a paridade com C3 só é afirmada quando os dois recebem o mesmo limite (EXP-STRUCT: 256
+  bytes admitido com 300, recusado com 255 — por S_G e pelo C3; `no_admission_limit_refused`).
+- **301S-STAB** — após compromisso, S é imutável para não-root, e o que foi comprometido é o que
+  foi autenticado · memfd; observado só no kernel 6.18/WSL2 · selos + re-hash pós-selo +
+  **revalidação do objeto selado** contra o registro da aquisição · produtor → todos · bateria de 9
+  operações de escrita por outro processo; escritor pré-selo; selo estranho; mapeamento gravável
+  retido; **autenticar A e entregar B antes da serialização**; nó fora do registro · conteúdo
+  idêntico, compromisso sem atacante · disponibilidade não coberta · #301 · EXP-CAPTURE (ablação
+  sem revalidação compromete B).
 - **301S-BIND** — o consumidor só aceita o descritor recebido se selado, regular, com digest e
   identidade esperados vindos do launcher · handoff · `open_sealed` sobre o buffer único ·
   launcher → bootstrap · arquivo regular idêntico, memfd atacante, sem `F_SEAL_WRITE`, sem identidade
   esperada, fd não herdado · handoff correto · número de FD em receipt não é prova · #301 ·
   EXP-CAPTURE `binding_*`.
-- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão · por ocorrência, para
-  commit, tree **e** blob · todo corpo é cobrado pelo header antes de ser lido (commit: teto próprio;
-  tree: limite pré-leitura do C3 com o orçamento restante e orçamento de metadados; blob: orçamento
-  de payload) · produtor · subárvore compartilhada 2.000× (125 MiB por ocorrência de 64 KiB únicos);
+- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão, **no produtor e no
+  transporte** · por ocorrência, para commit, tree **e** blob · (i) o filho `git` roda num envelope
+  de memória do kernel (`RLIMIT_AS`, aplicado antes do `exec`); (ii) o cabeçalho é lido com limite e
+  parseado estritamente; (iii) todo corpo é cobrado a partir desse cabeçalho antes de ser lido
+  (commit: teto próprio; tree: limite pré-leitura do C3 com o orçamento restante e orçamento de
+  metadados; blob: orçamento de payload); (iv) toda recusa mata e colhe o filho · produtor +
+  kernel · filho sem contenção com pai lento vai a 68 MiB, contido fica em 11 MiB (envelope de teste
+  64 MiB); 9 cabeçalhos hostis (negativo, `+`, não decimal, overflow, sem fim de linha, tipo
+  desconhecido, oid errado, acima do orçamento, corpo truncado); subárvore compartilhada 2.000×;
   blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB; profundidade 110; contagem cumulativa de nós ·
-  corpus real aceito · limites propostos (§8) ainda não adjudicados; o orçamento cumulativo de nós
-  é imposto pelo cap por árvore do C3 alimentado com o **restante** (o `budget_nodes` próprio é
-  redundante) · #301 · EXP-RES.
+  corpus real aceito com o filho em 14,7 MiB dentro do envelope de 128 MiB · valores de envelope e
+  orçamentos (§8) ainda não adjudicados; `RLIMIT_AS` segue a semântica já usada por
+  `trusted_check_supervisor_v2`; o orçamento cumulativo de nós é imposto pelo cap por árvore do C3
+  alimentado com o **restante** · #301 · EXP-RES `git_child_contained_*`, `strict_transport_*`,
+  EXP-FUNC `real_corpus_accepted_with_git_child_inside_envelope`.
 - **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial; filho sem resposta não
   vira sucesso · produtor/launcher · FD/processos contados antes e depois · — · falha de escrita
   (EFBIG), de selo (injetada), de hash no meio da captura, falha do launcher antes do spawn, filho
@@ -382,13 +429,16 @@ Medidos no corpus real (`C = 9abcde64`) em CPython 3.11.16 / tmpfs (EXP-FUNC); n
 | Bytes únicos vs por ocorrência | 8.642.394 / 8.660.242 (blobs); 52.807 B de corpos commit/tree | 9.700.542 (payload) | — |
 | Bytes de paths (soma dos comprimentos) | 54.726 B | — | — |
 | Container (RAM-backed) | 8.769.133 B | 9.718.908 B | 2 memfds nativos no filho |
-| Heap de pico do produtor | 25,9 MiB (build → selo) | 45,6 MiB | maxrss 87.216 KiB (normal: 78.076) |
+| Heap de pico do produtor | 43,0 MiB (build → selo → revalidação pós-selo) | 45,6 MiB | maxrss 87.712 KiB (normal: 87.504) |
+| Memória do transporte `git` | pico 14,7 MiB, envelope `RLIMIT_AS` 128 MiB | — | — |
 | FDs | 1 por container | 1 | 3 herdados (por construção) + 1 socket + 2 nativos |
 | Subprocessos | 2 `git` (contados: object format + cat-file) | 0 | 0 (audit hook) |
 | I/O | 1.003 objetos, 8.713.049 B lidos do git | 6 wheels lidos 1× | 0 aberturas em checkout/venv |
-| Tempo | build 0,164 s; serialize+selo+verificação 0,028 s | 0,096 s | 0,41 s (normal 0,26 s) |
+| Tempo | build 0,176 s; serialize+selo+revalidação 0,059 s | 0,091 s | 0,39 s (normal 0,25 s) |
 
-Limites **propostos** (para adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,
+Envelope **proposto** do transporte: `RLIMIT_AS` = 128 MiB (a base do `git cat-file` é ~8 MB de
+VM; o envelope precisa admitir o maior corpo que a política admite). Limites **propostos** (para
+adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,
 por ocorrência) = 64 MiB (≈7× o corpus atual; memfd é RAM/shmem, então o orçamento de disco de C3
 de 2 GiB **não** se transfere); `max_metadata_bytes` (corpos commit+tree) = 64 MiB;
 `max_commit_bytes` = 1 MiB; `max_path_bytes` = 16 MiB. Para S_D, um teto de 64 MiB é **proposto e
@@ -477,34 +527,46 @@ Perguntas **abertas que bloqueiam E** (não S1):
    Regras de árvore → C3: `_parse_tree_data` (usada diretamente pelo protótipo) e o builder
    hierárquico `_build_canonical_trie_hierarchical` (duplicado, round-trip, ciclo, profundidade 100,
    componente, limite pré-leitura). O protótipo **espelha** estas últimas — são cópias, portanto hoje
-   há duas instâncias dessas regras no protótipo; S1 deve ter **uma**: inserir a verificação de hash
-   no leitor de objetos do C3 (`_list_single_tree_entries_v2` lê o corpo e parseia sem hashear) e
-   consumir o builder do C3, sem enumerador paralelo. Autorização de wheels → lock em `C`; formato
+   há duas instâncias dessas regras no protótipo. S1 deve ter **uma**, separando **aquisição** de
+   **interpretação estrutural** (decisão b): S1 é dono de quais bytes foram adquiridos (transporte
+   contido), autenticados e comprometidos; o C3 continua dono do que uma tree significa, exposto como
+   interpretação sobre bytes **fornecidos** pela aquisição. A proposta anterior ("inserir hash no
+   leitor do C3 e consumir o carrier") foi **retirada**: o carrier de blobs do C3 grava num spool
+   temporário reabrível e relê dele, o que reproduz "verificar uma leitura, consumir outra" (R3-4).
+   Nenhum segundo parser estrutural é criado. Limite de componente → parâmetro explícito de admissão;
+   paridade com C3 só sob o mesmo limite (decisão d). Autorização de wheels → lock em `C`; formato
    de wheel → PEP 427/RECORD/METADATA/WHEEL (derivados). Anchor → #319.
-3. **Linguagem/capacidade.** Aceita: objetos sha1/sha256; modos `040000/100644/100755/120000`;
-   nomes em bytes; wheels puros e nativos cp311 manylinux sem RPATH/RUNPATH. Recusa explícita:
-   gitlink, modos não canônicos, `..`, duplicados, lock não regular, lock com duplicado/marker,
+3. **Linguagem/capacidade.** Aceita: objetos sha1 (sob a premissa de segunda pré-imagem, sem
+   equivalência sha1dc) e sha256; modos `040000/100644/100755/120000`; nomes em bytes até o limite
+   de componente **explicitamente** admitido; wheels puros e nativos cp311 manylinux sem RPATH/RUNPATH. Recusa explícita:
+   gitlink, modos não canônicos, `..`, duplicados, captura sem limite de componente, componente
+   acima do limite, cabeçalho de transporte fora da forma estrita, lock não regular, lock com duplicado/marker,
    identidade/tag de wheel divergente, `.pth`, `.data/`, symlink em wheel, colisão arquivo/diretório,
    nativo com caminho de busca, plugins pydantic, import através de symlink, `__file__`,
    `inspect.getsource`, `importlib.resources`, `pkgutil.iter_modules`, relançamento por path.
    U1–U4 são perguntas de E; U3 também condiciona o **significado operacional** de S1 (§12).
 4. **Corpus.** Negativo: EXP-N1, EXP-STRUCT §4, EXP-CAPTURE, EXP-BOOT, EXP-RES. Positivo **com
    igualdade**: paridade com árvore declarada, com C3 (`list_commit_tree_structure_v2` +
-   `read_commit_blobs_v2`) e com o resultado da engine no caminho normal. Limite: corpus sintético
-   pequeno + o próprio toolrepo em `C`.
+   `read_commit_blobs_v2`) e com o resultado da engine no caminho normal. Limite: a paridade com C3
+   foi medida só no corpus sintético (o corpus real, 1.001 nós, não tem symlinks nem árvores vazias e
+   não foi comparado ao C3) — exigida no aceite de S1.
 5. **Evidência/mutação.** Mutantes executados e observados: verificação de hash desligada
    (aceita blob adulterado), hash-então-relê (incorpora outros bytes), sem re-hash pós-selo
    (compromete conteúdo adulterado), projeção com perda (colide em 5/7). O finder anterior (head
    `3d426e1`, que ignorava `path`) funciona como mutante de 301S-LOAD: a revisão reproduziu nele a
    injeção que o finder corrigido recusa. Predicados admitidos (vocabulário do preflight):
    `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no domínio/corpus declarados;
-   `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB; 301S-RES (S_G) e 301S-ID só
-   `MECHANICALLY_VERIFIED` no corpus declarado (sem mutantes executados). S_D: `DEFINED`; 301S-RES
+   `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB (inclusive a revalidação pós-selo: a ablação
+   compromete B) e para a contenção de 301S-RES (S_G) (o transporte sem envelope, com pai lento, é o
+   mutante: 68 MiB contra 11 MiB); os cabeçalhos estritos e 301S-ID são `MECHANICALLY_VERIFIED` no
+   corpus declarado. S_D: `DEFINED`; 301S-RES
    (S_D) é `REFUTED` no protótipo `1e2453e` (R2-1). Os instrumentos de medição também são
    discriminados: a auditoria de aberturas e o probe do piso têm controles positivos que os métodos
    da rodada 2 teriam falhado (R2-5, R2-6). `PROVED` não.
 6. **Premissas entre camadas.** "git serve os bytes do oid" → **falso** (EXP-N1 HOR), por isso
-   hash-on-read. "`-I -S` isola o startup" → falso para `pyvenv.cfg`/`LD_PRELOAD` (EXP-BOOT), por
+   hash-on-read. "O cabeçalho do `git` é bem formado" → falso sob pipe reabrível (R3-2), por isso parse
+   estrito. "Recusar pelo cabeçalho limita a expansão" → falso: o filho expande sozinho; "matar
+   rápido" é corrida, por isso envelope do kernel (R3-1). "`-I -S` isola o startup" → falso para `pyvenv.cfg`/`LD_PRELOAD` (EXP-BOOT), por
    isso interpretador root-owned + `env={}`. "O lock autentica a venv" → falso (EXP-FUNC). "Yama
    impede ptrace" → verdadeiro neste host (`ptrace_scope=1`), premissa em CT104 (U2).
 7. **Snapshot/ownership.** Uma decisão, um buffer: cada objeto é hasheado e incorporado da mesma
@@ -520,17 +582,24 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
 
 **S1 — captura autenticada e selada do subject Git (WHAT apenas).**
 
-- Entradas: `repo_root` (locator), `C` esperado (40/64 hex), orçamentos.
+- Entradas: `repo_root` (locator), `C` esperado (40/64 hex), limites de admissão **explícitos**
+  (inclusive o limite de componente; quando composto com C3, o mesmo valor que o C3 admitiu, vindo da
+  capability/receipt do C3 — se ainda não exposto, uma pequena interface derivada, nunca um novo
+  `fpathconf`), envelope do transporte.
 - Saída: capability com memfd selado de `S_G` + `(algoritmo, C, root_tree, container_digest)`;
   função pura de parse/validação do consumidor sobre um descritor recebido.
 - Consumidor previsto: o futuro launcher de E; nenhum caller de produção nesta slice.
-- Write-set esperado: um módulo novo em `app/agent_review/` (captura + container + validação),
-  verificação de hash inserida no leitor de objetos de C3 (sem enumerador paralelo; nome duplicado
-  no dono), testes em `tests/agent_review/` portando EXP-N1/STRUCT/CAPTURE/RES e o corpus CM-333
-  aplicável.
-- Aceite: todos os casos das famílias N1/STRUCT/CAPTURE/RES com os mesmos contramodelos e mutantes;
-  paridade com C3 no corpus; orçamentos adjudicados aplicados antes da expansão; FDs e processos
-  lineares em toda falha; nenhum campo de wire novo sem decisão.
+- Write-set esperado: um módulo novo em `app/agent_review/` com a **capability de aquisição**
+  (transporte `git` contido por `RLIMIT_AS` antes do `exec`, cabeçalho estrito, abort = kill+reap),
+  construção do container, selo e **revalidação pós-selo**, validação do consumidor; no C3, uma
+  interface derivada que interpreta bytes de tree **fornecidos** (sem processo `git` nem spool
+  próprios), consumida em vez de cópias; **sem** `BoundedBlobCarrierV2` no caminho; testes em
+  `tests/agent_review/` portando EXP-N1/STRUCT/CAPTURE/RES e o corpus CM-333 aplicável.
+- Aceite: todos os casos das famílias N1/STRUCT/CAPTURE/RES com os mesmos contramodelos e mutantes,
+  inclusive contenção medida **no filho** com pai lento, os 9 cabeçalhos hostis, "autenticar A e
+  entregar B" e o domínio do limite de componente; paridade com C3 sob o mesmo limite, no corpus
+  sintético e no corpus real; orçamentos e envelope adjudicados aplicados antes da expansão; FDs e
+  processos lineares em toda falha; nenhum campo de wire novo sem decisão.
 - Falsificadores: objeto adulterado aceito; nó de contract A perdido; S parcial retornado;
   escrita pós-compromisso; leak de FD/processo.
 - Teto: sem launcher, sem loader, sem S_D, sem receipt, sem G5; **novo grant necessário**.
@@ -539,9 +608,9 @@ precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFI
   checkout gravável pelo UID do runner, nenhum consumidor pode tratar a saída de S1 como proteção de
   #301 até U3 ser resolvida. S1 não deve ser apresentado como "#301 protegido".
 - **Decisões de adjudicação necessárias antes do grant de S1** (não são fatos desconhecidos):
-  (i) valores dos orçamentos de §8; (ii) aceite do owner de C3 para inserir verificação de hash e
-  novas razões de recusa no leitor de objetos do C3 (muda comportamento do C3 para todos os seus
-  consumidores).
+  (i) valores dos orçamentos e do envelope do transporte (§8); (ii) aceite do owner de C3 para expor
+  a interpretação de tree sobre bytes fornecidos (interface derivada; não muda o comportamento dos
+  consumidores atuais do C3).
 
 Cortes seguintes derivados desta arquitetura (não é sequência universal): **slice S_D** — leitor
 único com cobrança (spike), identidade/tags/ELF e completude do loader, com R2-1/2/3/7/8 e o corpus

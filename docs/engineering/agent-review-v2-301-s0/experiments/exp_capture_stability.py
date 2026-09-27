@@ -21,6 +21,11 @@ W = Path(sys.argv[2]).resolve()
 PY = sys.argv[3]
 
 import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
 import s0_fixture as fx  # noqa: E402
 import s0_launch as ln  # noqa: E402
 
@@ -140,10 +145,45 @@ repo = fx.init(W / "cap")
 b_init = fx.blob(repo, b'VALUE = "trusted"\n')
 pkg = fx.mktree(repo, [("100644", "blob", b_init, b"__init__.py")])
 c = fx.commit(repo, fx.mktree(repo, [("040000", "tree", pkg, b"pkg"), ("040000", "tree", fx.empty_tree(repo), b"ns")]))
-s = cap.build_subject(repo, c)
+s = cap.build_subject(repo, c, budget=admitted())
 s_bytes = cap.serialize(s.algorithm, s.commit, s.root_tree, s.nodes)
-s_digest = hashlib.sha256(s_bytes).hexdigest()
-s_fd = cap.seal_committed(s_bytes)
+s_fd, s_digest = cap.commit_subject(s)  # seal + post-seal revalidation of the final object
+assert s_digest == hashlib.sha256(s_bytes).hexdigest()
+
+# --- decision (b): the committed representation is the truth-maker ------------------------------
+EVIL_PKG = b'VALUE = "EVIL"\n'
+
+
+def commit_outcome(**kw):
+    try:
+        fd, digest = cap.commit_subject(s, **kw)
+        body = cap.parse(os.pread(fd, os.fstat(fd).st_size, 0))[3]
+        os.close(fd)
+        return "COMMITTED:" + body[b"pkg/__init__.py"][2].decode().strip()
+    except cap.CaptureRefused as exc:
+        return "REFUSED:" + exc.reason
+
+
+def substitute_payload(nodes):  # authenticate A, then hand B to the representation (same oid label)
+    kind, oid, _ = nodes[b"pkg/__init__.py"]
+    nodes[b"pkg/__init__.py"] = (kind, oid, EVIL_PKG)
+    return nodes
+
+
+def add_node(nodes):
+    nodes[b"planted.py"] = ("regular", b_init, b'VALUE = "trusted"\n')
+    return nodes
+
+
+case("authenticate_A_substitute_B_before_commit_refused", "REFUSED:sealed_binding_mismatch",
+     commit_outcome(_before_serialize=substitute_payload),
+     note="the seal digest is computed over B, so only the post-seal binding revalidation can catch it")
+case("ABLATION_no_post_seal_revalidation_commits_B", 'COMMITTED:VALUE = "EVIL"',
+     commit_outcome(_before_serialize=substitute_payload, revalidate=False))
+case("node_not_in_acquisition_record_refused", "REFUSED:sealed_record_mismatch",
+     commit_outcome(_before_serialize=add_node))
+case("mutate_unsealed_S_then_seal_refused", "REFUSED:sealed_content_mismatch",
+     commit_outcome(_after_write=pre_seal(ATTACK_WRITE_ONCE)))
 
 from app.agent_review.git_commit_subject_v2 import materialise_commit_subject_v2  # noqa: E402
 

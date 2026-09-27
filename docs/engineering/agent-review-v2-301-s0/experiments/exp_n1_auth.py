@@ -15,6 +15,11 @@ sys.path.insert(1, str(SRC))
 W = Path(sys.argv[2]).resolve()
 
 import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
 import s0_fixture as fx  # noqa: E402
 
 out = {"cases": {}}
@@ -55,7 +60,7 @@ def fixture(root: Path, fmt: str = "sha1"):
 # --- control + each contribution tampered (sha1) -------------------------------------------
 for fmt in ("sha1", "sha256"):
     repo, c, root_tree, pkg, b_init = fixture(W / f"n1-{fmt}", fmt)
-    s = cap.build_subject(repo, c)
+    s = cap.build_subject(repo, c, budget=admitted())
     case(f"{fmt}_control_legitimate_bytes_accepted",
          {b"pkg": "tree", b"pkg/__init__.py": b'VALUE = "trusted"\n'},
          {p: (k if k == "tree" else v) for p, (k, _o, v) in s.nodes.items() if p in (b"pkg", b"pkg/__init__.py")},
@@ -67,19 +72,19 @@ for fmt in ("sha1", "sha256"):
     git_returns = subprocess.run(["git", "cat-file", "-p", b_init], cwd=repo, env=fx.FIXTURE_ENV,
                                  capture_output=True).stdout
     case(f"{fmt}_HOR_git_itself_serves_swapped_blob_rc0", True, b"EVIL" in git_returns)
-    case(f"{fmt}_blob_swapped_same_length", "REFUSED:object_hash_mismatch/blob", outcome(lambda: cap.build_subject(repo, c)))
+    case(f"{fmt}_blob_swapped_same_length", "REFUSED:object_hash_mismatch/blob", outcome(lambda: cap.build_subject(repo, c, budget=admitted())))
     fx.swap_loose(repo, b_init, "blob", b"x = 'a different length payload'\n")
-    case(f"{fmt}_blob_swapped_other_length", "REFUSED:object_hash_mismatch/blob", outcome(lambda: cap.build_subject(repo, c)))
+    case(f"{fmt}_blob_swapped_other_length", "REFUSED:object_hash_mismatch/blob", outcome(lambda: cap.build_subject(repo, c, budget=admitted())))
     # ablation: the discriminator is the hash check, not an incidental failure
     mutant = {}
 
     def run_mutant():
-        mutant["s"] = cap.build_subject(repo, c, verify=False)
+        mutant["s"] = cap.build_subject(repo, c, verify=False, budget=admitted())
 
     case(f"{fmt}_ABLATION_verify_disabled_accepts_swapped_blob", "ACCEPTED", outcome(run_mutant),
          mutant_embedded=mutant["s"].nodes[b"pkg/__init__.py"][2].decode() if mutant else None)
     fx.swap_loose(repo, b_init, "blob", b'VALUE = "trusted"\n')  # restore exact bytes
-    case(f"{fmt}_restored_blob_accepted_again", "ACCEPTED", outcome(lambda: cap.build_subject(repo, c)))
+    case(f"{fmt}_restored_blob_accepted_again", "ACCEPTED", outcome(lambda: cap.build_subject(repo, c, budget=admitted())))
 
     # tree contribution: replace pkg tree object with a valid tree naming another blob
     evil_blob = fx.blob(repo, b'VALUE = "EVIL-TREE"\n')
@@ -87,23 +92,23 @@ for fmt in ("sha1", "sha256"):
                          cwd=repo, env=fx.FIXTURE_ENV, capture_output=True).stdout
     original_pkg = subprocess.run(["git", "cat-file", "tree", pkg], cwd=repo, env=fx.FIXTURE_ENV, capture_output=True).stdout
     fx.swap_loose(repo, pkg, "tree", raw)
-    case(f"{fmt}_tree_swapped", "REFUSED:object_hash_mismatch/tree", outcome(lambda: cap.build_subject(repo, c)))
+    case(f"{fmt}_tree_swapped", "REFUSED:object_hash_mismatch/tree", outcome(lambda: cap.build_subject(repo, c, budget=admitted())))
     fx.swap_loose(repo, pkg, "tree", original_pkg)
 
     # commit contribution: replace the commit object with one naming another root tree
     other_root = fx.mktree(repo, [("100644", "blob", evil_blob, b"main.py")])
     commit_body = subprocess.run(["git", "cat-file", "commit", c], cwd=repo, env=fx.FIXTURE_ENV, capture_output=True).stdout
     fx.swap_loose(repo, c, "commit", commit_body.replace(root_tree.encode(), other_root.encode(), 1))
-    case(f"{fmt}_commit_swapped", "REFUSED:object_hash_mismatch/commit", outcome(lambda: cap.build_subject(repo, c)))
+    case(f"{fmt}_commit_swapped", "REFUSED:object_hash_mismatch/commit", outcome(lambda: cap.build_subject(repo, c, budget=admitted())))
     fx.swap_loose(repo, c, "commit", commit_body)
 
     case(f"{fmt}_type_confusion_blob_as_commit", "REFUSED:object_type_mismatch",
-         outcome(lambda: cap.build_subject(repo, b_init)))
+         outcome(lambda: cap.build_subject(repo, b_init, budget=admitted())))
 
 # --- object format is taken from the EXPECTED identity, cross-checked with the repository ----
 repo1, c1, *_ = fixture(W / "fmt-mismatch", "sha1")
 case("expected_sha256_id_against_sha1_repo", "REFUSED:object_format_mismatch",
-     outcome(lambda: cap.build_subject(repo1, "a" * 64)))
+     outcome(lambda: cap.build_subject(repo1, "a" * 64, budget=admitted())))
 
 # --- "hash one read, embed another" reopens the window (why S embeds the verified buffer) ----
 repo2, c2, _rt, _pkg, b2 = fixture(W / "double-read", "sha1")

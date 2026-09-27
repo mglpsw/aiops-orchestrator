@@ -251,6 +251,33 @@
    "C3": "ACCEPTED:['caf\\udce9.py']",
    "note": "divergence here is a finding: S must adopt C3's rule, not a second one"
   },
+  "component_256_limit_300_admitted": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "component_256_limit_255_refused": {
+   "expected": "REFUSED:budget_component_len",
+   "observed": "REFUSED:budget_component_len",
+   "pass": true
+  },
+  "C3_parity_under_same_limit_300": {
+   "expected": "ACCEPTED:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.py",
+   "observed": "ACCEPTED:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.py",
+   "pass": true,
+   "note": "parity claim available: same admission limit"
+  },
+  "C3_also_refuses_under_same_limit_255": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "note": "refusal parity under the same limit"
+  },
+  "no_admission_limit_refused": {
+   "expected": "REFUSED:admission_limit_missing",
+   "observed": "REFUSED:admission_limit_missing",
+   "pass": true
+  },
   "container_truncated_refused": {
    "expected": "REFUSED:container_truncated",
    "observed": "REFUSED:container_truncated",

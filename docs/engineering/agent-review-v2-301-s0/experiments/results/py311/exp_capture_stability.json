@@ -47,6 +47,27 @@
    "observed": "COMMITTED",
    "pass": true
   },
+  "authenticate_A_substitute_B_before_commit_refused": {
+   "expected": "REFUSED:sealed_binding_mismatch",
+   "observed": "REFUSED:sealed_binding_mismatch",
+   "pass": true,
+   "note": "the seal digest is computed over B, so only the post-seal binding revalidation can catch it"
+  },
+  "ABLATION_no_post_seal_revalidation_commits_B": {
+   "expected": "COMMITTED:VALUE = \"EVIL\"",
+   "observed": "COMMITTED:VALUE = \"EVIL\"",
+   "pass": true
+  },
+  "node_not_in_acquisition_record_refused": {
+   "expected": "REFUSED:sealed_record_mismatch",
+   "observed": "REFUSED:sealed_record_mismatch",
+   "pass": true
+  },
+  "mutate_unsealed_S_then_seal_refused": {
+   "expected": "REFUSED:sealed_content_mismatch",
+   "observed": "REFUSED:sealed_content_mismatch",
+   "pass": true
+  },
   "M_mutated_after_capture_S_unchanged": {
    "expected": "f712d92a697a10de3114eba7b750182ae01a16cc4ad639a37539758e0e2dc5ea",
    "observed": "f712d92a697a10de3114eba7b750182ae01a16cc4ad639a37539758e0e2dc5ea",

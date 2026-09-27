@@ -16,6 +16,11 @@ sys.path.insert(1, str(SRC))
 W = Path(sys.argv[2]).resolve()
 
 import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
 import s0_fixture as fx  # noqa: E402
 
 out = {"cases": {}}
@@ -71,7 +76,7 @@ DECLARED = {
     b"run.sh": ("executable", b"#!/bin/sh\necho s0\n"), b"link": ("symlink", b"pkg"),
     b"link-up": ("symlink", b"../outside"),
 }
-s = cap.build_subject(repo, base_commit)
+s = cap.build_subject(repo, base_commit, budget=admitted())
 observed = {p: (k, v) for p, (k, _o, v) in s.nodes.items()}
 case("parity_with_explicitly_declared_tree", DECLARED, observed)
 
@@ -87,7 +92,7 @@ carrier.close()
 case("parity_with_C3_enumeration_and_blobs", c3, observed)
 
 data_a = cap.serialize(s.algorithm, s.commit, s.root_tree, s.nodes)
-data_b = cap.serialize(*(lambda t: (t.algorithm, t.commit, t.root_tree, t.nodes))(cap.build_subject(repo, base_commit)))
+data_b = cap.serialize(*(lambda t: (t.algorithm, t.commit, t.root_tree, t.nodes))(cap.build_subject(repo, base_commit, budget=admitted())))
 case("deterministic_bytes_two_builds", True, data_a == data_b)
 alg, com, rt, parsed = cap.parse(data_a)
 case("parse_inverse_of_serialize", True, (alg, com, rt, parsed) == (s.algorithm, s.commit, s.root_tree, s.nodes))
@@ -116,7 +121,7 @@ def lossy(nodes):
 
 base_digest = hashlib.sha256(data_a).hexdigest()
 for name, spec in VARIANTS.items():
-    v = cap.build_subject(repo, fx.commit(repo, tree_of(spec)))
+    v = cap.build_subject(repo, fx.commit(repo, tree_of(spec)), budget=admitted())
     vd = hashlib.sha256(cap.serialize(v.algorithm, v.commit, v.root_tree, v.nodes)).hexdigest()
     node_diff = sorted(set(v.nodes.items()) ^ set(s.nodes.items()), key=lambda x: x[0])
     case(f"countermodel_{name}_distinguished", True, vd != base_digest and bool(node_diff),
@@ -125,18 +130,18 @@ for name, spec in VARIANTS.items():
 # (4) explicit refusals, never silent skips
 gitlink = fx.git(repo, "rev-parse", base_commit)
 case("gitlink_refused", "REFUSED:unsupported_mode",
-     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("160000", gitlink, b"sub")])))))
+     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("160000", gitlink, b"sub")])), budget=admitted())))
 case("noncanonical_mode_100664_refused", "REFUSED:unsupported_mode",
-     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("100664", B["main"], b"a.py")])))))
+     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("100664", B["main"], b"a.py")])), budget=admitted())))
 case("dotdot_name_refused_by_C3_rule", "REFUSED:tree_unrepresentable",
-     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("100644", B["main"], b"..")])))))
+     outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(repo, [("100644", B["main"], b"..")])), budget=admitted())))
 case("duplicate_name_refused", "REFUSED:tree_duplicate_name",
      outcome(lambda: cap.build_subject(repo, fx.commit(repo, fx.raw_tree(
-         repo, [("100644", B["main"], b"a.py"), ("100644", B["mod"], b"a.py")])))))
+         repo, [("100644", B["main"], b"a.py"), ("100644", B["mod"], b"a.py")])), budget=admitted())))
 
 # raw (non-UTF-8) names: S keeps bytes; record what the C3 authority does with the same commit
 raw_commit = fx.commit(repo, fx.mktree(repo, [("100644", "blob", B["main"], b"caf\xe9.py")]))
-raw_s = outcome(lambda: cap.build_subject(repo, raw_commit))
+raw_s = outcome(lambda: cap.build_subject(repo, raw_commit, budget=admitted()))
 try:
     c3_raw = [e.path for e in list_commit_tree_structure_v2(repo_root=repo, commit_sha=raw_commit)]
     c3_outcome = "ACCEPTED:" + repr(c3_raw)
@@ -144,6 +149,37 @@ except Exception as exc:  # noqa: BLE001 -- recording the authority's behaviour,
     c3_outcome = "REFUSED:" + type(exc).__name__ + ":" + str(getattr(exc, "reason_code", exc))[:80]
 out["cases"]["non_utf8_name_S_vs_C3"] = {"S": raw_s, "C3": c3_outcome,
                                           "note": "divergence here is a finding: S must adopt C3's rule, not a second one"}
+
+# (4b) decision (d): the component limit is an explicit admission parameter; C3 parity is claimed
+#      only when S_G and C3 are given the SAME limit
+long_name = b"n" * 253 + b".py"  # 256 bytes
+c_long = fx.commit(repo, fx.mktree(repo, [("100644", "blob", B["main"], long_name)]))
+
+
+def c3_outcome(limit):
+    try:
+        return "ACCEPTED:" + ",".join(e.path for e in list_commit_tree_structure_v2(
+            repo_root=repo, commit_sha=c_long, max_component_len=limit))
+    except Exception as exc:  # noqa: BLE001 -- recording the authority's behaviour
+        return "REFUSED:" + str(getattr(exc, "reason_code", type(exc).__name__))
+
+
+def sg_outcome(limit):
+    try:
+        v = cap.build_subject(repo, c_long, budget=cap.Budget(max_component_len=limit))
+        return "ACCEPTED:" + ",".join(p.decode() for p in sorted(v.nodes))
+    except cap.CaptureRefused as exc:
+        return "REFUSED:" + exc.reason
+
+
+case("component_256_limit_300_admitted", True, sg_outcome(300).startswith("ACCEPTED"))
+case("component_256_limit_255_refused", "REFUSED:budget_component_len", sg_outcome(255))
+case("C3_parity_under_same_limit_300", c3_outcome(300), sg_outcome(300),
+     note="parity claim available: same admission limit")
+case("C3_also_refuses_under_same_limit_255", True, c3_outcome(255).startswith("REFUSED"),
+     note="refusal parity under the same limit")
+case("no_admission_limit_refused", "REFUSED:admission_limit_missing",
+     outcome(lambda: cap.build_subject(repo, base_commit, budget=cap.Budget())))
 
 # (5) container integrity is part of the digest: truncation / trailing / reorder refused by parse
 case("container_truncated_refused", "REFUSED:container_truncated", outcome(lambda: cap.parse(data_a[:-3])))

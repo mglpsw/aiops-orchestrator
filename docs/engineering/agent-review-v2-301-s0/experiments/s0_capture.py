@@ -47,16 +47,22 @@ GIT_ENV = {
 
 @dataclass
 class Budget:
-    # Values MIRROR C3 where C3 owns the rule (entries 100_000, depth 100, component 255); the
-    # byte budgets are S's own (RAM-backed; C3's 2 GiB is a disk budget and does not transfer).
-    # S1 must obtain the C3-owned rules from C3's hierarchical builder, not from these copies.
+    """Admission policy of one S_G capture.
+
+    Values MIRROR C3 where C3 owns the rule (entries 100_000, depth 100); the byte budgets are S's own
+    (RAM-backed; C3's 2 GiB is a disk budget and does not transfer). `max_component_len` is an
+    EXPLICIT admission parameter (decision (d)): S_G is not a filesystem, so no value is intrinsic to
+    it; C3 parity holds only when the caller passes the limit C3 admitted under.
+    `child_address_space_bytes` is the kernel envelope of the untrusted git transport (decision (a)).
+    """
+    max_component_len: int | None = None
     max_nodes: int = 100_000
     max_depth: int = 100
     max_payload_bytes: int = 64 * 1024 * 1024  # blob bytes, per occurrence
     max_metadata_bytes: int = 64 * 1024 * 1024  # commit + tree bodies, charged before reading
     max_commit_bytes: int = 1024 * 1024
     max_path_bytes: int = 16 * 1024 * 1024
-    max_component_len: int = 255
+    child_address_space_bytes: int | None = 128 * 1024 * 1024
     nodes: int = 0
     payload_bytes: int = 0
     metadata_bytes: int = 0
@@ -86,53 +92,99 @@ class Budget:
             raise CaptureRefused("budget_metadata_bytes", str(self.metadata_bytes))
 
     def charge_payload(self, oid: str, size: int) -> None:
-        # Charged from the object HEADER, before the body is read: an oversized or
-        # repeatedly referenced blob is refused without being expanded into memory.
+        # Charged from the object HEADER, before the body is read.
         self.payload_bytes += size
         self.unique_payload[oid] = size
         if self.payload_bytes > self.max_payload_bytes:
             raise CaptureRefused("budget_payload_bytes", str(self.payload_bytes))
 
 
-def _git(repo: Path, *args: str) -> str:
-    cp = subprocess.run(["git", *args], cwd=repo, env=GIT_ENV, capture_output=True, timeout=60)
+MAX_HEADER_BYTES = 160  # "<64-hex oid> <type> <decimal size>\n" with room to spare
+GIT_OBJECT_TYPES = (b"commit", b"tree", b"blob", b"tag")
+
+
+def _contain(address_space: int | None):
+    """preexec hook: the kernel owns the git child's memory envelope, set BEFORE exec (decision (a))."""
+    if address_space is None:
+        return None
+
+    def apply() -> None:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
+    return apply
+
+
+def _git(repo: Path, *args: str, address_space: int | None = None) -> str:
+    cp = subprocess.run(["git", *args], cwd=repo, env=GIT_ENV, capture_output=True, timeout=60,
+                        preexec_fn=_contain(address_space))
     if cp.returncode != 0:
         raise CaptureRefused("git_failed", " ".join(args))
     return cp.stdout.decode("ascii").strip()
 
 
 class VerifiedObjectReader:
-    """`git cat-file --batch` as an UNTRUSTED transport: bytes are accepted only if they hash
-    to the oid they were requested by. `verify=False` exists solely as the ablation mutant."""
+    """`git cat-file --batch` as an UNTRUSTED, CONTAINED transport.
 
-    def __init__(self, repo: Path, expected_hexlen: int, *, verify: bool = True) -> None:
+    - the child runs under RLIMIT_AS set before exec (its own expansion fails inside the envelope);
+    - the header is read with a bounded readline and parsed strictly (exact oid, known type, plain
+      non-negative decimal size) BEFORE anything is charged or read;
+    - every refusal terminates and reaps the child before it propagates (never close-and-wait,
+      which lets the child keep expanding);
+    - bytes are accepted only if they hash to the oid they were requested by.
+    `verify=False` is the ablation mutant; `argv`/`abort_delay_s` are test hooks (fake transport,
+    adversarial scheduling of the parent)."""
+
+    def __init__(self, repo: Path, expected_hexlen: int, *, verify: bool = True,
+                 address_space: int | None = 128 * 1024 * 1024, argv: list | None = None,
+                 abort_delay_s: float = 0.0) -> None:
         if expected_hexlen not in ALGORITHM_BY_HEXLEN:
             raise CaptureRefused("object_format_unsupported", str(expected_hexlen))
         self.algorithm = ALGORITHM_BY_HEXLEN[expected_hexlen]
-        declared = _git(repo, "rev-parse", "--show-object-format")
-        if declared != self.algorithm:
-            raise CaptureRefused("object_format_mismatch", f"expected={self.algorithm} repo={declared}")
+        if argv is None:
+            declared = _git(repo, "rev-parse", "--show-object-format", address_space=address_space)
+            if declared != self.algorithm:
+                raise CaptureRefused("object_format_mismatch", f"expected={self.algorithm} repo={declared}")
         self.verify = verify
+        self.abort_delay_s = abort_delay_s
         self.bytes_read = 0
         self.objects_read = 0
         self.proc = subprocess.Popen(
-            ["git", "cat-file", "--batch"], cwd=repo, env=GIT_ENV,
+            argv or ["git", "cat-file", "--batch"], cwd=repo, env=GIT_ENV,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            preexec_fn=_contain(address_space),
         )
 
     def get(self, oid: str, want: str, budget: Budget | None = None) -> bytes:
+        try:
+            return self._get(oid, want, budget)
+        except BaseException:
+            self.abort()
+            raise
+
+    def _get(self, oid: str, want: str, budget: Budget | None) -> bytes:
         assert self.proc.stdin is not None and self.proc.stdout is not None
-        self.proc.stdin.write(oid.encode("ascii") + b"\n")
-        self.proc.stdin.flush()
-        header = self.proc.stdout.readline().rstrip(b"\n").split(b" ")
-        if len(header) == 2 and header[1] == b"missing":
+        try:
+            self.proc.stdin.write(oid.encode("ascii") + b"\n")
+            self.proc.stdin.flush()
+        except OSError as exc:
+            raise CaptureRefused("transport_failed", f"errno={exc.errno}") from exc
+        line = self.proc.stdout.readline(MAX_HEADER_BYTES)
+        if not line.endswith(b"\n"):
+            raise CaptureRefused("transport_header_invalid", "unterminated_or_too_long")
+        fields = line[:-1].split(b" ")
+        if len(fields) == 2 and fields[0] == oid.encode("ascii") and fields[1] == b"missing":
             raise CaptureRefused("object_missing", oid)
-        if len(header) != 3 or header[0].decode("ascii", "replace") != oid:
-            raise CaptureRefused("object_header_invalid", oid)
-        kind, size = header[1].decode("ascii", "replace"), int(header[2])
+        if len(fields) != 3 or fields[0] != oid.encode("ascii"):
+            raise CaptureRefused("transport_header_invalid", "fields_or_oid")
+        kind_b, size_b = fields[1], fields[2]
+        if kind_b not in GIT_OBJECT_TYPES:
+            raise CaptureRefused("transport_header_invalid", "unknown_type")
+        if not (1 <= len(size_b) <= 19) or not all(48 <= c <= 57 for c in size_b):  # ASCII digits only
+            raise CaptureRefused("transport_header_invalid", "size_not_plain_decimal")
+        kind, size = kind_b.decode("ascii"), int(size_b)
         if kind != want:
             raise CaptureRefused("object_type_mismatch", f"{oid} want={want} got={kind}")
-        if budget is not None:  # every body is charged from its header, before it is read
+        if budget is not None:  # every body is charged from its (strictly parsed) header, before it is read
             if want == "blob":
                 budget.charge_payload(oid, size)
             else:
@@ -144,11 +196,26 @@ class VerifiedObjectReader:
         self.objects_read += 1
         if self.verify:
             h = hashlib.new(self.algorithm)
-            h.update(kind.encode("ascii") + b" " + str(size).encode("ascii") + b"\0")
+            h.update(kind_b + b" " + size_b + b"\0")
             h.update(body)
             if h.hexdigest() != oid:
                 raise CaptureRefused("object_hash_mismatch", f"{kind} {oid}")
         return body
+
+    def abort(self) -> None:
+        """Refusal path: terminate + reap FIRST, then release the pipes. Idempotent."""
+        if self.abort_delay_s:
+            import time
+            time.sleep(self.abort_delay_s)  # test hook: an adversarially slow parent
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+        for stream in (self.proc.stdin, self.proc.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
 
     def close(self) -> None:
         for stream in (self.proc.stdin, self.proc.stdout):
@@ -181,15 +248,21 @@ class Subject:
     commit: str
     root_tree: str
     nodes: dict  # raw path bytes -> (kind, oid-or-"", payload bytes)
+    record: dict  # raw path bytes -> (kind, oid): what the authenticated walk admitted (acquisition record)
     budget: Budget
     objects_read: int
     git_bytes_read: int
 
 
-def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, verify: bool = True) -> Subject:
+def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, verify: bool = True,
+                  _abort_delay_s: float = 0.0) -> Subject:
     budget = budget or Budget()
-    reader = VerifiedObjectReader(repo, len(commit), verify=verify)
+    if budget.max_component_len is None:  # decision (d): no implicit limit
+        raise CaptureRefused("admission_limit_missing", "max_component_len")
+    reader = VerifiedObjectReader(repo, len(commit), verify=verify, address_space=budget.child_address_space_bytes,
+                                  abort_delay_s=_abort_delay_s)
     GIT_INVOCATIONS[0] += 2  # rev-parse --show-object-format + cat-file --batch
+    ok = False
     try:
         commit_body = reader.get(commit, "commit", budget)
         first = commit_body.split(b"\n", 1)[0].split(b" ")
@@ -224,9 +297,59 @@ def build_subject(repo: Path, commit: str, *, budget: Budget | None = None, veri
                     nodes[path] = ("symlink", oid, reader.get(oid, "blob", budget))
                 else:  # gitlink (160000) and every non-canonical mode: explicit refusal, never a skip
                     raise CaptureRefused("unsupported_mode", f"{mode} {path!r}")
-        return Subject(reader.algorithm, commit, root_tree, nodes, budget, reader.objects_read, reader.bytes_read)
+        record = {p: (k, o) for p, (k, o, _v) in nodes.items()}
+        ok = True
+        return Subject(reader.algorithm, commit, root_tree, nodes, record, budget, reader.objects_read, reader.bytes_read)
     finally:
-        reader.close()
+        reader.close() if ok else reader.abort()
+
+
+def _git_blob_oid(algorithm: str, payload: bytes) -> str:
+    h = hashlib.new(algorithm)
+    h.update(b"blob %d\0" % len(payload))
+    h.update(payload)
+    return h.hexdigest()
+
+
+def validate_sealed_subject(fd: int, subject: Subject) -> None:
+    """Post-seal revalidation of the FINAL object (decision (b)): re-read the sealed bytes and check
+    identity (algorithm implied by C, C, root tree), that the node set/kinds/oids equal the acquisition
+    record, that every leaf payload re-hashes to its oid, and structural form (parents are trees).
+    Tree bodies are not embedded, so tree oids are bound through the record, not re-hashed here."""
+    data = os.pread(fd, os.fstat(fd).st_size, 0)
+    algorithm, commit, root_tree, nodes = parse(data)
+    if algorithm != ALGORITHM_BY_HEXLEN.get(len(subject.commit)) or commit != subject.commit or root_tree != subject.root_tree:
+        raise CaptureRefused("sealed_identity_mismatch")
+    if {p: (k, o) for p, (k, o, _v) in nodes.items()} != subject.record:
+        raise CaptureRefused("sealed_record_mismatch")
+    for path, (kind, oid, payload) in nodes.items():
+        if "/" in path.decode("utf-8", "surrogateescape"):
+            parent = path.rsplit(b"/", 1)[0]
+            if nodes.get(parent, ("?",))[0] != "tree":
+                raise CaptureRefused("sealed_structure_invalid", repr(parent))
+        if kind == "tree":
+            if payload:
+                raise CaptureRefused("sealed_structure_invalid", "tree_payload")
+        elif _git_blob_oid(algorithm, payload) != oid:
+            raise CaptureRefused("sealed_binding_mismatch", repr(path))
+
+
+def commit_subject(subject: Subject, *, revalidate: bool = True, _before_serialize=None, _after_write=None):
+    """Serialize -> seal -> post-seal revalidation -> capability. Returns (fd, container_sha256).
+    `revalidate=False` is the ablation mutant; `_before_serialize`/`_after_write` inject the
+    authenticate-A-consume-B substitution and the pre-seal writer."""
+    nodes = subject.nodes
+    if _before_serialize is not None:
+        nodes = _before_serialize(dict(nodes))
+    data = serialize(subject.algorithm, subject.commit, subject.root_tree, nodes)
+    fd = seal_committed(data, name="ar-301-s0-sg", after_write=_after_write)
+    try:
+        if revalidate:
+            validate_sealed_subject(fd, subject)
+        return fd, hashlib.sha256(data).hexdigest()
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def lock_bytes(nodes: dict, path: bytes = b"requirements-agent-review.lock") -> bytes:

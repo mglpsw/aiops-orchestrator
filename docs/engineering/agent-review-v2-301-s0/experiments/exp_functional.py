@@ -29,6 +29,11 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(1, str(PRODUCER_SRC))  # producer-side only: C3's _parse_tree_data, from the root-owned copy
 
 import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
 import s0_deps as deps  # noqa: E402
 import s0_launch as ln  # noqa: E402
 
@@ -71,12 +76,13 @@ INPUTS = {"target_root": str(target), "diff_text": DIFF, "pr_number": 101, "base
 fds_before = cap.open_fds()
 tracemalloc.start()
 t0 = time.perf_counter()
-subject = cap.build_subject(CLONE, COMMIT)
+subject = cap.build_subject(CLONE, COMMIT, budget=admitted())
 t_build = time.perf_counter() - t0
 t0 = time.perf_counter()
+import resource  # noqa: E402
+git_children_maxrss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024  # only git has run so far
 s_bytes = cap.serialize(subject.algorithm, subject.commit, subject.root_tree, subject.nodes)
-s_digest = hashlib.sha256(s_bytes).hexdigest()
-s_fd = cap.seal_committed(s_bytes)
+s_fd, s_digest = cap.commit_subject(subject)  # seal + post-seal revalidation of the final object
 t_seal = time.perf_counter() - t0
 _, heap_peak_s = tracemalloc.get_traced_memory()
 tracemalloc.reset_peak()
@@ -119,6 +125,10 @@ out["resources"]["D"] = {"wheels": d_manifest, "nodes_including_directories": le
                          "producer_heap_peak_MiB": round(heap_peak_d / 2**20, 1), "sha256": d_digest,
                          "lock_sha256": hashlib.sha256(lock_bytes).hexdigest()}
 
+
+case("real_corpus_accepted_with_git_child_inside_envelope", {"accepted": True, "within_envelope": True},
+     {"accepted": len(subject.nodes) > 0, "within_envelope": 0 < git_children_maxrss <= subject.budget.child_address_space_bytes},
+     git_children_maxrss_MiB=round(git_children_maxrss / 2**20, 1), envelope_MiB=subject.budget.child_address_space_bytes >> 20)
 
 # ---------------- runners -----------------------------------------------------------------------
 def run_E(label):

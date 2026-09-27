@@ -23,6 +23,11 @@ W = Path(sys.argv[2]).resolve()
 PY = sys.argv[3]
 
 import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
 import s0_fixture as fx  # noqa: E402
 import s0_launch as ln  # noqa: E402
 
@@ -65,11 +70,11 @@ repo = fx.init(W / "res")
 big = fx.blob(repo, b"x" * 65536)
 sub = fx.mktree(repo, [("100644", "blob", big, b"data.bin")])
 dag = fx.commit(repo, fx.mktree(repo, [("040000", "tree", sub, b"d%04d" % i) for i in range(2000)]))
-res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, dag, budget=cap.Budget(max_payload_bytes=16 * 2**20)))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, dag, budget=admitted(max_payload_bytes=16 * 2**20)))
 case("shared_subtree_expansion_refused_per_occurrence", "REFUSED:budget_payload_bytes", res,
      unique_bytes=65536, per_occurrence_bytes=2000 * 65536, budget_bytes=16 * 2**20, heap_peak_MiB=peak,
      fds_restored=fds_ok, git_reaped=kids_ok)
-res, _, _, _ = measured(lambda: cap.build_subject(repo, dag, budget=cap.Budget(max_nodes=1000)))
+res, _, _, _ = measured(lambda: cap.build_subject(repo, dag, budget=admitted(max_nodes=1000)))
 case("single_tree_entry_cap_rule_is_C3s", "REFUSED:tree_unrepresentable", res,
      note="2,000 entries in ONE tree vs S's node budget 1000: the RULE is C3's (_parse_tree_data entry cap); "
           "the VALUE passed to it is S's remaining node budget. The body (~80 KB) is below the pre-read bound.")
@@ -80,17 +85,17 @@ dag40 = fx.commit(repo, fx.mktree(repo, [("040000", "tree", sub40, b"d%02d" % i)
 # (remaining 10 >= size//295 = 4); its 40 entries then exceed the REMAINING node budget, which S passes
 # as C3's per-tree entry cap. So the cumulative (per-occurrence) node budget is enforced by C3's rule;
 # S's own `budget_nodes` check is redundant defence and is not the mechanism observed here.
-res, peak, _, _ = measured(lambda: cap.build_subject(repo, dag40, budget=cap.Budget(max_nodes=1010)))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, dag40, budget=admitted(max_nodes=1010)))
 case("shared_subtree_node_budget_per_occurrence", "REFUSED:tree_unrepresentable", res, heap_peak_MiB=peak,
      unique_nodes=41, per_occurrence_nodes=40 + 40 * 40, note="every tree has 40 entries; only the cumulative count exceeds")
 
 # (2) one oversized blob: refused from the object HEADER, before the body is read
 huge = fx.blob(repo, os.urandom(32 * 2**20))
 c_huge = fx.commit(repo, fx.mktree(repo, [("100644", "blob", huge, b"huge.bin")]))
-res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_huge, budget=cap.Budget(max_payload_bytes=8 * 2**20)))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_huge, budget=admitted(max_payload_bytes=8 * 2**20)))
 case("oversized_blob_refused_before_read", "REFUSED:budget_payload_bytes", res, blob_bytes=32 * 2**20,
      budget_bytes=8 * 2**20, heap_peak_MiB=peak, fds_restored=fds_ok, git_reaped=kids_ok)
-res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_huge))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_huge, budget=admitted()))
 case("CONTROL_same_blob_within_default_budget", "ACCEPTED", res, heap_peak_MiB=peak,
      note="heap ~ blob size: the carrier is in-memory by design; the budget bounds it")
 
@@ -99,20 +104,96 @@ names = [("100644", "blob", fx.blob(repo, b"t"), (b"%06d" % i) + b"n" * 244) for
 big_tree = fx.mktree(repo, names)
 c_big_tree = fx.commit(repo, big_tree)
 tree_size = int(fx.git(repo, "cat-file", "-s", big_tree))
-res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_big_tree, budget=cap.Budget(max_nodes=10)))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_big_tree, budget=admitted(max_nodes=10)))
 case("oversized_tree_refused_before_read", "REFUSED:budget_tree_entries_pre_read", res, tree_bytes=tree_size,
      heap_peak_MiB=peak, fds_restored=fds_ok, git_reaped=kids_ok)
-res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_big_tree, budget=cap.Budget(max_metadata_bytes=4 * 2**20)))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_big_tree, budget=admitted(max_metadata_bytes=4 * 2**20)))
 case("tree_bytes_charged_to_metadata_budget", "REFUSED:budget_metadata_bytes", res, tree_bytes=tree_size, heap_peak_MiB=peak)
 big_msg_commit = fx.git(repo, "commit-tree", fx.empty_tree(repo), "-F", "-", data=b"m" * (16 * 2**20))
-res, peak, _, _ = measured(lambda: cap.build_subject(repo, big_msg_commit))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, big_msg_commit, budget=admitted()))
 case("oversized_commit_refused_before_read", "REFUSED:budget_commit_bytes", res, commit_bytes=16 * 2**20, heap_peak_MiB=peak)
+
+# (A) decision (a): the git CHILD stays inside its kernel envelope. Measured in the child (fresh
+#     process per case, RUSAGE_CHILDREN = the git transport only), with an adversarially slow parent
+#     (1 s between refusal and kill), because a fast kill alone is a race, not a bound.
+ENVELOPE = 64 * 2**20
+big_tree_66mb = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"t"), (b"%07d" % i) + b"n" * 243) for i in range(240000)])
+c_tree_66mb = fx.commit(repo, big_tree_66mb)
+c_msg_64mib = fx.git(repo, "commit-tree", fx.empty_tree(repo), "-F", "-", data=b"m" * (64 << 20))
+CHILD_PROBE = r"""
+import json, resource, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(1, sys.argv[2])
+import s0_capture as cap
+env = None if sys.argv[5] == "none" else int(sys.argv[5])
+try:
+    cap.build_subject(__import__("pathlib").Path(sys.argv[3]), sys.argv[4], _abort_delay_s=1.0,
+                      budget=cap.Budget(max_component_len=255, max_nodes=10, child_address_space_bytes=env))
+    r = "ACCEPTED"
+except cap.CaptureRefused as e:
+    r = "REFUSED:" + e.reason
+print(json.dumps({"result": r, "git_child_maxrss_MiB": round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)}))
+"""
+
+
+def child_probe(commit, envelope):
+    cp = subprocess.run([PY, "-I", "-S", "-B", "-c", CHILD_PROBE, str(HERE), str(SRC), str(repo), commit,
+                         "none" if envelope is None else str(envelope)], capture_output=True, text=True, timeout=300)
+    return json.loads(cp.stdout) if cp.returncode == 0 else {"err": cp.stderr[-300:]}
+
+
+for label, commit in (("tree_66_7MB", c_tree_66mb), ("commit_64MiB", c_msg_64mib)):
+    free, held = child_probe(commit, None), child_probe(commit, ENVELOPE)
+    case(f"git_child_contained_{label}",
+         {"uncontained_exceeds_envelope": True, "contained_within_envelope": True, "both_refused": True},
+         {"uncontained_exceeds_envelope": free.get("git_child_maxrss_MiB", 0) * 2**20 > ENVELOPE,
+          "contained_within_envelope": 0 < held.get("git_child_maxrss_MiB", 10**9) * 2**20 <= ENVELOPE,
+          "both_refused": str(free.get("result", "")).startswith("REFUSED") and str(held.get("result", "")).startswith("REFUSED")},
+         uncontained=free, contained=held, envelope_MiB=ENVELOPE >> 20)
+small_c = fx.commit(repo, fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"ok\n"), b"ok.py")]))
+case("git_child_contained_control_small_accepted", "ACCEPTED", child_probe(small_c, ENVELOPE).get("result"))
+
+# (B) strict transport: a fake transport answers with hostile headers; each is refused BEFORE any
+#     body is consumed, the child is killed and reaped at once (it would otherwise sleep 30 s)
+FAKE = r"""
+import sys, time
+sys.stdin.readline()
+oid, mode = sys.argv[1].encode(), sys.argv[2]
+headers = {"negative": oid + b" blob -1\n", "plus": oid + b" blob +5\n", "nondecimal": oid + b" blob 12a\n",
+           "overflow": oid + b" blob " + b"9" * 25 + b"\n", "toolong": oid + b" blob " + b"1" * 400,
+           "unknowntype": oid + b" blobx 5\n", "wrongoid": b"b" * 40 + b" blob 5\n",
+           "overbudget": oid + b" blob 67108864\n", "truncated": oid + b" blob 100\n"}
+out = sys.stdout.buffer
+out.write(headers[mode]); out.flush()
+out.write(b"x" * (10 if mode == "truncated" else 64 << 20)); out.flush()
+if mode == "truncated":
+    sys.exit(0)
+time.sleep(30)
+"""
+OID = "a" * 40
+EXPECT = {"negative": "transport_header_invalid", "plus": "transport_header_invalid", "nondecimal": "transport_header_invalid",
+          "overflow": "transport_header_invalid", "toolong": "transport_header_invalid", "unknowntype": "transport_header_invalid",
+          "wrongoid": "transport_header_invalid", "overbudget": "budget_payload_bytes", "truncated": "object_truncated"}
+for mode, want in EXPECT.items():
+    reader = cap.VerifiedObjectReader(W, 40, argv=[PY, "-I", "-S", "-c", FAKE, OID, mode], address_space=None)
+    t0 = __import__("time").monotonic()
+    tracemalloc.start()
+    try:
+        reader.get(OID, "blob", admitted(max_payload_bytes=8 * 2**20))
+        res = "ACCEPTED"
+    except cap.CaptureRefused as exc:
+        res = "REFUSED:" + exc.reason
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    case(f"strict_transport_{mode}", {"result": "REFUSED:" + want, "child_reaped": True, "heap_under_1MiB": True,
+                                      "no_wait_for_child": True},
+         {"result": res, "child_reaped": reader.proc.returncode is not None, "heap_under_1MiB": peak < 2**20,
+          "no_wait_for_child": __import__("time").monotonic() - t0 < 10}, heap_peak_MiB=round(peak / 2**20, 2))
 
 # (3) depth budget applies to EVERY node kind (C3/R2 property), not only to trees
 deep = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"x"), b"leaf.py")])
 for i in range(110):
     deep = fx.mktree(repo, [("040000", "tree", deep, b"n")])
-res, _, _, _ = measured(lambda: cap.build_subject(repo, fx.commit(repo, deep)))
+res, _, _, _ = measured(lambda: cap.build_subject(repo, fx.commit(repo, deep), budget=admitted()))
 case("depth_budget", "REFUSED:budget_depth", res)
 
 # (4) failure injection: no partial result can look like a committed S; ownership stays linear
@@ -153,7 +234,7 @@ finally:
 case("seal_failure_no_fd_leaked", ("REFUSED:seal_failed", True), (r[0], r[2]))
 
 fx.swap_loose(repo, fx.git(repo, "rev-parse", f"{good}^{{tree}}"), "tree", b"")
-r = measured(lambda: cap.build_subject(repo, good))
+r = measured(lambda: cap.build_subject(repo, good, budget=admitted()))
 case("mid_capture_hash_failure_git_reaped_fds_restored", ("REFUSED:object_hash_mismatch", True, True), (r[0], r[2], r[3]))
 
 # (5) consumer lifecycle: a child that never answers yields NO result, is killed and reaped

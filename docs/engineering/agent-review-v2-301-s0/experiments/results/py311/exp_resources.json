@@ -66,6 +66,199 @@
    "commit_bytes": 16777216,
    "heap_peak_MiB": 0.06
   },
+  "git_child_contained_tree_66_7MB": {
+   "expected": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "observed": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "pass": true,
+   "uncontained": {
+    "result": "REFUSED:budget_tree_entries_pre_read",
+    "git_child_maxrss_MiB": 68.2
+   },
+   "contained": {
+    "result": "REFUSED:budget_tree_entries_pre_read",
+    "git_child_maxrss_MiB": 11.0
+   },
+   "envelope_MiB": 64
+  },
+  "git_child_contained_commit_64MiB": {
+   "expected": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "observed": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "pass": true,
+   "uncontained": {
+    "result": "REFUSED:budget_commit_bytes",
+    "git_child_maxrss_MiB": 68.0
+   },
+   "contained": {
+    "result": "REFUSED:budget_commit_bytes",
+    "git_child_maxrss_MiB": 11.0
+   },
+   "envelope_MiB": 64
+  },
+  "git_child_contained_control_small_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "strict_transport_negative": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_plus": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_nondecimal": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_overflow": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_toolong": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_unknowntype": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_wrongoid": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_overbudget": {
+   "expected": {
+    "result": "REFUSED:budget_payload_bytes",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:budget_payload_bytes",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
+  "strict_transport_truncated": {
+   "expected": {
+    "result": "REFUSED:object_truncated",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:object_truncated",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.0
+  },
   "depth_budget": {
    "expected": "REFUSED:budget_depth",
    "observed": "REFUSED:budget_depth",
