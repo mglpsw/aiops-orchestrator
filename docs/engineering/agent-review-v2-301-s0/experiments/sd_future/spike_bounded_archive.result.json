@@ -1,0 +1,27 @@
+{
+ "control": {
+  "result": "ACCEPTED",
+  "heap_peak_MiB": 0.11,
+  "archive_bytes": 747
+ },
+ "metadata_bomb_200MiB": {
+  "result": "REFUSED:budget_inflated_bytes",
+  "heap_peak_MiB": 0.27,
+  "archive_bytes": 204603
+ },
+ "record_bomb_200MiB": {
+  "result": "REFUSED:budget_inflated_bytes",
+  "heap_peak_MiB": 0.2,
+  "archive_bytes": 204603
+ },
+ "member_bomb_200MiB": {
+  "result": "REFUSED:budget_inflated_bytes",
+  "heap_peak_MiB": 0.27,
+  "archive_bytes": 204742
+ },
+ "archive_40MiB_stored_padding": {
+  "result": "REFUSED:budget_archive_bytes",
+  "heap_peak_MiB": 0.0,
+  "archive_bytes": 41943887
+ }
+}

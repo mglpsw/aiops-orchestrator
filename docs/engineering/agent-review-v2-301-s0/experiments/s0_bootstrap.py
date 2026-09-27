@@ -143,20 +143,34 @@ def _main(spec):
     import importlib.util
     import json
 
-    watch = tuple(spec.get("watch", ()))
+    # Watched roots and every observed path are compared RESOLVED (cwd-joined, realpath) and by path
+    # component: a relative open("app/x.py") under cwd=<checkout> is a checkout read (R2-5).
+    watch_roots = tuple(os.path.realpath(w) for w in spec.get("watch", ()))
+    in_hook = [False]
+
+    def under(path, roots):
+        return any(path == r or path.startswith(r.rstrip(os.sep) + os.sep) for r in roots)
+
     observed = {"opens_watched": [], "opens_other": [], "dlopen": [], "subprocess": [], "import_pwd_stack": []}
     # Python-level audit only: opens performed by native code and anything before this line are
-    # invisible to it. It is the consumer's own observation and is worth what process integrity is.
+    # invisible to it; an `os.open(..., dir_fd=...)` event carries no dir_fd, so such a relative open is
+    # resolved against the cwd, which may be wrong. It is the consumer's own observation and is worth
+    # what process integrity is.
     spawn_events = ("subprocess.Popen", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty",
                     "os.system", "os.spawn", "pty.spawn")
 
     def audit(event, args):
-        if event == "open" and args and isinstance(args[0], (str, bytes)):
-            p = os.fsdecode(args[0])
-            if watch and p.startswith(watch):
-                observed["opens_watched"].append(p)
-            elif not p.startswith(("/usr/", "/proc/self/fd/", "/dev/")):
-                observed["opens_other"].append(p)
+        if event == "open" and args and isinstance(args[0], (str, bytes)) and not in_hook[0]:
+            in_hook[0] = True
+            try:
+                raw = os.fsdecode(args[0])
+                resolved = os.path.realpath(os.path.join(os.getcwd(), raw))
+            finally:
+                in_hook[0] = False
+            if watch_roots and under(resolved, watch_roots):
+                observed["opens_watched"].append({"raw": raw, "resolved": resolved})
+            elif not under(resolved, ("/usr", "/proc/self/fd", "/dev")):
+                observed["opens_other"].append(resolved)
         elif event == "ctypes.dlopen":
             observed["dlopen"].append(str(args[0]))
         elif event in spawn_events:
@@ -183,8 +197,12 @@ def _main(spec):
     try:
         s_raw = open_sealed(spec["s"].get("fd"), spec["s"].get("sha256"))
         s_alg, s_commit, _s_tree, S = parse(s_raw)
-        if s_commit != spec["s"].get("commit"):
+        expected_commit = spec["s"].get("commit")
+        if s_commit != expected_commit:
             raise CaptureRefused("subject_identity_mismatch", s_commit)
+        # subject_identity is (algorithm, C): the algorithm is implied by the EXPECTED id, not the label (R2-4)
+        if s_alg != {40: "sha1", 64: "sha256"}.get(len(expected_commit or "")):
+            raise CaptureRefused("subject_algorithm_mismatch", s_alg)
         D = {}
         if spec.get("d"):
             d_raw = open_sealed(spec["d"].get("fd"), spec["d"].get("sha256"))

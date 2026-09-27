@@ -62,17 +62,45 @@ for soname in ("libgcc_s.so.1", "librt.so.1", "libpthread.so.0", "libm.so.6", "l
         floor_paths.append(("needed:" + soname, Path(os.path.realpath(hit))))
 for anc in sorted({str(a) for _l, p in floor_paths for a in p.parents}):
     floor_paths.append(("ancestor:" + anc, Path(anc)))
-for label, path in floor_paths:
-    st = path.stat()
+def parent_creation_probe(path):
+    """The round-2 method (R2-6): can this UID create an entry in the directory? Kept for comparison."""
     try:
         probe = (path if path.is_dir() else path.parent) / ".s0-write-probe"
         probe.touch()
         probe.unlink()
-        writable = True
+        return True
     except OSError:
-        writable = False
+        return False
+
+
+def writable_probe(path):
+    """Directories: can an entry be created in it. Files: can THIS file be opened for writing
+    (access(2) honours mode, group and ACL; the O_WRONLY open writes nothing and truncates nothing)."""
+    if path.is_dir():
+        return parent_creation_probe(path)
+    if os.access(path, os.W_OK):
+        return True
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC))
+        return True
+    except OSError:
+        return False
+
+
+# the probe itself is discriminated: a writable FILE inside a directory this UID cannot write to
+probe_dir = W / "probe-ro-dir"
+probe_dir.mkdir()
+probe_file = probe_dir / "writable.bin"
+probe_file.write_bytes(b"x")
+probe_dir.chmod(0o555)
+case("floor_probe_detects_writable_file_in_readonly_dir", True, writable_probe(probe_file),
+     round2_parent_creation_probe=parent_creation_probe(probe_file))
+probe_dir.chmod(0o755)
+
+for label, path in floor_paths:
+    st = path.stat()
     out["floor"][label] = {"path": str(path), "uid": st.st_uid, "mode": oct(st.st_mode & 0o7777),
-                           "writable_by_this_uid": writable}
+                           "writable_by_this_uid": writable_probe(path)}
 out["floor"]["this_uid"] = os.getuid()
 out["floor_all_root_owned_and_not_writable"] = all(
     v["uid"] == 0 and not v["writable_by_this_uid"] for k, v in out["floor"].items() if isinstance(v, dict))

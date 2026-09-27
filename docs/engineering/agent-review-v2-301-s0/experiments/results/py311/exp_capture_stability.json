@@ -106,6 +106,12 @@
    "observed": "refused:subject_identity_mismatch",
    "pass": true,
    "driver_ran": false
+  },
+  "binding_right_commit_wrong_algorithm_label": {
+   "expected": "refused:subject_algorithm_mismatch",
+   "observed": "refused:subject_algorithm_mismatch",
+   "pass": true,
+   "driver_ran": false
   }
  },
  "all_pass": true

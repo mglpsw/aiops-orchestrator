@@ -15,7 +15,7 @@ wheels: iguais aos sha256 do lock (environment.json)
 command: bash experiments/run_py311.sh <checkout> 9abcde6420a59b814b5faaff10ca5904c5d23370 <results>
 results: experiments/results/py311/
 scripts: experiments/results/py311/SCRIPTS.sha256   # os arquivos que produziram estes resultados
-outcome: 123/123 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
+outcome: 126/126 casos com expectativa passaram (8 scripts); 2 observações sem expectativa em
          exp_process_channel e 1 em exp_structure (non_utf8_name_S_vs_C3); único stderr = aviso
          esperado do zipfile no fixture de membro duplicado (exp_deps.stderr)
 reproduction: própria (esta sessão); não é reprodução independente
@@ -23,7 +23,10 @@ reproduction: própria (esta sessão); não é reprodução independente
 
 Os valores esperados estão escritos em cada script antes da execução registrada. Execuções de
 ensaio em CPython 3.12.3 no host e as execuções anteriores em 3.11 **não** são evidência registrada
-deste head; a do head `3d426e1` continua no histórico git.
+deste head; as dos heads `3d426e1` e `1e2453e` continuam no histórico git.
+
+**Escopo após a decisão do mantenedor (CONTRACT, topo):** as linhas marcadas **S_G** sustentam a
+claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qualificação.
 
 ## Afirmações → evidência
 
@@ -40,15 +43,19 @@ deste head; a do head `3d426e1` continua no histórico git.
 | Pós-compromisso: 9 operações de escrita negadas | `exp_capture_stability.json` `sealed_attack_battery` | EPERM; `mprotect` EACCES; `MAP_PRIVATE` só COW; `F_GET_SEALS=0xf` | aqui | kernel 6.18 |
 | Janela pré-selo; selo estranho; mapeamento retido | `pre_seal_*`, `ABLATION_no_post_seal_rehash_*` | detectado / `seal_failed`; mutante `COMMITTED` | aqui | — |
 | M mutado após captura; consumidor não lê M | `M_mutated_*`, `consumer_*` | digest igual; `trusted`; 0 aberturas | aqui | `cwd=M`, `PYTHONPATH=M` oferecidos |
-| Substituição de binding | `binding_*` (6) | recusas esperadas; driver não executou | aqui | — |
+| Substituição de binding (**S_G**) | `binding_*` (7) | recusas esperadas, inclusive rótulo de algoritmo incoerente (R2-4); driver não executou | aqui | — |
 | Pipe forjável; socketpair não | `exp_process_channel.json` | `FORGED` / `ENXIO` | aqui | — |
 | Não-ancestral mesmo UID vs consumidor | `same_uid_non_ancestor_vs_*` | sem attach/`/proc/pid/mem`; lista FDs se dumpable | aqui | Yama=1; produtor/launcher não observados |
 | Startup: `pyvenv.cfg`, `LD_PRELOAD`, `-I` vs `-S` | `exp_bootstrap_env.json` | conforme esperado (14 casos) | EXP-F1 **reexecutada** + novos | — |
 | Piso root-owned | `floor` (23 caminhos), `floor_all_root_owned_and_not_writable` | `true` | aqui | **só neste container** |
-| S_D: 25 recusas e controles | `exp_deps.json` | todas as razões esperadas; controle puro e nativo sem caminho aceitos | aqui (novo nesta rodada) | wheels sintéticos; `cc` do container |
-| Zip bomb recusado antes de inflar | `compressed_member_refused_before_inflate` | 200 MiB recusado, heap 0,27 MiB | aqui | — |
+| O probe do piso testa o próprio arquivo (R2-6) | `floor_probe_detects_writable_file_in_readonly_dir` | novo probe `true`; probe da rodada 2 `false` no mesmo arquivo | aqui | — |
+| S_D (protótipo, **não qualificado**): 25 recusas e controles | `exp_deps.json` | todas as razões esperadas; controle puro e nativo sem caminho aceitos | aqui | wheels sintéticos; ver R2-1/2/3/7/8 |
+| Membro-bomba comum recusado antes de inflar | `compressed_member_refused_before_inflate` | 200 MiB recusado, heap 0,27 MiB | aqui | **não** cobre `METADATA`/`RECORD` (R2-1) |
+| S_D: defeito R2-1/R2-8 no protótipo congelado | `experiments/sd_future/repro_r2.result.json` | `METADATA` 200 MiB → 2.282 MiB; `RECORD` → 1.001 MiB + crash; superconjunto de tags aceito | reprodução (host 3.12) sobre `s0_deps.py` inalterado desde `1e2453e` | contramodelo obrigatório da slice S_D |
+| Mecanismo proposto para S_D | `experiments/sd_future/spike_bounded_archive.result.json` | todos os contramodelos recusados com heap ≤ 0,27 MiB; controle aceito | spike descartável (host 3.12) | não implementado; não é claim de S0 |
 | Engine real só de S_G/S_D com paridade | `exp_functional.json` `positive_E_result_equals_normal_path` | `bundle_sha256` igual; `ready`; 2 chunks | aqui | Router → resposta sintética |
 | E: 0 aberturas em checkout/venv, 0 subprocessos, 0 distribuições | `E_no_*`, `E_distribution_metadata_visible` | vazios | aqui | audit do bootstrap: só nível Python; vale sob **P** |
+| O auditor detecta leitura relativa do checkout (R2-5) | `auditor_detects_relative_checkout_read` | detectada; caminho cru relativo; resolvido sob o checkout | aqui | `os.open(dir_fd=)` sem `dir_fd` no evento |
 | Checkout, `.pyc`, venv, plugin afetam só o caminho normal | `checkout_source_tampered`, `pyc_planted_*`, `venv_installed_*`, `pydantic_plugin_*` | normal executa; E inalterado | aqui | — |
 | D vinculado ao lock; sem fallback | `D_not_bound_*`, `D_absent_no_fallback` | recusa; `No module named` | aqui | vínculo de rótulo |
 | D não estende pacotes de S/stdlib nem sombreia stdlib | `D_cannot_extend_S_or_stdlib_packages` | `ModuleNotFoundError` ×3, `LookupError`, `json` da stdlib | aqui; **defeito reproduzido pela revisão no head `3d426e1`** | — |
@@ -78,7 +85,26 @@ deste head; a do head `3d426e1` continua no histórico git.
 - Interpretador não oficial (Debian `/usr/bin/python3.11`), musl.
 - Reprodução independente por outro operador/máquina.
 
-## Rodada de revisão 1 (head `3d426e1`) → correções neste head
+## Rodada de revisão 2 (head `1e2453e`) → STOP/REDESIGN → decisão → correções neste head
+
+Codex (review 5328675140) trouxe 8 achados, todos estabelecidos. R2-1 foi reproduzido e **admitido
+como recorrência** da correção do zip bomb da rodada 1, o que estabeleceu STOP/REDESIGN. O patching
+foi congelado, um spike descartável selecionou o mecanismo e as perguntas de redesenho apontaram que
+S0 afirmava mais sobre S_D do que o objetivo exige. Registro completo na PR #355, comentário
+5852251027. O mantenedor aceitou a redução (topo de CONTRACT).
+
+| Achado | Destino | Correção / preservação |
+|---|---|---|
+| R2-1 metadados inflados antes da cobrança | S_D (futura) | contramodelo obrigatório; `repro_r2.py` |
+| R2-2 arquivo do wheel sem limite | S_D (futura) | contramodelo obrigatório; spike |
+| R2-3 `DT_FILTER`/`DT_AUXILIARY` | S_D (futura) | contramodelo obrigatório |
+| R2-4 algoritmo do cabeçalho ignorado | **S_G — corrigido** | consumidor exige o algoritmo implicado pelo `C` esperado; `binding_right_commit_wrong_algorithm_label` |
+| R2-5 aberturas relativas escapam da auditoria | **evidência — corrigido** | caminho resolvido + comparação por componente; `auditor_detects_relative_checkout_read` |
+| R2-6 probe do piso testa o pai | **evidência — corrigido** | probe por arquivo; `floor_probe_detects_writable_file_in_readonly_dir` |
+| R2-7 pacote-extensão não procurado | S_D/loader (futura) | contramodelo obrigatório |
+| R2-8 superconjunto de tags aceito | S_D (futura) | contramodelo obrigatório; `repro_r2.py` |
+
+## Rodada de revisão 1 (head `3d426e1`) → correções em `1e2453e`
 
 Revisores: Codex (`chatgpt-codex-connector`, 8 comentários inline no head exato) e um subagente de
 revisão adversarial com contexto limpo (mesmo modelo; independência limitada). Todos os achados foram

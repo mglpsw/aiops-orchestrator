@@ -314,6 +314,27 @@ case("D_cannot_extend_S_or_stdlib_packages",
 os.close(inj_fd)
 os.close(probe_fd)
 
+# (h) the auditor itself is discriminated (R2-5): a RELATIVE read of the checkout, with cwd = checkout,
+#     must be reported as a checkout read; the raw event path alone would not match the watched root
+READER = b"""
+def run(inputs):
+    with open("requirements-agent-review.lock", "rb") as fh:
+        return {"read_bytes": len(fh.read(16))}
+"""
+reader_fd = cap.seal_committed(READER)
+r = ln.launch(BASE, {"s": {"fd": s_fd, "sha256": s_digest, "commit": COMMIT}, "d": None,
+                     "x": {"fd": reader_fd, "sha256": hashlib.sha256(READER).hexdigest()}, "roots": ["app"],
+                     "inputs": {}, "watch": [str(CLONE), str(VENV)]}, (s_fd, reader_fd), cwd=str(CLONE), timeout=60)
+watched = ((r["reply"] or {}).get("observed") or {}).get("opens_watched") or []
+case("auditor_detects_relative_checkout_read",
+     {"detected": True, "raw_is_relative": True, "resolved_under_checkout": True},
+     {"detected": bool(watched),
+      "raw_is_relative": bool(watched) and not watched[0]["raw"].startswith("/"),
+      "resolved_under_checkout": bool(watched) and watched[0]["resolved"].startswith(str(CLONE) + "/")},
+     note="positive control of the measurement behind E_no_open_under_checkout_or_venv; a prefix match on "
+          "the raw event path (round-2 auditor) would not have matched")
+os.close(reader_fd)
+
 for fd in (s_fd, d_fd, x_fd):
     os.close(fd)
 case("producer_fds_restored", fds_before, cap.open_fds())

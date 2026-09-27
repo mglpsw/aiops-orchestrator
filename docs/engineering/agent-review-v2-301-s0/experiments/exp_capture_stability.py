@@ -191,6 +191,8 @@ os.write(weak_fd, s_bytes)
 fcntl.fcntl(weak_fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SEAL)  # no F_SEAL_WRITE
 closed_fd = os.dup(s_fd)
 os.close(closed_fd)
+mislabeled = cap.serialize("sha256", s.commit, s.root_tree, s.nodes)  # right commit, wrong algorithm label (R2-4)
+mislabeled_fd = cap.seal_committed(mislabeled)
 SUBST = {
     "regular_file_with_identical_bytes": ({"fd": plain.fileno(), "sha256": s_digest, "commit": c}, (plain.fileno(),),
                                           "descriptor_not_sealable"),
@@ -201,6 +203,8 @@ SUBST = {
     "descriptor_not_inherited": ({"fd": closed_fd, "sha256": s_digest, "commit": c}, (), "descriptor_invalid"),
     "right_bytes_wrong_subject_identity": ({"fd": s_fd, "sha256": s_digest, "commit": "0" * 40}, (s_fd,),
                                            "subject_identity_mismatch"),
+    "right_commit_wrong_algorithm_label": ({"fd": mislabeled_fd, "sha256": hashlib.sha256(mislabeled).hexdigest(),
+                                            "commit": c}, (mislabeled_fd,), "subject_algorithm_mismatch"),
 }
 for name, (s_part, fds, want) in SUBST.items():
     spec = dict(base_spec, s=s_part)

@@ -11,6 +11,23 @@ evidence_index: EVIDENCE.md
 experiments: experiments/            # opt-in; fora de app/, scripts/ e da descoberta do pytest
 ```
 
+### Decisão de corte do mantenedor (2026-09-27, após STOP/REDESIGN da rodada 2)
+
+```yaml
+S0_decision:
+  S_G:  {contract: keep_and_finish, status_target: ready_for_adjudication}
+  S_D:
+    architecture: preserve_as_proposed
+    proof_claims: {resource_boundedness: future_S_D_slice, native_closure: future_S_D_slice,
+                   loader_completeness: future_S_D_slice}
+    mandatory_countermodels: [R2-1, R2-2, R2-3, R2-7, R2-8]   # PR #355, comentário 5852251027
+  E: {remains_future: true}
+```
+
+S0 fecha o contrato de **S_G** como componente. S_D e E continuam **propostos**: a evidência
+deles aqui é de viabilidade, não de qualificação. Nenhuma obrigação foi apagada; as de S_D têm
+owner futuro e contramodelos obrigatórios (§7.3).
+
 Este documento é a **única** fonte legível da proposta. `EVIDENCE.md` aponta para cá e não
 repete norma. Vocabulário epistemológico e critérios de STOP/REDESIGN pertencem a
 [`STRUCTURAL_CHANGE_PREFLIGHT.md`](../STRUCTURAL_CHANGE_PREFLIGHT.md); nada aqui os substitui.
@@ -41,18 +58,23 @@ Há um quarto papel que o caller real mistura com a engine: o **adapter do targe
 importa a engine e chama o Router entre `build` e `bind`. AgentEscala, CAEM e SACR-AS são
 consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 
-## 2. Claim proposta de S (≤ 3 frases) e non-claims
+## 2. Claim de S0 (≤ 3 frases), propostas restantes e non-claims
 
-> **S-CLAIM.** Dado um commit esperado `C` fornecido por autoridade externa (#319) e o lock contido
-> em `C`, um S admitido é o par de objetos selados `(S_G, S_D)` cujos bytes foram todos
-> autenticados **no instante da leitura** — contra `C` pela cadeia commit → tree → blob no formato
-> de objeto de `C`, ou contra os sha256 do lock autenticado — e que codifica sem perda as
-> distinções da contract A/A2 de C3 sobre a árvore de `C`. Depois do instante de compromisso (selos
+> **S_G-CLAIM.** Dado um commit esperado `C` fornecido por autoridade externa (#319) e um produtor
+> íntegro, um S_G admitido é um objeto selado cujos bytes foram todos autenticados **no instante
+> da leitura** contra `C`, pela cadeia commit → tree → blob no formato de objeto de `C`, e que
+> codifica sem perda as distinções da contract A/A2 de C3 sobre a árvore de `C`, com todo corpo de
+> objeto cobrado antes de ser lido. Depois do instante de compromisso (selos
 > `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta e conteúdo selado re-hasheado igual ao digest dos
 > bytes autenticados), nenhum processo sem `CAP_SYS_ADMIN`/root, inclusive do mesmo UID, altera
-> bytes, índice ou tamanho de `S_G`/`S_D`. E recebe S por descritores herdados e a identidade
-> esperada por canal separado controlado pelo launcher, valida selos e digest sobre o mesmo buffer
-> que consome e não lê checkout, venv ou M.
+> bytes, índice ou tamanho de S_G. Um consumidor recebe S_G por descritor herdado e a identidade
+> esperada `(algoritmo, C)` e o digest por canal separado controlado pelo launcher, e valida selos,
+> digest e identidade sobre o mesmo buffer que consome.
+
+**Propostas que S0 não qualifica** (arquitetura preservada, prova futura):
+- **S_D**: dependências como segundo container selado vinculado ao lock em S_G (§4–§5, §7.3).
+- **E**: launcher/bootstrap/loader/canal (§9, §7.2). A execução da engine real só a partir de S_G +
+  S_D, com resultado idêntico ao caminho normal, é evidência de **viabilidade**, não claim de S0.
 
 Premissas (não impostas por S): kernel Linux com memfd seals (observado só em 6.18/WSL2); root e
 kernel confiáveis; `C` correto (#319); launcher/produtor/bootstrap vindos de local não gravável pelo
@@ -150,6 +172,9 @@ C (esperado, via #319)
   caminho normal).
 - Uma cópia selada com digest próprio **não** autentica a origem: o digest de `S_G` só significa
   algo porque cada nó foi verificado contra `C`, e `C` vem de #319.
+As regras abaixo para S_D são **propostas** (§7.3): o protótipo as observa no corpus sintético, mas
+a ingestão de S_D não é limitada em `1e2453e` (R2-1/R2-2) e sua closure nativa está incompleta (R2-3).
+
 - **O lock precisa ser nó `regular` de `S_G`**; o texto-alvo de um symlink nunca autoriza S_D
   (produtor e consumidor verificam).
 - **Identidade do wheel vem de dentro dos bytes autenticados**, não do nome do arquivo: stem do
@@ -201,7 +226,10 @@ consome como dado); reaquisição da PR e teto de rollout são do adapter. Resul
 Subprocessos no percurso: **0**; aberturas em checkout/venv durante E: **0**. Ambas as contagens vêm
 do audit hook do próprio bootstrap: veem só eventos em nível Python (`open`, `subprocess.Popen`,
 `os.system`, `os.spawn`, `os.exec`, `os.posix_spawn`, `os.fork`, `pty.spawn`), não aberturas feitas
-por código nativo, e valem sob **P**.
+por código nativo, e valem sob **P**. Cada caminho é resolvido contra o cwd (`realpath`) e comparado
+por componente com as raízes observadas (R2-5); o controle positivo `auditor_detects_relative_checkout_read`
+mostra que uma leitura relativa do checkout é detectada. Limite: o evento de `os.open(..., dir_fd=)`
+não traz o `dir_fd`.
 
 ### 6.2 Piso de TCB proposto
 
@@ -216,7 +244,9 @@ por código nativo, e valem sob **P**.
 
 "Fica no TCB" não é dispensa: cada item acima nomeia autoridade (ownership/DAC ou #319), forma de
 aquisição (instalação root), mutabilidade (nenhuma pelo UID do runner), validação (EXP-BOOT
-`floor`: 23 caminhos — interpretador, stdlib, `lib-dynload`, cada `.so` mapeado pelo interpretador,
+`floor`, com probe por arquivo — `access(W_OK)` e abertura `O_WRONLY` sem escrita — e por criação só
+para diretórios; o probe é discriminado por um arquivo gravável dentro de diretório não gravável,
+R2-6: 23 caminhos — interpretador, stdlib, `lib-dynload`, cada `.so` mapeado pelo interpretador,
 as libs `NEEDED` do `pydantic_core` resolvidas pelo `ld.so.cache`, e todos os ancestrais — uid 0 e
 escrita negada ao ator; **só neste container**) e consequência por target:
 
@@ -231,10 +261,20 @@ escrita negada ao ator; **só neste container**) e consequência por target:
 Formato: proposição · domínio · truth-maker · produtor → consumidor · contramodelo · positivo ·
 limite · owner · evidência.
 
-- **301S-ID** — S carrega `subject_identity`, `container_digest` e `dependency_identity` como fatos
-  distintos · captura/handoff · cabeçalho selado + digest · produtor → bootstrap · handoff com
-  bytes certos e commit errado · commit certo aceito · — · #301 · EXP-CAPTURE
-  `binding_right_bytes_wrong_subject_identity`.
+| Grupo | Obrigações | Estado em S0 |
+|---|---|---|
+| 7.1 — S_G (claim de S0) | 301S-ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | a qualificar nesta PR |
+| 7.2 — E (viabilidade) | 301S-BOOT, LOAD (confinamento observado), CHAN, DATA, CALLER | propostas; E é futura |
+| 7.3 — S_D (futura slice) | 301S-DEP, NAT, RES (S_D), completude do loader | `DEFINED`; contramodelos obrigatórios R2-1/2/3/7/8 |
+
+### 7.1 — S_G (claim de S0)
+
+- **301S-ID** — S carrega `subject_identity = (algoritmo, C)`, `container_digest` e (para S_D)
+  `dependency_identity` como fatos distintos; o algoritmo aceito é o implicado pelo `C` **esperado**,
+  não o rótulo do container · captura/handoff · cabeçalho selado + digest · produtor → bootstrap ·
+  bytes certos e commit errado; commit certo com rótulo de algoritmo incoerente (R2-4) · identidade
+  correta aceita · — · #301 · EXP-CAPTURE `binding_right_bytes_wrong_subject_identity`,
+  `binding_right_commit_wrong_algorithm_label`.
 - **301S-AUTH** — todo objeto que contribui para S é autenticado no consumo · commit/tree/blob,
   sha1 e sha256 · hash-on-read sobre o buffer usado · produtor · troca de objeto commit, tree ou
   blob após a aquisição · bytes legítimos aceitos; restaurar volta a aceitar · pack/alternates só
@@ -257,20 +297,22 @@ limite · owner · evidência.
   launcher → bootstrap · arquivo regular idêntico, memfd atacante, sem `F_SEAL_WRITE`, sem identidade
   esperada, fd não herdado · handoff correto · número de FD em receipt não é prova · #301 ·
   EXP-CAPTURE `binding_*`.
-- **301S-DEP** — dependências vêm só de S_D, vinculado ao lock (nó regular) dentro de S_G · lock
-  atual · sha256 do wheel ∈ lock, identidade interna e tags, RECORD, tamanho antes de inflar,
-  colisões, vínculo `sha256(lock)` e tag do interpretador no cabeçalho · produtor → finder de E ·
-  25 casos sintéticos (renomeado, tags, ABI, duplicado, RECORD, `.pth`, `.data`, `..`, symlink,
-  colisões, hash/lock ausentes, lock duplicado/marker/hash em comentário, zip bomb de 200 MiB) + D de
-  outro lock, D ausente, venv adulterada, plugin plantado · controle sintético aceito e paridade
-  funcional · a checagem do consumidor é de **rótulo** (digest do lock e tag); a autenticação por
-  membro aconteceu no produtor (TCB) · #301 · EXP-DEPS, EXP-FUNC.
-- **301S-NAT** — extensões nativas executam só bytes de S_D, e sua closure dinâmica fica no TCB ·
-  `.so` do lock · ELF inspecionado pelo produtor; memfd selado criado e re-hasheado **no filho**,
-  `ExtensionFileLoader` em `/proc/self/fd/N` · produtor → bootstrap · `.so` com `RPATH`, `RUNPATH` ou
-  `DT_NEEDED` absoluto · `.so` sem caminhos aceito; `pydantic_core` e `yaml._yaml` carregados de
-  memfd · as sonames resolvem pelo `ld.so.cache` root-owned; `LD_*` fechado pelo launcher · #301 ·
-  EXP-DEPS `native_*`, EXP-FUNC census.
+- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão · por ocorrência, para
+  commit, tree **e** blob · todo corpo é cobrado pelo header antes de ser lido (commit: teto próprio;
+  tree: limite pré-leitura do C3 com o orçamento restante e orçamento de metadados; blob: orçamento
+  de payload) · produtor · subárvore compartilhada 2.000× (125 MiB por ocorrência de 64 KiB únicos);
+  blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB; profundidade 110; contagem cumulativa de nós ·
+  corpus real aceito · limites propostos (§8) ainda não adjudicados; o orçamento cumulativo de nós
+  é imposto pelo cap por árvore do C3 alimentado com o **restante** (o `budget_nodes` próprio é
+  redundante) · #301 · EXP-RES.
+- **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial; filho sem resposta não
+  vira sucesso · produtor/launcher · FD/processos contados antes e depois · — · falha de escrita
+  (EFBIG), de selo (injetada), de hash no meio da captura, falha do launcher antes do spawn, filho
+  travado, filho com rc 0 sem resposta · FDs restaurados, git reapado, ambos os lados do socketpair
+  fechados · #354 não é ativado (§8) · #301 · EXP-RES.
+
+### 7.2 — E (viabilidade; E é futura)
+
 - **301S-BOOT** — nenhuma configuração controlada por outro ator age antes do 1º import ·
   launcher · interpretador root-owned absoluto, `env={}`, `-I -S`, `cwd=/` · launcher · `pyvenv.cfg`
   editado (executa sob `-I -S`), `LD_PRELOAD`, `PYTHONPATH`, módulo no cwd, `.pth` de user site ·
@@ -289,24 +331,45 @@ limite · owner · evidência.
 - **301S-CHAN** — o resultado só chega por canal não reabrível por terceiros · socketpair herdado ·
   ENXIO ao reabrir via `/proc` · bootstrap → launcher · pipe reaberto injeta resultado forjado ·
   resultado genuíno · o conteúdo ainda é autorrelato do filho (vale sob **P**) · #301 · EXP-PROC.
-- **301S-RES** — S e sua captura são limitados antes da expansão · por ocorrência, para commit,
-  tree **e** blob · todo corpo é cobrado pelo header antes de ser lido (commit: teto próprio; tree:
-  limite pré-leitura do C3 com o orçamento restante e orçamento de metadados; blob: orçamento de
-  payload); membros de wheel pelo `ZipInfo` antes de inflar · produtor · subárvore compartilhada
-  2.000× (125 MiB por ocorrência de 64 KiB únicos); blob de 32 MiB; tree de 16,7 MB; commit de 16 MiB;
-  zip bomb 200 MiB; profundidade 110; contagem cumulativa de nós · corpus real aceito · limites
-  propostos (§8) ainda não adjudicados; o orçamento cumulativo de nós é imposto pelo cap por árvore
-  do C3 alimentado com o **restante** (o `budget_nodes` próprio é redundante) · #301 · EXP-RES,
-  EXP-DEPS.
-- **301S-LIFE** — cada descritor tem um dono; falhas não produzem S parcial; filho sem resposta não
-  vira sucesso · produtor/launcher · FD/processos contados antes e depois · — · falha de escrita
-  (EFBIG), de selo (injetada), de hash no meio da captura, falha do launcher antes do spawn, filho
-  travado, filho com rc 0 sem resposta · FDs restaurados, git reapado, ambos os lados do socketpair
-  fechados · #354 não é ativado (§8) · #301 · EXP-RES.
 - **301S-DATA** (aberta) — dados do target consumidos por E não retornam a bytes mutáveis · hoje
   #200-G4B relê por path e declara same-UID fora de escopo · owner a decidir (#301-E / #331) · U4.
 - **301S-CALLER** (aberta) — onde roda o adapter do target e como o Router é chamado sem pôr
   código do target no processo de E · owner #301-E · U1.
+
+### 7.3 — S_D (futura slice; `DEFINED`, não qualificadas por S0)
+
+Contramodelos **obrigatórios** herdados da rodada 2 (PR #355, comentário 5852251027):
+- R2-1: `METADATA`/`WHEEL`/`RECORD` inflados antes da cobrança (reproduzido: 2.282 MiB / 1.001 MiB com
+  orçamento de 8 MiB);
+- R2-2: arquivo do wheel lido inteiro sem limite;
+- R2-3: `DT_FILTER`/`DT_AUXILIARY` não inspecionados;
+- R2-7: pacote-extensão `pkg/__init__.so` não procurado;
+- R2-8: superconjunto de tags no `WHEEL` aceito.
+
+Mecanismo proposto (spike descartável, não implementado):
+[`experiments/sd_future/spike_bounded_archive.py`](experiments/sd_future/spike_bounded_archive.py) —
+um único leitor de arquivo com cobrança pelo qual passa toda leitura. Reprodução do defeito no
+protótipo congelado: [`experiments/sd_future/repro_r2.py`](experiments/sd_future/repro_r2.py). O
+protótipo `s0_deps.py` fica **congelado** no estado de `1e2453e`, com esses defeitos conhecidos.
+
+- **301S-DEP** — dependências vêm só de S_D, vinculado ao lock (nó regular) dentro de S_G · lock
+  atual · sha256 do wheel ∈ lock, identidade interna e tags, RECORD, tamanho antes de inflar,
+  colisões, vínculo `sha256(lock)` e tag do interpretador no cabeçalho · produtor → finder de E ·
+  25 casos sintéticos (renomeado, tags, ABI, duplicado, RECORD, `.pth`, `.data`, `..`, symlink,
+  colisões, hash/lock ausentes, lock duplicado/marker/hash em comentário, zip bomb de 200 MiB) + D de
+  outro lock, D ausente, venv adulterada, plugin plantado · controle sintético aceito e paridade
+  funcional · a checagem do consumidor é de **rótulo** (digest do lock e tag); a autenticação por
+  membro aconteceu no produtor (TCB) · futura slice S_D · EXP-DEPS e EXP-FUNC observam o protótipo;
+  limitação conhecida R2-1/R2-2/R2-8.
+- **301S-NAT** — extensões nativas executam só bytes de S_D, e sua closure dinâmica fica no TCB ·
+  `.so` do lock · ELF inspecionado pelo produtor; memfd selado criado e re-hasheado **no filho**,
+  `ExtensionFileLoader` em `/proc/self/fd/N` · produtor → bootstrap · `.so` com `RPATH`, `RUNPATH` ou
+  `DT_NEEDED` absoluto · `.so` sem caminhos aceito; `pydantic_core` e `yaml._yaml` carregados de
+  memfd · as sonames resolvem pelo `ld.so.cache` root-owned; `LD_*` fechado pelo launcher · futura
+  slice S_D · EXP-DEPS `native_*`, EXP-FUNC census; limitação conhecida R2-3/R2-7.
+- **301S-RES (S_D)** — ingestão de S_D limitada antes de qualquer expansão (arquivo, diretório
+  central, todo membro inclusive metadados) · **REFUTADA** no protótipo em `1e2453e` (R2-1/R2-2) ·
+  futura slice S_D, com o mecanismo do spike.
 
 ## 8. Recursos e lifecycle
 
@@ -328,11 +391,12 @@ Medidos no corpus real (`C = 9abcde64`) em CPython 3.11.16 / tmpfs (EXP-FUNC); n
 Limites **propostos** (para adjudicação), aplicados antes da expansão: `max_payload_bytes` (blobs,
 por ocorrência) = 64 MiB (≈7× o corpus atual; memfd é RAM/shmem, então o orçamento de disco de C3
 de 2 GiB **não** se transfere); `max_metadata_bytes` (corpos commit+tree) = 64 MiB;
-`max_commit_bytes` = 1 MiB; `max_path_bytes` = 16 MiB; `S_D` ≤ 64 MiB (por `ZipInfo.file_size`,
-antes de inflar). Valores que pertencem ao C3 e devem vir dele: entradas 100.000, profundidade 100,
+`max_commit_bytes` = 1 MiB; `max_path_bytes` = 16 MiB. Para S_D, um teto de 64 MiB é **proposto e
+não imposto** pelo protótipo (R2-1/R2-2): fica com a futura slice e o mecanismo do spike. Valores que pertencem ao C3 e devem vir dele: entradas 100.000, profundidade 100,
 componente 255, limite pré-leitura `size // 295`. Todo corpo é cobrado pelo header do `cat-file`
 antes de ser lido (EXP-RES: blob de 32 MiB, tree de 16,7 MB e commit de 16 MiB recusados com heap
-de 0,06 MiB; EXP-DEPS: zip bomb de 200 MiB recusado com 0,27 MiB). O memfd é contabilizado como shmem no memcg do processo;
+de 0,06 MiB; EXP-DEPS: um membro-bomba comum de 200 MiB é recusado com 0,27 MiB, mas `METADATA`/`RECORD`-bomba não —
+R2-1). O memfd é contabilizado como shmem no memcg do processo;
 comportamento sob limite de memcg **não testado**.
 
 Ownership: produtor possui o memfd até retornar; em falha fecha uma vez e propaga. Launcher possui
@@ -354,7 +418,7 @@ entrada admitida (C via #319, lock ∈ C) + política (orçamentos, raízes) + a
   → compromisso: S_G, S_D selados + digests            [301S-STAB]
   → handoff: descritores herdados (pass_fds) + identidade esperada no argv do launcher
              (digests, C) + socketpair de resultado; interpretador root-owned absoluto, env={}, -I -S
-  → validação no bootstrap: regular ∧ selado ∧ digest ∧ C ∧ vínculo S_D↔lock   [301S-BIND/ID]
+  → validação no bootstrap: regular ∧ selado ∧ digest ∧ (algoritmo, C) ∧ vínculo S_D↔lock   [301S-BIND/ID]
   → carga: finder fechado sobre S_G/S_D; nativos → memfd selado no filho       [301S-LOAD/NAT]
   → resultado pelo socketpair; ausência ≠ sucesso                              [301S-CHAN/LIFE]
 ```
@@ -404,10 +468,11 @@ Perguntas **abertas que bloqueiam E** (não S1):
 
 ## 11. Respostas ao preflight §§1–7
 
-1. **Propriedade.** S-CLAIM (§2). Observação mecânica: hash-on-read por objeto; paridade estrutural;
-   `F_GET_SEALS` + re-hash pós-selo; validação do descritor recebido; paridade funcional e 0
-   aberturas em checkout/venv. Disposição conservadora: qualquer falha recusa e **nenhum** S
-   parcial é emitido; resultado ausente não é sucesso.
+1. **Propriedade.** S_G-CLAIM (§2). Observação mecânica: hash-on-read por objeto; cobrança de todo
+   corpo pelo header; paridade estrutural; `F_GET_SEALS` + re-hash pós-selo; validação do descritor
+   recebido e da identidade `(algoritmo, C)`. Paridade funcional e 0 aberturas em checkout/venv são
+   viabilidade de E, não parte da claim. Disposição conservadora: qualquer falha recusa e
+   **nenhum** S parcial é emitido; resultado ausente não é sucesso.
 2. **Autoridade.** Formato de objeto Git (hash por tipo/tamanho/conteúdo) → S **deriva** dele.
    Regras de árvore → C3: `_parse_tree_data` (usada diretamente pelo protótipo) e o builder
    hierárquico `_build_canonical_trie_hierarchical` (duplicado, round-trip, ciclo, profundidade 100,
@@ -433,8 +498,11 @@ Perguntas **abertas que bloqueiam E** (não S1):
    `3d426e1`, que ignorava `path`) funciona como mutante de 301S-LOAD: a revisão reproduziu nele a
    injeção que o finder corrigido recusa. Predicados admitidos (vocabulário do preflight):
    `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no domínio/corpus declarados;
-   `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB; para as recusas de S_D e para 301S-RES só
-   `MECHANICALLY_VERIFIED` sobre o corpus sintético (sem mutantes executados); `PROVED` não.
+   `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB; 301S-RES (S_G) e 301S-ID só
+   `MECHANICALLY_VERIFIED` no corpus declarado (sem mutantes executados). S_D: `DEFINED`; 301S-RES
+   (S_D) é `REFUTED` no protótipo `1e2453e` (R2-1). Os instrumentos de medição também são
+   discriminados: a auditoria de aberturas e o probe do piso têm controles positivos que os métodos
+   da rodada 2 teriam falhado (R2-5, R2-6). `PROVED` não.
 6. **Premissas entre camadas.** "git serve os bytes do oid" → **falso** (EXP-N1 HOR), por isso
    hash-on-read. "`-I -S` isola o startup" → falso para `pyvenv.cfg`/`LD_PRELOAD` (EXP-BOOT), por
    isso interpretador root-owned + `env={}`. "O lock autentica a venv" → falso (EXP-FUNC). "Yama
@@ -444,9 +512,9 @@ Perguntas **abertas que bloqueiam E** (não S1):
    Segunda cópia de regra: checagem de nome duplicado (acima). Dados do target: **duas leituras por
    path** (U4) — fora de S, registrado.
 
-**Unknown material:** nenhum fato desconhecido para a propriedade de componente de S1; U3 condiciona
-o que o resultado de S1 significa em operação e está declarado como precondição (§12). U1–U4
-bloqueiam E/ativação.
+**Unknown material:** nenhum fato desconhecido para a claim de S_G nem para a propriedade de
+componente de S1; U3 condiciona o que o resultado de S1 significa em operação e está declarado como
+precondição (§12). U1–U4 bloqueiam E/ativação; S_D tem obrigações `DEFINED` e owner futuro.
 
 ## 12. Handoff — menor implementação seguinte
 
@@ -475,8 +543,9 @@ bloqueiam E/ativação.
   novas razões de recusa no leitor de objetos do C3 (muda comportamento do C3 para todos os seus
   consumidores).
 
-Cortes seguintes derivados desta arquitetura (não é sequência universal): S_D + loader fechado
-(depende de U2); launcher/E (depende de U1, U3; U4 decide se dados entram); receipt de execução
+Cortes seguintes derivados desta arquitetura (não é sequência universal): **slice S_D** — leitor
+único com cobrança (spike), identidade/tags/ELF e completude do loader, com R2-1/2/3/7/8 e o corpus
+de `exp_deps.py` como contramodelos obrigatórios (depende de U2); launcher/E (depende de U1, U3; U4 decide se dados entram); receipt de execução
 (depois de E). Nenhum deles fecha #301 sozinho; G5 (#350) e a composição operacional ficam com seus
 owners. Outros owners inalterados: #319 (anchor), #331 (storage do host), #354 (transferência de
 descritor), #298, #314, #350.

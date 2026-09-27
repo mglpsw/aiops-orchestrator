@@ -1,5 +1,11 @@
 {
  "cases": {
+  "floor_probe_detects_writable_file_in_readonly_dir": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "round2_parent_creation_probe": false
+  },
   "venv_python_I_S_intact_cfg": {
    "expected_payload_ran": false,
    "payload_ran": false,

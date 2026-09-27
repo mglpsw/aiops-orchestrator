@@ -114,6 +114,20 @@
    "pass": true,
    "reviewer_repro_of": "F3 (finder ignored `path`)"
   },
+  "auditor_detects_relative_checkout_read": {
+   "expected": {
+    "detected": true,
+    "raw_is_relative": true,
+    "resolved_under_checkout": true
+   },
+   "observed": {
+    "detected": true,
+    "raw_is_relative": true,
+    "resolved_under_checkout": true
+   },
+   "pass": true,
+   "note": "positive control of the measurement behind E_no_open_under_checkout_or_venv; a prefix match on the raw event path (round-2 auditor) would not have matched"
+  },
   "producer_fds_restored": {
    "expected": [
     0,
@@ -149,8 +163,8 @@
    "git_bytes_read": 8713049,
    "git_subprocesses_counted": 2,
    "metadata_bytes_read": 52807,
-   "build_s": 0.164,
-   "serialize_seal_verify_s": 0.028,
+   "build_s": 0.203,
+   "serialize_seal_verify_s": 0.021,
    "producer_heap_peak_MiB_build_to_seal": 25.9,
    "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
   },
@@ -192,21 +206,21 @@
    "python_tag": "cp311",
    "payload_bytes": 9700542,
    "container_bytes": 9718908,
-   "build_seal_s": 0.096,
+   "build_seal_s": 0.104,
    "producer_heap_peak_MiB": 45.6,
    "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
    "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
   },
   "E_child": {
-   "maxrss_kib": 87216,
+   "maxrss_kib": 87420,
    "inherited_sealed_fds_by_construction": 3,
    "native_memfds_created_in_child": 2,
    "result_channel": "socketpair",
-   "elapsed_s": 0.408
+   "elapsed_s": 0.406
   },
   "normal": {
-   "maxrss_kib": 78076,
-   "elapsed_s": 0.2551267300150357
+   "maxrss_kib": 78032,
+   "elapsed_s": 0.2774931649910286
   }
  },
  "census": {
@@ -383,7 +397,7 @@
   },
   "E_untampered": {
    "rc": 0,
-   "elapsed_s": 0.408,
+   "elapsed_s": 0.406,
    "stderr_tail": ""
   },
   "normal_source_tampered": {
@@ -392,7 +406,7 @@
   },
   "E_source_tampered": {
    "rc": 0,
-   "elapsed_s": 0.401,
+   "elapsed_s": 0.37,
    "stderr_tail": ""
   },
   "normal_warm_pycache": {
@@ -405,7 +419,7 @@
   },
   "E_pyc_planted": {
    "rc": 0,
-   "elapsed_s": 0.381,
+   "elapsed_s": 0.403,
    "stderr_tail": ""
   },
   "normal_venv_tampered": {
@@ -414,7 +428,7 @@
   },
   "E_venv_tampered": {
    "rc": 0,
-   "elapsed_s": 0.375,
+   "elapsed_s": 0.415,
    "stderr_tail": ""
   },
   "normal_plugin_planted": {
@@ -423,7 +437,7 @@
   },
   "E_plugin_planted": {
    "rc": 0,
-   "elapsed_s": 0.405,
+   "elapsed_s": 0.452,
    "stderr_tail": ""
   }
  },

@@ -48,6 +48,7 @@ declarado. Casos sem `expected` (em `exp_process_channel` e `non_utf8_name_S_vs_
 | `exp_resources.py` | expansão, orçamentos, falhas e ownership |
 | `exp_deps.py` | recusas de S_D em wheels sintéticos (identidade, tags, RECORD, zip bomb, colisões, ELF) |
 | `results/py311/` | saída da execução registrada + `SCRIPTS.sha256` dos arquivos que a produziram |
+| `sd_future/` | **preservado para a futura slice S_D, não é evidência de S0**: spike do leitor único com cobrança e reprodução de R2-1/R2-8 sobre `s0_deps.py` congelado (execução no host 3.12; `python3 -I -S -B <arquivo> <experiments> <scratch>` para `repro_r2.py` — `<scratch>` precisa existir —, `<scratch>` para o spike) |
 
 ## Limites
 
