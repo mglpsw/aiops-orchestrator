@@ -62,7 +62,7 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | **B/iv** — kill vs fechar-e-esperar (R4-4) | `exp_resources.json` `ABLATION_close_and_wait_refusal_path_waits_for_transport` | mutante espera 8,0 s; kill < 4 s | aqui | — |
 | **A** — filho `git` contido pelo kernel (**S_G**) | `exp_resources.json` `git_child_contained_*` | tree 66,7 MB e commit 64 MiB: sem envelope o filho vai a 68,2/68,0 MiB; com `RLIMIT_AS` 64 MiB fica em 11,0 MiB; controle aceito | aqui; medido **no filho** (processo novo por caso), pai lento de 1 s | envelope de teste 64 MiB; valor de produção a adjudicar |
 | **A** — corpus real sob o envelope (**S_G**) | `exp_functional.json` `real_corpus_accepted_with_git_child_inside_envelope` | aceito pela captura de C; `ru_maxrss` dos filhos 16,0 MiB ≤ 128 MiB (limite superior: herda RSS pré-`exec`) | aqui | — |
-| **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de consumir corpo; filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
+| **B** — transporte estrito (**S_G**) | `strict_transport_*` (9) | cada cabeçalho hostil recusado antes de cobrar ou usar o corpo (o leitor pode pré-ler até um bloco de 64 KiB do corpo ao procurar o fim do cabeçalho: 4117693716; não prova "zero bytes do corpo antes da admissão"); filho morto e colhido na hora; heap ≈ 0 | aqui; transporte falso | injeção num `git` real reproduzida pela revisão da rodada 3 |
 | **C** — o objeto comprometido é o autenticado (**S_G**) | `exp_capture_stability.json` `authenticate_A_substitute_B_*`, `ABLATION_no_post_seal_revalidation_*`, `node_not_in_acquisition_record_refused`, `mutate_unsealed_S_then_seal_refused` | `sealed_binding_mismatch`; ablação compromete `EVIL`; `sealed_record_mismatch`; `sealed_content_mismatch` | aqui | tree oids vinculados pelo registro, não re-hasheados pós-selo |
 | **D** — limite de componente explícito (**S_G**) | `exp_structure.json` `component_256_*`, `C3_parity_under_same_limit_300`, `C3_also_refuses_*`, `no_admission_limit_refused` | 300 admite, 255 recusa, C3 igual sob o mesmo limite; ausência recusada | aqui | — |
 | **E** — SHA | `exp_n1_auth.json` `sha1_*`, `sha256_*` | positivos e adulterações nos dois formatos | aqui | **nenhum teste de segunda pré-imagem**; sha1dc não alegado (CONTRACT §2) |
@@ -88,6 +88,22 @@ claim de S0; **E** e **S_D** são evidência de viabilidade/protótipo, não qua
 | Commit/tree/blob/expansão/profundidade limitados antes | `exp_resources.json` | tree 16,7 MB, commit 16 MiB, blob 32 MiB recusados com heap 0,06 MiB; expansão 125 MiB recusada em 17,8 MiB; profundidade 110 | aqui | — |
 | Falhas sem S parcial; ownership linear | `write_failure_*`, `seal_failure_*`, `mid_capture_*`, `launcher_pre_spawn_*`, `hung_*`, `consumer_exits_rc0_*` | conforme esperado | aqui | falha de selo por injeção |
 | Caller real, runner, targets | forge: AgentEscala `develop@8537eb18`; listagem de workflows de caem/sacr-as | CT104 self-hosted; sem v2 em CAEM/SACR-AS | leitura de fonte | não executado |
+
+## Redesenho do escopo de evidência de recursos (revisão Codex 5332917933 sobre `3f5b086`)
+
+`TestCount != ClaimCompleteness`. O resultado 216/216 é evidência exata das proposições que
+exercitou em `34fc575`, mas **não** é qualificação completa de 301S-RES, que passa a
+`NOT_QUALIFIED_IN_S0` (requisito preservado; owners sucessores S1-B/S1-C e #320 para
+disponibilidade). Os experimentos não foram alterados nem reexecutados.
+
+| Achado | Estabelecido | Material | Disposição |
+|---|---|---|---|
+| 4117693712: corpos de tree repetidos não são recobrados por ocorrência (o limite de metadados é excedido numa subárvore compartilhada) | sim (leitura de código) | sim, a 301S-RES; sem efeito sobre a autenticidade | `SHARED_TREE_METADATA_PER_OCCURRENCE` → S1-C. **Mesma família de falha de RC-2, mas testemunha fora do Δ1 demonstrado de RC-2: recorrência não admitida** (correção do registro 5861448551) |
+| 4117693716: o leitor do cabeçalho pode pré-ler até um bloco (64 KiB) do corpo antes da cobrança | sim (leitura de código) | sim, à evidência de transporte estrito; sem efeito sobre a autenticidade | `TRANSPORT_HEADER_BODY_PREFETCH` → S1-B: admitir o tamanho declarado antes de consumir o corpo além de uma margem de framing estritamente limitada |
+| 4117693719: o runner de evidência sai com 0 mesmo quando um experimento falha | sim (leitura de código) | não, ao 216/216 registrado (reconciliado caso a caso) | defeito do harness de evidência → harness de qualificação de S1: falha → código de saída diferente de zero; o runner de S0 fica congelado |
+
+A família sucessora completa (original, RC-2, RC-3, K4, as duas pós-Ready e R4-3) está em CONTRACT §12
+(`S1_CLOSURE_RESOURCE_COUNTERMODELS`), cada item com a sua proveniência.
 
 ## Reconciliação pós-Ready (revisão Codex 5332770958 sobre `fdf4193`)
 

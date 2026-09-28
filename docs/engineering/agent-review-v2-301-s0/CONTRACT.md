@@ -3,6 +3,7 @@
 ```yaml
 status: S0_S_G_RATIFIED_AS_COMPONENT_CONTRACT     # S_D and E remain PROPOSED; nothing is implemented in production
 architecture_C_status: RATIFIED_AS_COMPONENT_CONTRACT   # maintainer ratification; applicability requires AuthorizedReaderExecutionContext
+S0_301S_RES_status: NOT_QUALIFIED_IN_S0   # resource requirement preserved; prototype qualification withdrawn (successor: S1-B/S1-C)
 experimental_subject: 34fc57562edfcb8f59d3ed0c359dc9bffb95d47d   # 216/216 there; later commits (ratification, reconciliation) change documentation only
 architecture: C_PRIVILEGE_SEPARATED_IMMUTABLE_SNAPSHOT   # ratified component contract; A and B are REJECTED PREDECESSORS
 claim_scope: S_G_only
@@ -226,6 +227,49 @@ post_ready_findings:
 A arquitetura não exige abrir nada fora de `A` para descobrir storage Git legítimo: a sonda do
 protótipo é que escolheu `open("..")`/`open("../HEAD")` antes de raciocinar sobre contenção.
 
+**Redesenho do escopo de evidência de recursos (revisão Codex 5332917933 sobre `3f5b086`; decisão do mantenedor).**
+
+```yaml
+post_ready_gate_2: {merge_blocked: true, reason: MATERIAL_FINDINGS}
+architecture_C: {refuted: false, remains_ratified: true}
+S_G_authenticity: {refuted: false}
+storage_authority_relation: {refuted: false}
+aocm_recurrence_correction:
+  prior_record: "PR #355 comment 5861448551 (STOP_301_S0_READY_RETRY_RECURRENCE)"
+  finding_4117693712: {established: true, material_to_301S_RES: true, same_failure_family_as_RC2: true,
+                       RC2_demonstrated_witness: repeated_cached_blob_payload_per_path,
+                       new_witness: repeated_cached_tree_metadata_per_path,
+                       witness_inside_RC2_Delta1: NOT_ESTABLISHED, recurrence_admitted: false}
+  K4_relation: {same_general_resource_family: true, same_corrective_proposition: false}
+  operative_stop: STOP_301_S0_READY_RETRY_MATERIAL_FINDING
+  history_rewritten: false
+301S_RES:
+  normative_requirement: PRESERVED
+  S0_experimental_qualification: WITHDRAWN
+  status: NOT_QUALIFIED_IN_S0            # DEFINED successor requirement; not FAILED, not PASS
+  future_owners: [S1-B, S1-C, "#320 where availability/envelope applies"]
+findings:
+  "4117693712": {established: true, effect: metadata_budget_undercharges_repeated_tree_occurrences,
+                 authenticity_effect: false, successor_countermodel: SHARED_TREE_METADATA_PER_OCCURRENCE}
+  "4117693716": {established: true, material: true, header_reader_may_prefetch_body_bytes: true,
+                 maximum_prefetch_order: approximately_one_read_chunk, authenticity_effect: false,
+                 successor_requirement: "charge/admit the declared object size before body consumption beyond a strictly bounded framing allowance"}
+  "4117693719": {established: true, material_to_recorded_216_216: false,
+                 reason: "the recorded 216/216 was reconciled case by case", evidence_harness_defect: true,
+                 successor_owner: S1 qualification harness, obligation: "any failed experiment -> qualification runner exits non-zero"}
+```
+
+`FailureFamily(f1) == FailureFamily(f2)` **não** implica `Witness(f2) ∈ Δ1(f1)`. A obrigação de
+correção de RC-2 vem do achado validado e do Δ1 demonstrado: o mesmo blob em vários caminhos, com
+o payload cobrado uma vez só. Ela não vem da redação mais ampla ("commit/tree/blob") escrita depois.
+`SameFailureFamily != SameCorrectionDomain`.
+
+Leis desta decisão: `ResourceRequirement != S0ResourceQualification` e
+`AuthenticationQualified != ResourceAccountingQualified`. S0 continua **exigindo** que a
+implementação futura seja limitada. S0 deixa de alegar que o protótipo já estabeleceu
+quantitativamente a família inteira. A arquitetura C, o hash-on-read, a raiz derivada do commit, o
+selo e a revalidação, e a aplicabilidade continuam como estavam.
+
 **Relações com owners** (nenhuma absorvida):
 - **#331 / C2:** o contrato de S1 exige que a aquisição física use **somente** storage dentro da
   capability admitida `A`; quem produz e autoriza `A` continua owner de #331/C2_B. O experimento C9
@@ -325,10 +369,12 @@ consumidores heterogêneos; nenhum vira ramo especial da engine. Ver §9 (U1).
 > namespace, mount namespace e política de exec), no qual o snapshot **não** é alterável pelo
 > principal do leitor, e limites de admissão explícitos, S_G é derivado de um commit esperado `C`
 > (#319) usando só esse snapshot: Git local contido (prazo,
-> memória por processo, subreaper com teardown da unidade inteira), cada objeto cobrado a partir de
-> um cabeçalho estrito antes de ser lido e autenticado **no instante da leitura** contra `C` pela
+> memória por processo, subreaper com teardown da unidade inteira), cada objeto autenticado **no
+> instante da leitura** contra `C` pela
 > cadeia commit → tree → blob no formato de objeto de `C`, com a raiz derivada dos bytes
-> autenticados de `C`, codificando sem perda as distinções da contract A/A2 de C3 sob esses limites.
+> autenticados de `C`, codificando sem perda as distinções da contract A/A2 de C3 sob esses limites;
+> a captura tem de ser limitada em recursos antes da expansão (301S-RES: requisito preservado, **não
+> qualificado** por S0).
 > A capability só é emitida depois do instante de compromisso — selos
 > `F_SEAL_{WRITE,GROW,SHRINK,SEAL}` lidos de volta, conteúdo selado re-hasheado e S_G **re-derivado**
 > do mapa de objetos endereçado por conteúdo e comparado com o conteúdo selado — e a partir daí
@@ -394,7 +440,7 @@ integridade do processo consumidor; **R** = canal de resultado; **A** = disponib
 | Ator | Capacidades relevantes | Coberto por S/E | Não coberto |
 |---|---|---|---|
 | Conteúdo Git/PR hostil (target) | dados arbitrários no diff/artefatos | nunca executado; parse pelas autoridades de ingress existentes | semântica dos dados (fora de S) |
-| Conteúdo do commit da engine | árvore arbitrária sob `C` admitido | recusas estruturais (C3) e orçamentos por ocorrência (EXP-RES) | `C` errado → #319 |
+| Conteúdo do commit da engine | árvore arbitrária sob `C` admitido | recusas estruturais (C3); orçamentos por ocorrência **exigidos** (301S-RES, não qualificados em S0) | `C` errado → #319 |
 | Writer de filesystem mesmo UID (não-ancestral) | reescrever/renomear checkout, `.git/objects`, venv, `__pycache__`, `pyvenv.cfg`, `.pth`, wheels, dados do target; abrir `/proc/<pid>/fd/N` de processos *dumpable*; escrever em pipe reaberto; tocar memfd **antes** do selo; adicionar selo estranho; manter mapeamento | **O**: pós-compromisso nenhuma escrita/grow/shrink/punch/mmap-write/mprotect (EXP-CAPTURE); pré-compromisso detectado ou recusado; adulteração de objeto Git recusada por hash (EXP-N1). **R**: socketpair não reabrível (EXP-PROC). Bytes carregados independem de M/venv/pyc/plugins (EXP-FUNC) | **A** (kill, OOM, disco); leitura de S (não secreto); dados do target lidos por path |
 | Worker legítimo concorrente | mesmo que acima, benigno | S não compartilha estado mutável | — |
 | Ator que altera configuração do processo (não o arquivo) | env (`LD_PRELOAD`, `PYTHON*`, `HOME`), cwd, `pyvenv.cfg`, user site, `.pth`, `sitecustomize` | launcher: interpretador root-owned por caminho absoluto, `env={}`, `-I -S`, `cwd=/` (EXP-BOOT) | se o ator **for** o launcher ou um ancestral |
@@ -645,7 +691,7 @@ limite · owner · evidência.
 
 | Grupo | Obrigações | Estado em S0 |
 |---|---|---|
-| 7.1 — S_G (claim de S0) | 301S-SNAP, PRIV, ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob), LIFE | ratificadas como contrato de componente sob `Applicable_SG` (evidência: head experimental `34fc575`); obrigações sucessoras em §12 |
+| 7.1 — S_G (claim de S0) | 301S-SNAP, PRIV, ID, AUTH, FID, STAB, BIND, RES (commit/tree/blob; `NOT_QUALIFIED_IN_S0`), LIFE | ratificadas como contrato de componente sob `Applicable_SG` (evidência: head experimental `34fc575`); obrigações sucessoras em §12 |
 | 7.2 — E (viabilidade) | 301S-BOOT, LOAD (confinamento observado), CHAN, DATA, CALLER | propostas; E é futura |
 | 7.3 — S_D (futura slice) | 301S-DEP, NAT, RES (S_D), completude do loader | `DEFINED`; contramodelos obrigatórios R2-1/2/3/7/8 |
 
@@ -741,7 +787,14 @@ limite · owner · evidência.
   launcher → bootstrap · arquivo regular idêntico, memfd atacante, sem `F_SEAL_WRITE`, sem identidade
   esperada, fd não herdado · handoff correto · número de FD em receipt não é prova · #301 ·
   EXP-CAPTURE `binding_*`.
-- **301S-RES (S_G)** — a captura de S_G é limitada antes da expansão, com **dois domínios de
+- **301S-RES (S_G)** — **status em S0: `DEFINED` / `NOT_QUALIFIED_IN_S0`.** Os requisitos de
+  segurança de recursos e os contramodelos históricos continuam valendo, mas o protótipo experimental
+  não estabelece uma contabilidade quantitativa completa da closure. Corpos de tree repetidos não são
+  recobrados por ocorrência (4117693712), e o leitor do cabeçalho pode pré-ler até cerca de um bloco
+  do corpo antes da admissão (4117693716). Os casos citados abaixo são evidência exata só do que
+  exercitaram; K4 não é evidência de qualificação completa da closure. Owners sucessores: S1-B e
+  S1-C (`S1_CORE_CLOSURE_RESOURCE_ACCOUNTING`, §12), e #320 onde se aplica disponibilidade/envelope.
+  Requisito: a captura de S_G é limitada antes da expansão, com **dois domínios de
   orçamento que não se misturam nem se inferem um do outro**: `snapshot_budget` (físico: bytes,
   entradas, profundidade de alternates; cobrado pelo `fstat` antes da leitura, no produtor, que
   nunca infla) e `closure_budget` (subject: nós, payload, metadados, paths, componente; cobrado pelo
@@ -903,8 +956,10 @@ por ocorrência) = 64 MiB (≈7× o corpus atual; memfd é RAM/shmem, então o o
 de 2 GiB **não** se transfere); `max_metadata_bytes` (corpos commit+tree) = 64 MiB;
 `max_commit_bytes` = 1 MiB; `max_path_bytes` = 16 MiB. Para S_D, um teto de 64 MiB é **proposto e
 não imposto** pelo protótipo (R2-1/R2-2): fica com a futura slice e o mecanismo do spike. Valores que pertencem ao C3 e devem vir dele: entradas 100.000, profundidade 100,
-componente 255, limite pré-leitura `size // 295`. Todo corpo é cobrado pelo header do `cat-file`
-antes de ser lido (EXP-RES: blob de 32 MiB, tree de 16,7 MB e commit de 16 MiB recusados com heap
+componente 255, limite pré-leitura `size // 295`. Nos casos exercitados, os corpos foram cobrados
+pelo header do `cat-file` antes do uso. Isso **não** qualifica "zero bytes do corpo antes da
+admissão": o leitor do cabeçalho pode pré-ler até um bloco de 64 KiB (4117693716), e 301S-RES não é
+qualificado em S0 (EXP-RES: blob de 32 MiB, tree de 16,7 MB e commit de 16 MiB recusados com heap
 de 0,06 MiB; EXP-DEPS: um membro-bomba comum de 200 MiB é recusado com 0,27 MiB, mas `METADATA`/`RECORD`-bomba não —
 R2-1). O memfd é contabilizado como shmem no memcg do processo;
 comportamento sob limite de memcg **não testado**.
@@ -1027,13 +1082,15 @@ Perguntas **abertas que bloqueiam E** (não S1):
    injeção que o finder corrigido recusa. Predicados admitidos (vocabulário do preflight):
    `DEFINED`, `MECHANICALLY_VERIFIED` e `EMPIRICALLY_SUPPORTED` no domínio/corpus declarados;
    `MUTATION_DISCRIMINATED` para 301S-AUTH/FID/STAB (inclusive a revalidação pós-selo: a ablação
-   compromete B) e para a contenção de 301S-RES (S_G) (o transporte sem envelope, com pai lento, é o
-   mutante: 68 MiB contra 11 MiB). Arquitetura C: `MUTATION_DISCRIMINATED` para a raiz derivada de
+   compromete B) e para a contenção do **filho `git`** pelo envelope (o transporte sem envelope, com
+   pai lento, é o mutante: 68 MiB contra 11 MiB). Isso não qualifica a contabilidade da closure de
+   301S-RES, que fica `NOT_QUALIFIED_IN_S0`. Arquitetura C: `MUTATION_DISCRIMINATED` para a raiz derivada de
    301S-ID (a ablação que confia no registro auxiliar muda S_G: C6), para o teardown de 301S-LIFE (a
    ablação "só grupo de processos" deixa o neto `setsid` vivo: C7) e para a precondição de 301S-PRIV
    (o contra-controle de posse do runner é recusado: C11); a negação do kernel em 301S-PRIV/SNAP
    (C1/C3/C4/C10) é `EMPIRICALLY_SUPPORTED` só neste container; os cabeçalhos estritos são
-   `MECHANICALLY_VERIFIED` no corpus declarado. S_D: `DEFINED`; 301S-RES
+   `MECHANICALLY_VERIFIED` para os 9 cabeçalhos hostis do corpus declarado, sem garantia de zero bytes
+   do corpo antes da admissão (4117693716). S_D: `DEFINED`; 301S-RES
    (S_D) é `REFUTED` no protótipo `1e2453e` (R2-1). Os instrumentos de medição também são
    discriminados: a auditoria de aberturas e o probe do piso têm controles positivos que os métodos
    da rodada 2 teriam falhado (R2-5, R2-6). `PROVED` não.
@@ -1223,6 +1280,40 @@ EMPTY_TREE_AT_EXACT_NODE_BUDGET:        # contramodelo de S1_SEM_01 / S1-C
   finding: 4117560412
   shape: "parent consumes exactly max_nodes; the remaining explicit empty tree has zero entries"
   expected: "a valid C3 tree is still admitted without exceeding the budget"
+```
+
+Família sucessora de contramodelos de 301S-RES. É um desafio sucessor, **não** um registro de recorrência: cada item preserva sua claim e seu achado históricos, e a lista não afirma um Δ comum. O registro `S1_obligations` continua com cinco itens e **não** foi alterado.
+
+`S1_RES_01` é a relação de recurso física e de alternates, já ratificada. A implementação sucessora de 301S-RES é a contabilidade de recurso central do leitor e da closure. Seu nome local, **não normativo**, é `S1_CORE_CLOSURE_RESOURCE_ACCOUNTING`, e os owners são S1-B (framing e admissão do transporte, prazos por objeto, leitura do corpo só depois da admissão competente, interface de envelope) e S1-C (contabilidade por ocorrência lógica de commit, tree e blob, bytes de path, orçamento de nós, interação com a paridade C3).
+
+`Integrity resource accounting != General availability policy`. #320 continua owner de:
+- prazos gerais;
+- leituras bloqueantes;
+- memória agregada/cgroup;
+- relação admissão ↔ envelope (R4-3);
+- família NFS/FUSE.
+
+```yaml
+S1_CLOSURE_RESOURCE_COUNTERMODELS:
+  original:            # EXP-RES (A-era mechanism) and EXP-ARCH-C C5; exact evidence for what they exercised
+    oversized_commit_body: EXP-RES oversized_commit_*
+    oversized_tree_body: EXP-RES tree_bytes_* / oversized_tree_*
+    oversized_blob_body: EXP-RES oversized_blob_refused_before_read
+    excessive_depth: EXP-RES depth 110
+    excessive_node_count: EXP-RES shared_subtree_node_budget_per_occurrence
+  RC2:
+    repeated_blob_payload_per_occurrence: "Codex 4116643927 / adversarial F2 (a858dc9)"
+  RC3:
+    cumulative_path_bytes: "Codex 4116643928 (a858dc9)"
+  K4:
+    remaining_node_budget_per_tree: "Codex 4116734589 (28a3b4a); exact-boundary parity NOT_HELD: 4117560412 -> S1_SEM_01"
+  POST_READY_2:
+    repeated_tree_metadata_per_occurrence: "Codex 4117693712 (3f5b086) — SHARED_TREE_METADATA_PER_OCCURRENCE"
+    transport_header_body_prefetch: "Codex 4117693716 (3f5b086) — TRANSPORT_HEADER_BODY_PREFETCH"
+  known_availability_relation:
+    R4_3: "S1 + #320"
+qualification_harness:
+  failed_case_exit_nonzero: required        # Codex 4117693719; the frozen S0 runner is not changed
 ```
 
 Antes da primeira implementação, o plano de S1 (grant separado, "#301-S1 IMPLEMENTATION PLAN") precisa reconciliar:
