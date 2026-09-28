@@ -28,7 +28,7 @@ limitation recorded by the underlying artifact.
 | What limits an evaluation result? | the evaluation artifact itself (e.g. `reports/…`) | this matrix |
 | Who is the final owner? | #46/#351 and the owning repository | this matrix alone |
 
-Live bases used, verified `2026-09-27` via `git rev-parse`/`gh api repos/<repo>/branches/<default>`:
+Live bases used, reverified `2026-09-28` via `git rev-parse`/`gh api repos/<repo>/branches/<default>`:
 
 | Repo | Branch | HEAD verified this round |
 |---|---|---|
@@ -36,7 +36,7 @@ Live bases used, verified `2026-09-27` via `git rev-parse`/`gh api repos/<repo>/
 | `mglpsw/aiops-orchestrator` | `master` | `9abcde6420a59b814b5faaff10ca5904c5d23370` |
 | `mglpsw/homelab` | `main` | `10352e9b040db6a20edb8ebf1ffd2812deb3e138` |
 | `mglpsw/caem` | `main` | `854e321a99170eebd7795cb50d2e5b5e0e94db2f` |
-| `mglpsw/AgentEscala` | `develop` | `75bcc1af370a35df61e018406ef2190197759264` (moved from an earlier checkpoint `0ddfbe4b…` via an unrelated UX/IA-registry commit — no architectural conflict with this matrix) |
+| `mglpsw/AgentEscala` | `develop` | `d7627e4ead16e13b62a99ca186cb35b413d36aba` (advanced via unrelated dependency/frontend work; target-side reconciliation PR #859 remains Draft and is not qualification evidence by itself) |
 | `mglpsw/sacr-as` | `main` | `61003a120e540f92594c859f0888955f672ffa77` |
 | `mglpsw/interleitos` | `main` | `8207b159e190a0f694b70d249eea31542e11ea9c` |
 
@@ -81,13 +81,18 @@ runtime_deployment_state: UNKNOWN_PENDING_19 — no live runtime was observed fo
                docs/PROJECT_STATUS.md states its deployment record is "a historical record, not a
                current health assertion — runtime health must be observed live"
 adapters (same directory, different lifecycle):
-               - quarantined executors: app/adapters/executor_ssh.py, executor_local.py, docker.py
-                 (carry the "LEGACY / NOT USED" marker; registered as executor providers in
-                 provider_registry.py:43-45)
+               - legacy executors: app/adapters/executor_ssh.py, executor_local.py, docker.py carry
+                 the historical "LEGACY / NOT USED" marker, but the marker is NOT reachability
+                 evidence. ProviderRegistry.initialize() registers all three executor providers.
                - LIVE LLM adapters: app/adapters/claude.py, codex.py, ollama.py,
-                 openai_compatible.py — instantiated by ProviderRegistry.initialize()
-                 (provider_registry.py:36-39) and called directly by the orchestrator; see
-                 "Legacy in-process inference" below
+                 openai_compatible.py — instantiated by ProviderRegistry.initialize() and called
+                 directly by the orchestrator; see "Legacy in-process inference" below
+reachable_executor_path: POST /v1/approvals/{task_id} with decision=approved
+               → Orchestrator.execute_approved_task(task_id)
+               → each planned step calls registry.get_executor(tool)
+               → get_executor() returns the requested enabled executor or falls back to the
+                 unconditionally registered local executor. Source establishes reachability in the
+                 application graph; live deployment/caller reachability remains UNKNOWN_PENDING_19.
 current_consumers: UNKNOWN_PENDING_19 — docs/RI_A1_ADR_OWNERSHIP_MAP.md records the callers of the
                legacy HTTP endpoints as externally unknown by design. One known historical caller
                is the Router-side AIOpsRouterAdapter shim in mglpsw/agent-router-api (direction
@@ -99,13 +104,18 @@ migration_dependency: #19 live inventory + backup/restore/rollback + explicit gr
                ("retirada controlada de source AIOps")
 countermodels: - app/agent_review/ (AgentReview v1/v2) is NOT part of this runtime —
                  RI_A1/ADR-001 verified zero imports of app.agent_review.* from RUNTIME modules
+               - "LEGACY / NOT USED" marker != unreachable executor
                - "no live deployment observed" != "not deployed": retirement must not proceed on
                  this matrix's evidence alone
-retirement_gate: #19 produces live inventory/backup/rollback with its own grants before any
-               service retirement; nothing here authorizes CT102 changes
-evidence: #19 (OPEN), #351 (OPEN), app/services/provider_registry.py:31-45,
-               docs/PROJECT_STATUS.md:82-83, docs/RI_A1_ADR_OWNERSHIP_MAP.md (legacy endpoints row)
-limitations: source-observed only; deployment and external callers are UNKNOWN until #19
+retirement_gate: #19 must inventory the approvals/task execution path, executor configuration,
+               live callers and deployment state, then prove cutover/desuse before source/runtime
+               removal; nothing here authorizes CT102 changes
+evidence: #19 (OPEN), #351 (OPEN), app/api/routes.py:87-110,
+               app/services/orchestrator.py:execute_approved_task,
+               app/services/provider_registry.py:get_executor,
+               docs/PROJECT_STATUS.md:82-83, docs/RI_A1_ADR_OWNERSHIP_MAP.md
+limitations: source-observed reachability only; actual deployment/external callers remain UNKNOWN
+               until #19 live inventory
 status: FINAL_OWNER_ASSIGNED only
 ```
 
@@ -136,23 +146,36 @@ status: FINAL_OWNER_ASSIGNED only — residual direct-provider path, not migrate
 ### AgentReview v1
 
 ```text
-current_owner: aiops-orchestrator, app/agent_review/ (v1 line) — per #46 the historical
+current_owner: aiops-orchestrator, app/agent_review/ (v1 line) — per #46 the
                LEGACY_ADVISORY_BASELINE: debt/quality fixes only, no new trust architecture;
-               product successor after the first Assured release is #357
-current_implementation: released, baseline v0.22.0@2ce1f45768b8779cb48ef8a302d4ed796349f0e5
-               consumed by mglpsw/AgentEscala#802 and mglpsw/AgentEscala#803 (per #46 §1)
-current_consumers: mglpsw/AgentEscala — .github/workflows/agent-review.yml pins this repository
-               at the v0.22.0 SHA and transports through the Agent Router
-               (scripts/call-agent-router.sh → /v1/chat/completions); active on every internal PR
-               (run history, per mglpsw/AgentEscala#859)
+               product convergence after the first Assured release is #357
+current_implementation:
+               - published/consumed baseline: v0.22.0@2ce1f45768b8779cb48ef8a302d4ed796349f0e5
+               - merged-unreleased v1 source on master: includes later planner/soundness fixes from
+                 #225/PR #227 (merge da5a03b4…) and H1-B/PR #231 (merge ffa30406…).
+                 PublishedBaseline != LiveMasterV1Source.
+current_consumers:
+               - internal toolrepo consumers: v1 CLIs/scripts importing app.agent_review, including
+                 scripts/aiops-review-intake.py, aiops-review-plan-chunks.py,
+                 aiops-review-parse-chunks.py, aiops-review-synthesize.py,
+                 aiops-review-quality-gate.py and telemetry/false-positive tooling
+               - external: AgentEscala consumes the v0.22.0 baseline per #46/AgentEscala lineage;
+                 current run-history assertions recorded in Draft mglpsw/AgentEscala#859 remain
+                 target-side evidence pending independent review and are not used here as sole
+                 qualification
 final_owner: AgentReview
-disposition: KEEP in AgentReview → freeze pending #221
-migration_dependency: #221 (material-debt fix, immutable release, repin/canary, freeze)
-countermodels: v1 does not become default/required by administrative decision (#46 §2)
+disposition: KEEP in AgentReview → repair/freeze pending #221; decide release/repin of the
+               merged-unreleased delta explicitly rather than collapsing it into v0.22.0
+migration_dependency: #221 (material-debt fix, immutable release when needed, repin/canary, freeze)
+countermodels: - PublishedBaseline == LiveMasterV1Source is false
+               - v1 does not become default/required by administrative decision (#46 §2)
 retirement_gate: n/a — kept, not retired; freeze is a maintenance state, not removal
-evidence: #221 (OPEN), #46 §1/§3 (M1), mglpsw/AgentEscala#859
-limitations: freeze timing depends on #232/#307/#315/#343, not on this matrix
-status: FINAL_OWNER_ASSIGNED; MIGRATION_IMPLEMENTED in AgentEscala (live GA consumer)
+evidence: #221 (OPEN), #46 §1/§3, #225, PR #227, PR #231;
+               internal import graph; target-side evidence is separately qualified
+limitations: freeze timing depends on #232/#307/#315/#343 and on explicit disposition of the
+               merged-unreleased source delta
+status: FINAL_OWNER_ASSIGNED; external consumer cutover/freeze status is not inferred solely from
+               this repository
 ```
 
 ### AgentReview v2
@@ -160,68 +183,95 @@ status: FINAL_OWNER_ASSIGNED; MIGRATION_IMPLEMENTED in AgentEscala (live GA cons
 ```text
 current_owner: aiops-orchestrator, app/agent_review/ (v2 line) — per #46 the architecture of the
                ASSURED profile; first operational path #80 → #350 → #199
-current_implementation: C3 integrated (#304/PR #349), C4-Q integrated (#333/PR #352); C4-S+E
-               (#301) is the current open core slice per #46 §1 — its S0 contract is ratified in
-               PR #355, which is still Draft/open and not integrated in master
-current_consumers: mglpsw/AgentEscala in shadow only — agent-review-v2-evidence.yml,
-               agent-review-v2-analysis.yml, agent-review-v2-publish.yml are wired end to end, but
-               repository variable AGENT_REVIEW_V2_ROUTER_ENABLED=false (no real Router call yet)
-               and AGENT_REVIEW_V2_MODE=shadow (per mglpsw/AgentEscala#859). No production
-               consumer. mglpsw/caem and mglpsw/sacr-as are pre-integration
+current_implementation: C3 integrated (#304/PR #349), C4-Q integrated (#333/PR #352).
+               #301-S0 is ratified in Draft PR #355 but NOT integrated. Per current #46 §4, the
+               next production step is integrate/read-back #355 under its own grant, then execute
+               #301 S1-A followed by S1-B/C/D, S_D and E; only then #298 → #314.
+current_consumers:
+               - internal toolrepo consumers: v2 CLIs and qualification tooling import
+                 app.agent_review directly, including scripts/aiops-review-quality-gate-v2.py,
+                 agent-review-target-pack-v2.py, verify-agent-review-v2-conformance.py,
+                 export-agent-review-v2-schemas.py and evals/agent_review_v2/harness.py
+               - external target: AgentEscala has v2 target/workflow material in source, but
+                 mglpsw/AgentEscala#859 is still Draft/unreviewed as a target-side reconciliation;
+                 its run-history/variable claims are evidence to qualify, not a completed cutover
 final_owner: AgentReview
 disposition: KEEP in AgentReview
-migration_dependency: #301 → #298 → #314 → #350 → #203 → #204 → #205 (first Assured release),
-               then #357 post-release convergence (per #46 §4's own sequence)
-countermodels: v2 does not become default/required check by this reconciliation (#46 §2)
+migration_dependency: integrate/read-back PR #355
+               → #301 S1-A/B/C/D + S_D + E
+               → #298 → #314 → #350 → #203 → #204 → #205 (first Assured release)
+               → #357 (post-release Advisory/Assured convergence on the common engine)
+countermodels: - #355 ratified != #355 integrated
+               - target wiring != Router-backed semantic review
+               - v2 does not become default/required check by this reconciliation (#46 §2)
 retirement_gate: n/a — kept
-evidence: #46 §1/§4/§5, PR #349, PR #352, mglpsw/AgentEscala#859
-limitations: AgentEscala evidence is workflow source + run history + repository variables, not an
-               end-to-end Router-backed review
-status: FINAL_OWNER_ASSIGNED; MIGRATION_IMPLEMENTED (shadow) in AgentEscala; not
-               CONSUMER_CUTOVER_COMPLETE
+evidence: #46 §1/§4/§5, PR #349, PR #352, Draft PR #355; internal import graph;
+               mglpsw/AgentEscala#859 only as unqualified target-side evidence
+limitations: no end-to-end Router-backed v2 review is established by this matrix
+status: FINAL_OWNER_ASSIGNED; target migration/cutover remains unqualified until its own exact-head
+               review and the upstream Assured gates
+```
+
+### AgentReview shared source dependencies
+
+```text
+environment_context:
+  current_path: app/services/environment_context.py
+  consumers: app/agent_review/cli.py plus v1 aiops-review-* scripts
+  disposition: KEEP_WITH_AGENTREVIEW or rederive a minimal AgentReview-owned equivalent in #351-B
+  retirement_rule: must not be removed with AIOps Runtime until standalone AgentReview tests prove
+                   the replacement/import graph
+
+strict_json:
+  current_path: app/common/strict_json.py
+  consumers: multiple AgentReview v2 runtime modules and CLIs; also app/caem_consumer/f0.py
+  disposition: KEEP_SHARED while both consumer families exist; rehome only with an explicit
+               compatibility/cutover proof
+  retirement_rule: app/common is not AIOps-only merely because it sits outside app/agent_review
+
+final_owner: AgentReview toolrepo/shared support surface, with CAEM F0 carrier use preserved until
+             that carrier receives its own lifecycle below
+countermodel: "app/agent_review is the whole product boundary" is false while required imports live
+              outside that subtree
+evidence: live import graph at master@9abcde6
+status: FINAL_OWNER_ASSIGNED; physical rehome not implemented
 ```
 
 ### Review Intelligence generic (the former "AIOps Review Intelligence" control plane)
 
 ```text
-current_owner: none currently building it — the implementation epic is closed
+current_owner: none currently building the service — the implementation epic is closed/not_planned
 current_implementation: two distinct things, not one:
-               (a) planning documents RI-A0/A1/A2 (#122/#118/#120, CLOSED/COMPLETED):
-                   docs/RI_A0_CAEM_REUSE_MATRIX.md, docs/RI_A1_ADR_OWNERSHIP_MAP.md,
-                   docs/RI_A2_THREAT_MODEL.md — each self-declares "Zero functional/runtime change"
-               (b) EXECUTABLE RI-B0a artifacts that exist in source: app/ri_b0a/reuse_manifest.py,
+               (a) planning documents RI-A0/A1/A2 (#122/#118/#120, CLOSED/COMPLETED)
+               (b) executable RI-B0a artifacts still present:
+                   app/ri_b0a/reuse_manifest.py,
                    config/ri/ri-b0a-2-reuse-manifest.json,
-                   scripts/generate-ri-b0a-2-reuse-view.py, tests/ri_b0a/; plus the RI-B0A-1 CAEM
-                   pin loader app/caem_consumer/f0.py (see CAEM row). RI-B0a/B0f (#119/#121) and
-                   the parent epic (#126) are CLOSED/NOT_PLANNED
-runtime_service: never deployed — no database, HTTP API, sync or workers were built
-current_consumers: no runtime consumer; the RI-B0a artifacts are exercised by their own
-               generator script and tests
-final_owner: none for the service — RETIRE unless a concrete claim + concrete consumer exists
-disposition: - RI service: RETIRE (never built; #46 §6 "Fora do novo escopo do produto
-                 (not_planned, não entregue): … #126 … (RI/proof executor/Workbench/persistência)")
-               - RI-B0a artifacts: KEEP as historical/provenance (#46 intro allows preservation
-                 "como provenance, shared primitive ainda consumida ou owner explícito de
-                 retirement") until the #351 slice A census, then RETIRE,
-                 or explicitly rehome any generic primitive (precedent: strict JSON helpers
-                 already extracted from app.caem_consumer.f0 into app/common/strict_json.py)
-migration_dependency: #351 slice A census for the RI-B0a artifacts; none for the service
-countermodels: - "no deployed RI service" != "no RI implementation artifacts"
-               - a future claim citing "AIOps Review Intelligence" as a dependency is
-                 STOP_NEW_CROSS_CUTTING_SERVICE
-retirement_gate: service: already closed (#119, #121, #126 = NOT_PLANNED); artifacts: #351 slice A
-               disposition, in its own PR
-evidence: gh issue state for #118 (CLOSED/COMPLETED), #119 (CLOSED/NOT_PLANNED), #120
-               (CLOSED/COMPLETED), #121 (CLOSED/NOT_PLANNED), #122 (CLOSED/COMPLETED), #126
-               (CLOSED/NOT_PLANNED); #46 §6; the source paths listed above at master@9abcde6
-limitations: #46 §6's not_planned list names #119/#121/#123/#124/#125/#126 explicitly but not
-               #118/#120/#122 (the docs-only RI-A0/A1/A2 issues) — those three remain CLOSED/
-               COMPLETED because each delivered a real, zero-side-effect documentation artifact;
-               #46 calls such prior work "specs and evidence" that "permanecem acessíveis". This
-               matrix preserves that distinction rather than reclassifying them
-status: LEGACY_RETIRED at the implementation-epic level (#126/#119/#121); RI-B0a artifacts still
-               present, disposition pending #351-A; planning docs preserved as historical/formative
-               evidence, not as a live dependency
+                   scripts/generate-ri-b0a-2-reuse-view.py,
+                   tests/ri_b0a/
+runtime_service: never deployed — no RI database, HTTP API, sync or workers were built
+current_consumers: executable RI-B0a is NOT orphaned:
+               - generator/tests
+               - .github/workflows/ci.yml reuse-view check
+               - scripts/ci_validate.sh repository-validation check
+               The loader also scans live AgentReview schema material.
+final_owner: none for an RI service — RETIRE unless a concrete claim + consumer exists
+disposition:
+               - RI service/product plan: CLOSED/NOT_PLANNED; no runtime surface was delivered
+               - RI-B0a artifacts: KEEP_PENDING_351_CENSUS; then explicit RETIRE or rehome only
+                 after the CI/repository-validation consumers are cut over or removed
+migration_dependency: #351 slice A inventory + explicit disposition of CI/ci_validate consumers
+countermodels: - closed/not_planned tracker != executable artifacts retired
+               - no deployed RI service != no RI implementation artifacts
+               - removing RI-B0a while CI still invokes it breaks an active conformance gate
+retirement_gate: RI-B0a can be marked LEGACY_RETIRED only after source is removed/rehomed AND
+               .github/workflows/ci.yml + scripts/ci_validate.sh are explicitly cut over
+evidence: issue states #118/#119/#120/#121/#122/#126; #46 §6;
+               app/ri_b0a/reuse_manifest.py; .github/workflows/ci.yml;
+               scripts/ci_validate.sh; generator/tests
+limitations: planning docs remain historical/formative evidence; none of this reopens the retired
+               RI service/product
+status: TRACKER_CLOSED_NOT_PLANNED; LEGACY_RETIRED=false for RI-B0a while executable artifacts and
+               active CI consumers remain
 ```
 
 ### Review-specific evals / calibration / replay / false-positive evaluation
@@ -349,7 +399,7 @@ countermodels: creating a new ProjectOps-shaped service in any repository withou
 retirement_gate: n/a — never built
 evidence: #46 §6, RI_A1/ADR-001, mglpsw/interleitos docs/roadmap.md
 limitations: none recorded
-status: LEGACY_RETIRED at the tracker level (#91–#95 not_planned); no successor exists to assign
+status: TRACKER_CLOSED_NOT_PLANNED; no runtime/product surface was delivered, so `LEGACY_RETIRED` is not used
 ```
 
 ### Workbench
@@ -369,7 +419,37 @@ evidence: #46 §6; mglpsw/agent-router-api#111; mglpsw/agent-router-api docs/AGE
                (Workbench row reconciled in mglpsw/agent-router-api#116, OPEN)
 limitations: no Workbench prototype was found in the seven repositories checked; repositories
                outside that set were not searched
-status: LEGACY_RETIRED / no successor
+status: TRACKER_CLOSED_NOT_PLANNED / no successor; no implemented Workbench surface was established to retire
+```
+
+### Local CAEM F0 carrier (repository-governance dependency)
+
+```text
+current_owner: this toolrepo's repository-governance/shared-support layer; upstream semantic
+               authority remains mglpsw/caem
+current_implementation: config/caem/caem-3.0-f0.pin.json
+               + app/caem_consumer/f0.py
+               + scripts/verify-caem-f0-pin.py
+               + generated identity headers/views
+current_consumers: active repository-level gates, independently of RI-B0a:
+               - .github/workflows/ci.yml invokes the pin verifier
+               - scripts/ci_validate.sh section 5 invokes the pin verifier
+               - AGENTS.md/CLAUDE.md/.caem/README.md and generated engineering views declare the
+                 pin as the single active CAEM identity source
+final_owner: AgentReview toolrepo repository-governance layer while this repository remains the
+               carrier; any locator/identity change is owned by #358 planning/census, not by RI
+disposition: KEEP independently of RI-B0a. Rehome/migrate only with #351-B/#358 evidence and
+               explicit cutover of verifier/CI/generated identity consumers
+migration_dependency: #351-B standalone product boundary + #358 identity census/planning;
+               repository rename has no grant
+countermodels: - F0CarrierLifecycle != RIB0aLifecycle
+               - pin/loader/verifier present in active CI != historical-only artifact
+retirement_gate: never retire by RI disposition; require replacement carrier, CI cutover,
+               generated-header reconciliation and identity read-back
+evidence: config/caem/caem-3.0-f0.pin.json; app/caem_consumer/f0.py;
+               scripts/verify-caem-f0-pin.py; .github/workflows/ci.yml;
+               scripts/ci_validate.sh; AGENTS.md/.caem/README.md
+status: KEEP; independent lifecycle established
 ```
 
 ### Generic evidence semantics (identity, binding, qualification, claims, obligations,
@@ -377,80 +457,63 @@ status: LEGACY_RETIRED / no successor
 
 ```text
 current_owner: mglpsw/caem (upstream semantic authority)
-current_implementation: CAEM 3.0 F0 pinned here via config/caem/caem-3.0-f0.pin.json; F2
-               (mglpsw/caem#97) and RK-1 (mglpsw/caem#74) OPEN; independent reviewer lanes /
-               AgentRouter capability broker (mglpsw/caem#63) OPEN
-current_local_consumer: the F0 pin loader app/caem_consumer/f0.py, which declares itself the
-               #119 RI-B0A-1 slice (f0.py:3) and binds this repository's slug as the consumer
-               identity (f0.py:82). Its only non-test caller is the pin verifier
-               scripts/verify-caem-f0-pin.py
-AgentReview_relation: vocabulary and design references only — no module under app/agent_review/
-               imports app.caem_consumer (the one textual match,
-               app/agent_review/trusted_check_supervisor_v2.py:110, is a docstring citing f0's
-               discipline). AgentReview runtime consumption of CAEM F0 is NOT proven; it is
-               prospective until a real callsite exists
+current_implementation: CAEM 3.0 F0 semantics are consumed locally through the separate carrier
+               described above; F2 (mglpsw/caem#97), RK-1 (mglpsw/caem#74) and independent
+               reviewer lanes/AgentRouter broker (mglpsw/caem#63) remain OPEN
+AgentReview_relation: vocabulary/design influence is proven; direct AgentReview runtime import of
+               app.caem_consumer is not. CAEMDesignInfluence != CAEMRuntimeConsumption.
 final_owner: CAEM
-disposition: KEEP in CAEM — CAEM is upstream semantic authority, never a runtime
-migration_dependency: mglpsw/caem#63 (independent reviewer lanes/broker), mglpsw/caem#74 (RK-1),
-               mglpsw/caem#97 (F2)
-countermodels: - CAEMDesignInfluence != CAEMRuntimeConsumption
-               - CAEM must never gain GPU/Ollama/review-engine/routing/scheduler/Incident
-                 Journal/CI-planner/review-database runtime (reaffirmed in the 2026-09-27
-                 CURRENT/RECONCILIATION comment on mglpsw/caem#63)
-retirement_gate: n/a for CAEM itself. The local F0 carrier follows the RI-B0a disposition
-               (#351 slice A); its consumer-identity binding is an input to #358
-evidence: mglpsw/caem#63, mglpsw/caem#74, mglpsw/caem#97 (all OPEN);
-               app/caem_consumer/f0.py:3/82/564;
-               scripts/verify-caem-f0-pin.py:19; RI_A0 erratum (F0 pin location)
-limitations: - this document does not audit mglpsw/caem's own repository
-               - #46 §6 keeps "o pin/consumer CAEM compartilhado que AgentReview realmente usa"
-                 preserved. That rule is unaffected here — nothing is removed. This row only
-                 records, from source, that what AgentReview demonstrably uses today is CAEM
-                 vocabulary/design, while the F0 pin's current caller is the pin verifier; if a
-                 real AgentReview → F0 callsite exists outside the paths searched, #46's
-                 preservation rule applies to it unchanged
-status: FINAL_OWNER_ASSIGNED for the semantics; no AgentReview → CAEM runtime cutover exists
+disposition: KEEP in CAEM — CAEM is upstream semantic authority, never the runtime
+migration_dependency: mglpsw/caem#63, mglpsw/caem#74, mglpsw/caem#97
+countermodels: CAEM must never absorb GPU/Ollama/review-engine/routing/scheduler/Incident
+               Journal/CI-planner/review-database runtime
+retirement_gate: n/a for CAEM semantics. The local F0 carrier has its own KEEP lifecycle above and
+               MUST NOT inherit the RI-B0a disposition.
+evidence: mglpsw/caem#63/#74/#97; local F0 carrier source/gates above
+limitations: this matrix does not qualify mglpsw/caem itself or prove a direct AgentReview→F0
+               runtime callsite
+status: FINAL_OWNER_ASSIGNED for generic semantics
 ```
 
 ### Inference execution
 
 ```text
-current_owner: mglpsw/agent-router-api — the canonical/final inference execution plane
-current_state: NOT yet the only current inference path — the legacy in-process direct-provider
-               path in this repository still exists (see "Legacy in-process inference")
+current_owner: mglpsw/agent-router-api — canonical/final inference execution plane
+current_state: NOT yet the only current inference path — legacy in-process direct-provider
+               execution still exists in this repository and must be retired/cut over by #19
 current_implementation: OpenAI-compatible API, preset resolution, provider/model registry,
-               admission, routing policy, fallback, `agent-router.inference-receipt.v2`
-               (mglpsw/agent-router-api#99, mglpsw/agent-router-api#111; F2-A integrated at
-               master@a6ea6ba)
-current_consumers: mglpsw/AgentEscala's AgentReview lanes via scripts/call-agent-router.sh →
-               /v1/chat/completions (per mglpsw/AgentEscala#859). AgentReview is the canonical
-               consumer (mglpsw/agent-router-api#116). The Router-side AIOpsRouterAdapter shim is
-               NOT a consumer of the Router — it is a deprecated Router → aiops-orchestrator
-               adapter, already inert
+               admission/routing/fallback and agent-router.inference-receipt.v2
+receipt_truth_boundary: receipt v2 records Router-observed execution facts at the adapter-start /
+               selected-attempt boundary (provider/model argument, attempts/transitions where
+               observed). It does NOT prove ProviderSawExactly(input), provider-side model
+               revision unless separately observed, semantic correctness, repo/HEAD truth or
+               AgentReview readiness.
+current_consumers: AgentReview is the canonical intended consumer contract
+               (mglpsw/agent-router-api#116). AgentEscala source contains Router integration
+               surfaces, but mglpsw/AgentEscala#859 remains Draft and its run-history/cutover
+               assertions are not treated here as independent qualification.
+ct102_contract_state: DOCUMENTED_NOT_E2E_EXERCISED_THIS_ROUND — #116 documents authenticated HTTP
+               access to the Router runtime on CT102, but the reconciliation environment lacked
+               both Router credential and homelab network path; no real HTTP smoke was executed.
 final_owner: Agent Router
 disposition: KEEP in Agent Router
-migration_dependency: retirement or cutover of the legacy in-process inference path (#19)
-countermodels: no "policy brain"/semantic reducer/review planner/infrastructure
-               collector/incident memory/global intelligence may enter the Router roadmap;
-               mglpsw/agent-router-api#65 already records the review planner/reducer as superseded
-               (2026-08-24 reconciliation)
+migration_dependency: retirement/cutover of the legacy in-process inference path (#19)
+countermodels: - "canonical/final" != "currently sole"
+               - AdapterStarted(provider, model) != ProviderSawExactly(input)
+               - DocumentedCT102Contract != RuntimeSmokeQualified
 retirement_gate: n/a
-evidence: mglpsw/agent-router-api@a6ea6ba:app/agent_router/main.py:2103
-               (`@app.post("/v1/chat/completions")`) and app/agent_router/inference_receipt.py;
-               mglpsw/agent-router-api#65, mglpsw/agent-router-api#99, mglpsw/agent-router-api#111,
-               mglpsw/agent-router-api#116. NOT this repository's
-               app/agent_router/main.py, which is the local AIOps Diagnostic Engine
-               (RI_A1, "A naming collision worth flagging explicitly")
-limitations: receipt v3 is not authorized by this or any document in this round
-status: FINAL_OWNER_ASSIGNED; the "only inference plane" property awaits the legacy-path
-               retirement (#19)
+evidence: mglpsw/agent-router-api#65/#99/#111/#116 and Router source;
+               this repository's legacy direct-provider path above
+limitations: receipt v3 is not authorized; CT102 smoke remains blocked in the documented #116
+               environment; target-side AgentEscala qualification remains separate
+status: FINAL_OWNER_ASSIGNED; sole-plane property awaits #19 cutover/retirement
 ```
 
 ## First-wave target adoption (informational — no implementation here)
 
 | Target | Evidence | Disposition |
 |---|---|---|
-| `mglpsw/AgentEscala` | v1 lane (`agent-review.yml`, `agent-review-publish.yml`) active, pinned to `v0.22.0`, Router-only transport; v2 shadow trio wired, `AGENT_REVIEW_V2_ROUTER_ENABLED=false`; `aiops-runner-smoke.yml` (on-demand CT104 infrastructure smoke) and `issue-aiops.yml` (issue triage, already Router-based) active — all per `mglpsw/AgentEscala#859` workflow source + run history | v1: GA consumer, retirement `DEFER` until v2 promotion; v2: shadow, not cut over. **None of the four legacy-named workflows is a `RETIRE` candidate today** |
+| `mglpsw/AgentEscala` | Bounded source evidence shows Router integration surfaces; Draft `mglpsw/AgentEscala#859` records a broader workflow/run-history census but has not completed independent review. Treat those target-side claims as evidence pending qualification, not as cutover proof. | First-wave target by #46. v1 baseline consumption is established by upstream lineage; v2 remains unqualified for cutover here. No retirement decision is derived solely from Draft #859. |
 | `mglpsw/caem` | No AgentReview-specific workflow found; `mglpsw/caem#63` (broker) is the open contract | Dogfooding advisory adoption path exists on paper; not yet cut over |
 | `mglpsw/sacr-as` | Only `.github/workflows/validate.yml`; no AgentReview workflow | `DEFER` — adoption contract with synthetic-corpus and DLP/clinical constraints proposed in `mglpsw/sacr-as#45` (OPEN) |
 | `mglpsw/interleitos` | Only `ci.yml`/`ct104-deployment.yml`; no AgentReview workflow | Deferred consumer, not a first-wave release gate (#46's 2026-09-25 addendum; `mglpsw/interleitos#138`, OPEN) |
