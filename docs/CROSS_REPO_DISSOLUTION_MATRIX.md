@@ -159,6 +159,14 @@ current_consumers:
                  scripts/aiops-review-intake.py, aiops-review-plan-chunks.py,
                  aiops-review-parse-chunks.py, aiops-review-synthesize.py,
                  aiops-review-quality-gate.py and telemetry/false-positive tooling
+               - standalone GitHub review lane — a SEPARATE surface, not part of app.agent_review:
+                 .github/workflows/agent-review.yml (step at line 59) → scripts/github_agent_review.py,
+                 which has 0 imports of app.agent_review and implements its own
+                 deterministic/Router-assisted review path. A package-based census of
+                 app.agent_review importers does not capture it. Lifecycle: attached to AgentReview
+                 v1 / LEGACY_ADVISORY_BASELINE; its source/path egress debt is tracked in #315
+                 (which names this workflow and script); closure/freeze owner is #221. It needs its
+                 own explicit disposition/cutover before any #351 source separation
                - external: AgentEscala consumes the v0.22.0 baseline per #46/AgentEscala lineage;
                  current run-history assertions recorded in Draft mglpsw/AgentEscala#859 remain
                  target-side evidence pending independent review and are not used here as sole
@@ -168,10 +176,13 @@ disposition: KEEP in AgentReview → repair/freeze pending #221; decide release/
                merged-unreleased delta explicitly rather than collapsing it into v0.22.0
 migration_dependency: #221 (material-debt fix, immutable release when needed, repin/canary, freeze)
 countermodels: - PublishedBaseline == LiveMasterV1Source is false
+               - ImporterCensus(app.agent_review) == v1 product surface is false: the standalone
+                 GitHub review lane has no such import
                - v1 does not become default/required by administrative decision (#46 §2)
 retirement_gate: n/a — kept, not retired; freeze is a maintenance state, not removal
-evidence: #221 (OPEN), #46 §1/§3, #225, PR #227, PR #231;
-               internal import graph; target-side evidence is separately qualified
+evidence: #221 (OPEN), #315 (OPEN), #46 §1/§3, #225, PR #227, PR #231;
+               internal import graph; .github/workflows/agent-review.yml:59;
+               target-side evidence is separately qualified
 limitations: freeze timing depends on #232/#307/#315/#343 and on explicit disposition of the
                merged-unreleased source delta
 status: FINAL_OWNER_ASSIGNED; external consumer cutover/freeze status is not inferred solely from
@@ -195,6 +206,16 @@ current_consumers:
                - external target: AgentEscala has v2 target/workflow material in source, but
                  mglpsw/AgentEscala#859 is still Draft/unreviewed as a target-side reconciliation;
                  its run-history/variable claims are evidence to qualify, not a completed cutover
+required_asset_trees (outside app/agent_review/, inside the product boundary):
+               - templates/agentreview-v2-target-pack/
+               - schemas/agent-review/v2/
+               app/agent_review/target_pack_build_v2.py:107-108 binds both paths and reads them from
+               the pinned Git tree (lines 155-180); a missing template tree raises
+               TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2) at line 159, so the Target
+               Pack cannot be built without them. Disposition: KEEP as part of AgentReview Assured
+               while consumers exist; related to #203. Any future extraction/rehome must prove
+               preservation of templates, schemas, schema digests, byte identity where contracted,
+               and Target Pack/conformance behavior. No physical migration has been executed
 final_owner: AgentReview
 disposition: KEEP in AgentReview
 migration_dependency: integrate/read-back PR #355
@@ -203,6 +224,8 @@ migration_dependency: integrate/read-back PR #355
                → #357 (post-release Advisory/Assured convergence on the common engine)
 countermodels: - #355 ratified != #355 integrated
                - target wiring != Router-backed semantic review
+               - "extract app/agent_review/" != "extract AgentReview v2": the required asset trees
+                 live outside the package
                - v2 does not become default/required check by this reconciliation (#46 §2)
 retirement_gate: n/a — kept
 evidence: #46 §1/§4/§5, PR #349, PR #352, Draft PR #355; internal import graph;
@@ -217,10 +240,22 @@ status: FINAL_OWNER_ASSIGNED; target migration/cutover remains unqualified until
 ```text
 environment_context:
   current_path: app/services/environment_context.py
-  consumers: app/agent_review/cli.py plus v1 aiops-review-* scripts
-  disposition: KEEP_WITH_AGENTREVIEW or rederive a minimal AgentReview-owned equivalent in #351-B
-  retirement_rule: must not be removed with AIOps Runtime until standalone AgentReview tests prove
-                   the replacement/import graph
+  disposition: KEEP_SHARED
+  consumers (non-test importers, census at master@9abcde6 / PR head 1a9819b):
+    - AgentReview family: app/agent_review/cli.py; scripts/aiops-review-build-payloads.py,
+      aiops-review-false-positives.py, aiops-review-parse-chunks.py,
+      aiops-review-plan-chunks.py, aiops-review-quality-gate.py, aiops-review-synthesize.py,
+      aiops-review-telemetry.py
+    - AIOps Runtime / environment-boundary family: scripts/guard-aiops-environment.py (lines
+      18-21; its --require-mode enforces both aiops_runtime and agent_review_tooling, lines 26 and
+      62-66, and docs/ENVIRONMENT_BOUNDARIES.md:86 invokes it for AgentReview tooling) and
+      scripts/aiops-env-info.py (lines 16-20, runtime context reporting)
+    - indirect test coverage only: tests/test_aiops_environment_contract.py runs both scripts; no
+      test imports the module directly
+  invariant: AgentReviewNeeds(X) != AgentReviewOwnsExclusively(X)
+  retirement_rule: do not move or remove while both consumer families exist; rehome only after the
+                   pertinent AgentReview standalone/cutover (#351 slice B) AND the pertinent AIOps
+                   Runtime cutover/retirement (#19)
 
 strict_json:
   current_path: app/common/strict_json.py
@@ -229,8 +264,9 @@ strict_json:
                compatibility/cutover proof
   retirement_rule: app/common is not AIOps-only merely because it sits outside app/agent_review
 
-final_owner: AgentReview toolrepo/shared support surface, with CAEM F0 carrier use preserved until
-             that carrier receives its own lifecycle below
+final_owner: AgentReview toolrepo/shared support surface; environment_context stays shared with the
+             AIOps Runtime until #19, and the CAEM F0 carrier's use of strict_json is preserved
+             until that carrier receives its own lifecycle below
 countermodel: "app/agent_review is the whole product boundary" is false while required imports live
               outside that subtree
 evidence: live import graph at master@9abcde6
