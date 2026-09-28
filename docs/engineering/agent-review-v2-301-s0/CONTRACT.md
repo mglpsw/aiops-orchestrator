@@ -201,9 +201,39 @@ obrigatórios da ativação de S1 (§12). A razão é estreita. Nenhum principal
 snapshot canônico publicado pelo produtor, alterou algo que o Git local consome. E nenhuma
 recorrência autenticar-X/consumir-Y foi estabelecida na identidade de S_G.
 
+**Reconciliação pós-Ready (revisão Codex 5332770958 sobre `fdf4193`; decisão do mantenedor).**
+
+```yaml
+S0_ratification:
+  architecture_C: PRESERVED                   # redesign_required: false
+  claim_of_SG_authenticity: PRESERVED
+  changes:
+    C9_evidence_scope: NARROWED_TO_OBSERVED_TRUTH        # ByteAdmissionContainment only
+    S1A_storage_confinement_requirement: PRESERVED_STRONG
+    K4_resource_and_parity_claims: SEPARATED
+  experiments: {unchanged: true}
+post_ready_findings:
+  "4117560405": {established: true, material_to_current_SG: false, owner: FUTURE_SD, disposition: VALID_FUTURE_SD_OWNER}
+  "4117560411": {established: true, architecture_C_refuted: false, S_G_authenticity_refuted: false,
+                 class: [EXPERIMENTAL_EVIDENCE_OVERCLAIM, STORAGE_AUTHORITY_ENFORCEMENT_GAP],
+                 disposition: LOCAL_EXPERIMENTAL_ENFORCEMENT_GAP, successor: S1_A_CORE_PHYSICAL_AUTHORITY}
+  "4117560412": {established: true, authenticity_effect: false, resource_safety_effect: false,
+                 K4_remaining_budget_bound: HELD, C3_parity_at_exact_budget_boundary: NOT_HELD,
+                 successor: [S1_SEM_01, S1-C]}
+```
+
+`ByteAdmissionContainment != ProducerOperationContainment`, e `NoOverBudgetExpansion != SemanticParity`.
+A arquitetura não exige abrir nada fora de `A` para descobrir storage Git legítimo: a sonda do
+protótipo é que escolheu `open("..")`/`open("../HEAD")` antes de raciocinar sobre contenção.
+
 **Relações com owners** (nenhuma absorvida):
-- **#331 / C2_B:** C prova só "dada a capability A, o produtor nunca sai de A" (C9). Quem autorizou
-  A continua com #331.
+- **#331 / C2:** o contrato de S1 exige que a aquisição física use **somente** storage dentro da
+  capability admitida `A`; quem produz e autoriza `A` continua owner de #331/C2_B. O experimento C9
+  demonstrou que os bytes de um alternate fora de `A` não são admitidos no snapshot
+  (`ByteAdmissionContainment`). A revisão pós-Ready (achado 4117560411 sobre `fdf4193`) mostrou que a
+  sonda experimental ainda pode abrir `..`/`../HEAD` fora de `A` antes da checagem. Portanto C9 **não**
+  qualifica o confinamento de todas as operações do produtor (`ProducerOperationContainment`). Essa
+  propriedade continua **obrigatória** para a S1-A (`S1_A_STORAGE_ACCESS_CONTAINMENT`, §12).
 - **#319:** proveniência de `C`. C só autentica o fechamento **de** `C`.
 - **#320 (adendo):** "Git local sem prazo pode travar" é **candidato a mecanismo** registrado sob
   #301 (Spike B, EXP-SNAP, C7); a família de disponibilidade/recurso do Git local continua com
@@ -628,7 +658,9 @@ limite · owner · evidência.
   point · produtor → leitor · fonte com remote, promisor + `extensions.partialClone`, `hooksPath` +
   hook, alternates, refs e `tmp_obj_*`; alternate fora da capability; objeto obrigatório ausente;
   SIGKILL do produtor durante o staging; loose-bomba de 256 MiB · nada da fonte atravessa (C2);
-  `alternate_outside_authorized_storage` (C9); `object_missing` sem marcador de busca (C4/C8B); 0
+  `alternate_outside_authorized_storage` (C9: bytes de fora de `A` não são admitidos; o confinamento
+  de todas as aberturas do produtor **não** foi provado: 4117560411); `object_missing` sem marcador de
+  busca (C4/C8B); 0
   snapshot publicado e staging ilegível pelo runner (C10); produtor sem inflate, VmHWM 21,7 MiB (C5);
   alternate autorizado achatado sem ponteiro, clone parcial com closure completa **admitido**,
   sha256 aceito; toda entrada **listada** (copiada ou ignorada) conta no orçamento de entradas
@@ -732,7 +764,10 @@ limite · owner · evidência.
   entradas → `budget_nodes` com teto 8; o parser do C3 aplica o teto incrementalmente e materializa
   no máximo restante+1 entradas antes de recusar (o contador "além do restante" do experimento mede
   listas completas, 0), contra 50 na
-  ablação com o teto global; mesma forma com 5 entradas aceita) · corpus real aceito com a unidade Git ≤ 14,8 MiB
+  ablação com o teto global; mesma forma com 5 entradas aceita). O limite de recurso de K4
+  (`NoOverBudgetExpansion`) se mantém; a paridade estrutural com o C3 na fronteira exata **não**: uma
+  tree explícita vazia restante quando o orçamento foi consumido exatamente é recusada antes do parse,
+  embora tenha zero entradas (4117560412; contramodelo de S1_SEM_01/S1-C) · corpus real aceito com a unidade Git ≤ 14,8 MiB
   dentro do envelope de 128 MiB · valores de envelope e orçamentos (§8) ainda não adjudicados;
   memória **agregada** da unidade e prazo total **não** reivindicados (#320); `RLIMIT_AS` segue a
   semântica já usada por `trusted_check_supervisor_v2` · #301 · EXP-RES `git_child_contained_*`,
@@ -798,7 +833,10 @@ Contramodelos **obrigatórios** herdados da rodada 2 (PR #355, comentário 58522
 - R2-2: arquivo do wheel lido inteiro sem limite;
 - R2-3: `DT_FILTER`/`DT_AUXILIARY` não inspecionados;
 - R2-7: pacote-extensão `pkg/__init__.so` não procurado;
-- R2-8: superconjunto de tags no `WHEEL` aceito.
+- R2-8: superconjunto de tags no `WHEEL` aceito;
+- `DANGLING_LOCK_CONTINUATION_EOF`: um lock que termina com continuação `\` pendente tem de recusar
+  (fail closed), nunca autorizar um conjunto vazio de dependências (revisão Codex 5332770958, achado
+  4117560405; o protótipo `s0_deps.py` continua congelado).
 
 Mecanismo proposto (spike descartável, não implementado):
 [`experiments/sd_future/spike_bounded_archive.py`](experiments/sd_future/spike_bounded_archive.py) —
@@ -1166,6 +1204,25 @@ S1_obligations:
     S0_disposition: ACCEPTED_LIMITATION
     successor_owner: [S1, "#320"]
     required: "harmonize SnapshotAdmissionBudget <-> LocalGitExecutionEnvelope (no new limits chosen in S0)"
+```
+
+Contramodelos sucessores registrados na reconciliação pós-Ready. O registro `S1_obligations` acima
+continua com exatamente cinco itens e não foi alterado:
+
+```yaml
+S1_A_STORAGE_ACCESS_CONTAINMENT:        # subpropriedade de S1_CORE (estágio físico), não um sexto item S1_*
+  proposition: >
+    every filesystem open/traversal performed by the privileged physical acquisition producer must remain
+    inside AuthorizedGitStorageSetV2
+  owner: S1_A_CORE_PHYSICAL_AUTHORITY
+  composes_with: [C2_A enforcement, "#331 C2_B provenance"]
+  countermodel: {id: STORAGE_ROOT_PARENT_PROBE_ESCAPE, finding: 4117560411,
+                 shape: "authorized alternate is itself a capability root; probe attempts open('..') / open('../HEAD')"}
+  expected: "parent/sibling is never opened unless its descriptor was already established as admitted by the storage capability"
+EMPTY_TREE_AT_EXACT_NODE_BUDGET:        # contramodelo de S1_SEM_01 / S1-C
+  finding: 4117560412
+  shape: "parent consumes exactly max_nodes; the remaining explicit empty tree has zero entries"
+  expected: "a valid C3 tree is still admitted without exceeding the budget"
 ```
 
 Antes da primeira implementação, o plano de S1 (grant separado, "#301-S1 IMPLEMENTATION PLAN") precisa reconciliar:
