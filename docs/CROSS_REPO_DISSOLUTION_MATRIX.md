@@ -36,7 +36,7 @@ Live bases used, reverified `2026-09-28` via `git rev-parse`/`gh api repos/<repo
 | `mglpsw/aiops-orchestrator` | `master` | `9abcde6420a59b814b5faaff10ca5904c5d23370` |
 | `mglpsw/homelab` | `main` | `10352e9b040db6a20edb8ebf1ffd2812deb3e138` |
 | `mglpsw/caem` | `main` | `854e321a99170eebd7795cb50d2e5b5e0e94db2f` |
-| `mglpsw/AgentEscala` | `develop` | `d7627e4ead16e13b62a99ca186cb35b413d36aba` (advanced via unrelated dependency/frontend work; target-side reconciliation PR #859 remains Draft and is not qualification evidence by itself) |
+| `mglpsw/AgentEscala` | `develop` | `d7627e4ead16e13b62a99ca186cb35b413d36aba` (advanced via unrelated dependency/frontend work; target-side reconciliation PR mglpsw/AgentEscala#859 remains Draft and is not qualification evidence by itself) |
 | `mglpsw/sacr-as` | `main` | `61003a120e540f92594c859f0888955f672ffa77` |
 | `mglpsw/interleitos` | `main` | `8207b159e190a0f694b70d249eea31542e11ea9c` |
 
@@ -505,7 +505,7 @@ countermodels: CAEM must never absorb GPU/Ollama/review-engine/routing/scheduler
                Journal/CI-planner/review-database runtime
 retirement_gate: n/a for CAEM semantics. The local F0 carrier has its own KEEP lifecycle above and
                MUST NOT inherit the RI-B0a disposition.
-evidence: mglpsw/caem#63/#74/#97; local F0 carrier source/gates above
+evidence: mglpsw/caem#63, mglpsw/caem#74, mglpsw/caem#97; local F0 carrier source/gates above
 limitations: this matrix does not qualify mglpsw/caem itself or prove a direct AgentReview→F0
                runtime callsite
 status: FINAL_OWNER_ASSIGNED for generic semantics
@@ -528,7 +528,7 @@ current_consumers: AgentReview is the canonical intended consumer contract
                (mglpsw/agent-router-api#116). AgentEscala source contains Router integration
                surfaces, but mglpsw/AgentEscala#859 remains Draft and its run-history/cutover
                assertions are not treated here as independent qualification.
-ct102_contract_state: DOCUMENTED_NOT_E2E_EXERCISED_THIS_ROUND — #116 documents authenticated HTTP
+ct102_contract_state: DOCUMENTED_NOT_E2E_EXERCISED_THIS_ROUND — mglpsw/agent-router-api#116 documents authenticated HTTP
                access to the Router runtime on CT102, but the reconciliation environment lacked
                both Router credential and homelab network path; no real HTTP smoke was executed.
 final_owner: Agent Router
@@ -538,9 +538,10 @@ countermodels: - "canonical/final" != "currently sole"
                - AdapterStarted(provider, model) != ProviderSawExactly(input)
                - DocumentedCT102Contract != RuntimeSmokeQualified
 retirement_gate: n/a
-evidence: mglpsw/agent-router-api#65/#99/#111/#116 and Router source;
+evidence: mglpsw/agent-router-api#65, mglpsw/agent-router-api#99,
+               mglpsw/agent-router-api#111, mglpsw/agent-router-api#116 and Router source;
                this repository's legacy direct-provider path above
-limitations: receipt v3 is not authorized; CT102 smoke remains blocked in the documented #116
+limitations: receipt v3 is not authorized; CT102 smoke remains blocked in the documented mglpsw/agent-router-api#116
                environment; target-side AgentEscala qualification remains separate
 status: FINAL_OWNER_ASSIGNED; sole-plane property awaits #19 cutover/retirement
 ```
@@ -549,7 +550,7 @@ status: FINAL_OWNER_ASSIGNED; sole-plane property awaits #19 cutover/retirement
 
 | Target | Evidence | Disposition |
 |---|---|---|
-| `mglpsw/AgentEscala` | Bounded source evidence shows Router integration surfaces; Draft `mglpsw/AgentEscala#859` records a broader workflow/run-history census but has not completed independent review. Treat those target-side claims as evidence pending qualification, not as cutover proof. | First-wave target by #46. v1 baseline consumption is established by upstream lineage; v2 remains unqualified for cutover here. No retirement decision is derived solely from Draft #859. |
+| `mglpsw/AgentEscala` | Bounded source evidence shows Router integration surfaces; Draft `mglpsw/AgentEscala#859` records a broader workflow/run-history census but has not completed independent review. Treat those target-side claims as evidence pending qualification, not as cutover proof. | First-wave target by #46. v1 baseline consumption is established by upstream lineage; v2 remains unqualified for cutover here. No retirement decision is derived solely from Draft mglpsw/AgentEscala#859. |
 | `mglpsw/caem` | No AgentReview-specific workflow found; `mglpsw/caem#63` (broker) is the open contract | Dogfooding advisory adoption path exists on paper; not yet cut over |
 | `mglpsw/sacr-as` | Only `.github/workflows/validate.yml`; no AgentReview workflow | `DEFER` — adoption contract with synthetic-corpus and DLP/clinical constraints proposed in `mglpsw/sacr-as#45` (OPEN) |
 | `mglpsw/interleitos` | Only `ci.yml`/`ct104-deployment.yml`; no AgentReview workflow | Deferred consumer, not a first-wave release gate (#46's 2026-09-25 addendum; `mglpsw/interleitos#138`, OPEN) |
