@@ -1,0 +1,11 @@
+{
+"image": "python:3.11-bookworm@sha256:b99029c95d3d37fb1e4e76d287f7984373dca77c665885986e31b2c95260c13c",
+"python": "3.11.16",
+"git": "git version 2.39.5",
+"glibc": "ldd (Debian GLIBC 2.36-9+deb12u14) 2.36",
+"kernel": "6.18.33.2-microsoft-standard-WSL2",
+"work_filesystem": "tmpfs",
+"yama_ptrace_scope": "1",
+"runner_uid": 2000, "toolrepo_commit": "9abcde6420a59b814b5faaff10ca5904c5d23370",
+"wheels_sha256": "3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85  PyYAML-6.0.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl;1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53  annotated_types-0.7.0-py3-none-any.whl;a082753436a07f9ba1289c6ffa01cd93db3548776088aa917cc43b63f68fa60f  pydantic-2.11.3-py3-none-any.whl;c964fd24e6166420d18fb53996d8c9fd6eac9bf5ae3ec3d03015be4414ce497f  pydantic_core-2.33.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl;481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8  typing_extensions-4.16.0-py3-none-any.whl;4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7  typing_inspection-0.4.2-py3-none-any.whl;"
+}

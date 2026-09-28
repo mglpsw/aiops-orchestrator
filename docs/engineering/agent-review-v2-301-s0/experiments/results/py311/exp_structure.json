@@ -1,0 +1,294 @@
+{
+ "cases": {
+  "parity_with_explicitly_declared_tree": {
+   "expected": {
+    "main.py": [
+     "regular",
+     "VALUE = \"main\"\n"
+    ],
+    "pkg": [
+     "tree",
+     ""
+    ],
+    "pkg/__init__.py": [
+     "regular",
+     "VALUE = \"pkg\"\n"
+    ],
+    "pkg/mod.py": [
+     "regular",
+     "VALUE = \"mod\"\n"
+    ],
+    "ns": [
+     "tree",
+     ""
+    ],
+    "ns2": [
+     "tree",
+     ""
+    ],
+    "ns2/sub": [
+     "tree",
+     ""
+    ],
+    "run.sh": [
+     "executable",
+     "#!/bin/sh\necho s0\n"
+    ],
+    "link": [
+     "symlink",
+     "pkg"
+    ],
+    "link-up": [
+     "symlink",
+     "../outside"
+    ]
+   },
+   "observed": {
+    "link": [
+     "symlink",
+     "pkg"
+    ],
+    "link-up": [
+     "symlink",
+     "../outside"
+    ],
+    "main.py": [
+     "regular",
+     "VALUE = \"main\"\n"
+    ],
+    "ns": [
+     "tree",
+     ""
+    ],
+    "ns2": [
+     "tree",
+     ""
+    ],
+    "pkg": [
+     "tree",
+     ""
+    ],
+    "run.sh": [
+     "executable",
+     "#!/bin/sh\necho s0\n"
+    ],
+    "pkg/__init__.py": [
+     "regular",
+     "VALUE = \"pkg\"\n"
+    ],
+    "pkg/mod.py": [
+     "regular",
+     "VALUE = \"mod\"\n"
+    ],
+    "ns2/sub": [
+     "tree",
+     ""
+    ]
+   },
+   "pass": true
+  },
+  "parity_with_C3_enumeration_and_blobs": {
+   "expected": {
+    "link": [
+     "symlink",
+     "pkg"
+    ],
+    "link-up": [
+     "symlink",
+     "../outside"
+    ],
+    "main.py": [
+     "regular",
+     "VALUE = \"main\"\n"
+    ],
+    "ns": [
+     "tree",
+     ""
+    ],
+    "ns2": [
+     "tree",
+     ""
+    ],
+    "pkg": [
+     "tree",
+     ""
+    ],
+    "run.sh": [
+     "executable",
+     "#!/bin/sh\necho s0\n"
+    ],
+    "ns2/sub": [
+     "tree",
+     ""
+    ],
+    "pkg/__init__.py": [
+     "regular",
+     "VALUE = \"pkg\"\n"
+    ],
+    "pkg/mod.py": [
+     "regular",
+     "VALUE = \"mod\"\n"
+    ]
+   },
+   "observed": {
+    "link": [
+     "symlink",
+     "pkg"
+    ],
+    "link-up": [
+     "symlink",
+     "../outside"
+    ],
+    "main.py": [
+     "regular",
+     "VALUE = \"main\"\n"
+    ],
+    "ns": [
+     "tree",
+     ""
+    ],
+    "ns2": [
+     "tree",
+     ""
+    ],
+    "pkg": [
+     "tree",
+     ""
+    ],
+    "run.sh": [
+     "executable",
+     "#!/bin/sh\necho s0\n"
+    ],
+    "pkg/__init__.py": [
+     "regular",
+     "VALUE = \"pkg\"\n"
+    ],
+    "pkg/mod.py": [
+     "regular",
+     "VALUE = \"mod\"\n"
+    ],
+    "ns2/sub": [
+     "tree",
+     ""
+    ]
+   },
+   "pass": true
+  },
+  "deterministic_bytes_two_builds": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "parse_inverse_of_serialize": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "countermodel_empty_dir_removed_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": true
+  },
+  "countermodel_empty_dir_added_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": true
+  },
+  "countermodel_nested_empty_dir_removed_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": true
+  },
+  "countermodel_exec_bit_cleared_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": true
+  },
+  "countermodel_symlink_target_changed_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": false
+  },
+  "countermodel_symlink_to_regular_same_bytes_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": true
+  },
+  "countermodel_empty_dir_to_empty_file_distinguished": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "lossy_mutant_collides": false
+  },
+  "gitlink_refused": {
+   "expected": "REFUSED:unsupported_mode",
+   "observed": "REFUSED:unsupported_mode",
+   "pass": true
+  },
+  "noncanonical_mode_100664_refused": {
+   "expected": "REFUSED:unsupported_mode",
+   "observed": "REFUSED:unsupported_mode",
+   "pass": true
+  },
+  "dotdot_name_refused_by_C3_rule": {
+   "expected": "REFUSED:tree_unrepresentable",
+   "observed": "REFUSED:tree_unrepresentable",
+   "pass": true
+  },
+  "duplicate_name_refused": {
+   "expected": "REFUSED:tree_duplicate_name",
+   "observed": "REFUSED:tree_duplicate_name",
+   "pass": true
+  },
+  "non_utf8_name_S_vs_C3": {
+   "S": "ACCEPTED",
+   "C3": "ACCEPTED:['caf\\udce9.py']",
+   "note": "divergence here is a finding: S must adopt C3's rule, not a second one"
+  },
+  "component_256_limit_300_admitted": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "component_256_limit_255_refused": {
+   "expected": "REFUSED:budget_component_len",
+   "observed": "REFUSED:budget_component_len",
+   "pass": true
+  },
+  "C3_parity_under_same_limit_300": {
+   "expected": "ACCEPTED:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.py",
+   "observed": "ACCEPTED:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.py",
+   "pass": true,
+   "note": "parity claim available: same admission limit"
+  },
+  "C3_also_refuses_under_same_limit_255": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "note": "refusal parity under the same limit"
+  },
+  "no_admission_limit_refused": {
+   "expected": "REFUSED:admission_limit_missing",
+   "observed": "REFUSED:admission_limit_missing",
+   "pass": true
+  },
+  "container_truncated_refused": {
+   "expected": "REFUSED:container_truncated",
+   "observed": "REFUSED:container_truncated",
+   "pass": true
+  },
+  "container_trailing_refused": {
+   "expected": "REFUSED:container_trailing",
+   "observed": "REFUSED:container_trailing",
+   "pass": true
+  }
+ },
+ "all_pass": true,
+ "lossy_mutant_collisions": 5
+}

@@ -1,0 +1,129 @@
+{
+ "cases": {
+  "sha1_control_legitimate_bytes_accepted": {
+   "expected": {
+    "pkg": "tree",
+    "pkg/__init__.py": "VALUE = \"trusted\"\n"
+   },
+   "observed": {
+    "pkg": "tree",
+    "pkg/__init__.py": "VALUE = \"trusted\"\n"
+   },
+   "pass": true,
+   "algorithm": "sha1"
+  },
+  "sha1_HOR_git_itself_serves_swapped_blob_rc0": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "sha1_blob_swapped_same_length": {
+   "expected": "REFUSED:object_hash_mismatch/blob",
+   "observed": "REFUSED:object_hash_mismatch/blob",
+   "pass": true
+  },
+  "sha1_blob_swapped_other_length": {
+   "expected": "REFUSED:object_hash_mismatch/blob",
+   "observed": "REFUSED:object_hash_mismatch/blob",
+   "pass": true
+  },
+  "sha1_ABLATION_verify_disabled_accepts_swapped_blob": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "mutant_embedded": "x = 'a different length payload'\n"
+  },
+  "sha1_restored_blob_accepted_again": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "sha1_tree_swapped": {
+   "expected": "REFUSED:object_hash_mismatch/tree",
+   "observed": "REFUSED:object_hash_mismatch/tree",
+   "pass": true
+  },
+  "sha1_commit_swapped": {
+   "expected": "REFUSED:object_hash_mismatch/commit",
+   "observed": "REFUSED:object_hash_mismatch/commit",
+   "pass": true
+  },
+  "sha1_type_confusion_blob_as_commit": {
+   "expected": "REFUSED:object_type_mismatch",
+   "observed": "REFUSED:object_type_mismatch",
+   "pass": true
+  },
+  "sha256_control_legitimate_bytes_accepted": {
+   "expected": {
+    "pkg": "tree",
+    "pkg/__init__.py": "VALUE = \"trusted\"\n"
+   },
+   "observed": {
+    "pkg": "tree",
+    "pkg/__init__.py": "VALUE = \"trusted\"\n"
+   },
+   "pass": true,
+   "algorithm": "sha256"
+  },
+  "sha256_HOR_git_itself_serves_swapped_blob_rc0": {
+   "expected": true,
+   "observed": true,
+   "pass": true
+  },
+  "sha256_blob_swapped_same_length": {
+   "expected": "REFUSED:object_hash_mismatch/blob",
+   "observed": "REFUSED:object_hash_mismatch/blob",
+   "pass": true
+  },
+  "sha256_blob_swapped_other_length": {
+   "expected": "REFUSED:object_hash_mismatch/blob",
+   "observed": "REFUSED:object_hash_mismatch/blob",
+   "pass": true
+  },
+  "sha256_ABLATION_verify_disabled_accepts_swapped_blob": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "mutant_embedded": "x = 'a different length payload'\n"
+  },
+  "sha256_restored_blob_accepted_again": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "sha256_tree_swapped": {
+   "expected": "REFUSED:object_hash_mismatch/tree",
+   "observed": "REFUSED:object_hash_mismatch/tree",
+   "pass": true
+  },
+  "sha256_commit_swapped": {
+   "expected": "REFUSED:object_hash_mismatch/commit",
+   "observed": "REFUSED:object_hash_mismatch/commit",
+   "pass": true
+  },
+  "sha256_type_confusion_blob_as_commit": {
+   "expected": "REFUSED:object_type_mismatch",
+   "observed": "REFUSED:object_type_mismatch",
+   "pass": true
+  },
+  "expected_sha256_id_against_sha1_repo": {
+   "expected": "REFUSED:object_format_mismatch",
+   "observed": "REFUSED:object_format_mismatch",
+   "pass": true
+  },
+  "MUTANT_verify_then_reread_embeds_other_bytes": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "verified": "VALUE = \"trusted\"\n",
+   "reread": "VALUE = \"EVIL!!!\"\n"
+  },
+  "INHERITED_N1_G1_Q_accepts_EVIL_after_private_copy_swap": {
+   "expected": "SUCCESS",
+   "observed": "SUCCESS",
+   "pass": true,
+   "note": "witness for S's obligation; violates Q's quiescence precondition, not a Q defect"
+  }
+ },
+ "all_pass": true
+}

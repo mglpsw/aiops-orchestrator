@@ -1,0 +1,295 @@
+{
+ "cases": {
+  "floor_probe_detects_writable_file_in_readonly_dir": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "round2_parent_creation_probe": false
+  },
+  "venv_python_I_S_intact_cfg": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "/usr/local",
+    ""
+   ]
+  },
+  "venv_python_I_S_same_uid_edited_pyvenv_cfg": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "/work/scr-boot/evilprefix /work/scr-boot/evilprefix",
+    ""
+   ],
+   "note": "payload runs before the first line of -c code: revalidates spike EXP-F1 on this runtime"
+  },
+  "base_interpreter_abs_path_I_S_same_attacker_prefix_present": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "/usr/local",
+    ""
+   ]
+  },
+  "LD_PRELOAD_with_I_S": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "empty_environment_I_S": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "S_only_env_PYTHONPATH": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "S_only_cwd_module": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "E_S_cwd_module_no_safe_path": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "no_flags_user_site_pth": {
+   "expected_payload_ran": true,
+   "payload_ran": true,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "I_only_env_PYTHONPATH": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "I_only_cwd_module": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "I_only_user_site_pth": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "I_S_env_PYTHONPATH": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  },
+  "I_S_cwd_module": {
+   "expected_payload_ran": false,
+   "payload_ran": false,
+   "pass": true,
+   "rc": [
+    0,
+    "",
+    ""
+   ]
+  }
+ },
+ "floor": {
+  "interpreter": {
+   "path": "/usr/local/bin/python3.11",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "interpreter_dir": {
+   "path": "/usr/local/bin",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "stdlib_dir": {
+   "path": "/usr/local/lib/python3.11",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "stdlib_encodings": {
+   "path": "/usr/local/lib/python3.11/encodings/__init__.py",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "lib_dynload": {
+   "path": "/usr/local/lib/python3.11/lib-dynload",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:ld-linux-x86-64.so.2": {
+   "path": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:libc.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "mapped:libm.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "mapped:libpython3.11.so.1.0": {
+   "path": "/usr/local/lib/libpython3.11.so.1.0",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "needed:libgcc_s.so.1": {
+   "path": "/usr/lib/x86_64-linux-gnu/libgcc_s.so.1",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:librt.so.1": {
+   "path": "/usr/lib/x86_64-linux-gnu/librt.so.1",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libpthread.so.0": {
+   "path": "/usr/lib/x86_64-linux-gnu/libpthread.so.0",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libm.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+   "uid": 0,
+   "mode": "0o644",
+   "writable_by_this_uid": false
+  },
+  "needed:libc.so.6": {
+   "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/": {
+   "path": "/",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr": {
+   "path": "/usr",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/lib": {
+   "path": "/usr/lib",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/lib/x86_64-linux-gnu": {
+   "path": "/usr/lib/x86_64-linux-gnu",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local": {
+   "path": "/usr/local",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/bin": {
+   "path": "/usr/local/bin",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib": {
+   "path": "/usr/local/lib",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib/python3.11": {
+   "path": "/usr/local/lib/python3.11",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "ancestor:/usr/local/lib/python3.11/encodings": {
+   "path": "/usr/local/lib/python3.11/encodings",
+   "uid": 0,
+   "mode": "0o755",
+   "writable_by_this_uid": false
+  },
+  "this_uid": 2000
+ },
+ "floor_all_root_owned_and_not_writable": true,
+ "child_self_report_flags_I_S_informative_only": "1 1 True",
+ "all_pass": true
+}

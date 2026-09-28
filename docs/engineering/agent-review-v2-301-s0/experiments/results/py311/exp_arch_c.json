@@ -1,0 +1,787 @@
+{
+ "cases": {
+  "C2_source_metadata_does_not_cross": {
+   "expected": {
+    "remote": false,
+    "promisor": false,
+    "hooks": false,
+    "source_config": false,
+    "refs": [],
+    "alternates_pointer": false
+   },
+   "observed": {
+    "remote": false,
+    "promisor": false,
+    "hooks": false,
+    "source_config": false,
+    "refs": [],
+    "alternates_pointer": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "top_level": [
+    "HEAD",
+    "S0_SNAPSHOT_RECEIPT.json",
+    "config",
+    "objects",
+    "refs"
+   ],
+   "receipt": {
+    "schema_version": "ar301-s0-c.snapshot-receipt.v1",
+    "object_format": "sha1",
+    "physical_bytes": 1908,
+    "physical_entries": 4,
+    "alternate_sources_count": 1,
+    "storage_capability_binding": [
+     "/work/ar301c-26b55e66/altpool",
+     "/work/ar301c-26b55e66/src"
+    ],
+    "published_snapshot_identity": {
+     "snapshot_id": "45d3c05392193f664a1dcce5-5f7fad8c",
+     "physical_content_sha256": "45d3c05392193f664a1dcce58469181b981781df5863398cb4186961b3c3eb40"
+    },
+    "skipped_non_object_files": 1
+   }
+  },
+  "C1_runner_mutations_denied_by_kernel": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "syscall_results": {
+    "write_config": "EACCES",
+    "create_alternates": "EACCES",
+    "replace_loose_object_by_write": "EACCES",
+    "replace_loose_object_by_rename": "EACCES",
+    "replace_pack": "EACCES",
+    "unlink_file": "EACCES",
+    "rename_object": "EACCES",
+    "mkdir_inside": "EACCES",
+    "chmod_snapshot": "EPERM",
+    "chmod_object": "EPERM",
+    "rename_snapshot_dir": "EACCES",
+    "create_sibling_in_committed": "EACCES",
+    "POSITIVE_read": "ok"
+   },
+   "snapshot_owner_mode": "0:0o555"
+  },
+  "C1_POSITIVE_runner_reads_snapshot": {
+   "expected": "ok",
+   "observed": "ok",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_unprivileged_reader_derives_S_G_structure": {
+   "expected": {
+    "status": "ok",
+    "uid": 2000,
+    "node_kinds": {
+     "alt.txt": "regular",
+     "empty": "tree",
+     "link": "symlink",
+     "main.py": "regular",
+     "nested": "tree",
+     "nested/inner": "tree",
+     "nested/inner/__init__.py": "regular",
+     "run.sh": "executable"
+    },
+    "symlink_targets": {
+     "link": "pkg/../main.py"
+    }
+   },
+   "observed": {
+    "status": "ok",
+    "uid": 2000,
+    "node_kinds": {
+     "alt.txt": "regular",
+     "empty": "tree",
+     "link": "symlink",
+     "main.py": "regular",
+     "nested": "tree",
+     "nested/inner": "tree",
+     "nested/inner/__init__.py": "regular",
+     "run.sh": "executable"
+    },
+    "symlink_targets": {
+     "link": "pkg/../main.py"
+    }
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "note": "explicit declared tree: empty explicit tree, executable bit, symlink target bytes, nested trees, authorized-alternate blob"
+  },
+  "C9_authorized_alternate_flattened_no_pointer": {
+   "expected": {
+    "accepted": true,
+    "pointer": false,
+    "alternate_sources": 1
+   },
+   "observed": {
+    "accepted": true,
+    "pointer": false,
+    "alternate_sources": 1
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_COUNTER_reader_refuses_runner_mutable_snapshot": {
+   "expected": "REFUSED:snapshot_mutable_by_reader",
+   "observed": "REFUSED:snapshot_mutable_by_reader",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_COUNTER_symlinked_path_into_runner_owned_parent_refused": {
+   "expected": "REFUSED:snapshot_path_not_canonical",
+   "observed": "REFUSED:snapshot_path_not_canonical",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "countermodel_is_real": "RENAMED_AND_RESTORED",
+   "mutant": "a858dc9 lexical ancestor check ACCEPTED this path and the runner then replaced the snapshot (PR #355 review)"
+  },
+  "C11_COUNTER_runner_owned_real_ancestor_refused": {
+   "expected": "REFUSED:snapshot_mutable_by_reader",
+   "observed": "REFUSED:snapshot_mutable_by_reader",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_COUNTER_relative_path_refused": {
+   "expected": "REFUSED:snapshot_path_not_canonical",
+   "observed": "REFUSED:snapshot_path_not_canonical",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_expected_format_mismatch_refused": {
+   "expected": "REFUSED:snapshot_format_mismatch",
+   "observed": "REFUSED:snapshot_format_mismatch",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C3_inject_alternates_after_publish_kernel_refused": {
+   "expected": "EACCES",
+   "observed": "EACCES",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C4_inject_promisor_config_after_publish_kernel_refused": {
+   "expected": "EACCES",
+   "observed": "EACCES",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C4_C8B_missing_required_object_no_network": {
+   "expected": {
+    "result": "REFUSED:object_missing",
+    "fetch_marker": false
+   },
+   "observed": {
+    "result": "REFUSED:object_missing",
+    "fetch_marker": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "precondition_object_absent_in_source": true
+  },
+  "C8A_partial_clone_complete_closure_accepted": {
+   "expected": {
+    "result": "ACCEPTED",
+    "fetch_marker": false
+   },
+   "observed": {
+    "result": "ACCEPTED",
+    "fetch_marker": false
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "precondition_closure_complete_in_source": true
+  },
+  "C9_unauthorized_alternate_typed_refusal": {
+   "expected": "REFUSED:alternate_outside_authorized_storage",
+   "observed": "REFUSED:alternate_outside_authorized_storage",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_producer_never_inflates": {
+   "expected": {
+    "status": "ok",
+    "producer_vmhwm_under_64MiB": true
+   },
+   "observed": {
+    "status": "ok",
+    "producer_vmhwm_under_64MiB": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "producer_vmhwm_MiB": 21.7,
+   "producer_heap_MiB": 2.62,
+   "physical_bytes": 261293,
+   "inflated_bytes": 268435456
+  },
+  "C5_unrelated_bomb_does_not_affect_runner_S_G": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_bomb_in_closure_runner_bounded_refusal": {
+   "expected": {
+    "refused": true,
+    "git_unit_under_128MiB_envelope": true
+   },
+   "observed": {
+    "refused": true,
+    "git_unit_under_128MiB_envelope": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "reason": "budget_payload_bytes",
+   "git_unit_rss_MiB_upper_bound": 14.8
+  },
+  "C5_blob_charged_per_occurrence_refused": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "one 1 MiB blob at 100 paths, payload budget 8 MiB (a858dc9 accepted it and sealed 104.9 MB)"
+  },
+  "C5_POSITIVE_repeated_blob_within_budget_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C5_path_bytes_budget_enforced_during_walk": {
+   "expected": "REFUSED:budget_path_bytes",
+   "observed": "REFUSED:budget_path_bytes",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "700 leaves under 98 dirs of 250-byte names: ~18.6 MB of path bytes vs max_path_bytes 16 MiB (a858dc9 accepted)"
+  },
+  "C5_producer_listing_charged_to_entry_budget": {
+   "expected": "REFUSED:physical_budget_exceeded",
+   "observed": "REFUSED:physical_budget_exceeded",
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "shape": "1,200 non-object names in one fanout dir, max_entries 1000 (a858dc9 listed them unbounded)"
+  },
+  "C6_root_derived_from_authenticated_commit_only": {
+   "expected": {
+    "root": "a3ab46d85a54c588a4873f04422378bf2de4c893",
+    "aux_record_no_effect": true
+   },
+   "observed": {
+    "root": "a3ab46d85a54c588a4873f04422378bf2de4c893",
+    "aux_record_no_effect": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C6_ABLATION_trusting_aux_root_changes_S_G": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "ablation_root": "6a638b87e6680a811e87291d46457067be33056d"
+  },
+  "C6_forged_object_map_entry_refused": {
+   "expected": "REFUSED:object_map_binding_mismatch",
+   "observed": "REFUSED:object_map_binding_mismatch",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C7_runner_unit_teardown_0_survivors": {
+   "expected": {
+    "reader": "REFUSED:transport_deadline",
+    "survivors": []
+   },
+   "observed": {
+    "reader": "REFUSED:transport_deadline",
+    "survivors": []
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "unit": {
+    "killed": 3,
+    "remaining": []
+   },
+   "reader_uid": 2000
+  },
+  "C7_ABLATION_process_group_only_leaves_setsid_survivor": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "survivors": [
+    [
+     300906,
+     "23270056"
+    ]
+   ]
+  },
+  "C10_sigkill_before_publish_no_committed_snapshot": {
+   "expected": {
+    "new_committed": [],
+    "staging_garbage": true
+   },
+   "observed": {
+    "new_committed": [],
+    "staging_garbage": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "runner_listing_staging": "DENIED 13",
+   "commit_point": "rename(staging/<id> -> committed/<id>) after modes + fsync"
+  },
+  "K1_POSITIVE_established_runner_principal_accepted": {
+   "expected": {
+    "result": "ACCEPTED",
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "caps_zero": true
+   },
+   "observed": {
+    "result": "ACCEPTED",
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "caps_zero": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "snapshot_owner": 3000,
+   "principal_observed": {
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1A_real_runner_effective_snapshot_owner_refused": {
+   "expected": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "3000",
+     "3000",
+     "3000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "0000000000000000"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     3000,
+     3000,
+     3000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1B_saved_uid_of_snapshot_owner_refused": {
+   "expected": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_principal_mismatch",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "2000",
+     "3000",
+     "2000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "0000000000000000"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     2000,
+     3000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "0000000000000000",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K1C_permitted_capability_with_CapEff_0_refused": {
+   "expected": {
+    "result": "REFUSED:reader_has_capabilities",
+    "countermodel_is_real": true
+   },
+   "observed": {
+    "result": "REFUSED:reader_has_capabilities",
+    "countermodel_is_real": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "status_fields": {
+    "Uid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Gid": [
+     "2000",
+     "2000",
+     "2000",
+     "2000"
+    ],
+    "Groups": [],
+    "CapInh": [
+     "0000000000000000"
+    ],
+    "CapPrm": [
+     "00000000a80425fb"
+    ],
+    "CapEff": [
+     "0000000000000000"
+    ],
+    "CapAmb": [
+     "0000000000000000"
+    ]
+   },
+   "probe_mutation": "MUTATED_AND_RESTORED",
+   "mutant_28a3b4a_real_id_check_accepts": true,
+   "principal_observed_by_reader": {
+    "uid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "gid": [
+     2000,
+     2000,
+     2000,
+     2000
+    ],
+    "groups": [],
+    "caps": {
+     "CapInh": "0000000000000000",
+     "CapPrm": "00000000a80425fb",
+     "CapEff": "0000000000000000",
+     "CapBnd": "00000000a80425fb",
+     "CapAmb": "0000000000000000"
+    }
+   }
+  },
+  "K2_failure_path_with_surviving_descendant_refused_as_teardown_incomplete": {
+   "expected": {
+    "outcome": "REFUSED:unit_teardown_incomplete",
+    "primary_failure_recorded": true,
+    "real_unit_after_empty": true
+   },
+   "observed": {
+    "outcome": "REFUSED:unit_teardown_incomplete",
+    "primary_failure_recorded": true,
+    "real_unit_after_empty": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "primary_failure": "transport_header_invalid",
+   "real_D_state": "NOT_TESTED (stub teardown reports the survivor)"
+  },
+  "K2_ABLATION_success_only_rule_hides_the_survivor": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_outcome": "REFUSED:transport_header_invalid"
+  },
+  "K3_alternate_probe_charged_to_entry_budget": {
+   "expected": {
+    "result": "REFUSED:physical_budget_exceeded",
+    "enumerated_within_budget": true
+   },
+   "observed": {
+    "result": "REFUSED:physical_budget_exceeded",
+    "enumerated_within_budget": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "dir_entries_enumerated": 1001,
+   "junk_entries": 3000,
+   "max_entries": 1000
+  },
+  "K3_ABLATION_unbounded_G1C_probe_enumerates_beyond_budget": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_result": "REFUSED:physical_budget_exceeded",
+   "mutant_dir_entries_enumerated": 4002,
+   "fanout_listing_position": 3000
+  },
+  "K3_POSITIVE_small_standalone_pool_accepted": {
+   "expected": {
+    "producer": "ok",
+    "reader": "ACCEPTED",
+    "alternate_sources": 1
+   },
+   "observed": {
+    "producer": "ok",
+    "reader": "ACCEPTED",
+    "alternate_sources": 1
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "K4_tree_parser_bounded_by_remaining_node_budget": {
+   "expected": {
+    "result": "REFUSED:budget_nodes",
+    "materialized_beyond_remaining": 0
+   },
+   "observed": {
+    "result": "REFUSED:budget_nodes",
+    "materialized_beyond_remaining": 0
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "parser_cap_at_refusal": 8
+  },
+  "K4_ABLATION_global_cap_materializes_beyond_remaining": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant_result": "REFUSED:budget_nodes",
+   "mutant_materialized": 50
+  },
+  "K4_POSITIVE_same_shape_within_remaining_budget_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "RC5_forced_short_writes_publish_exact_bytes": {
+   "expected": {
+    "published_equals_source": true,
+    "receipt_matches_destination": true
+   },
+   "observed": {
+    "published_equals_source": true,
+    "receipt_matches_destination": true
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "files": 10,
+   "max_write": 4093,
+   "reader": "ACCEPTED"
+  },
+  "RC5_ABLATION_one_write_per_chunk_publishes_mismatch": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "mutant": {
+    "published_equals_source": false,
+    "receipt_matches_destination": false,
+    "files": 10
+   }
+  },
+  "POSITIVE_sha256_runner_S_G": {
+   "expected": {
+    "snapshot_format": "sha256",
+    "result": "ACCEPTED"
+   },
+   "observed": {
+    "snapshot_format": "sha256",
+    "result": "ACCEPTED"
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  },
+  "C11_POSITIVE_real_toolrepo_runner_derived_S_G_equals_prior_record": {
+   "expected": {
+    "uid": 2000,
+    "s_g": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
+   },
+   "observed": {
+    "uid": 2000,
+    "s_g": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
+   },
+   "pass": true,
+   "evidence": "REPRODUCED",
+   "note": "positive equivalence control on this exact subject; the producer only published the snapshot"
+  },
+  "LIFECYCLE_no_survivors_no_listeners": {
+   "expected": {
+    "processes": {},
+    "listeners": []
+   },
+   "observed": {
+    "processes": {},
+    "listeners": []
+   },
+   "pass": true,
+   "evidence": "REPRODUCED"
+  }
+ },
+ "observed": {
+  "privilege": {
+   "producer_uid": 0,
+   "runner_uid": 2000,
+   "note": "container uid 0 is the experiment's mechanism; the contract property is RunnerCanRead AND NOT RunnerCanMutate"
+  }
+ },
+ "not_tested": [
+  "CT104",
+  "production producer/service and its provenance (U3)",
+  "C2_B host policy provenance (#331)",
+  "#319 anchor provenance",
+  "cgroup aggregate memory of the git unit",
+  "total-capture deadline",
+  "production staging GC",
+  "R4-3 envelope vs mapped packs (reproduced by review F3 as unavailability, not re-run here)",
+  "real descendant in uninterruptible (D) sleep: the K2 branch is discriminated with a stub teardown"
+ ],
+ "resource_vector": {
+  "physical_snapshot": {
+   "compressed_bytes": 3646095,
+   "entry_count": 2,
+   "alternate_depth": 0,
+   "producer_heap_MiB": 3.81,
+   "producer_rss_MiB_vmhwm": 23.3,
+   "io": {
+    "rchar": 5632037,
+    "wchar": 3646583
+   },
+   "time_s": 0.061,
+   "producer_uid": 0
+  },
+  "subject_closure": {
+   "object_count_unique": 933,
+   "object_reads": 933,
+   "nodes": 1001,
+   "payload_bytes_charged_per_occurrence": 8660242,
+   "metadata_bytes": 51346,
+   "path_bytes": 54726,
+   "reader_heap_MiB": 36.69,
+   "reader_rss_MiB_vmhwm": 58.2,
+   "local_git_processes": 1,
+   "per_object_deadline_s": 30,
+   "time_s": 0.295,
+   "reader_uid": 2000
+  },
+  "local_git_unit": {
+   "rss_MiB_upper_bound": 14.8,
+   "envelope": "RLIMIT_AS 128 MiB per process",
+   "aggregate_memory": "NOT_TESTED (no cgroup)"
+  }
+ },
+ "all_pass": true
+}

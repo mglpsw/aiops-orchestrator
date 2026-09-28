@@ -1,0 +1,21 @@
+{
+ "metadata_bomb_200MiB": {
+  "result": "REFUSED:wheel_identity_mismatch",
+  "heap_peak_MiB": 2282.2,
+  "budget_MiB": 8
+ },
+ "record_bomb_200MiB": {
+  "result": "CRASH:Error",
+  "heap_peak_MiB": 1000.7,
+  "budget_MiB": 8
+ },
+ "wheel_tags_superset": {
+  "result": "ACCEPTED",
+  "heap_peak_MiB": 0.1,
+  "budget_MiB": 8
+ },
+ "elf_reader_tags": {
+  "handles_DT_FILTER_0x7fffffff": false,
+  "handles_DT_AUXILIARY_0x7ffffffd": false
+ }
+}

@@ -1,0 +1,481 @@
+{
+ "cases": {
+  "S_G_digest_equals_architecture_A_record_on_this_corpus": {
+   "expected": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085",
+   "observed": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085",
+   "pass": true,
+   "note": "positive control: boundary changed (live repo -> private snapshot), observed S_G preserved on THIS corpus; not a proof of universal equivalence"
+  },
+  "real_corpus_accepted_with_git_child_inside_envelope": {
+   "expected": {
+    "accepted": true,
+    "within_envelope": true
+   },
+   "observed": {
+    "accepted": true,
+    "within_envelope": true
+   },
+   "pass": true,
+   "git_children_maxrss_MiB": 16.0,
+   "envelope_MiB": 128
+  },
+  "positive_E_result_equals_normal_path": {
+   "expected": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b",
+   "observed": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b",
+   "pass": true,
+   "readiness": "ready",
+   "chunks": 2
+  },
+  "E_no_open_under_checkout_or_venv": {
+   "expected": [],
+   "observed": [],
+   "pass": true
+  },
+  "E_no_subprocess_on_this_percurso": {
+   "expected": [],
+   "observed": [],
+   "pass": true
+  },
+  "E_distribution_metadata_visible": {
+   "expected": [],
+   "observed": [],
+   "pass": true
+  },
+  "checkout_source_tampered": {
+   "expected": {
+    "normal": "RuntimeError: TAMPERED_CODE_EXECUTED",
+    "E": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b"
+   },
+   "observed": {
+    "normal": "RuntimeError: TAMPERED_CODE_EXECUTED",
+    "E": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b"
+   },
+   "pass": true
+  },
+  "pyc_planted_source_matches_commit": {
+   "expected": {
+    "source_blob_equals_commit": true,
+    "normal": "RuntimeError: TAMPERED_CODE_EXECUTED",
+    "E": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b"
+   },
+   "observed": {
+    "source_blob_equals_commit": true,
+    "normal": "RuntimeError: TAMPERED_CODE_EXECUTED",
+    "E": "174f06fcd503a0bcecafd7375a44b8ae4c518dc054207ca812afc2395ba0e16b"
+   },
+   "pass": true,
+   "note": "verifying the SOURCE tree (Q/G1) does not cover the bytecode the normal path loads"
+  },
+  "venv_installed_file_tampered": {
+   "expected": {
+    "normal": [
+     "venv_tamper"
+    ],
+    "E": []
+   },
+   "observed": {
+    "normal": [
+     "venv_tamper"
+    ],
+    "E": []
+   },
+   "pass": true
+  },
+  "pydantic_plugin_distribution_planted": {
+   "expected": {
+    "normal": [
+     "plugin"
+    ],
+    "E": []
+   },
+   "observed": {
+    "normal": [
+     "plugin"
+    ],
+    "E": []
+   },
+   "pass": true,
+   "note": "lock hashes constrain what pip installed, not what importlib.metadata discovers later"
+  },
+  "D_not_bound_to_S_lock_refused": {
+   "expected": "refused:dependency_lock_binding_mismatch",
+   "observed": "refused:dependency_lock_binding_mismatch",
+   "pass": true
+  },
+  "D_absent_no_fallback": {
+   "expected": {
+    "status": "driver_failed",
+    "error_is_missing_dependency": true,
+    "venv_opens": []
+   },
+   "observed": {
+    "status": "driver_failed",
+    "error_is_missing_dependency": true,
+    "venv_opens": []
+   },
+   "pass": true
+  },
+  "D_cannot_extend_S_or_stdlib_packages": {
+   "expected": {
+    "json_is_stdlib": true,
+    "app.extra": "ModuleNotFoundError",
+    "json.injected": "ModuleNotFoundError",
+    "encodings.s0evil": "ModuleNotFoundError",
+    "codec_s0evil": "LookupError"
+   },
+   "observed": {
+    "app.extra": "ModuleNotFoundError",
+    "codec_s0evil": "LookupError",
+    "encodings.s0evil": "ModuleNotFoundError",
+    "json.injected": "ModuleNotFoundError",
+    "json_is_stdlib": true
+   },
+   "pass": true,
+   "reviewer_repro_of": "F3 (finder ignored `path`)"
+  },
+  "auditor_detects_relative_checkout_read": {
+   "expected": {
+    "detected": true,
+    "raw_is_relative": true,
+    "resolved_under_checkout": true
+   },
+   "observed": {
+    "detected": true,
+    "raw_is_relative": true,
+    "resolved_under_checkout": true
+   },
+   "pass": true,
+   "note": "positive control of the measurement behind E_no_open_under_checkout_or_venv; a prefix match on the raw event path (round-2 auditor) would not have matched"
+  },
+  "producer_fds_restored": {
+   "expected": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "observed": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "pass": true
+  }
+ },
+ "resources": {
+  "S": {
+   "commit": "9abcde6420a59b814b5faaff10ca5904c5d23370",
+   "algorithm": "sha1",
+   "nodes": 1001,
+   "by_kind": {
+    "tree": 206,
+    "regular": 776,
+    "executable": 19
+   },
+   "empty_trees": 0,
+   "container_bytes": 8769133,
+   "payload_bytes_per_occurrence": null,
+   "payload_bytes_unique_blobs": 8660242,
+   "path_bytes": 54726,
+   "git_objects_read": 933,
+   "git_bytes_read": null,
+   "git_subprocesses_counted": 1,
+   "metadata_bytes_read": 51346,
+   "snapshot_s": 0.0,
+   "snapshot_identity": {
+    "alternate_sources_count": 0,
+    "object_format": "sha1",
+    "physical_bytes": 3646095,
+    "physical_entries": 2,
+    "published_snapshot_identity": {
+     "physical_content_sha256": "a7e73d18a2d3cb79320a41157cb41334986393167ef64b65b388a81d8fd59a6f",
+     "snapshot_id": "a7e73d18a2d3cb79320a4115-72a2855d"
+    },
+    "schema_version": "ar301-s0-c.snapshot-receipt.v1",
+    "skipped_non_object_files": 0,
+    "storage_capability_binding": [
+     "/work/toolrepo"
+    ]
+   },
+   "build_s": 0.17,
+   "serialize_seal_verify_s": 0.102,
+   "producer_heap_peak_MiB_build_to_seal": 34.7,
+   "sha256": "95504743b1075c6dd6e9be27014e6b6dde13f0385dcf54621baaac373e9b0085"
+  },
+  "D": {
+   "wheels": [
+    {
+     "wheel": "PyYAML-6.0.2-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+     "sha256": "3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85",
+     "bytes": 762952
+    },
+    {
+     "wheel": "annotated_types-0.7.0-py3-none-any.whl",
+     "sha256": "1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53",
+     "bytes": 13643
+    },
+    {
+     "wheel": "pydantic-2.11.3-py3-none-any.whl",
+     "sha256": "a082753436a07f9ba1289c6ffa01cd93db3548776088aa917cc43b63f68fa60f",
+     "bytes": 443591
+    },
+    {
+     "wheel": "pydantic_core-2.33.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+     "sha256": "c964fd24e6166420d18fb53996d8c9fd6eac9bf5ae3ec3d03015be4414ce497f",
+     "bytes": 2005794
+    },
+    {
+     "wheel": "typing_extensions-4.16.0-py3-none-any.whl",
+     "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+     "bytes": 45571
+    },
+    {
+     "wheel": "typing_inspection-0.4.2-py3-none-any.whl",
+     "sha256": "4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7",
+     "bytes": 14611
+    }
+   ],
+   "nodes_including_directories": 186,
+   "members": 164,
+   "python_tag": "cp311",
+   "payload_bytes": 9700542,
+   "container_bytes": 9718908,
+   "build_seal_s": 0.099,
+   "producer_heap_peak_MiB": 54.2,
+   "sha256": "2f5859c40636799540f3180f33b734e13bf502af5a2190bc63c28c063efe958f",
+   "lock_sha256": "321644f748ded850265f6ea17974ab516018aadb556ef8a58a720b5e0e6508e4"
+  },
+  "E_child": {
+   "maxrss_kib": 88608,
+   "inherited_sealed_fds_by_construction": 3,
+   "native_memfds_created_in_child": 2,
+   "result_channel": "socketpair",
+   "elapsed_s": 0.391
+  },
+  "normal": {
+   "maxrss_kib": 88608,
+   "elapsed_s": 0.2506646459805779
+  }
+ },
+ "census": {
+  "E_modules_by_origin": {
+   "D_native_memfd": [
+    "pydantic_core._pydantic_core",
+    "yaml._yaml"
+   ],
+   "D_source": [
+    "annotated_types",
+    "pydantic",
+    "pydantic._internal",
+    "pydantic._internal._config",
+    "pydantic._internal._core_metadata",
+    "pydantic._internal._core_utils",
+    "pydantic._internal._decorators",
+    "pydantic._internal._discriminated_union",
+    "pydantic._internal._docs_extraction",
+    "pydantic._internal._fields",
+    "pydantic._internal._forward_ref",
+    "pydantic._internal._generate_schema",
+    "pydantic._internal._generics",
+    "pydantic._internal._import_utils",
+    "pydantic._internal._internal_dataclass",
+    "pydantic._internal._known_annotated_metadata",
+    "pydantic._internal._mock_val_ser",
+    "pydantic._internal._model_construction",
+    "pydantic._internal._namespace_utils",
+    "pydantic._internal._repr",
+    "pydantic._internal._schema_gather",
+    "pydantic._internal._schema_generation_shared",
+    "pydantic._internal._signature",
+    "pydantic._internal._typing_extra",
+    "pydantic._internal._utils",
+    "pydantic._internal._validators",
+    "pydantic._migration",
+    "pydantic.aliases",
+    "pydantic.annotated_handlers",
+    "pydantic.config",
+    "pydantic.errors",
+    "pydantic.fields",
+    "pydantic.functional_validators",
+    "pydantic.json_schema",
+    "pydantic.main",
+    "pydantic.plugin",
+    "pydantic.plugin._loader",
+    "pydantic.plugin._schema_validator",
+    "pydantic.root_model",
+    "pydantic.type_adapter",
+    "pydantic.types",
+    "pydantic.version",
+    "pydantic.warnings",
+    "pydantic_core",
+    "pydantic_core.core_schema",
+    "typing_extensions",
+    "typing_inspection",
+    "typing_inspection.introspection",
+    "typing_inspection.typing_objects",
+    "yaml",
+    "yaml.composer",
+    "yaml.constructor",
+    "yaml.cyaml",
+    "yaml.dumper",
+    "yaml.emitter",
+    "yaml.error",
+    "yaml.events",
+    "yaml.loader",
+    "yaml.nodes",
+    "yaml.parser",
+    "yaml.reader",
+    "yaml.representer",
+    "yaml.resolver",
+    "yaml.scanner",
+    "yaml.serializer",
+    "yaml.tokens"
+   ],
+   "OTHER:": [
+    "__main__",
+    "_cython_3_0_11",
+    "cython_runtime",
+    "typing.io",
+    "typing.re"
+   ],
+   "S_source": [
+    "app",
+    "app.agent_review",
+    "app.agent_review._router_receipt_v2",
+    "app.agent_review.authoritative_check_policy_v2",
+    "app.agent_review.authoritative_ci_snapshot_v2",
+    "app.agent_review.authoritative_producer_evidence_v2",
+    "app.agent_review.chunk_result_scope_v2",
+    "app.agent_review.consumer_v2",
+    "app.agent_review.contracts_v2",
+    "app.agent_review.diff_acquisition_v2",
+    "app.agent_review.external_path_ingress_v2",
+    "app.agent_review.lifecycle_v2",
+    "app.agent_review.manifest_v2",
+    "app.agent_review.parser_v2",
+    "app.agent_review.payload_builder_v2",
+    "app.agent_review.payload_references_v2",
+    "app.agent_review.payload_set_emission_v2",
+    "app.agent_review.payload_set_v2",
+    "app.agent_review.planner_v2",
+    "app.agent_review.profile_loader_v2",
+    "app.agent_review.readiness_decision_v2",
+    "app.agent_review.redaction",
+    "app.agent_review.required_check_assembly_v2",
+    "app.agent_review.required_check_provenance_v2",
+    "app.agent_review.required_check_readiness_v2",
+    "app.agent_review.review_transport_contract_v2",
+    "app.agent_review.run_assembly_v2",
+    "app.agent_review.run_fragment_coverage_v2",
+    "app.agent_review.schemas",
+    "app.agent_review.semantic_grouping_policy_v2",
+    "app.agent_review.synthesis_v2",
+    "app.agent_review.trusted_checks_v2",
+    "app.agent_review.versioning",
+    "app.common",
+    "app.common.strict_json"
+   ],
+   "builtin_or_frozen": 41,
+   "stdlib_extension": 27,
+   "stdlib_source": 103
+  },
+  "E_opens_outside_usr_proc_dev": [
+   "/work/scr-func/target/.aiops/target-profile.v2.yaml",
+   "/work/scr-func/target/.aiops/target-profile.v2.yaml",
+   "/work/scr-func/target/artifacts/full.diff",
+   "/work/scr-func/target/artifacts/full.diff",
+   "/work/scr-func/target/contracts/domain-contracts.yaml",
+   "/work/scr-func/target/contracts/domain-contracts.yaml"
+  ],
+  "E_native_memfds": 2,
+  "E_import_pwd_stack": [
+   "<frozen posixpath>:246:expanduser",
+   "/usr/local/lib/python3.11/sysconfig.py:119:joinuser",
+   "/usr/local/lib/python3.11/sysconfig.py:129:_getuserbase",
+   "/usr/local/lib/python3.11/sysconfig.py:131:<module>",
+   "<frozen importlib._bootstrap>:241:_call_with_frames_removed",
+   "<frozen importlib._bootstrap_external>:940:exec_module",
+   "<frozen importlib._bootstrap>:690:_load_unlocked",
+   "<frozen importlib._bootstrap>:1147:_find_and_load_unlocked",
+   "<frozen importlib._bootstrap>:1176:_find_and_load",
+   "/usr/local/lib/python3.11/zoneinfo/_tzpath.py:2:<module>",
+   "<frozen importlib._bootstrap>:241:_call_with_frames_removed",
+   "<frozen importlib._bootstrap_external>:940:exec_module"
+  ],
+  "E_flags_self_report": {
+   "ignore_environment": 1,
+   "isolated": 1,
+   "no_site": 1,
+   "safe_path": true
+  },
+  "normal_modules_by_origin_counts": {
+   "stdlib": 130,
+   "namespace_or_other:": 5,
+   "builtin_or_frozen": 42,
+   "venv_site_packages": 69,
+   "checkout": 35
+  },
+  "modules_only_in_normal": [
+   "_distutils_hack",
+   "_sitebuiltins",
+   "site"
+  ],
+  "modules_only_in_E": [
+   "pwd"
+  ]
+ },
+ "capture_architecture": "C (runner-side reader over producer-published immutable snapshot)",
+ "runs": {
+  "normal_untampered": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "E_untampered": {
+   "rc": 0,
+   "elapsed_s": 0.391,
+   "stderr_tail": ""
+  },
+  "normal_source_tampered": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "E_source_tampered": {
+   "rc": 0,
+   "elapsed_s": 0.392,
+   "stderr_tail": ""
+  },
+  "normal_warm_pycache": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "normal_pyc_planted": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "E_pyc_planted": {
+   "rc": 0,
+   "elapsed_s": 0.387,
+   "stderr_tail": ""
+  },
+  "normal_venv_tampered": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "E_venv_tampered": {
+   "rc": 0,
+   "elapsed_s": 0.387,
+   "stderr_tail": ""
+  },
+  "normal_plugin_planted": {
+   "rc": 0,
+   "stderr_tail": ""
+  },
+  "E_plugin_planted": {
+   "rc": 0,
+   "elapsed_s": 0.393,
+   "stderr_tail": ""
+  }
+ },
+ "all_pass": true
+}

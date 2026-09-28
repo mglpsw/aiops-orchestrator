@@ -1,0 +1,283 @@
+"""EXP-RES: resource vector, expansion, and failure/lifecycle ownership.
+
+usage: python -I -S exp_resources.py <toolrepo_source_root> <scratch_dir> <interpreter>
+A timeout here only protects the harness; each budget claim is shown by a refusal that happens
+BEFORE the expansion (heap peak recorded), not by the run finishing in time.
+"""
+import errno
+import fcntl
+import hashlib
+import json
+import os
+import resource
+import subprocess
+import sys
+import tracemalloc
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+SRC = Path(sys.argv[1]).resolve()
+sys.path.insert(1, str(SRC))
+W = Path(sys.argv[2]).resolve()
+PY = sys.argv[3]
+
+import s0_capture as cap  # noqa: E402
+
+def admitted(**kw):
+    """Explicit admission policy (decision (d)): 255 = C3's enumeration default, stated, never implied."""
+    return cap.Budget(max_component_len=255, **kw)
+
+import s0_fixture as fx  # noqa: E402
+import s0_launch as ln  # noqa: E402
+
+out = {"cases": {}}
+
+
+def case(name, expected, observed, **extra):
+    out["cases"][name] = {"expected": expected, "observed": observed, "pass": expected == observed, **extra}
+
+
+def children():
+    me = str(os.getpid())
+    kids = []
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                if open(f"/proc/{pid}/stat").read().split(") ", 1)[1].split()[1] == me:
+                    kids.append(pid)
+            except OSError:
+                pass
+    return kids
+
+
+def measured(fn):
+    fds, kids = cap.open_fds(), children()
+    tracemalloc.start()
+    try:
+        fn()
+        res = "ACCEPTED"
+    except cap.CaptureRefused as exc:
+        res = "REFUSED:" + exc.reason
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return res, round(peak / 2**20, 2), cap.open_fds() == fds, children() == kids
+
+
+repo = fx.init(W / "res")
+
+# (1) repeated expansion: one 64 KiB blob, one subtree referenced 2,000 times -> 125 MiB per occurrence
+big = fx.blob(repo, b"x" * 65536)
+sub = fx.mktree(repo, [("100644", "blob", big, b"data.bin")])
+dag = fx.commit(repo, fx.mktree(repo, [("040000", "tree", sub, b"d%04d" % i) for i in range(2000)]))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, dag, budget=admitted(max_payload_bytes=16 * 2**20)))
+case("shared_subtree_expansion_refused_per_occurrence", "REFUSED:budget_payload_bytes", res,
+     unique_bytes=65536, per_occurrence_bytes=2000 * 65536, budget_bytes=16 * 2**20, heap_peak_MiB=peak,
+     fds_restored=fds_ok, git_reaped=kids_ok)
+res, _, _, _ = measured(lambda: cap.build_subject(repo, dag, budget=admitted(max_nodes=1000)))
+case("single_tree_entry_cap_rule_is_C3s", "REFUSED:tree_unrepresentable", res,
+     note="2,000 entries in ONE tree vs S's node budget 1000: the RULE is C3's (_parse_tree_data entry cap); "
+          "the VALUE passed to it is S's remaining node budget. The body (~80 KB) is below the pre-read bound.")
+small = fx.blob(repo, b"s\n")
+sub40 = fx.mktree(repo, [("100644", "blob", small, b"f%02d" % i) for i in range(40)])
+dag40 = fx.commit(repo, fx.mktree(repo, [("040000", "tree", sub40, b"d%02d" % i) for i in range(40)]))
+# 1010 = 40 root entries + 24 whole subtrees + 10: the 25th subtree passes the pre-read bound
+# (remaining 10 >= size//295 = 4); its 40 entries then exceed the REMAINING node budget, which S passes
+# as C3's per-tree entry cap. So the cumulative (per-occurrence) node budget is enforced by C3's rule;
+# S's own `budget_nodes` check is redundant defence and is not the mechanism observed here.
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, dag40, budget=admitted(max_nodes=1010)))
+case("shared_subtree_node_budget_per_occurrence", "REFUSED:tree_unrepresentable", res, heap_peak_MiB=peak,
+     unique_nodes=41, per_occurrence_nodes=40 + 40 * 40, note="every tree has 40 entries; only the cumulative count exceeds")
+
+# (2) one oversized blob: refused from the object HEADER, before the body is read
+huge = fx.blob(repo, os.urandom(32 * 2**20))
+c_huge = fx.commit(repo, fx.mktree(repo, [("100644", "blob", huge, b"huge.bin")]))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_huge, budget=admitted(max_payload_bytes=8 * 2**20)))
+case("oversized_blob_refused_before_read", "REFUSED:budget_payload_bytes", res, blob_bytes=32 * 2**20,
+     budget_bytes=8 * 2**20, heap_peak_MiB=peak, fds_restored=fds_ok, git_reaped=kids_ok)
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_huge, budget=admitted()))
+case("CONTROL_same_blob_within_default_budget", "ACCEPTED", res, heap_peak_MiB=peak,
+     note="heap ~ blob size: the carrier is in-memory by design; the budget bounds it")
+
+# (2b) a huge TREE body and a huge COMMIT body: refused from the header, before the body is read
+names = [("100644", "blob", fx.blob(repo, b"t"), (b"%06d" % i) + b"n" * 244) for i in range(60000)]
+big_tree = fx.mktree(repo, names)
+c_big_tree = fx.commit(repo, big_tree)
+tree_size = int(fx.git(repo, "cat-file", "-s", big_tree))
+res, peak, fds_ok, kids_ok = measured(lambda: cap.build_subject(repo, c_big_tree, budget=admitted(max_nodes=10)))
+case("oversized_tree_refused_before_read", "REFUSED:budget_tree_entries_pre_read", res, tree_bytes=tree_size,
+     heap_peak_MiB=peak, fds_restored=fds_ok, git_reaped=kids_ok)
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, c_big_tree, budget=admitted(max_metadata_bytes=4 * 2**20)))
+case("tree_bytes_charged_to_metadata_budget", "REFUSED:budget_metadata_bytes", res, tree_bytes=tree_size, heap_peak_MiB=peak)
+big_msg_commit = fx.git(repo, "commit-tree", fx.empty_tree(repo), "-F", "-", data=b"m" * (16 * 2**20))
+res, peak, _, _ = measured(lambda: cap.build_subject(repo, big_msg_commit, budget=admitted()))
+case("oversized_commit_refused_before_read", "REFUSED:budget_commit_bytes", res, commit_bytes=16 * 2**20, heap_peak_MiB=peak)
+
+# (A) decision (a): the git CHILD stays inside its kernel envelope. Measured in the child (fresh
+#     process per case, RUSAGE_CHILDREN = the git transport only), with an adversarially slow parent
+#     (1 s between refusal and kill), because a fast kill alone is a race, not a bound.
+ENVELOPE = 64 * 2**20
+big_tree_66mb = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"t"), (b"%07d" % i) + b"n" * 243) for i in range(240000)])
+c_tree_66mb = fx.commit(repo, big_tree_66mb)
+c_msg_64mib = fx.git(repo, "commit-tree", fx.empty_tree(repo), "-F", "-", data=b"m" * (64 << 20))
+CHILD_PROBE = r"""
+import json, resource, sys
+sys.path.insert(0, sys.argv[1]); sys.path.insert(1, sys.argv[2])
+import s0_capture as cap
+env = None if sys.argv[5] == "none" else int(sys.argv[5])
+try:
+    cap.build_subject(__import__("pathlib").Path(sys.argv[3]), sys.argv[4], _abort_delay_s=1.0,
+                      budget=cap.Budget(max_component_len=255, max_nodes=10, child_address_space_bytes=env))
+    r = "ACCEPTED"
+except cap.CaptureRefused as e:
+    r = "REFUSED:" + e.reason
+print(json.dumps({"result": r, "git_child_maxrss_MiB": round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024, 1)}))
+"""
+
+
+def child_probe(commit, envelope):
+    cp = subprocess.run([PY, "-I", "-S", "-B", "-c", CHILD_PROBE, str(HERE), str(SRC), str(repo), commit,
+                         "none" if envelope is None else str(envelope)], capture_output=True, text=True, timeout=300)
+    return json.loads(cp.stdout) if cp.returncode == 0 else {"err": cp.stderr[-300:]}
+
+
+for label, commit in (("tree_66_7MB", c_tree_66mb), ("commit_64MiB", c_msg_64mib)):
+    free, held = child_probe(commit, None), child_probe(commit, ENVELOPE)
+    case(f"git_child_contained_{label}",
+         {"uncontained_exceeds_envelope": True, "contained_within_envelope": True, "both_refused": True},
+         {"uncontained_exceeds_envelope": free.get("git_child_maxrss_MiB", 0) * 2**20 > ENVELOPE,
+          "contained_within_envelope": 0 < held.get("git_child_maxrss_MiB", 10**9) * 2**20 <= ENVELOPE,
+          "both_refused": str(free.get("result", "")).startswith("REFUSED") and str(held.get("result", "")).startswith("REFUSED")},
+         uncontained=free, contained=held, envelope_MiB=ENVELOPE >> 20)
+small_c = fx.commit(repo, fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"ok\n"), b"ok.py")]))
+case("git_child_contained_control_small_accepted", "ACCEPTED", child_probe(small_c, ENVELOPE).get("result"))
+
+# (B) strict transport: a fake transport answers with hostile headers; each is refused BEFORE any
+#     body is consumed, the child is killed and reaped at once (it would otherwise sleep 30 s)
+FAKE = r"""
+import sys, time
+sys.stdin.readline()
+oid, mode = sys.argv[1].encode(), sys.argv[2]
+headers = {"negative": oid + b" blob -1\n", "plus": oid + b" blob +5\n", "nondecimal": oid + b" blob 12a\n",
+           "overflow": oid + b" blob " + b"9" * 25 + b"\n", "toolong": oid + b" blob " + b"1" * 400,
+           "unknowntype": oid + b" blobx 5\n", "wrongoid": b"b" * 40 + b" blob 5\n",
+           "overbudget": oid + b" blob 67108864\n", "truncated": oid + b" blob 100\n"}
+out = sys.stdout.buffer
+out.write(headers[mode]); out.flush()
+if mode == "truncated":
+    out.write(b"x" * 10); out.flush()
+    sys.exit(0)
+time.sleep(8)  # silent: a close-and-wait parent would wait here; only a kill ends it early
+out.write(b"x" * (64 << 20)); out.flush()
+"""
+OID = "a" * 40
+EXPECT = {"negative": "transport_header_invalid", "plus": "transport_header_invalid", "nondecimal": "transport_header_invalid",
+          "overflow": "transport_header_invalid", "toolong": "transport_header_invalid", "unknowntype": "transport_header_invalid",
+          "wrongoid": "transport_header_invalid", "overbudget": "budget_payload_bytes", "truncated": "object_truncated"}
+for mode, want in EXPECT.items():
+    reader = cap.VerifiedObjectReader(W, 40, argv=[PY, "-I", "-S", "-c", FAKE, OID, mode], address_space=None)
+    t0 = __import__("time").monotonic()
+    tracemalloc.start()
+    try:
+        reader.get(OID, "blob", admitted(max_payload_bytes=8 * 2**20))
+        res = "ACCEPTED"
+    except cap.CaptureRefused as exc:
+        res = "REFUSED:" + exc.reason
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    case(f"strict_transport_{mode}", {"result": "REFUSED:" + want, "child_reaped": True, "heap_under_1MiB": True,
+                                      "no_wait_for_child": True},
+         {"result": res, "child_reaped": reader.proc.returncode is not None, "heap_under_1MiB": peak < 2**20,
+          "no_wait_for_child": __import__("time").monotonic() - t0 < 4}, heap_peak_MiB=round(peak / 2**20, 2))
+
+# ABLATION of (iv): the round-3 close-and-wait refusal path waits for the silent transport
+reader = cap.VerifiedObjectReader(W, 40, argv=[PY, "-I", "-S", "-c", FAKE, OID, "negative"], address_space=None)
+
+
+def close_and_wait():  # the round-3 path: release both pipes, then wait (the child ends only on EPIPE after its sleep)
+    reader.proc.stdin.close()
+    reader.proc.stdout.close()
+    reader.proc.wait()
+
+
+reader.abort = close_and_wait
+t0 = __import__("time").monotonic()
+try:
+    reader.get(OID, "blob", admitted())
+except cap.CaptureRefused:
+    pass
+case("ABLATION_close_and_wait_refusal_path_waits_for_transport", True, __import__("time").monotonic() - t0 >= 7,
+     elapsed_s=round(__import__("time").monotonic() - t0, 1))
+
+# (3) depth budget applies to EVERY node kind (C3/R2 property), not only to trees
+deep = fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"x"), b"leaf.py")])
+for i in range(110):
+    deep = fx.mktree(repo, [("040000", "tree", deep, b"n")])
+res, _, _, _ = measured(lambda: cap.build_subject(repo, fx.commit(repo, deep), budget=admitted()))
+case("depth_budget", "REFUSED:budget_depth", res)
+
+# (4) failure injection: no partial result can look like a committed S; ownership stays linear
+good = fx.commit(repo, fx.mktree(repo, [("100644", "blob", fx.blob(repo, b"ok\n"), b"ok.py")]))
+fds0 = cap.open_fds()
+
+
+def seal_with_fsize_limit():
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1024, hard))
+    try:
+        return cap.seal_committed(b"y" * 4096)
+    except OSError as exc:
+        raise cap.CaptureRefused("write_failed", errno.errorcode.get(exc.errno, str(exc.errno)))
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+
+case("write_failure_EFBIG_no_fd_leaked", ("REFUSED:write_failed", True),
+     (measured(seal_with_fsize_limit)[0], cap.open_fds() == fds0))
+
+real_fcntl = fcntl.fcntl
+
+
+def failing_add_seals(fd, cmd, *a):
+    if cmd == fcntl.F_ADD_SEALS:
+        raise OSError(errno.EBUSY, "injected")
+    return real_fcntl(fd, cmd, *a)
+
+
+import s0_bootstrap  # noqa: E402
+
+s0_bootstrap.fcntl.fcntl = failing_add_seals
+try:
+    r = measured(lambda: cap.seal_committed(b"z" * 100))
+finally:
+    s0_bootstrap.fcntl.fcntl = real_fcntl
+case("seal_failure_no_fd_leaked", ("REFUSED:seal_failed", True), (r[0], r[2]))
+
+fx.swap_loose(repo, fx.git(repo, "rev-parse", f"{good}^{{tree}}"), "tree", b"")
+r = measured(lambda: cap.build_subject(repo, good, budget=admitted()))
+case("mid_capture_hash_failure_git_reaped_fds_restored", ("REFUSED:object_hash_mismatch", True, True), (r[0], r[2], r[3]))
+
+# (5) consumer lifecycle: a child that never answers yields NO result, is killed and reaped
+data = b"s0"
+s_fd = cap.seal_committed(cap.serialize("sha1", "0" * 40, "0" * 40, {b"ok.py": ("regular", "0" * 40, b"x = 1\n")}))
+hang = b"def run(inputs):\n    import time\n    time.sleep(3600)\n"
+x_fd = cap.seal_committed(hang)
+spec = {"s": {"fd": s_fd, "sha256": hashlib.sha256(os.pread(s_fd, os.fstat(s_fd).st_size, 0)).hexdigest(), "commit": "0" * 40},
+        "d": None, "x": {"fd": x_fd, "sha256": hashlib.sha256(hang).hexdigest()}, "roots": ["ok"], "inputs": {}}
+kids = children()
+r = ln.launch(PY, spec, (s_fd, x_fd), timeout=3)
+case("hung_consumer_no_result_killed_reaped", {"reply": None, "timeout": True, "reaped": True},
+     {"reply": r["reply"], "timeout": r.get("timeout", False), "reaped": children() == kids})
+crash = b"def run(inputs):\n    import os\n    os._exit(0)\n"
+x2 = cap.seal_committed(crash)
+r = ln.launch(PY, dict(spec, x={"fd": x2, "sha256": hashlib.sha256(crash).hexdigest()}), (s_fd, x2), timeout=30)
+case("consumer_exits_rc0_without_reply_is_not_success", {"rc": 0, "reply": None}, {"rc": r["rc"], "reply": r["reply"]})
+for fd in (s_fd, x_fd, x2):
+    os.close(fd)
+fds1 = cap.open_fds()
+r = ln.launch("/nonexistent/python", spec, (), timeout=5)
+case("launcher_pre_spawn_failure_releases_both_socket_ends", {"spawn_error": "FileNotFoundError", "reply": None, "fds_restored": True},
+     {"spawn_error": r.get("spawn_error"), "reply": r.get("reply"), "fds_restored": cap.open_fds() == fds1})
+case("harness_fds_restored", fds0, cap.open_fds())
+out["all_pass"] = all(c.get("pass") for c in out["cases"].values())
+print(json.dumps(out, indent=1, default=str))

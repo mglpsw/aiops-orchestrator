@@ -1,0 +1,139 @@
+{
+ "cases": {
+  "sealed_attack_battery": {
+   "observed": {
+    "open_rdwr": "ok",
+    "write": "denied:1",
+    "pwrite": "denied:1",
+    "ftruncate_shrink": "denied:1",
+    "ftruncate_grow": "denied:1",
+    "fallocate_grow": "denied:1",
+    "fallocate_punch_hole": "denied:1",
+    "mmap_shared_write": "denied:1",
+    "shared_ro_map_then_mprotect_write": "denied:13",
+    "add_seal_future_write": "denied:1",
+    "map_private_cow_write": "SUCCEEDED(copy-on-write; file must be unchanged)"
+   },
+   "F_GET_SEALS": "0xf",
+   "pass": true
+  },
+  "sealed_digest_unchanged_after_attacks": {
+   "expected": "f21b1d71b37a49910b6f82869174c3f0244d6a541f2d09c06e5960e072aa6d10",
+   "observed": "f21b1d71b37a49910b6f82869174c3f0244d6a541f2d09c06e5960e072aa6d10",
+   "pass": true
+  },
+  "pre_seal_write_detected_at_commit": {
+   "expected": "REFUSED:sealed_content_mismatch",
+   "observed": "REFUSED:sealed_content_mismatch",
+   "pass": true
+  },
+  "ABLATION_no_post_seal_rehash_commits_tampered": {
+   "expected": "COMMITTED",
+   "observed": "COMMITTED",
+   "pass": true
+  },
+  "pre_seal_foreign_F_SEAL_SEAL_fails_closed": {
+   "expected": "REFUSED:seal_failed",
+   "observed": "REFUSED:seal_failed",
+   "pass": true
+  },
+  "pre_seal_foreign_writable_mapping_fails_closed": {
+   "expected": "REFUSED:seal_failed",
+   "observed": "REFUSED:seal_failed",
+   "pass": true
+  },
+  "control_no_attacker_commits": {
+   "expected": "COMMITTED",
+   "observed": "COMMITTED",
+   "pass": true
+  },
+  "authenticate_A_substitute_B_before_commit_refused": {
+   "expected": "REFUSED:sealed_binding_mismatch",
+   "observed": "REFUSED:sealed_binding_mismatch",
+   "pass": true,
+   "note": "the seal digest is computed over B, so only the post-seal binding revalidation can catch it"
+  },
+  "ABLATION_no_post_seal_revalidation_commits_B": {
+   "expected": "COMMITTED:VALUE = \"EVIL\"",
+   "observed": "COMMITTED:VALUE = \"EVIL\"",
+   "pass": true
+  },
+  "node_not_in_acquisition_record_refused": {
+   "expected": "REFUSED:sealed_record_mismatch",
+   "observed": "REFUSED:sealed_record_mismatch",
+   "pass": true
+  },
+  "mutate_unsealed_S_then_seal_refused": {
+   "expected": "REFUSED:sealed_content_mismatch",
+   "observed": "REFUSED:sealed_content_mismatch",
+   "pass": true
+  },
+  "M_mutated_after_capture_S_unchanged": {
+   "expected": "f712d92a697a10de3114eba7b750182ae01a16cc4ad639a37539758e0e2dc5ea",
+   "observed": "f712d92a697a10de3114eba7b750182ae01a16cc4ad639a37539758e0e2dc5ea",
+   "pass": true
+  },
+  "consumer_imports_trusted_bytes_from_S": {
+   "expected": {
+    "pkg": "trusted",
+    "ns": "NamespaceLoader",
+    "extra": "ModuleNotFoundError"
+   },
+   "observed": {
+    "pkg": "trusted",
+    "ns": "NamespaceLoader",
+    "extra": "ModuleNotFoundError"
+   },
+   "pass": true,
+   "note": "cwd=M and PYTHONPATH=M were offered; -I -S and the closed finder must ignore both"
+  },
+  "consumer_opens_under_M": {
+   "expected": [],
+   "observed": [],
+   "pass": true
+  },
+  "binding_regular_file_with_identical_bytes": {
+   "expected": "refused:descriptor_not_sealable",
+   "observed": "refused:descriptor_not_sealable",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_attacker_sealed_memfd_other_bytes": {
+   "expected": "refused:descriptor_digest_mismatch",
+   "observed": "refused:descriptor_digest_mismatch",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_expected_identity_absent": {
+   "expected": "refused:expected_identity_absent",
+   "observed": "refused:expected_identity_absent",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_memfd_without_F_SEAL_WRITE": {
+   "expected": "refused:descriptor_not_sealed",
+   "observed": "refused:descriptor_not_sealed",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_descriptor_not_inherited": {
+   "expected": "refused:descriptor_invalid",
+   "observed": "refused:descriptor_invalid",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_right_bytes_wrong_subject_identity": {
+   "expected": "refused:subject_identity_mismatch",
+   "observed": "refused:subject_identity_mismatch",
+   "pass": true,
+   "driver_ran": false
+  },
+  "binding_right_commit_wrong_algorithm_label": {
+   "expected": "refused:subject_algorithm_mismatch",
+   "observed": "refused:subject_algorithm_mismatch",
+   "pass": true,
+   "driver_ran": false
+  }
+ },
+ "all_pass": true
+}

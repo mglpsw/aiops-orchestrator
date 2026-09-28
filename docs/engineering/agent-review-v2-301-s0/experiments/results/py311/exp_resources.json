@@ -1,0 +1,362 @@
+{
+ "cases": {
+  "shared_subtree_expansion_refused_per_occurrence": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "unique_bytes": 65536,
+   "per_occurrence_bytes": 131072000,
+   "budget_bytes": 16777216,
+   "heap_peak_MiB": 17.86,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "single_tree_entry_cap_rule_is_C3s": {
+   "expected": "REFUSED:tree_unrepresentable",
+   "observed": "REFUSED:tree_unrepresentable",
+   "pass": true,
+   "note": "2,000 entries in ONE tree vs S's node budget 1000: the RULE is C3's (_parse_tree_data entry cap); the VALUE passed to it is S's remaining node budget. The body (~80 KB) is below the pre-read bound."
+  },
+  "shared_subtree_node_budget_per_occurrence": {
+   "expected": "REFUSED:tree_unrepresentable",
+   "observed": "REFUSED:tree_unrepresentable",
+   "pass": true,
+   "heap_peak_MiB": 0.26,
+   "unique_nodes": 41,
+   "per_occurrence_nodes": 1640,
+   "note": "every tree has 40 entries; only the cumulative count exceeds"
+  },
+  "oversized_blob_refused_before_read": {
+   "expected": "REFUSED:budget_payload_bytes",
+   "observed": "REFUSED:budget_payload_bytes",
+   "pass": true,
+   "blob_bytes": 33554432,
+   "budget_bytes": 8388608,
+   "heap_peak_MiB": 0.07,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "CONTROL_same_blob_within_default_budget": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true,
+   "heap_peak_MiB": 99.25,
+   "note": "heap ~ blob size: the carrier is in-memory by design; the budget bounds it"
+  },
+  "oversized_tree_refused_before_read": {
+   "expected": "REFUSED:budget_tree_entries_pre_read",
+   "observed": "REFUSED:budget_tree_entries_pre_read",
+   "pass": true,
+   "tree_bytes": 16680000,
+   "heap_peak_MiB": 0.06,
+   "fds_restored": true,
+   "git_reaped": true
+  },
+  "tree_bytes_charged_to_metadata_budget": {
+   "expected": "REFUSED:budget_metadata_bytes",
+   "observed": "REFUSED:budget_metadata_bytes",
+   "pass": true,
+   "tree_bytes": 16680000,
+   "heap_peak_MiB": 0.06
+  },
+  "oversized_commit_refused_before_read": {
+   "expected": "REFUSED:budget_commit_bytes",
+   "observed": "REFUSED:budget_commit_bytes",
+   "pass": true,
+   "commit_bytes": 16777216,
+   "heap_peak_MiB": 0.06
+  },
+  "git_child_contained_tree_66_7MB": {
+   "expected": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "observed": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "pass": true,
+   "uncontained": {
+    "result": "REFUSED:budget_tree_entries_pre_read",
+    "git_child_maxrss_MiB": 68.3
+   },
+   "contained": {
+    "result": "REFUSED:budget_tree_entries_pre_read",
+    "git_child_maxrss_MiB": 11.1
+   },
+   "envelope_MiB": 64
+  },
+  "git_child_contained_commit_64MiB": {
+   "expected": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "observed": {
+    "uncontained_exceeds_envelope": true,
+    "contained_within_envelope": true,
+    "both_refused": true
+   },
+   "pass": true,
+   "uncontained": {
+    "result": "REFUSED:budget_commit_bytes",
+    "git_child_maxrss_MiB": 68.2
+   },
+   "contained": {
+    "result": "REFUSED:budget_commit_bytes",
+    "git_child_maxrss_MiB": 10.9
+   },
+   "envelope_MiB": 64
+  },
+  "git_child_contained_control_small_accepted": {
+   "expected": "ACCEPTED",
+   "observed": "ACCEPTED",
+   "pass": true
+  },
+  "strict_transport_negative": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_plus": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_nondecimal": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_overflow": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_toolong": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_unknowntype": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_wrongoid": {
+   "expected": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:transport_header_invalid",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_overbudget": {
+   "expected": {
+    "result": "REFUSED:budget_payload_bytes",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:budget_payload_bytes",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "strict_transport_truncated": {
+   "expected": {
+    "result": "REFUSED:object_truncated",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "observed": {
+    "result": "REFUSED:object_truncated",
+    "child_reaped": true,
+    "heap_under_1MiB": true,
+    "no_wait_for_child": true
+   },
+   "pass": true,
+   "heap_peak_MiB": 0.06
+  },
+  "ABLATION_close_and_wait_refusal_path_waits_for_transport": {
+   "expected": true,
+   "observed": true,
+   "pass": true,
+   "elapsed_s": 8.0
+  },
+  "depth_budget": {
+   "expected": "REFUSED:budget_depth",
+   "observed": "REFUSED:budget_depth",
+   "pass": true
+  },
+  "write_failure_EFBIG_no_fd_leaked": {
+   "expected": [
+    "REFUSED:write_failed",
+    true
+   ],
+   "observed": [
+    "REFUSED:write_failed",
+    true
+   ],
+   "pass": true
+  },
+  "seal_failure_no_fd_leaked": {
+   "expected": [
+    "REFUSED:seal_failed",
+    true
+   ],
+   "observed": [
+    "REFUSED:seal_failed",
+    true
+   ],
+   "pass": true
+  },
+  "mid_capture_hash_failure_git_reaped_fds_restored": {
+   "expected": [
+    "REFUSED:object_hash_mismatch",
+    true,
+    true
+   ],
+   "observed": [
+    "REFUSED:object_hash_mismatch",
+    true,
+    true
+   ],
+   "pass": true
+  },
+  "hung_consumer_no_result_killed_reaped": {
+   "expected": {
+    "reply": null,
+    "timeout": true,
+    "reaped": true
+   },
+   "observed": {
+    "reply": null,
+    "timeout": true,
+    "reaped": true
+   },
+   "pass": true
+  },
+  "consumer_exits_rc0_without_reply_is_not_success": {
+   "expected": {
+    "rc": 0,
+    "reply": null
+   },
+   "observed": {
+    "rc": 0,
+    "reply": null
+   },
+   "pass": true
+  },
+  "launcher_pre_spawn_failure_releases_both_socket_ends": {
+   "expected": {
+    "spawn_error": "FileNotFoundError",
+    "reply": null,
+    "fds_restored": true
+   },
+   "observed": {
+    "spawn_error": "FileNotFoundError",
+    "reply": null,
+    "fds_restored": true
+   },
+   "pass": true
+  },
+  "harness_fds_restored": {
+   "expected": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "observed": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "pass": true
+  }
+ },
+ "all_pass": true
+}
