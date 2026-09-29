@@ -32,11 +32,11 @@ Live bases used, reverified `2026-09-28` via `git rev-parse`/`gh api repos/<repo
 
 | Repo | Branch | HEAD verified this round |
 |---|---|---|
-| `mglpsw/agent-router-api` | `master` | `a6ea6ba5fa0335cb77852e03d77cd9cd4ed15d6e` |
-| `mglpsw/aiops-orchestrator` | `master` | `9abcde6420a59b814b5faaff10ca5904c5d23370` |
+| `mglpsw/agent-router-api` | `master` | `dbf8f659d8fe685228fca5b6092fff97082f3d71` (advanced via merged PR mglpsw/agent-router-api#116, formalizing the AgentReview authenticated HTTP consumer contract) |
+| `mglpsw/aiops-orchestrator` | `master` | `3aab1aad68167673b46c68639c4a3600d70195ee` (advanced via merged PR #355 / #301-S0 and PR #360 / S1-A architecture freeze) |
 | `mglpsw/homelab` | `main` | `10352e9b040db6a20edb8ebf1ffd2812deb3e138` |
 | `mglpsw/caem` | `main` | `854e321a99170eebd7795cb50d2e5b5e0e94db2f` |
-| `mglpsw/AgentEscala` | `develop` | `d7627e4ead16e13b62a99ca186cb35b413d36aba` (advanced via unrelated dependency/frontend work; target-side reconciliation PR mglpsw/AgentEscala#859 remains Draft and is not qualification evidence by itself) |
+| `mglpsw/AgentEscala` | `develop` | `7c86bca0aeb1c36eaf772a266032714b18893328` (advanced via merged PR mglpsw/AgentEscala#859; ratifies v1 GA consumer contract since #673 and records v2 shadow as MIGRATION_PENDING / cutover incomplete) |
 | `mglpsw/sacr-as` | `main` | `61003a120e540f92594c859f0888955f672ffa77` |
 | `mglpsw/interleitos` | `main` | `8207b159e190a0f694b70d249eea31542e11ea9c` |
 
@@ -76,7 +76,7 @@ current_owner: aiops-orchestrator — app/main.py FastAPI app, app/agent_router/
                Diagnostic Engine v1 — NOT the mglpsw/agent-router-api inference service),
                app/services/orchestrator.py + app/models/database.py (legacy chat/task orchestrator),
                app/services/provider_registry.py, app/adapters/*
-source_state: IMPLEMENTED at master@9abcde6
+source_state: IMPLEMENTED at master@3aab1aa
 runtime_deployment_state: UNKNOWN_PENDING_19 — no live runtime was observed for this matrix;
                docs/PROJECT_STATUS.md states its deployment record is "a historical record, not a
                current health assertion — runtime health must be observed live"
@@ -205,9 +205,8 @@ current_consumers:
                  (which names this workflow and script); closure/freeze owner is #221. It needs its
                  own explicit disposition/cutover before any #351 source separation
                - external: AgentEscala consumes the v0.22.0 baseline per #46/AgentEscala lineage;
-                 current run-history assertions recorded in Draft mglpsw/AgentEscala#859 remain
-                 target-side evidence pending independent review and are not used here as sole
-                 qualification
+                 merged mglpsw/AgentEscala#859 ratifies that v1 is MIGRATION_IMPLEMENTED and
+                 operating as GA consumer contract since #673
 final_owner: AgentReview
 disposition: KEEP in AgentReview → repair/freeze pending #221; decide release/repin of the
                merged-unreleased delta explicitly rather than collapsing it into v0.22.0
@@ -231,18 +230,21 @@ status: FINAL_OWNER_ASSIGNED; external consumer cutover/freeze status is not inf
 ```text
 current_owner: aiops-orchestrator, app/agent_review/ (v2 line) — per #46 the architecture of the
                ASSURED profile; first operational path #80 → #350 → #199
-current_implementation: C3 integrated (#304/PR #349), C4-Q integrated (#333/PR #352).
-               #301-S0 is ratified in Draft PR #355 but NOT integrated. Per current #46 §4, the
-               next production step is integrate/read-back #355 under its own grant, then execute
-               #301 S1-A followed by S1-B/C/D, S_D and E; only then #298 → #314.
+current_implementation: C3 integrated (#304/PR #349), C4-Q integrated (#333/PR #352),
+               #301-S0 integrated via PR #355 (merge 5a9a8e5), S1-A Architecture Freeze integrated
+               via PR #360 (merge 3aab1aa). S1-A implementation NOT STARTED / NOT AUTHORIZED by
+               that documentation freeze; per current #46 §4, the next production step is
+               S1-A implementation under its own grant, followed by S1-B/C/D, S_D and E; only
+               then #298 → #314.
 current_consumers:
                - internal toolrepo consumers: v2 CLIs and qualification tooling import
                  app.agent_review directly, including scripts/aiops-review-quality-gate-v2.py,
                  agent-review-target-pack-v2.py, verify-agent-review-v2-conformance.py,
                  export-agent-review-v2-schemas.py and evals/agent_review_v2/harness.py
-               - external target: AgentEscala has v2 target/workflow material in source, but
-                 mglpsw/AgentEscala#859 is still Draft/unreviewed as a target-side reconciliation;
-                 its run-history/variable claims are evidence to qualify, not a completed cutover
+               - external target: AgentEscala has v2 target/workflow material in source;
+                 merged mglpsw/AgentEscala#859 establishes that v2 shadow is MIGRATION_PENDING and
+                 CONSUMER_CUTOVER_NOT_COMPLETE because AGENT_REVIEW_V2_ROUTER_ENABLED=false and
+                 connected mode blocks on review_content_extraction_not_implemented
 required_asset_trees (outside app/agent_review/, inside the product boundary):
                - templates/agentreview-v2-target-pack/
                - schemas/agent-review/v2/
@@ -272,11 +274,11 @@ required_install_boundary (offline toolrepo installation contract, outside app/a
                No physical migration has been executed
 final_owner: AgentReview
 disposition: KEEP in AgentReview
-migration_dependency: integrate/read-back PR #355
-               → #301 S1-A/B/C/D + S_D + E
+migration_dependency: S1-A implementation under its own grant
+               → #301 S1-B/C/D + S_D + E
                → #298 → #314 → #350 → #203 → #204 → #205 (first Assured release)
                → #357 (post-release Advisory/Assured convergence on the common engine)
-countermodels: - #355 ratified != #355 integrated
+countermodels: - S1-A architecture freeze integrated != S1-A implemented
                - target wiring != Router-backed semantic review
                - "extract app/agent_review/" != "extract AgentReview v2": the required asset trees
                  and the offline install boundary (lock, installer, installation contract, tests)
@@ -284,10 +286,10 @@ countermodels: - #355 ratified != #355 integrated
                - "source + templates + schemas preserved" != "installable by pinned targets"
                - v2 does not become default/required check by this reconciliation (#46 §2)
 retirement_gate: n/a — kept
-evidence: #46 §1/§4/§5, PR #349, PR #352, Draft PR #355; internal import graph;
+evidence: #46 §1/§4/§5, PR #349, PR #352, PR #355, PR #360; internal import graph;
                docs/AGENT_REVIEW_V2_INSTALLATION.md:12-20, scripts/install-agent-review-toolrepo.sh:47-57,
                requirements-agent-review.lock, tests/agent_review/test_minimal_toolrepo_lock.py;
-               mglpsw/AgentEscala#859 only as unqualified target-side evidence
+               mglpsw/AgentEscala#859 (merged)
 limitations: no end-to-end Router-backed v2 review is established by this matrix
 status: FINAL_OWNER_ASSIGNED; target migration/cutover remains unqualified until its own exact-head
                review and the upstream Assured gates
@@ -299,7 +301,7 @@ status: FINAL_OWNER_ASSIGNED; target migration/cutover remains unqualified until
 environment_context:
   current_path: app/services/environment_context.py
   disposition: KEEP_SHARED
-  consumers (non-test importers, census at master@9abcde6 / PR head 1a9819b):
+  consumers (non-test importers, census at master@3aab1aa):
     - AgentReview family: app/agent_review/cli.py; scripts/aiops-review-build-payloads.py,
       aiops-review-false-positives.py, aiops-review-parse-chunks.py,
       aiops-review-plan-chunks.py, aiops-review-quality-gate.py, aiops-review-synthesize.py,
@@ -327,7 +329,7 @@ final_owner: AgentReview toolrepo/shared support surface; environment_context st
              until that carrier receives its own lifecycle below
 countermodel: "app/agent_review is the whole product boundary" is false while required imports live
               outside that subtree
-evidence: live import graph at master@9abcde6
+evidence: live import graph at master@3aab1aa
 status: FINAL_OWNER_ASSIGNED; physical rehome not implemented
 ```
 
@@ -510,7 +512,7 @@ countermodels: any receipt/projection field added "for Workbench" without a name
                consumer reopens a retired scope
 retirement_gate: n/a — never built
 evidence: #46 §6; mglpsw/agent-router-api#111; mglpsw/agent-router-api docs/AGENT_ROUTER.md
-               (Workbench row reconciled in mglpsw/agent-router-api#116, OPEN)
+               (Workbench row reconciled in mglpsw/agent-router-api#116, merged)
 limitations: no Workbench prototype was found in the seven repositories checked; repositories
                outside that set were not searched
 status: TRACKER_CLOSED_NOT_PLANNED / no successor; no implemented Workbench surface was established to retire
@@ -583,10 +585,10 @@ receipt_truth_boundary: receipt v2 records Router-observed execution facts at th
                revision unless separately observed, semantic correctness, repo/HEAD truth or
                AgentReview readiness.
 current_consumers: AgentReview is the canonical intended consumer contract
-               (mglpsw/agent-router-api#116). AgentEscala source contains Router integration
-               surfaces, but mglpsw/AgentEscala#859 remains Draft and its run-history/cutover
-               assertions are not treated here as independent qualification.
-ct102_contract_state: DOCUMENTED_NOT_E2E_EXERCISED_THIS_ROUND — mglpsw/agent-router-api#116 documents authenticated HTTP
+               (mglpsw/agent-router-api#116, merged). AgentEscala source contains Router integration
+               surfaces; merged mglpsw/AgentEscala#859 confirms Router integration for v1 GA while
+               v2 shadow remains MIGRATION_PENDING.
+ct102_contract_state: DOCUMENTED_NOT_E2E_EXERCISED_THIS_ROUND — mglpsw/agent-router-api#116 (merged) documents authenticated HTTP
                access to the Router runtime on CT102, but the reconciliation environment lacked
                both Router credential and homelab network path; no real HTTP smoke was executed.
 final_owner: Agent Router
@@ -597,7 +599,7 @@ countermodels: - "canonical/final" != "currently sole"
                - DocumentedCT102Contract != RuntimeSmokeQualified
 retirement_gate: n/a
 evidence: mglpsw/agent-router-api#65, mglpsw/agent-router-api#99,
-               mglpsw/agent-router-api#111, mglpsw/agent-router-api#116 and Router source;
+               mglpsw/agent-router-api#111, mglpsw/agent-router-api#116 (merged) and Router source;
                this repository's legacy direct-provider path above
 limitations: receipt v3 is not authorized; CT102 smoke remains blocked in the documented mglpsw/agent-router-api#116
                environment; target-side AgentEscala qualification remains separate
@@ -608,7 +610,7 @@ status: FINAL_OWNER_ASSIGNED; sole-plane property awaits #19 cutover/retirement
 
 | Target | Evidence | Disposition |
 |---|---|---|
-| `mglpsw/AgentEscala` | Bounded source evidence shows Router integration surfaces; Draft `mglpsw/AgentEscala#859` records a broader workflow/run-history census but has not completed independent review. Treat those target-side claims as evidence pending qualification, not as cutover proof. | First-wave target by #46. v1 baseline consumption is established by upstream lineage; v2 remains unqualified for cutover here. No retirement decision is derived solely from Draft mglpsw/AgentEscala#859. |
+| `mglpsw/AgentEscala` | Merged `mglpsw/AgentEscala#859` ratifies that v1 is MIGRATION_IMPLEMENTED (operating as GA consumer contract since #673), while v2 shadow is MIGRATION_PENDING and CONSUMER_CUTOVER_NOT_COMPLETE because `AGENT_REVIEW_V2_ROUTER_ENABLED=false` and connected mode blocks on `review_content_extraction_not_implemented`. | First-wave target by #46. v1 baseline consumption is established and operating in GA; v2 cutover is not complete. No retirement of legacy paths is derived prematurely. |
 | `mglpsw/caem` | No AgentReview-specific workflow found; `mglpsw/caem#63` (broker) is the open contract | Dogfooding advisory adoption path exists on paper; not yet cut over |
 | `mglpsw/sacr-as` | Only `.github/workflows/validate.yml`; no AgentReview workflow | `DEFER` — adoption contract with synthetic-corpus and DLP/clinical constraints proposed in `mglpsw/sacr-as#45` (OPEN) |
 | `mglpsw/interleitos` | Only `ci.yml`/`ct104-deployment.yml`; no AgentReview workflow | Deferred consumer, not a first-wave release gate (#46's 2026-09-25 addendum; `mglpsw/interleitos#138`, OPEN) |
