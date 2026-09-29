@@ -519,3 +519,95 @@ qualification_mutants_new: [N1 census, N1 sweep, N2 x8 families, classifier anti
 ```
 
 The exact head, CI, independent review and Codex review of this round are recorded in PR #361 under that head (a document cannot name its own commit). Terminal rule, per the maintainer: 0 production material findings, 0 declared-domain invalidations, a causal N1 discriminator, calibrated N2/N3 claims, green CI, and no material finding from the reviewer or Codex together give `301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`. A new material refutation of the code or the domain gives `STOP_NEW_FAILURE_CLASS`.
+
+---
+
+## 11. Final qualification review of `3ff700a`, maintainer authorization and closure (append-only)
+
+```yaml
+subject_reviewed: 3ff700ac31eedca536121e2abfcdda50bbc76c81
+exact_head_ci: "run 36616628408: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+independent_review: "production_material_findings=0, declared_domain_invalidations=0; F1 (MINOR): a `;` or one-line `if` on a marked line inherits the line's window class"
+codex_exact_head: "4137344830 (P2): a same-spelling `_roots_released += 1` counter in another context is accepted as a detach; 4137344841 (P2): direct `libc.syscall(...)` outside `_syscall_v2` is admitted by the census"
+maintainer_adjudication:   # 2026-09-29
+  production_material_findings: 0
+  declared_domain_invalidations: 0
+  production_mechanism: PRESERVED
+  qualification_contract: {N1: NOT_YET_CLOSED, N2: NOT_YET_CLOSED, N3: CALIBRATED}
+  disposition: ONE_BOUNDED_QUALIFICATION_CLOSURE_ROUND_AUTHORIZED
+  write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+production_changes_this_round: none   # app/agent_review/*.py byte-identical to 0672d16
+```
+
+### 11.1 N1: the causal bytecode-window model
+
+`SourceLineIdentity != OwnershipWindowIdentity`. The declared `PYTHON_FD_OWNERSHIP_INSTALLATION_WINDOW` is no longer "a marked line". It is an **ownership transition**, recognised on the AST and anchored on bytecode offsets through the source positions that CPython 3.11 attaches to every instruction:
+
+| Transition | Source form | Start instruction → end instruction |
+|---|---|---|
+| acquire | `<pre-evaluated owner> = <acquiring call>` | the acquiring `CALL` → the `STORE_ATTR`/`STORE_SUBSCR` into that owner |
+| created | `os.mkdir(...)` then `<name>.created = True` | the `mkdir` `CALL` → the `STORE_ATTR` of `created` |
+| release | `<chain>.fd = None` then `os.close(<name>)` | the detach `STORE_ATTR` → the close `CALL` |
+| roots | `self._roots_released += 1` then `os.close(<name>)`, **only** in `_SourceSessionV2._release_roots` (AST context **and** code `co_qualname`) | the counter `STORE_ATTR` → the close `CALL` |
+| transfer | `<chain>.fd = None` then `<chain>.fd = <name>` | the detach `STORE_ATTR` → the install `STORE_ATTR` |
+
+Rules:
+- Two-statement forms must be **consecutive statements of one block**, and each must be the **only statement starting on its line**.
+- Tolerance covers exactly the offsets strictly after the start instruction, up to and including the end instruction.
+- It applies only when every instruction in between belongs to the transition's own continuation: its target, or its second statement.
+- Nothing else inherits the tolerance: not another statement on the same line, not a one-line `if` body, not a same-spelling counter in another context, not a call inside the target.
+
+Markers now document transitions and nothing more. The census requires every marked line to belong to an admitted transition, with the matching marker, and every transition statement to be marked.
+
+Witnesses, each killed by the intended discriminator; RED is the 3ff700a line model, GREEN the bytecode model:
+
+| Variant (installed as `_FdSlotV2.close_quietly`) | 3ff700a sweep leaks / census | candidate sweep leaks / census |
+|---|---|---|
+| semicolon: `log.append(fd); os.close(fd)` | 0 / 0 | 12 / 2 |
+| one-line-if: `if log.append(fd) is None: os.close(fd)` | 0 / 0 | 12 / 2 |
+| unrelated counter: `counter._roots_released += 1` between detach and close | 0 / 0 | 12 / 3 |
+| allocating call on a formerly marked line | 6 / 1 | 12 / 3 |
+
+In addition, the exact `_release_roots` source compiled outside its class gets **no** window, and renaming the method makes it a census violation. The same spelling is admitted only in its exact context.
+
+Anti-vacuity: every production code object that holds a transition gets a non-empty bytecode window (including `duplicate_authorized_roots`), and a synthetic module shows that each of the 5 transitions is recognised while the same statements in any other arrangement are not.
+
+Without tolerance, MemoryError and KeyboardInterrupt, 15,673 runs each: 293 raw violations, **0 outside a bytecode window**.
+
+### 11.2 N2: the raw-syscall canonical boundary
+
+```text
+direct .syscall invocation is permitted only inside _syscall_v2
+StaticCanonicalSourceGuard != UniversalSemanticSolverForPython
+```
+
+The exact source obeys the rule. `libc.syscall(<descriptor-producing number>, …)` anywhere else is refused by that rule alone: on 3ff700a the census returned `[]`; on the candidate it returns `raw syscall outside _syscall_v2`. The claim stays:
+
+> the static census enforces the declared canonical source grammar
+
+and is **not**:
+
+> the static census proves that no possible Python program can obtain a descriptor indirectly
+
+`PYTHON_DYNAMIC_INDIRECTION_OUTSIDE_STATIC_CENSUS` (§10.3) is unchanged. The sweep's unraisable collection is now scoped to the injected fault only; any other unraisable still surfaces (review F2 of 3ff700a).
+
+### 11.3 N3: retained boundary
+
+The multiple-asynchronous-interruption counterexample is kept, reproducible and labelled `OUTSIDE_QUALIFIED_FAULT_MODEL`. No recursive closure of "handler of a handler" is attempted. The outcome and cleanup guarantee holds **within the qualified fault model**: the single synchronous or allocation fault, and the exercised asynchronous-interruption paths of §10.4. It does not hold universally against an arbitrary sequence of asynchronous interruptions.
+
+Historical and local wording, **superseded** by the qualified-domain statement of §10.4 and this section, and left unchanged because production is frozen:
+
+- `app/agent_review/physical_snapshot_v2.py`, in `publish_physical_snapshot_v2`'s cleanup handler: "An outcome that already exists -- returned, or carried by the interruption being propagated -- is never lost behind a cleanup failure (C10)."
+
+### 11.4 Terminal rule (maintainer)
+
+Terminal rule, given by the maintainer:
+
+- **Candidate** (`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`), when all of these hold on the new exact head:
+  - 0 production material findings and 0 declared-domain invalidations;
+  - N1's bytecode window is causal and its declared mutants are killed;
+  - under N2, a direct raw syscall outside the wrapper is rejected and dynamic-Python universality is not claimed;
+  - N3 is a calibrated boundary;
+  - CI is green, and neither the independent review nor Codex reports a production material finding.
+- **Does not reopen a round:** NITs, wording and non-material observations compatible with the declared limitations.
+- **`STOP_NEW_FAILURE_CLASS`:** only a new material refutation of production or of the qualified domain. The exact-head evidence is recorded in PR #361.

@@ -33,6 +33,7 @@ import sys
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -2388,97 +2389,235 @@ def _is_acquiring_call(node) -> bool:
     return func.attr == "duplicate_authorized_roots" and not node.args and not node.keywords
 
 
-def _marked_statement_kind(stmt, marker: str) -> str:
-    """`MarkerPresent != MarkerSemanticsSatisfied` (maintainer adjudication, N1).
+# -- causal ownership windows (maintainer adjudication of 3ff700a: N1 closure) --------------
+#
+# `SourceLineIdentity != OwnershipWindowIdentity`. The declared
+# PYTHON_FD_OWNERSHIP_INSTALLATION_WINDOW is no longer "a marked line"; it is
+# a TRANSITION recognised on the AST and anchored on bytecode offsets:
+#
+#   acquire   <pre-evaluated owner> = <acquiring call>     CALL  -> STORE into that owner
+#   created   os.mkdir(...) ; <name>.created = True         CALL  -> STORE created
+#   release   <chain>.fd = None ; os.close(<name>)          STORE -> close CALL
+#   roots     self._roots_released += 1 ; os.close(<name>)  STORE -> close CALL,
+#             ONLY in `_SourceSessionV2._release_roots`
+#   transfer  <chain>.fd = None ; <chain>.fd = <name>       STORE -> STORE
+#
+# The two-statement forms must be CONSECUTIVE statements of one block, each the
+# only statement starting on its line. Tolerance goes to the offsets strictly
+# after the start instruction up to and including the end instruction, and only
+# when every instruction in between is the transition's own continuation (its
+# target, or its second statement). Nothing else inherits it -- not another
+# statement on the same line, not a one-line `if`, not a same-spelling counter
+# in another context.
 
-    A marked line gets window tolerance only if its statement is one of the
-    statement CLASSES the current mechanism admits:
-      install-call   `<pre-evaluated owner> = <acquiring call>`
-      install-store  `<chain>.fd = <name>` (slot move) | `<name>.created = True`
-      detach         `<chain>.fd = None` | `<name>._roots_released += 1`
-      close          `os.close(<name>)`
-    `fd-install` admits install-call, install-store, detach (the source side
-    of a slot move); `fd-release` admits detach and close. Anything else on a
-    marked line -- an allocating call between detach and close, a registration
-    inside the target -- is `invalid`: no tolerance, and a census violation."""
-    kind = "invalid"
-    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-        target, value = stmt.targets[0], stmt.value
-        if _is_acquiring_call(value) and _pre_evaluated_owner(target):
-            kind = "install-call"
-        elif isinstance(target, ast.Attribute) and target.attr == "fd" and _name_chain(target.value):
-            if isinstance(value, ast.Constant) and value.value is None:
-                kind = "detach"
-            elif isinstance(value, ast.Name):
-                kind = "install-store"
-        elif (
-            isinstance(target, ast.Attribute) and target.attr == "created" and isinstance(target.value, ast.Name)
-            and isinstance(value, ast.Constant) and value.value is True
-        ):
-            kind = "install-store"
-    elif (
-        isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, ast.Add)
-        and isinstance(stmt.target, ast.Attribute) and stmt.target.attr == "_roots_released"
-        and isinstance(stmt.target.value, ast.Name) and isinstance(stmt.value, ast.Constant) and stmt.value.value == 1
-    ):
-        kind = "detach"
-    elif (
+_ROOTS_RELEASE_QUALNAME = "_SourceSessionV2._release_roots"
+_MUTANT_SOURCES: dict[str, str] = {}
+
+
+def _span(node) -> tuple[int, int, int, int]:
+    return (node.lineno, node.end_lineno, node.col_offset, node.end_col_offset)
+
+
+def _within(positions, span) -> bool:
+    if positions is None or positions.lineno is None:
+        return False
+    return (positions.lineno, positions.col_offset) >= (span[0], span[2]) and (
+        positions.end_lineno, positions.end_col_offset
+    ) <= (span[1], span[3])
+
+
+@dataclass(frozen=True)
+class _Transition:
+    kind: str
+    start_ops: frozenset
+    start_span: tuple
+    end_ops: frozenset
+    end_span: tuple
+    continuation: tuple
+    lines: tuple
+    marker: str
+    qualname: str | None = None
+
+
+def _is_detach(stmt) -> bool:
+    return (
+        isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Attribute)
+        and stmt.targets[0].attr == "fd" and _name_chain(stmt.targets[0].value)
+        and isinstance(stmt.value, ast.Constant) and stmt.value.value is None
+    )
+
+
+def _is_close(stmt) -> bool:
+    return (
         isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and not stmt.value.keywords
         and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == "close"
         and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == "os"
         and len(stmt.value.args) == 1 and isinstance(stmt.value.args[0], ast.Name)
-    ):
-        kind = "close"
-    admitted = {"# fd-install": {"install-call", "install-store", "detach"}, "# fd-release": {"detach", "close"}}
-    return kind if kind in admitted[marker] else "invalid"
+    )
 
 
-def _marked_statements(text: str) -> dict[int, str]:
-    """Line -> admitted statement class, for every marked line of `text`."""
+def _ownership_transitions(text: str) -> list[_Transition]:
+    """Every admitted ownership transition in `text` (see the table above)."""
+    tree = ast.parse(text)
+    starts: dict[int, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.stmt):
+            starts[node.lineno] = starts.get(node.lineno, 0) + 1
+
+    def alone(stmt) -> bool:
+        return stmt.lineno == stmt.end_lineno and starts.get(stmt.lineno) == 1
+
+    found: list[_Transition] = []
+    store = frozenset({"STORE_ATTR", "STORE_SUBSCR"})
+    call = frozenset({"CALL"})
+
+    def visit(body, qualname: str) -> None:
+        for index, stmt in enumerate(body):
+            follower = body[index + 1] if index + 1 < len(body) else None
+            if (
+                isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and _is_acquiring_call(stmt.value)
+                and _pre_evaluated_owner(stmt.targets[0]) and alone(stmt)
+            ):
+                target = stmt.targets[0]
+                found.append(_Transition(
+                    "acquire", call, _span(stmt.value), store, _span(target), _span(target), (stmt.lineno,), "# fd-install",
+                ))
+            if follower is not None and alone(follower) and alone(stmt):
+                if (
+                    isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == "mkdir"
+                    and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == "os"
+                    and isinstance(follower, ast.Assign) and len(follower.targets) == 1
+                    and isinstance(follower.targets[0], ast.Attribute) and follower.targets[0].attr == "created"
+                    and isinstance(follower.targets[0].value, ast.Name)
+                    and isinstance(follower.value, ast.Constant) and follower.value.value is True
+                ):
+                    found.append(_Transition(
+                        "created", call, _span(stmt.value), store, _span(follower.targets[0]), _span(follower),
+                        (follower.lineno,), "# fd-install",
+                    ))
+                if _is_detach(stmt) and _is_close(follower):
+                    found.append(_Transition(
+                        "release", store, _span(stmt.targets[0]), call, _span(follower.value), _span(follower),
+                        (stmt.lineno, follower.lineno), "# fd-release",
+                    ))
+                if (
+                    _is_detach(stmt) and isinstance(follower, ast.Assign) and len(follower.targets) == 1
+                    and isinstance(follower.targets[0], ast.Attribute) and follower.targets[0].attr == "fd"
+                    and _name_chain(follower.targets[0].value) and isinstance(follower.value, ast.Name)
+                ):
+                    found.append(_Transition(
+                        "transfer", store, _span(stmt.targets[0]), store, _span(follower.targets[0]), _span(follower),
+                        (stmt.lineno, follower.lineno), "# fd-install",
+                    ))
+                if (
+                    qualname == _ROOTS_RELEASE_QUALNAME and isinstance(stmt, ast.AugAssign)
+                    and isinstance(stmt.op, ast.Add) and isinstance(stmt.target, ast.Attribute)
+                    and stmt.target.attr == "_roots_released" and isinstance(stmt.target.value, ast.Name)
+                    and stmt.target.value.id == "self" and isinstance(stmt.value, ast.Constant)
+                    and stmt.value.value == 1 and _is_close(follower)
+                ):
+                    found.append(_Transition(
+                        "roots", store, _span(stmt.target), call, _span(follower.value), _span(follower),
+                        (stmt.lineno, follower.lineno), "# fd-release", _ROOTS_RELEASE_QUALNAME,
+                    ))
+            for child_body in _child_bodies(stmt):
+                visit(child_body, _child_qualname(stmt, qualname))
+
+    visit(tree.body, "")
+    return found
+
+
+def _child_bodies(stmt) -> list[list]:
+    bodies = [getattr(stmt, field) for field in ("body", "orelse", "finalbody") if isinstance(getattr(stmt, field, None), list)]
+    bodies += [handler.body for handler in getattr(stmt, "handlers", [])]
+    return bodies
+
+
+def _child_qualname(stmt, qualname: str) -> str:
+    if isinstance(stmt, ast.ClassDef):
+        return f"{qualname}.{stmt.name}" if qualname else stmt.name
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return f"{qualname}.{stmt.name}" if qualname else stmt.name
+    return qualname
+
+
+def _transition_lines(text: str) -> dict[int, str]:
+    """Line -> transition kind, for every statement line that belongs to an
+    admitted ownership transition."""
+    return {line: t.kind for t in _ownership_transitions(text) for line in t.lines}
+
+
+def _marker_violations(text: str) -> list[str]:
+    """Markers document transitions and nothing else: a marked line must
+    belong to an admitted transition (with the matching marker), and every
+    transition statement must be marked."""
     lines = text.splitlines()
-    marked = {
-        number: marker
-        for number, line in enumerate(lines, 1)
-        for marker in _WINDOW_MARKERS
-        if marker in line
-    }
-    kinds = dict.fromkeys(marked, "invalid")
-    for node in ast.walk(ast.parse(text)):
-        if isinstance(node, ast.stmt) and node.lineno in marked and node.end_lineno == node.lineno:
-            if not isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.FunctionDef, ast.ClassDef)):
-                kinds[node.lineno] = _marked_statement_kind(node, marked[node.lineno])
-    return kinds
+    marked = {n: m for n, line in enumerate(lines, 1) for m in _WINDOW_MARKERS if m in line}
+    expected = {line: t.marker for t in _ownership_transitions(text) for line in t.lines}
+    violations = [
+        f"line {n}: marked statement is not part of an admitted ownership transition"
+        for n in sorted(set(marked) - set(expected))
+    ]
+    violations += [f"line {n}: ownership transition statement not marked" for n in sorted(set(expected) - set(marked))]
+    violations += [
+        f"line {n}: transition marked {marked[n]}, expected {expected[n]}"
+        for n in sorted(set(marked) & set(expected)) if marked[n] != expected[n]
+    ]
+    return violations
 
 
-def _marked_lines(filename: str, text: str) -> dict[tuple[str, int], str]:
-    return {(filename, number): kind for number, kind in _marked_statements(text).items()}
+_TRANSITIONS_BY_FILE: dict[tuple[str, str], list[_Transition]] = {}
+_WINDOW_OFFSETS: dict[object, frozenset[int]] = {}
 
 
-def _source_window_lines() -> dict[tuple[str, int], str]:
-    return {
-        **_marked_lines(_PSV_FILE, Path(_PSV_FILE).read_text()),
-        **_marked_lines(_TOA_FILE, Path(_TOA_FILE).read_text()),
-    }
+def _source_of(filename: str) -> str:
+    return _MUTANT_SOURCES[filename] if filename == _MUTANT_FILE else Path(filename).read_text()
 
 
-#: What the declared window may contain, PER STATEMENT CLASS (N1): after an
-#: acquiring call only the owner-expression loads and the slot store; a slot
-#: move or detach only its store; a CALL only on the `os.close(<name>)`
-#: statement itself. An `invalid` marked statement gets no tolerance at all.
-_WINDOW_OPCODES = {
-    "install-call": frozenset({"LOAD_ATTR", "STORE_ATTR", "STORE_SUBSCR"}),
-    "install-store": frozenset({"LOAD_ATTR", "STORE_ATTR"}),
-    "detach": frozenset({"LOAD_ATTR", "STORE_ATTR", "BINARY_OP"}),
-    "close": frozenset({"LOAD_GLOBAL", "LOAD_ATTR", "LOAD_METHOD", "CALL"}),
-    "invalid": frozenset(),
-}
+def _window_offsets(code) -> frozenset[int]:
+    """Bytecode offsets of `code` that belong to an admitted ownership
+    transition (strictly after its start instruction, through its end)."""
+    cached = _WINDOW_OFFSETS.get(code)
+    if cached is not None:
+        return cached
+    text = _source_of(code.co_filename)
+    key = (code.co_filename, text)
+    if key not in _TRANSITIONS_BY_FILE:
+        _TRANSITIONS_BY_FILE[key] = _ownership_transitions(text)
+    instructions = [i for i in dis.get_instructions(code) if i.opname != "CACHE"]
+    tolerated: set[int] = set()
+    for transition in _TRANSITIONS_BY_FILE[key]:
+        if transition.qualname is not None and code.co_qualname != transition.qualname:
+            continue
+        for s_index, instruction in enumerate(instructions):
+            if instruction.opname not in transition.start_ops or tuple(instruction.positions) != transition.start_span:
+                continue
+            e_index = next(
+                (
+                    k for k in range(s_index + 1, len(instructions))
+                    if instructions[k].opname in transition.end_ops
+                    and tuple(instructions[k].positions) == transition.end_span
+                ),
+                None,
+            )
+            if e_index is None:
+                continue
+            between = instructions[s_index + 1 : e_index + 1]
+            if all(
+                _within(i.positions, transition.continuation)
+                or (i.opname == "POP_TOP" and _within(i.positions, transition.start_span))
+                for i in between
+            ):
+                tolerated.update(i.offset for i in between)
+    result = _WINDOW_OFFSETS[code] = frozenset(tolerated)
+    return result
 
 
-def _tolerated(site, windows: dict[tuple[str, int], str]) -> bool:
-    if site is None:
-        return False
-    kind = windows.get((site[0], site[1]))
-    return kind is not None and site[3] in _WINDOW_OPCODES[kind]
+def _tolerated(site) -> bool:
+    """A fault is inside the declared window iff its bytecode offset belongs
+    to an admitted ownership transition of its code object."""
+    return site is not None and site[4] in _window_offsets(site[5])
 
 
 _TOA_DUP_CODE = toa.AuthorizedGitStorageSetV2.duplicate_authorized_roots.__code__
@@ -2551,7 +2690,7 @@ def _traced(
                 if sites is not None:
                     sites.append((code, frame.f_lasti))
                 if state["count"] == inject_at:
-                    state["site"] = (code.co_filename, frame.f_lineno, code.co_name, name, frame.f_lasti)
+                    state["site"] = (code.co_filename, frame.f_lineno, code.co_name, name, frame.f_lasti, code)
                     raise fault("s1a-injected-fault")
         return local
 
@@ -2647,7 +2786,7 @@ def _dotgit_dir_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocator
 
 def _sweep_one(
     base: Path, roots: list[Path], locator: SourceRepositoryLocatorV2, scenario: _SweepScenario, index: int,
-    inject_at: int | None, monkeypatch, windows: dict[tuple[str, int], str], sites: list | None = None,
+    inject_at: int | None, monkeypatch, sites: list | None = None,
     fault: type = MemoryError,
 ) -> tuple[list[str], int]:
     pub = base / f"pub-{scenario.name}-{index}"
@@ -2687,10 +2826,10 @@ def _sweep_one(
         for restore in undo:
             restore()
         problems: list[str] = []
-        in_window = _tolerated(site, windows)
+        in_window = _tolerated(site)
         outcome = result if exc is None else getattr(exc, "physical_snapshot_outcome", None)
         if isinstance(exc, TimeoutError):
-            return [f"{scenario.name}@{site}: hang"], count
+            return [f"{scenario.name}@{None if site is None else site[:5]}: hang"], count
         if exc is not None and not isinstance(exc, fault):
             problems.append(f"unexpected exception {type(exc).__name__}: {exc}")
         committed = pub / "committed" / _SWEEP_ID
@@ -2740,7 +2879,8 @@ def _sweep_one(
             problems.append(f"pre-existing descriptors closed {closed_foreign} altered {altered}")
         if audit.ebadf:
             problems.append(f"close of an unowned descriptor x{audit.ebadf}")
-        return [f"{scenario.name}@{site}: {p}" for p in problems], count
+        shown = None if site is None else site[:5]
+        return [f"{scenario.name}@{shown}: {p}" for p in problems], count
     finally:
         monkeypatch.setattr(psv, "os", os)
         monkeypatch.setattr(toa, "os", os)
@@ -2762,7 +2902,6 @@ def _injection_points(sites: list) -> list[int]:
 def _sweep(base: Path, scenario: _SweepScenario, monkeypatch, *, only_codes: set | None = None) -> tuple[list[str], int]:
     """Baseline run, then one run per injection point. Returns (violations, runs)."""
     roots, locator = scenario.fixture(base / scenario.name)
-    windows = {**_source_window_lines(), **getattr(scenario, "extra_windows", {})}
     sites: list = []
     # The cyclic collector stays off for the whole sweep: no finalizer may
     # release a descriptor behind the census (strict ownership, not GC luck).
@@ -2773,17 +2912,26 @@ def _sweep(base: Path, scenario: _SweepScenario, monkeypatch, *, only_codes: set
     # descriptor was affected. Collected, not printed.
     swallowed: list = []
     previous_hook = sys.unraisablehook
-    sys.unraisablehook = swallowed.append
+
+    def only_injected(unraisable) -> None:
+        # Only the injected fault is collected; anything else still surfaces.
+        if isinstance(unraisable.exc_value, fault_type) and str(unraisable.exc_value) == "s1a-injected-fault":
+            swallowed.append(unraisable)
+        else:
+            previous_hook(unraisable)
+
+    fault_type = getattr(scenario, "fault", MemoryError)
+    sys.unraisablehook = only_injected
     try:
         fault = getattr(scenario, "fault", MemoryError)
-        violations, _ = _sweep_one(base, roots, locator, scenario, 0, None, monkeypatch, windows, sites, fault)
+        violations, _ = _sweep_one(base, roots, locator, scenario, 0, None, monkeypatch, sites, fault)
         points = _injection_points(sites)
         if only_codes is not None:
             points = [
                 p for p in points if sites[p - 1][0].co_name in only_codes or sites[p - 1][0].co_filename == _MUTANT_FILE
             ]
         for run, point in enumerate(points, 1):
-            found, _ = _sweep_one(base, roots, locator, scenario, run, point, monkeypatch, windows, None, fault)
+            found, _ = _sweep_one(base, roots, locator, scenario, run, point, monkeypatch, None, fault)
             violations.extend(found)
     finally:
         sys.unraisablehook = previous_hook
@@ -2913,7 +3061,6 @@ def test_c11_publication_root_factory_fault_sites_leave_no_unowned_descriptor(tm
     """The W factory is an acquisition path of its own (three descriptors)."""
     (tmp_path / "staging").mkdir()
     (tmp_path / "committed").mkdir()
-    windows = _source_window_lines()
     caller_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
     violations: list[str] = []
     gc.collect()
@@ -2931,10 +3078,10 @@ def test_c11_publication_root_factory_fault_sites_leave_no_unowned_descriptor(tm
                 result.close()
             leaked = sorted(_fd_census() - before)
             del result, exc
-            if leaked and not _tolerated(site, windows):
-                violations.append(f"{site}: leaked {leaked}")
+            if leaked and not _tolerated(site):
+                violations.append(f"{site[:5]}: leaked {leaked}")
             if _ident(caller_fd) is None:
-                violations.append(f"{site}: the caller's descriptor was closed")
+                violations.append(f"{site[:5]}: the caller's descriptor was closed")
     finally:
         gc.enable()
         os.close(caller_fd)
@@ -2987,6 +3134,10 @@ _VETTED_HANDLE_ATTRIBUTES = {
     ),
 }
 _LIBC_METHODS = frozenset({"syscall"})
+#: Direct `.syscall` invocation is permitted only inside the vetted wrapper,
+#: whose number table is asserted to hold only non-descriptor syscalls
+#: (maintainer adjudication of 3ff700a, Codex 4137344841).
+_RAW_SYSCALL_WRAPPER = "_syscall_v2"
 _FORBIDDEN_BUILTINS = frozenset({"vars", "globals", "locals", "eval", "exec", "compile", "__import__", "open"})
 #: Forms known to be OUTSIDE the canonical grammar's detection power. They
 #: are named, not enforced; the exact production source must contain none.
@@ -3001,6 +3152,14 @@ def _module_handle_violations(tree, parent) -> list[str]:
     libc/ctypes handles, `[os.open][0]`)."""
     violations: list[str] = []
     libc_names: set[str] = set()
+
+    def enclosing(node) -> str | None:
+        while node in parent:
+            node = parent[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return None
+
     changed = True
     while changed:
         changed = False
@@ -3030,6 +3189,8 @@ def _module_handle_violations(tree, parent) -> list[str]:
                     violations.append(f"{where}: {module}.{node.attr} escapes as a value")
             if module in libc_names and node.attr not in _LIBC_METHODS:
                 violations.append(f"{where}: libc handle used beyond {sorted(_LIBC_METHODS)}")
+            if module in libc_names and node.attr == "syscall" and enclosing(node) != _RAW_SYSCALL_WRAPPER:
+                violations.append(f"{where}: raw syscall outside {_RAW_SYSCALL_WRAPPER}")
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
             callee = node.value.func
             if isinstance(callee, ast.Attribute) and callee.attr == "CDLL":
@@ -3096,9 +3257,7 @@ def _acquisition_census(source: str) -> list[str]:
                 return body[index + 1] if index + 1 < len(body) else None
         return None
 
-    for number, kind in _marked_statements(source).items():
-        if kind == "invalid":
-            violations.append(f"line {number}: marked statement is not an admitted window statement class")
+    violations.extend(_marker_violations(source))
     violations.extend(_module_handle_violations(tree, parent))
 
     for node in ast.walk(tree):
@@ -3178,6 +3337,15 @@ def _acquisition_census(source: str) -> list[str]:
     return violations
 
 
+def _psv_code_objects() -> list:
+    found, stack = [], [compile(Path(_PSV_FILE).read_text(), _PSV_FILE, "exec")]
+    while stack:
+        code = stack.pop()
+        found.append(code)
+        stack.extend(c for c in code.co_consts if hasattr(c, "co_code"))
+    return found
+
+
 def _duplicate_authorized_roots_source() -> str:
     return textwrap.dedent(inspect.getsource(toa.AuthorizedGitStorageSetV2.duplicate_authorized_roots))
 
@@ -3187,8 +3355,18 @@ def test_c11_static_census_every_acquisition_installs_into_a_pre_existing_owner(
     assert _acquisition_census(psv_source) == []
     # The limitation never hides a form present in the exact source.
     assert [m for m in _OUTSIDE_STATIC_CENSUS_MARKERS if m in psv_source] == []
-    kinds = _marked_statements(psv_source)
-    assert "invalid" not in kinds.values() and {"install-call", "install-store", "detach", "close"} <= set(kinds.values())
+    kinds = {t.kind for t in _ownership_transitions(psv_source)}
+    assert kinds == {"acquire", "created", "release", "roots", "transfer"}
+    # Anti-vacuity of the bytecode anchoring: every production code object
+    # that contains a transition gets a non-empty window, and only those do.
+    anchored = {
+        code.co_qualname for code in _psv_code_objects() if _window_offsets(code)
+    }
+    assert {
+        "_FdSlotV2.move_to", "_FdSlotV2.close_once", "_FdSlotV2.close_quietly", "_SourceSessionV2._release_roots",
+        "_SourceSessionV2.acquire_roots", "_SourceSessionV2.admit", "_StagingWriterV2.create_stage",
+    } <= anchored
+    assert _window_offsets(_TOA_DUP_CODE)
     assert set(psv._SYSCALL_NUMBERS_V2["x86_64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
     assert set(psv._SYSCALL_NUMBERS_V2["aarch64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
     assert _acquisition_census(_duplicate_authorized_roots_source()) == []
@@ -3252,13 +3430,14 @@ def test_mutation_c11_close_outside_release_primitives_is_killed_by_the_static_c
 
 def _compile_mutant(source: str):
     namespace: dict[str, object] = {}
+    _MUTANT_SOURCES[_MUTANT_FILE] = textwrap.dedent(source)
     exec(compile(textwrap.dedent(source), _MUTANT_FILE, "exec"), vars(psv), namespace)  # noqa: S102
     (function,) = [value for value in namespace.values() if callable(value)]
     return function
 
 
 def _mutant_sweep(tmp_path: Path, monkeypatch, scenario: _SweepScenario, source: str, focus: set[str]) -> list[str]:
-    scenario.extra_windows = _marked_lines(_MUTANT_FILE, textwrap.dedent(source))
+    assert _MUTANT_SOURCES.get(_MUTANT_FILE) == textwrap.dedent(source), "compile the mutant first"
     violations, runs = _sweep(tmp_path, scenario, monkeypatch, only_codes=focus)
     assert runs > 0
     return violations
@@ -3815,7 +3994,7 @@ def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_
         "            os.close(fd)  # fd-release\n        except OSError:\n            pass\n",
         1,
     )
-    assert any("not an admitted window statement class" in v for v in _acquisition_census(mutated))
+    assert any("not part of an admitted ownership transition" in v for v in _acquisition_census(mutated))
 
 
 def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_the_fault_sweep(
@@ -3826,7 +4005,7 @@ def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_
     descriptor is reported (the 0672d16 tolerance accepted it)."""
     monkeypatch.setattr(psv, "_RELEASED_LOG_V2", [], raising=False)
     monkeypatch.setattr(psv._FdSlotV2, "close_quietly", _compile_mutant(_RELEASE_WITH_BOOKKEEPING))
-    assert _marked_statements(_RELEASE_WITH_BOOKKEEPING) == {6: "detach", 7: "invalid", 8: "close"}
+    assert _transition_lines(_RELEASE_WITH_BOOKKEEPING) == {}
     violations = _mutant_sweep(
         tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), _RELEASE_WITH_BOOKKEEPING,
         {"close_quietly"},
@@ -3834,25 +4013,43 @@ def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_
     assert any("leaked" in v and _MUTANT_FILE in v and "'CALL'" in v for v in violations), violations
 
 
-def test_n1_marker_semantics_classify_every_admitted_statement_class() -> None:
-    """Anti-vacuity of the classifier: each admitted class is recognised, and
-    a marker on the wrong class is invalid."""
-    source = (
-        "slot.fd = os.open('x', 0)  # fd-install\n"
-        "owner.fd = fd  # fd-install\n"
-        "self.created = True  # fd-install\n"
-        "self.fd = None  # fd-release\n"
-        "self._roots_released += 1  # fd-release\n"
-        "os.close(fd)  # fd-release\n"
-        "os.close(fd)  # fd-install\n"
-        "slot.fd = os.open('x', 0)  # fd-release\n"
-        "log.append(fd)  # fd-release\n"
-        "self._dirs.setdefault(k, slot).fd = os.open('x', 0)  # fd-install\n"
+def test_n1_transition_model_recognises_exactly_the_admitted_transitions() -> None:
+    """Anti-vacuity of the transition model: each admitted transition is
+    recognised; the same statements in any other arrangement are not."""
+    source = textwrap.dedent(
+        """
+        def f(self, slot, owner, fd):
+            slot.fd = os.open('x', 0)  # fd-install
+            os.mkdir('d')
+            self.created = True  # fd-install
+            self.fd = None  # fd-install
+            owner.fd = fd  # fd-install
+            try:
+                self.fd = None  # fd-release
+                os.close(fd)  # fd-release
+            except OSError:
+                pass
+            self._roots_released += 1  # fd-release
+            os.close(fd)  # fd-release
+            self.fd = None  # fd-release
+            log.append(fd); os.close(fd)  # fd-release
+            self.fd = None  # fd-release
+            if log.append(fd) is None: os.close(fd)  # fd-release
+            self._dirs.setdefault(k, slot).fd = os.open('x', 0)  # fd-install
+
+        class _SourceSessionV2:
+            def _release_roots(self, fd):
+                self._roots_released += 1  # fd-release
+                os.close(fd)  # fd-release
+        """
     )
-    assert _marked_statements(source) == {
-        1: "install-call", 2: "install-store", 3: "install-store", 4: "detach", 5: "detach", 6: "close",
-        7: "invalid", 8: "invalid", 9: "invalid", 10: "invalid",
+    assert _transition_lines(source) == {
+        3: "acquire", 5: "created", 6: "transfer", 7: "transfer", 9: "release", 10: "release",
+        23: "roots", 24: "roots",
     }
+    assert _marker_violations(source) == [
+        f"line {n}: marked statement is not part of an admitted ownership transition" for n in (13, 14, 15, 16, 17, 18, 19)
+    ]
 
 
 _OUTSIDE_STATIC_CENSUS_EXAMPLES = [
@@ -3915,3 +4112,88 @@ def test_n3_returned_outcome_then_two_cleanup_interruptions_is_outside_the_quali
         capability.close()
         root.close()
     assert facts == {"committed": 1, "carried": [None, None], "calls": 4}, "OUTSIDE_QUALIFIED_FAULT_MODEL"
+
+
+# -- N1 closure witnesses: every variant fails by the intended discriminator ---------------
+
+_CLOSE_QUIETLY_PREFIX = """def close_quietly(self{extra}):
+    fd = self.fd
+    if fd is None:
+        return
+    try:
+        self.fd = None  # fd-release
+"""
+_N1_VARIANTS = {
+    "semicolon": ("", "        _RELEASED_LOG_V2.append(fd); os.close(fd)  # fd-release\n"),
+    "one-line-if": ("", "        if _RELEASED_LOG_V2.append(fd) is None: os.close(fd)  # fd-release\n"),
+    "unrelated-counter": (
+        ", counter=_ROOTS_COUNTER_V2",
+        "        counter._roots_released += 1  # fd-release\n        os.close(fd)  # fd-release\n",
+    ),
+    "allocating-call": ("", "        _RELEASED_LOG_V2.append(fd)  # fd-release\n        os.close(fd)  # fd-release\n"),
+}
+
+
+def _n1_variant(name: str) -> str:
+    extra, body = _N1_VARIANTS[name]
+    return _CLOSE_QUIETLY_PREFIX.format(extra=extra) + body + "    except OSError:\n        pass\n"
+
+
+@pytest.mark.parametrize("variant", sorted(_N1_VARIANTS))
+def test_n1_variants_are_rejected_by_the_census(variant: str) -> None:
+    """Static side: none of the variants is an admitted transition, and the
+    marked lines they carry are violations."""
+    source = _n1_variant(variant)
+    assert _transition_lines(source) == {}
+    violations = _acquisition_census(source)
+    assert any("not part of an admitted ownership transition" in v for v in violations), violations
+
+
+@pytest.mark.parametrize("variant", sorted(_N1_VARIANTS))
+def test_n1_variants_are_killed_by_the_bytecode_window_sweep(tmp_path: Path, monkeypatch, variant: str) -> None:
+    """Dynamic side: installed as `_FdSlotV2.close_quietly`, each variant
+    leaves a descriptor unowned at a fault site that NO ownership transition
+    covers (the 3ff700a line model tolerated the semicolon, one-line-if and
+    counter forms)."""
+    monkeypatch.setattr(psv, "_RELEASED_LOG_V2", [], raising=False)
+    monkeypatch.setattr(psv, "_ROOTS_COUNTER_V2", type("Counter", (), {"_roots_released": 0})(), raising=False)
+    source = _n1_variant(variant)
+    monkeypatch.setattr(psv._FdSlotV2, "close_quietly", _compile_mutant(source))
+    violations = _mutant_sweep(
+        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), source, {"close_quietly"},
+    )
+    assert any("leaked" in v and _MUTANT_FILE in v for v in violations), violations
+
+
+def test_n1_same_spelling_counter_outside_release_roots_is_red() -> None:
+    """`self._roots_released += 1; os.close(fd)` is a transition ONLY in the
+    exact `_SourceSessionV2._release_roots` context -- statically (AST
+    context) and dynamically (code qualname)."""
+    real = textwrap.dedent(inspect.getsource(psv._SourceSessionV2._release_roots))
+    elsewhere = real.replace("def _release_roots(self)", "def release_other(self)", 1)
+    assert _transition_lines(elsewhere) == {}
+    assert any("not part of an admitted ownership transition" in v for v in _acquisition_census(elsewhere))
+    assert _window_offsets(psv._SourceSessionV2._release_roots.__code__)
+    moved = _compile_mutant(real)  # same source, but no longer the method's own code object
+    assert moved.__code__.co_qualname == "_release_roots"
+    assert _window_offsets(moved.__code__) == frozenset()
+
+
+# -- N2 closure witness ----------------------------------------------------------------------
+
+_RAW_SYSCALL_MUTANT = """
+
+def _raw_open_v2(path):
+    libc = _LIBC_V2
+    return libc.syscall(ctypes.c_long(2), ctypes.c_char_p(path), ctypes.c_long(0))
+"""
+
+
+def test_n2_direct_raw_syscall_outside_the_wrapper_is_rejected() -> None:
+    """Codex 4137344841: a direct `.syscall` outside `_syscall_v2` is refused by
+    the canonical-source guard, and by that rule only. The exact source obeys
+    the rule (`StaticCanonicalSourceGuard != UniversalSemanticSolverForPython`)."""
+    source = Path(_PSV_FILE).read_text()
+    assert _acquisition_census(source) == []
+    violations = _acquisition_census(source + _RAW_SYSCALL_MUTANT)
+    assert violations and all(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
