@@ -3115,3 +3115,156 @@ def test_cm_c2_os_dup_failure_translation(tmp_path: Path) -> None:
                 AuthorizedGitStorageSetV2.from_repository_fd(repo_fd)
     finally:
         os.close(repo_fd)
+
+
+# -- #301-S1-A: additive root-duplication API (C2_A semantics unchanged) --------
+
+
+def test_s1a_root_count_is_fixed_and_exposes_no_descriptor(tmp_path: Path) -> None:
+    """`root_count` is available before any dup and survives `close()`."""
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots(roots)
+    assert capability.root_count == 2
+    capability.close()
+    assert capability.root_count == 2
+
+
+def test_s1a_duplicate_authorized_roots_returns_caller_owned_cloexec_duplicates(tmp_path: Path) -> None:
+    """Each duplicate is a fresh CLOEXEC fd bound to the construction identity,
+    never the internal fd, and closing it leaves the capability intact."""
+    from app.agent_review.trusted_object_authority_v2 import AuthorizedStorageRootDuplicateV2
+    import fcntl
+
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots(roots)
+    try:
+        duplicates = capability.duplicate_authorized_roots()
+        assert [d.index for d in duplicates] == [0, 1]
+        for duplicate, root in zip(duplicates, roots):
+            assert isinstance(duplicate, AuthorizedStorageRootDuplicateV2)
+            assert duplicate.fd not in capability._root_fds
+            assert fcntl.fcntl(duplicate.fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC
+            info = os.stat(root)
+            assert duplicate.dev_ino == (info.st_dev, info.st_ino)
+            assert (os.fstat(duplicate.fd).st_dev, os.fstat(duplicate.fd).st_ino) == duplicate.dev_ino
+            assert duplicate.locator == PurePosixPath(str(root))
+            os.close(duplicate.fd)
+        probe = os.open(str(roots[0]), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            assert capability.contains_fd(probe) is True
+        finally:
+            os.close(probe)
+    finally:
+        capability.close()
+
+
+def test_s1a_from_repository_fd_has_no_captured_locator(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(str(repo), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        capability = AuthorizedGitStorageSetV2.from_repository_fd(repo_fd, logical_path=repo)
+    finally:
+        os.close(repo_fd)
+    try:
+        (duplicate,) = capability.duplicate_authorized_roots()
+        assert duplicate.locator is None
+        os.close(duplicate.fd)
+    finally:
+        capability.close()
+
+
+def test_s1a_duplicate_on_closed_capability_is_typed_refusal(tmp_path: Path) -> None:
+    """A8: a closed capability yields STORAGE_CAPABILITY_CLOSED, never a dup."""
+    from app.agent_review.trusted_object_authority_v2 import (
+        TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2,
+    )
+
+    root = tmp_path / "a"
+    root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots([root])
+    capability.close()
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        capability.duplicate_authorized_roots()
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2
+
+
+def test_s1a_partial_duplication_failure_closes_every_duplicate(tmp_path: Path, monkeypatch) -> None:
+    """A failing second dup closes the first one before the typed refusal."""
+    import errno as errno_module
+    import fcntl
+
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots(roots)
+    made: list[int] = []
+    real_fcntl = fcntl.fcntl
+
+    def failing_fcntl(fd, command, *args):
+        if command == fcntl.F_DUPFD_CLOEXEC:
+            if made:
+                raise OSError(errno_module.EMFILE, "Too many open files")
+            new_fd = real_fcntl(fd, command, *args)
+            made.append(new_fd)
+            return new_fd
+        return real_fcntl(fd, command, *args)
+
+    monkeypatch.setattr(trusted_object_authority_module_v2.fcntl, "fcntl", failing_fcntl)
+    try:
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            capability.duplicate_authorized_roots()
+        assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+        assert len(made) == 1
+        with pytest.raises(OSError):
+            os.fstat(made[0])
+    finally:
+        monkeypatch.undo()
+        capability.close()
+
+
+def test_s1a_duplicate_identity_mismatch_is_refused_and_closed(tmp_path: Path) -> None:
+    """A capability whose binding does not match its descriptor never hands out a dup."""
+    real = tmp_path / "real"
+    real.mkdir()
+    fd = os.open(str(real), os.O_RDONLY | os.O_DIRECTORY)
+    capability = AuthorizedGitStorageSetV2(root_fds=[fd], bound_paths=[real], bound_dev_ino=[(0, 0)])
+    before = set(os.listdir("/proc/self/fd"))
+    try:
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            capability.duplicate_authorized_roots()
+        assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+        assert set(os.listdir("/proc/self/fd")) == before
+    finally:
+        capability.close()
+
+
+def test_s1a_root_locators_must_align_with_root_fds(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    fd = os.open(str(real), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(TrustedObjectAuthorityError):
+            AuthorizedGitStorageSetV2(root_fds=[fd], bound_paths=[real], bound_dev_ino=[(0, 0)], root_locators=[])
+        import gc
+
+        gc.collect()
+        os.fstat(fd)  # a refused construction never closes the caller's descriptor
+    finally:
+        os.close(fd)
+
+
+def test_s1a_captured_locator_is_normalised_to_single_leading_slash(tmp_path: Path) -> None:
+    root = tmp_path / "a"
+    root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots(["/" + str(root)])
+    try:
+        (duplicate,) = capability.duplicate_authorized_roots()
+        assert str(duplicate.locator) == str(root)
+        os.close(duplicate.fd)
+    finally:
+        capability.close()

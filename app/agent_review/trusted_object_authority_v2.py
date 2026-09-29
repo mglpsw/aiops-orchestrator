@@ -229,9 +229,11 @@ __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_STORAGE_UNAUTHORIZED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
     "AuthorizedGitStorageSetV2",
+    "AuthorizedStorageRootDuplicateV2",
     "TrustedObjectAuthorityError",
     "TrustedObjectAuthorityV2",
     "open_trusted_object_authority_v2",
@@ -289,6 +291,13 @@ TRUSTED_OBJECT_AUTHORITY_RELATIVE_REPO_ROOT_REASON_V2 = "trusted_object_authorit
 # git requires it (a linked worktree's `commondir` is literally `../..`).
 TRUSTED_OBJECT_AUTHORITY_REPO_ROOT_NOT_NORMALISED_REASON_V2 = (
     "trusted_object_authority_repo_root_not_normalised"
+)
+# #301-S1-A: `duplicate_authorized_roots()` was called on a capability that
+# has already been closed. Distinct from `ACQUISITION_FAILED` (a `dup` that
+# failed on a live capability) because the fix differs: the caller used a
+# capability past the end of its lifetime.
+TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2 = (
+    "trusted_object_authority_storage_capability_closed"
 )
 
 #: Hard budgets, enforced *before* any copied byte is handed to git for
@@ -876,6 +885,26 @@ def _open_repo_root_fd_v2(repo_root: Path) -> int:
     return _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
 
 
+@dataclass(frozen=True)
+class AuthorizedStorageRootDuplicateV2:
+    """One caller-owned duplicate of an authorized storage root (#301-S1-A).
+
+    `fd` is a fresh `F_DUPFD_CLOEXEC` duplicate, never the capability's own
+    internal descriptor; closing it is the caller's job and never affects the
+    capability. `dev_ino` is the identity bound when the capability was
+    built, and the duplicate was checked against it. `locator` is the name
+    `from_roots` captured and opened for this root -- a NAME for matching
+    pointers lexically, never an authority and never re-resolved here. It is
+    `None` when no captured locator exists (`from_repository_fd`, direct
+    construction).
+    """
+
+    index: int
+    fd: int
+    dev_ino: tuple[int, int]
+    locator: PurePosixPath | None
+
+
 class AuthorizedGitStorageSetV2:
     """Storage capability enforcement for AgentReview v2 (#331-B, C2_A).
 
@@ -913,13 +942,29 @@ class AuthorizedGitStorageSetV2:
         bound_paths: Sequence[Path],
         bound_dev_ino: Sequence[tuple[int, int]],
         owns_fds: bool = True,
+        root_locators: Sequence[PurePosixPath | None] | None = None,
     ) -> None:
-        self._root_fds: tuple[int, ...] = tuple(root_fds)
+        # #301-S1-A: born closed and empty, so a refused construction (below)
+        # leaves `__del__`/`close()` a no-op and never closes a caller's fds.
+        self._lock = threading.Lock()
+        self._closed = True
+        self._root_fds: tuple[int, ...] = ()
+        # One captured locator (or None) per root, aligned with the root fds
+        # by index. `_bound_paths` cannot serve here: it holds one or two
+        # entries per root and is not index-aligned.
+        if root_locators is None:
+            locators: tuple[PurePosixPath | None, ...] = (None,) * len(root_fds)
+        else:
+            locators = tuple(root_locators)
+            if len(locators) != len(root_fds):
+                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
+        self._root_fds = tuple(root_fds)
         self._bound_paths: tuple[Path, ...] = tuple(bound_paths)
         self._bound_dev_ino: tuple[tuple[int, int], ...] = tuple(bound_dev_ino)
+        self._root_locators = locators
+        self._root_count = len(self._root_fds)
         self._owns_fds = owns_fds
         self._closed = False
-        self._lock = threading.Lock()
 
     @property
     def bound_paths(self) -> tuple[Path, ...]:
@@ -945,6 +990,7 @@ class AuthorizedGitStorageSetV2:
         validated_paths: list[Path] = []
         open_fds: list[int] = []
         dev_inos: list[tuple[int, int]] = []
+        root_locators: list[PurePosixPath] = []
         try:
             for item in roots:
                 captured = os.fspath(item)
@@ -967,6 +1013,9 @@ class AuthorizedGitStorageSetV2:
                     )
                 root_fd = _open_dir_by_segments_no_follow_v2(base_fd=None, path_str=captured)
                 open_fds.append(root_fd)
+                # The exact name just opened component by component, in the
+                # canonical single-leading-slash form (POSIX may keep "//").
+                root_locators.append(PurePosixPath("/", *locator.parts[1:]))
                 try:
                     stat_res = os.fstat(root_fd)
                     dev_inos.append((stat_res.st_dev, stat_res.st_ino))
@@ -992,6 +1041,7 @@ class AuthorizedGitStorageSetV2:
             bound_paths=validated_paths,
             bound_dev_ino=dev_inos,
             owns_fds=True,
+            root_locators=root_locators,
         )
 
     @classmethod
@@ -1096,6 +1146,54 @@ class AuthorizedGitStorageSetV2:
         finally:
             for pfd in private_fds:
                 _close_ignoring_errors_v2(pfd)
+
+    @property
+    def root_count(self) -> int:
+        """Number of authorized roots, fixed at construction (#301-S1-A).
+
+        Exposes no descriptor and never changes, not even after `close()`,
+        so a caller can charge a budget for the duplicates BEFORE calling
+        `duplicate_authorized_roots()`.
+        """
+        return self._root_count
+
+    def duplicate_authorized_roots(self) -> tuple[AuthorizedStorageRootDuplicateV2, ...]:
+        """Duplicate EVERY authorized root under one lock acquisition (#301-S1-A).
+
+        The single linearization point for a root-outward consumer: either
+        all roots are duplicated from a live capability, or none is returned.
+        Each duplicate is `F_DUPFD_CLOEXEC`, checked against the `(dev, ino)`
+        bound at construction, and owned by the caller from return onward.
+        The internal descriptors are never returned; no pathname is
+        re-resolved. A closed capability is refused with
+        `STORAGE_CAPABILITY_CLOSED`; any failure closes every duplicate
+        already made before raising. `contains_fd` is unaffected.
+        """
+        duplicates: list[AuthorizedStorageRootDuplicateV2] = []
+        with self._lock:
+            if self._closed:
+                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2)
+            try:
+                for index, root_fd in enumerate(self._root_fds):
+                    dup_fd = fcntl.fcntl(root_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+                    duplicates.append(
+                        AuthorizedStorageRootDuplicateV2(
+                            index=index,
+                            fd=dup_fd,
+                            dev_ino=self._bound_dev_ino[index],
+                            locator=self._root_locators[index],
+                        )
+                    )
+                    dup_stat = os.fstat(dup_fd)
+                    if (dup_stat.st_dev, dup_stat.st_ino) != self._bound_dev_ino[index]:
+                        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
+            except BaseException as exc:
+                for duplicate in duplicates:
+                    _close_ignoring_errors_v2(duplicate.fd)
+                if isinstance(exc, OSError):
+                    raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+                raise
+        return tuple(duplicates)
 
     def close(self) -> None:
         with self._lock:
