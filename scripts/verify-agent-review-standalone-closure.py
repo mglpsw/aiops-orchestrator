@@ -85,6 +85,23 @@ REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: frozenset[str] = frozenset(
     }
 )
 
+REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1: frozenset[str] = frozenset(
+    {
+        "aiosqlite",
+        "asyncpg",
+        "duckduckgo-search",
+        "fastapi",
+        "httpx",
+        "psycopg",
+        "psycopg2",
+        "pydantic-settings",
+        "python-multipart",
+        "sqlalchemy",
+        "starlette",
+        "uvicorn",
+    }
+)
+
 
 def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
     """Validate that rel_path_str is a canonical POSIX repository-relative path without escape or traversal."""
@@ -117,6 +134,11 @@ def paths_overlap(path_a: str, path_b: str) -> bool:
     parts_b = [p for p in path_b.strip("/").split("/") if p and p != "."]
     min_len = min(len(parts_a), len(parts_b))
     return bool(parts_a and parts_b and parts_a[:min_len] == parts_b[:min_len])
+
+
+def module_is_same_or_descendant(module: str, forbidden_root: str) -> bool:
+    """Return True if module equals forbidden_root or is a submodule of it (non-recursive import semantics)."""
+    return module == forbidden_root or module.startswith(forbidden_root + ".")
 
 
 class StandaloneClosureValidationError(Exception):
@@ -195,12 +217,12 @@ def derive_ast_imports_from_file(
                         # Check whether candidate is a submodule / package on disk or forbidden surface
                         is_submodule = False
 
-                        candidate_slash = candidate.replace(".", "/")
                         for fb in forbidden:
-                            fb_clean = fb.removesuffix(".py")
-                            if paths_overlap(candidate_slash, fb_clean):
-                                is_submodule = True
-                                break
+                            if fb.startswith("app/"):
+                                fb_mod = fb.removesuffix(".py").replace("/", ".")
+                                if module_is_same_or_descendant(candidate, fb_mod):
+                                    is_submodule = True
+                                    break
 
                         if not is_submodule:
                             candidate_parts = candidate.split(".")
@@ -286,8 +308,27 @@ def validate_manifest(
             f"Required negative runtime anchor(s) omitted from 'forbidden_runtime_surfaces': {missing_negative_anchors}"
         )
 
-    dep_closure = manifest.get("dependency_closure", {})
-    forbidden_packages = {p.lower() for p in dep_closure.get("forbidden_runtime_packages", [])}
+    # 2b. Negative runtime package contract enforcement (Layer S)
+    if "dependency_closure" not in manifest or not isinstance(manifest.get("dependency_closure"), dict):
+        errors.append("Manifest is missing required 'dependency_closure' dictionary.")
+        return errors
+    dep_closure = manifest["dependency_closure"]
+    if "forbidden_runtime_packages" not in dep_closure:
+        errors.append("Field 'dependency_closure' is missing required 'forbidden_runtime_packages' list.")
+        return errors
+    raw_forbidden_pkgs = dep_closure.get("forbidden_runtime_packages")
+    if not isinstance(raw_forbidden_pkgs, list):
+        errors.append("Field 'forbidden_runtime_packages' must be a list.")
+        return errors
+    if not raw_forbidden_pkgs:
+        errors.append("Field 'forbidden_runtime_packages' cannot be empty.")
+        return errors
+    forbidden_packages = {p.lower() for p in raw_forbidden_pkgs if isinstance(p, str)}
+    missing_negative_pkg_anchors = sorted(REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1 - forbidden_packages)
+    if missing_negative_pkg_anchors:
+        errors.append(
+            f"Required negative runtime package anchor(s) omitted from 'forbidden_runtime_packages': {missing_negative_pkg_anchors}"
+        )
 
     # 3. Check for existence, path confinement and runtime surface leaks in declared files
     declared_paths: list[str] = []
@@ -424,9 +465,9 @@ def validate_manifest(
                 )
                 continue
 
-            # Check forbidden runtime prefixes
+            # Check forbidden runtime prefixes using module semantics (exact or descendant)
             is_forbidden = any(
-                paths_overlap(mod.replace(".", "/"), fb.removesuffix(".py"))
+                module_is_same_or_descendant(mod, fb.removesuffix(".py").replace("/", "."))
                 for fb in forbidden_surfaces
                 if fb.startswith("app/")
             )

@@ -180,6 +180,11 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **R-01** | Não-vacuidade da fronteira negativa | Seção `forbidden_runtime_surfaces` ausente, vazia ou sem âncoras obrigatórias falha closed. |
 | **R-02** | Confinamento com alvo relativo/symlink | Suporta alvos relativos contra `target_resolved` e rejeita destinos symlink fail-closed. |
 | **R-03** | Ciclos de symlink e links quebrados | Qualquer symlink em membros da distribuição falha closed na validação e materialização. |
+| **F-01** | Não-vacuidade de pacotes proibidos | `dependency_closure.forbidden_runtime_packages` ausente, vazio ou sem âncoras (`REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1`) falha closed. |
+| **F-03** | Semântica de imports AST vs disco | Imports utilizam semântica exata ou descendente (`module_is_same_or_descendant`), permitindo imports legítimos de pacotes-pai (`import app`, `import app.services`) enquanto bloqueia submódulos de runtime (`app.models`). |
+| **F-04** | Provas imunes a `PYTHONOPTIMIZE` | Probes em subprocesso utilizam helper explícito `require()`, e `_clean_env` expurga `PYTHONOPTIMIZE`, impedindo anulação de checagens sob flags de otimização. |
+| **F-05** | Confinamento de origem por componentes | Verificação de origem de módulo utiliza `origin_path.is_relative_to(root)` em vez de prefixo de string, rejeitando diretórios irmãos (`/standalone-old`). |
+| **F-02** | Composição Layer E × Layer I | Teste composto (`test_lock_built_venv_executes_materialized_standalone_agentreview`) exercita a árvore materializada com o interpretador criado a partir de `requirements-agent-review.lock` (`requires_network`). Status de qualificação: implementado (em ambientes onde o lockfile difere da versão de Python do host, falhas de instalação são reportadas fielmente). |
 
 ---
 

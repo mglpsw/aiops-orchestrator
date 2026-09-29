@@ -28,7 +28,7 @@ def _clean_env(standalone_root: Path, **updates: str) -> dict[str, str]:
         key: value
         for key, value in os.environ.items()
         if not key.startswith("AIOPS_")
-        and key not in ("PYTHONPATH", "PYTHONHOME")
+        and key not in ("PYTHONPATH", "PYTHONHOME", "PYTHONOPTIMIZE")
     }
     env["PYTHONPATH"] = str(standalone_root)
     env["AIOPS_ENVIRONMENT"] = "dev"
@@ -150,9 +150,17 @@ def test_standalone_materialization_and_clean_subprocess_execution(tmp_path: Pat
     assert (standalone / "requirements-agent-review.lock").is_file()
 
     # Subprocess execution from standalone_root: core import and origin verification
+    _run_core_probe(standalone)
+
+
+def _run_core_probe(standalone: Path, python_executable: str = sys.executable) -> None:
     probe_code = """
 import sys
 from pathlib import Path
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
 
 # Verify modules can be imported
 from app.agent_review.contracts_v2 import ChunkPayloadV2
@@ -166,7 +174,7 @@ from app.common.strict_json import strict_json_loads, canonical_json_text
 from app.services.environment_context import build_environment_context
 
 # Verify origins: must resolve inside standalone directory, never from canonical repo
-standalone_root = str(Path('.').resolve())
+standalone_root = Path('.').resolve()
 import app.agent_review.contracts_v2 as mod_c2
 import app.agent_review.schemas as mod_s
 import app.agent_review.semantic_chunker as mod_sc
@@ -178,35 +186,36 @@ import app.common.strict_json as mod_sj
 import app.services.environment_context as mod_ec
 
 for mod in (mod_c2, mod_s, mod_sc, mod_ac, mod_tp, mod_se, mod_cli, mod_sj, mod_ec):
-    origin = getattr(mod, '__file__', '')
-    assert origin.startswith(standalone_root), f"Escape detected: {mod} origin {origin} is outside {standalone_root}"
+    origin = getattr(mod, '__file__', None)
+    require(origin is not None, f"Module {mod} has no __file__")
+    origin_path = Path(origin).resolve()
+    require(
+        origin_path == standalone_root or origin_path.is_relative_to(standalone_root),
+        f"Escape detected: {mod} origin {origin_path} is outside {standalone_root}"
+    )
 
 # Verify negative boundary: importing runtime modules must fail
 for forbidden in ('app.main', 'app.agent_router', 'app.models.database', 'app.services.orchestrator'):
     try:
         __import__(forbidden)
-        raise AssertionError(f"Forbidden module {forbidden} unexpectedly imported!")
+        require(False, f"Forbidden module {forbidden} unexpectedly imported!")
     except ModuleNotFoundError:
         pass
 
-print("ALL_PROBES_PASSED")
+print("ALL_CORE_PROBES_PASSED")
 """
     result = subprocess.run(
-        [sys.executable, "-c", probe_code],
+        [python_executable, "-c", probe_code],
         cwd=standalone,
         env=_clean_env(standalone),
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, f"Probe failed with stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
-    assert "ALL_PROBES_PASSED" in result.stdout
+    assert result.returncode == 0, f"Core probe failed with stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    assert "ALL_CORE_PROBES_PASSED" in result.stdout
 
 
-def test_positive_control_v1_offline_execution(tmp_path: Path) -> None:
-    """B0-C6: v1 representative offline operation executes cleanly in standalone environment."""
-    standalone = tmp_path / "standalone_v1"
-    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-
+def _run_v1_probe(standalone: Path, python_executable: str = sys.executable) -> None:
     v1_code = """
 from typing import get_args
 from app.agent_review.schemas import (
@@ -215,35 +224,38 @@ from app.agent_review.schemas import (
 )
 from app.agent_review.semantic_chunker import classify_file
 
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
 # Exercise v1 deterministic classification and quality gate verdicts
-assert classify_file("app/main.py") == "primary_backend_logic"
-assert classify_file("tests/test_foo.py") == "tests"
-assert classify_file("docs/readme.md") == "docs_changelog"
-assert "passed" in get_args(ReviewQualityGateStatus)
-assert "approved" in get_args(FinalReviewVerdict)
+require(classify_file("app/main.py") == "primary_backend_logic", "Failed classifying app/main.py")
+require(classify_file("tests/test_foo.py") == "tests", "Failed classifying tests/test_foo.py")
+require(classify_file("docs/readme.md") == "docs_changelog", "Failed classifying docs/readme.md")
+require("passed" in get_args(ReviewQualityGateStatus), "ReviewQualityGateStatus missing passed")
+require("approved" in get_args(FinalReviewVerdict), "FinalReviewVerdict missing approved")
 print("V1_POSITIVE_CONTROL_PASSED")
 """
     result = subprocess.run(
-        [sys.executable, "-c", v1_code],
+        [python_executable, "-c", v1_code],
         cwd=standalone,
         env=_clean_env(standalone),
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"v1 probe failed with stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     assert "V1_POSITIVE_CONTROL_PASSED" in result.stdout
 
 
-def test_positive_control_v2_external_asset_traversal(tmp_path: Path) -> None:
-    """B0-C4, B0-C6: v2 target-pack build traverses external templates and schemas in standalone root."""
-    standalone = tmp_path / "standalone_v2"
-    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-    head_sha = _init_git_in_standalone(standalone)
-
+def _run_v2_probe(standalone: Path, head_sha: str, python_executable: str = sys.executable) -> None:
     v2_code = f"""
 from pathlib import Path
 from app.agent_review.target_pack_build_v2 import build_target_pack_manifest_v2
 from app.agent_review.schema_export_v2 import render_v2_json_schemas
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
 
 # 1. Target pack manifest build requires Git tree traversal of templates/ and schemas/
 manifest = build_target_pack_manifest_v2(
@@ -251,44 +263,44 @@ manifest = build_target_pack_manifest_v2(
     toolrepo_sha='{head_sha}',
     pack_version='v2.0.0-standalone',
 )
-assert manifest.pack_version == 'v2.0.0-standalone'
-assert len(manifest.generated_files) > 0
-assert len(manifest.schema_digests) == 22, f"Expected 22 schema digests, got {{len(manifest.schema_digests)}}"
+require(manifest.pack_version == 'v2.0.0-standalone', "Unexpected pack version")
+require(len(manifest.generated_files) > 0, "No generated files in manifest")
+require(len(manifest.schema_digests) == 22, f"Expected 22 schema digests, got {{len(manifest.schema_digests)}}")
 
 # 2. Schema export produces all 22 schemas matching the standalone schema directory
 rendered = render_v2_json_schemas()
-assert len(rendered) == 22
+require(len(rendered) == 22, "Rendered schemas count != 22")
 for schema_name, schema_dict in rendered.items():
     schema_file = Path('schemas/agent-review/v2') / schema_name
-    assert schema_file.is_file(), f"Missing schema on disk: {{schema_name}}"
+    require(schema_file.is_file(), f"Missing schema on disk: {{schema_name}}")
 
 print("V2_POSITIVE_CONTROL_PASSED")
 """
     result = subprocess.run(
-        [sys.executable, "-c", v2_code],
+        [python_executable, "-c", v2_code],
         cwd=standalone,
         env=_clean_env(standalone),
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"v2 probe failed with stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     assert "V2_POSITIVE_CONTROL_PASSED" in result.stdout
 
 
-def test_positive_control_v1_v2_coexistence(tmp_path: Path) -> None:
-    """B0-C6: v1 and v2 coexist in the exact same standalone materialization without conflict."""
-    standalone = tmp_path / "standalone_coexistence"
-    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-    head_sha = _init_git_in_standalone(standalone)
-
+def _run_coexistence_probe(standalone: Path, head_sha: str, python_executable: str = sys.executable) -> None:
     coexist_code = f"""
 from pathlib import Path
 from typing import get_args
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
 # v1 import and execution
 from app.agent_review.schemas import FinalReviewVerdict
 from app.agent_review.semantic_chunker import classify_file
-assert classify_file("app/main.py") == "primary_backend_logic"
-assert "approved" in get_args(FinalReviewVerdict)
+require(classify_file("app/main.py") == "primary_backend_logic", "Failed classifying app/main.py")
+require("approved" in get_args(FinalReviewVerdict), "FinalReviewVerdict missing approved")
 
 # v2 import and execution
 from app.agent_review.target_pack_build_v2 import build_target_pack_manifest_v2
@@ -297,18 +309,41 @@ manifest = build_target_pack_manifest_v2(
     toolrepo_sha='{head_sha}',
     pack_version='v2.0.0-coexistence',
 )
-assert len(manifest.schema_digests) == 22
+require(len(manifest.schema_digests) == 22, "Expected 22 schema digests")
 print("COEXISTENCE_PASSED")
 """
     result = subprocess.run(
-        [sys.executable, "-c", coexist_code],
+        [python_executable, "-c", coexist_code],
         cwd=standalone,
         env=_clean_env(standalone),
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, f"coexistence probe failed with stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
     assert "COEXISTENCE_PASSED" in result.stdout
+
+
+def test_positive_control_v1_offline_execution(tmp_path: Path) -> None:
+    """B0-C6: v1 representative offline operation executes cleanly in standalone environment."""
+    standalone = tmp_path / "standalone_v1"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    _run_v1_probe(standalone)
+
+
+def test_positive_control_v2_external_asset_traversal(tmp_path: Path) -> None:
+    """B0-C4, B0-C6: v2 target-pack build traverses external templates and schemas in standalone root."""
+    standalone = tmp_path / "standalone_v2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    head_sha = _init_git_in_standalone(standalone)
+    _run_v2_probe(standalone, head_sha)
+
+
+def test_positive_control_v1_v2_coexistence(tmp_path: Path) -> None:
+    """B0-C6: v1 and v2 coexist in the exact same standalone materialization without conflict."""
+    standalone = tmp_path / "standalone_coexistence"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    head_sha = _init_git_in_standalone(standalone)
+    _run_coexistence_probe(standalone, head_sha)
 
 
 def test_countermodel_m1_omit_shared_primitive(tmp_path: Path) -> None:
@@ -950,3 +985,164 @@ def test_countermodel_r03_symlink_cycles_and_internal_symlinks(tmp_path: Path) -
             "Refusing to materialize distribution tree containing symlink",
         )
     )
+
+
+def test_countermodel_f1_forbidden_packages_non_vacuity() -> None:
+    """F-01: Negative forbidden package contract cannot be omitted, empty, or missing required anchors."""
+    manifest = validator.load_manifest()
+
+    # Case A: Missing dependency_closure dictionary
+    mutated_a = copy.deepcopy(manifest)
+    del mutated_a["dependency_closure"]
+    errs_a = validator.validate_manifest(mutated_a, repo_root=REPO_ROOT)
+    assert any("dependency_closure" in err for err in errs_a)
+
+    # Case B: Missing forbidden_runtime_packages inside dependency_closure
+    mutated_b = copy.deepcopy(manifest)
+    del mutated_b["dependency_closure"]["forbidden_runtime_packages"]
+    errs_b = validator.validate_manifest(mutated_b, repo_root=REPO_ROOT)
+    assert any("forbidden_runtime_packages" in err for err in errs_b)
+
+    # Case C: Empty forbidden_runtime_packages list
+    mutated_c = copy.deepcopy(manifest)
+    mutated_c["dependency_closure"]["forbidden_runtime_packages"] = []
+    errs_c = validator.validate_manifest(mutated_c, repo_root=REPO_ROOT)
+    assert any("cannot be empty" in err for err in errs_c)
+
+    # Case D: Removal of a mandatory negative anchor (e.g. fastapi)
+    mutated_d = copy.deepcopy(manifest)
+    mutated_d["dependency_closure"]["forbidden_runtime_packages"] = [
+        p for p in mutated_d["dependency_closure"]["forbidden_runtime_packages"] if p.lower() != "fastapi"
+    ]
+    errs_d = validator.validate_manifest(mutated_d, repo_root=REPO_ROOT)
+    assert any("Required negative runtime package anchor(s) omitted" in err and "fastapi" in err for err in errs_d)
+
+
+def test_countermodel_f3_import_semantics_exact_or_descendant(tmp_path: Path) -> None:
+    """F-03: Python module forbidden matching uses exact-or-descendant semantics, separating module imports from disk path overlap."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_f3"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    # Ensure forbidden surfaces exist in temp_repo so manifest validation satisfies non-vacuity check
+    for forbidden in manifest["forbidden_runtime_surfaces"]:
+        p = temp_repo / forbidden
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if "." in p.name:
+            p.write_text("# dummy\n", encoding="utf-8")
+        else:
+            p.mkdir(parents=True, exist_ok=True)
+
+    target_cli = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_cli.read_text(encoding="utf-8")
+
+    # Case A: Harmless parent package import: import app -> MUST PASS
+    target_cli.write_text("import app\n" + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("Forbidden runtime module 'app'" in err for err in errs_a)
+
+    # Case B: Harmless allowed package root import: import app.services -> MUST PASS
+    target_cli.write_text("import app.services\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("Forbidden runtime module 'app.services'" in err for err in errs_b)
+
+    # Case C: Forbidden submodule reconstruction: from app import models -> MUST FAIL
+    target_cli.write_text("from app import models\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models'" in err for err in errs_c)
+
+    # Case D: Direct forbidden import: import app.models -> MUST FAIL
+    target_cli.write_text("import app.models\n" + original_code, encoding="utf-8")
+    errs_d = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models'" in err for err in errs_d)
+
+    # Case E: Forbidden deep descendant: import app.models.foo -> MUST FAIL
+    target_cli.write_text("import app.models.foo\n" + original_code, encoding="utf-8")
+    errs_e = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models.foo'" in err for err in errs_e)
+
+    # Case F: Forbidden submodule from allowed parent: from app.services import orchestrator -> MUST FAIL
+    target_cli.write_text("from app.services import orchestrator\n" + original_code, encoding="utf-8")
+    errs_f = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.services.orchestrator'" in err for err in errs_f)
+
+    # Case G: Positive control: legitimate import of core module -> MUST PASS
+    target_cli.write_text("import app.agent_review.contracts_v2\n" + original_code, encoding="utf-8")
+    errs_g = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("contracts_v2" in err for err in errs_g)
+
+
+def test_countermodel_f4_optimization_resistance(tmp_path: Path) -> None:
+    """F-04: Subprocess probes resist PYTHONOPTIMIZE and explicit require() calls cannot be eliminated."""
+    # Case A: _clean_env strips PYTHONOPTIMIZE even if set in caller environment
+    dirty_env = {"PYTHONOPTIMIZE": "2"}
+    with pytest.MonkeyPatch.context() as mp:
+        for k, v in dirty_env.items():
+            mp.setenv(k, v)
+        cleaned = _clean_env(tmp_path)
+        assert "PYTHONOPTIMIZE" not in cleaned, "_clean_env must strip PYTHONOPTIMIZE!"
+
+    # Case B: Probe with require() fails closed even under python -O (where assert would be omitted)
+    standalone = tmp_path / "standalone_f4"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+
+    failing_probe = """
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+require(False, "Deliberate failure in probe")
+"""
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", failing_probe],
+        cwd=standalone,
+        env=_clean_env(standalone),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, "Probe with require(False) unexpectedly succeeded under python -O!"
+    assert "Deliberate failure in probe" in result.stderr
+
+
+def test_countermodel_f5_sibling_root_origin_confinement(tmp_path: Path) -> None:
+    """F-05: Module origin confinement uses resolved path components (is_relative_to), not raw string prefix."""
+    standalone_root = tmp_path / "standalone"
+    standalone_root.mkdir()
+    sibling_root = tmp_path / "standalone-old"
+    sibling_root.mkdir()
+    sibling_file = sibling_root / "app" / "contracts_v2.py"
+
+    resolved_root = standalone_root.resolve()
+    resolved_file = sibling_file.resolve()
+
+    # Flaw proof: raw startswith falsely accepts the sibling root because "/tmp/standalone-old".startswith("/tmp/standalone") is True
+    assert str(resolved_file).startswith(str(resolved_root)), "Precondition: sibling file path must start with root string"
+
+    # Fix proof: resolved path component confinement correctly rejects the sibling root
+    is_contained = (resolved_file == resolved_root) or resolved_file.is_relative_to(resolved_root)
+    assert not is_contained, "Component-aware is_relative_to must reject sibling directory path!"
+
+
+@pytest.mark.requires_network
+def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
+    """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""
+    standalone = tmp_path / "standalone_composed"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    head_sha = _init_git_in_standalone(standalone)
+
+    venv_dir = tmp_path / "venv"
+    install_script = standalone / "scripts" / "install-agent-review-toolrepo.sh"
+    install_result = subprocess.run(
+        ["bash", str(install_script), str(venv_dir)],
+        capture_output=True,
+        text=True,
+    )
+    assert install_result.returncode == 0, f"Installer failed with returncode {install_result.returncode}:\n{install_result.stderr}\n{install_result.stdout}"
+
+    venv_python = str(venv_dir / "bin" / "python3")
+    assert Path(venv_python).is_file(), f"Venv python binary not found at {venv_python}"
+
+    # Execute representative Layer E probes with the lock-built interpreter
+    _run_core_probe(standalone, python_executable=venv_python)
+    _run_v1_probe(standalone, python_executable=venv_python)
+    _run_v2_probe(standalone, head_sha, python_executable=venv_python)
+    _run_coexistence_probe(standalone, head_sha, python_executable=venv_python)
