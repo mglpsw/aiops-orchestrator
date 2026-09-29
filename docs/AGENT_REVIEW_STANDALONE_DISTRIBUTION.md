@@ -1,6 +1,6 @@
 # AgentReview Standalone Distribution Closure (#351-B0)
 
-**Status:** `VERIFIED | B0 DISTRIBUTION CLOSURE PROVEN`  
+**Status:** `CANDIDATE | B0 DISTRIBUTION CLOSURE — exact-head qualification pending`
 **Owner:** `#351` (distribution & source separation track)  
 **Roadmap:** `#46` (canonical roadmap authority)  
 **Reference:** [`docs/CROSS_REPO_DISSOLUTION_MATRIX.md`](CROSS_REPO_DISSOLUTION_MATRIX.md)  
@@ -102,7 +102,7 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../../te
 5. **Controle Positivo v2:** Execução de `build_target_pack_manifest_v2` navegando pela árvore git dos `templates/` e `schemas/` dentro da raiz temporária standalone, gerando manifest e hashes válidos.
 6. **Coexistência v1/v2:** Ambas as capacidades são exercitadas no mesmo ambiente materializado sem interferência mútua.
 
-### Countermodels Focais
+### Countermodels Focais e Controles de Fronteira
 
 - **M1 — Omissão de primitiva compartilhada:** Remover `strict_json.py` causa falha causal direta (`ModuleNotFoundError`) nos módulos dependentes.
 - **M2 — Omissão de assets de templates:** Remover `templates/agentreview-v2-target-pack` causa falha imediata e controlada em `build_target_pack_manifest_v2` com `TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2)`.
@@ -110,6 +110,11 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../../te
 - **M4 — Injeção de dependência ou módulo de runtime:** Declarar uma superfície proibida de runtime (`app/models/database.py`) ou injetar código com importação de pacote proibido (`import fastapi`) em arquivos da distribuição é detectado e rejeitado deterministicamente pelo validador via inspeção de AST.
 - **M5 — Violação do contrato estrutural de instalação:** Omitir artefatos obrigatórios da fronteira de instalação (`requirements-agent-review.lock`, `scripts/install-agent-review-toolrepo.sh`, `docs/AGENT_REVIEW_V2_INSTALLATION.md`), declarar fronteira vazia (`install_boundary: []`), apontar arquivo inexistente ou usar schema/versão não suportada invalida deterministicamente a distribuição.
 - **M6 — Fronteira parcial v1 ou v2:** A exclusão acidental de arquivos de qualquer um dos perfis causa falha no controle positivo correspondente.
+- **T-01 — Não-vacuidade estrutural das seções centrais:** O manifesto v1 não pode omitir ou esvaziar seções estruturais obrigatórias (`core_packages`, `package_roots`, `shared_primitives`, `required_asset_trees`, `install_boundary`, `distribution_clis`) nem omitir âncoras essenciais do produto, diferenciando omissão de contrato de arquivo inexistente em disco.
+- **T-02 — Confinamento de `ImportFrom` e star imports:** Submódulos e pacotes proibidos de runtime não escapam via módulos-pai permitidos (ex.: `from app import models` e `from app.services import orchestrator` são resolvidos e bloqueados deterministicamente, enquanto imports de símbolos permitidos não geram falsos positivos); imports internos ambíguos de asterisco (`from app import *`) falham closed.
+- **T-03 — Confinamento de caminhos e symlinks:** Todos os caminhos declarados devem ser caminhos canônicos POSIX relativos ao repositório, rejeitando traversal (`..`), caminhos absolutos, separadores backslash ou espaços. A resolução em disco e a materialização comprovam que caminhos de origem e destino, incluindo symlinks, permanecem estritamente confinados às suas respectivas raízes.
+- **T-04 — Rejeição de manifesto explícito vazio ou inválido:** Passagem explícita de `manifest={}` ou manifesto com esquema inválido é validada diretamente e rejeitada (`StandaloneClosureValidationError`), nunca realizando fallback silencioso para a configuração padrão do repositório (`load_manifest() if manifest is None else manifest`).
+- **T-05 — Alvo de materialização limpo e fechamento de saída:** A materialização standalone exige que o diretório de destino seja ausente ou vazio; diretórios não-vazios falham closed sem mutação ou exclusão de arquivos preexistentes do chamador. Todos os arquivos no diretório final são verificados contra a fronteira copiada (fechamento de saída).
 
 ---
 

@@ -24,13 +24,66 @@ DEFAULT_MANIFEST_PATH = (
 
 
 SUPPORTED_SCHEMA_IDS = frozenset({"agent-review.standalone-distribution-manifest.v1"})
-REQUIRED_INSTALL_BOUNDARY_V1 = frozenset(
-    {
-        "requirements-agent-review.lock",
-        "scripts/install-agent-review-toolrepo.sh",
-        "docs/AGENT_REVIEW_V2_INSTALLATION.md",
-    }
-)
+
+REQUIRED_BOUNDARY_ANCHORS_V1: dict[str, frozenset[str]] = {
+    "core_packages": frozenset({"app/agent_review"}),
+    "package_roots": frozenset({"app/__init__.py"}),
+    "shared_primitives": frozenset(
+        {
+            "app/common/strict_json.py",
+            "app/services/environment_context.py",
+        }
+    ),
+    "required_asset_trees": frozenset(
+        {
+            "templates/agentreview-v2-target-pack",
+            "schemas/agent-review/v2",
+        }
+    ),
+    "install_boundary": frozenset(
+        {
+            "requirements-agent-review.lock",
+            "scripts/install-agent-review-toolrepo.sh",
+            "docs/AGENT_REVIEW_V2_INSTALLATION.md",
+        }
+    ),
+    "distribution_clis": frozenset(
+        {
+            "scripts/agent-review-target-pack-v2.py",
+            "scripts/aiops-review-intake.py",
+            "scripts/aiops-review-quality-gate-v2.py",
+            "scripts/aiops-review-synthesize.py",
+            "scripts/github_agent_review.py",
+        }
+    ),
+}
+
+REQUIRED_INSTALL_BOUNDARY_V1 = REQUIRED_BOUNDARY_ANCHORS_V1["install_boundary"]
+
+
+def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
+    """Validate that rel_path_str is a canonical POSIX repository-relative path without escape or traversal."""
+    if not isinstance(rel_path_str, str):
+        raise ValueError(f"Path must be a string, got {type(rel_path_str).__name__}")
+    if not rel_path_str:
+        raise ValueError("Path cannot be empty")
+    if "\\" in rel_path_str:
+        raise ValueError(f"Path contains backslash separator: {rel_path_str!r}")
+    if rel_path_str.strip() != rel_path_str:
+        raise ValueError(f"Path contains leading or trailing whitespace: {rel_path_str!r}")
+    if rel_path_str.startswith("/"):
+        raise ValueError(f"Absolute paths not permitted in distribution boundary: {rel_path_str!r}")
+
+    parts = rel_path_str.split("/")
+    for part in parts:
+        if part == "":
+            raise ValueError(f"Non-canonical empty path component in: {rel_path_str!r}")
+        if part == ".":
+            raise ValueError(f"Current-directory '.' component not permitted in path: {rel_path_str!r}")
+        if part == "..":
+            raise ValueError(f"Parent-traversal '..' component not permitted in path: {rel_path_str!r}")
+
+    return Path(rel_path_str)
 
 
 class StandaloneClosureValidationError(Exception):
@@ -49,12 +102,17 @@ def load_manifest(manifest_path: Path | None = None) -> dict[str, Any]:
 
 def derive_ast_imports_from_file(
     file_path: Path,
+    repo_root: Path | None = None,
+    forbidden_surfaces: set[str] | None = None,
 ) -> tuple[set[str], set[str]]:
     """Parse a Python source file and return (external_packages, internal_app_imports)."""
     text = file_path.read_text(encoding="utf-8")
     tree = ast.parse(text, filename=str(file_path))
     external_pkgs: set[str] = set()
     app_imports: set[str] = set()
+
+    root = repo_root or REPO_ROOT
+    forbidden = forbidden_surfaces or set()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -68,6 +126,31 @@ def derive_ast_imports_from_file(
             mod = node.module or ""
             if mod.startswith("app"):
                 app_imports.add(mod)
+                for alias in node.names:
+                    if alias.name == "*":
+                        app_imports.add(f"{mod}.*")
+                    else:
+                        candidate = f"{mod}.{alias.name}"
+                        # Check whether candidate is a submodule / package on disk or forbidden surface
+                        is_submodule = False
+
+                        candidate_slash = candidate.replace(".", "/")
+                        for fb in forbidden:
+                            if candidate_slash == fb or candidate_slash.startswith(fb.rstrip("/") + "/"):
+                                is_submodule = True
+                                break
+
+                        if not is_submodule:
+                            candidate_parts = candidate.split(".")
+                            for check_root in {root, REPO_ROOT}:
+                                check_file = check_root / Path(*candidate_parts).with_suffix(".py")
+                                check_dir = check_root / Path(*candidate_parts)
+                                if check_file.is_file() or check_dir.is_dir():
+                                    is_submodule = True
+                                    break
+
+                        if is_submodule:
+                            app_imports.add(candidate)
             elif mod:
                 external_pkgs.add(mod.split(".")[0])
 
@@ -81,6 +164,9 @@ def validate_manifest(
     """Validate distribution boundary declarations and AST import closure against the repo."""
     root = repo_root or REPO_ROOT
     errors: list[str] = []
+
+    if not isinstance(manifest, dict):
+        return [f"Manifest must be a JSON dictionary object, got {type(manifest).__name__}"]
 
     # 0. Version / schema enforcement (fail-closed on unsupported versions)
     schema_id = manifest.get("schema_id")
@@ -97,26 +183,37 @@ def validate_manifest(
         )
         return errors
 
-    # 1. Structural schema requirements
+    # 1. Structural schema requirements and non-vacuity enforcement
     dist_boundary = manifest.get("distribution_boundary")
     if not isinstance(dist_boundary, dict):
         return ["Manifest is missing required 'distribution_boundary' dictionary."]
 
-    # Enforce minimum required install contract anchors for v1
-    install_boundary_entries = set(dist_boundary.get("install_boundary", []))
-    missing_install_anchors = sorted(REQUIRED_INSTALL_BOUNDARY_V1 - install_boundary_entries)
-    if missing_install_anchors:
-        errors.append(
-            f"Required install contract artifact(s) omitted from install_boundary: {missing_install_anchors}"
-        )
+    for section_name, required_anchors in REQUIRED_BOUNDARY_ANCHORS_V1.items():
+        if section_name not in dist_boundary:
+            errors.append(f"Required boundary section '{section_name}' is missing from distribution_boundary.")
+            continue
+        entries = dist_boundary.get(section_name)
+        if not isinstance(entries, list):
+            errors.append(f"Section '{section_name}' in distribution_boundary must be a list.")
+            continue
+        if not entries:
+            errors.append(f"Section '{section_name}' in distribution_boundary cannot be empty.")
+            continue
+        missing_anchors = sorted(required_anchors - set(entries))
+        if missing_anchors:
+            errors.append(
+                f"Required anchor(s) omitted from '{section_name}': {missing_anchors}"
+            )
 
     forbidden_surfaces = set(manifest.get("forbidden_runtime_surfaces", []))
     dep_closure = manifest.get("dependency_closure", {})
     forbidden_packages = {p.lower() for p in dep_closure.get("forbidden_runtime_packages", [])}
     allowed_packages = {p.lower() for p in dep_closure.get("allowed_third_party_packages", [])}
 
-    # 2. Check for existence and runtime surface leaks in declared files
+    # 2. Check for existence, path confinement and runtime surface leaks in declared files
     declared_paths: list[str] = []
+    root_resolved = root.resolve()
+
     for section_name in (
         "core_packages",
         "package_roots",
@@ -127,25 +224,56 @@ def validate_manifest(
     ):
         items = dist_boundary.get(section_name, [])
         if not isinstance(items, list):
-            errors.append(f"Section '{section_name}' in distribution_boundary must be a list.")
             continue
-        for rel_path in items:
-            declared_paths.append(rel_path)
+        for rel_path_str in items:
+            try:
+                rel_path = admit_manifest_relative_path_v1(rel_path_str)
+            except ValueError as exc:
+                errors.append(f"Non-canonical or escaping distribution path: {exc}")
+                continue
+
+            declared_paths.append(rel_path_str)
             full_path = root / rel_path
+
             if not full_path.exists():
-                errors.append(f"Declared distribution path does not exist: {rel_path}")
+                errors.append(f"Declared distribution path does not exist: {rel_path_str}")
+                continue
+
+            # Resolved-source confinement check (prevent symlink escape)
+            try:
+                resolved_full = full_path.resolve()
+                if not (resolved_full == root_resolved or resolved_full.is_relative_to(root_resolved)):
+                    errors.append(
+                        f"Resolved source path escapes repository root: {rel_path_str} -> {resolved_full}"
+                    )
+                    continue
+            except Exception as exc:
+                errors.append(f"Failed to resolve path {rel_path_str}: {exc}")
+                continue
+
+            # If directory, ensure no contained symlinks escape repository root
+            if full_path.is_dir():
+                for sub in full_path.rglob("*"):
+                    try:
+                        resolved_sub = sub.resolve()
+                        if not (resolved_sub == root_resolved or resolved_sub.is_relative_to(root_resolved)):
+                            errors.append(
+                                f"Symlink in distribution tree escapes repository root: {sub.relative_to(root)} -> {resolved_sub}"
+                            )
+                    except Exception as exc:
+                        errors.append(f"Failed to resolve item {sub}: {exc}")
 
             # Check if any forbidden runtime surface is declared
             for forbidden in forbidden_surfaces:
-                if rel_path == forbidden or rel_path.startswith(forbidden.rstrip("/") + "/"):
+                if rel_path_str == forbidden or rel_path_str.startswith(forbidden.rstrip("/") + "/"):
                     errors.append(
-                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path} matches {forbidden}"
+                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path_str} matches {forbidden}"
                     )
 
     # 3. Gather all Python files in the distribution boundary
     distribution_py_files: list[Path] = []
-    for rel_path in declared_paths:
-        full_path = root / rel_path
+    for rel_path_str in declared_paths:
+        full_path = root / rel_path_str
         if full_path.is_file() and full_path.suffix == ".py":
             distribution_py_files.append(full_path)
         elif full_path.is_dir():
@@ -183,7 +311,9 @@ def validate_manifest(
 
     for py_file in distribution_py_files:
         try:
-            ext_pkgs, local_app_imports = derive_ast_imports_from_file(py_file)
+            ext_pkgs, local_app_imports = derive_ast_imports_from_file(
+                py_file, repo_root=root, forbidden_surfaces=forbidden_surfaces
+            )
         except Exception as exc:
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
@@ -196,7 +326,6 @@ def validate_manifest(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
                 )
             elif pkg not in stdlib_top_levels and pkg_lower not in allowed_packages:
-                # Check normalized (e.g. pyyaml -> yaml)
                 if pkg_lower == "yaml" and "pyyaml" in allowed_packages:
                     continue
                 errors.append(
@@ -205,9 +334,16 @@ def validate_manifest(
 
         # Check local app imports
         for mod in local_app_imports:
+            if mod.endswith(".*"):
+                errors.append(
+                    f"Ambiguous internal star import '{mod}' in {py_file.relative_to(root)}: star imports from internal modules are forbidden"
+                )
+                continue
+
             # Check forbidden runtime prefixes
             is_forbidden = any(
-                mod == fb.replace("/", ".") or mod.startswith(fb.replace("/", ".") + ".")
+                mod == fb.replace("/", ".").rstrip(".py")
+                or mod.startswith(fb.replace("/", ".").rstrip(".py") + ".")
                 for fb in forbidden_surfaces
                 if fb.startswith("app/")
             )
@@ -235,7 +371,7 @@ def materialize_standalone_distribution(
     No files outside the declared boundary are copied. Any attempt to copy a forbidden
     surface raises StandaloneClosureValidationError.
     """
-    manifest_data = manifest or load_manifest()
+    manifest_data = load_manifest() if manifest is None else manifest
     validation_errors = validate_manifest(manifest_data, repo_root=repo_root)
     if validation_errors:
         raise StandaloneClosureValidationError(
@@ -243,10 +379,23 @@ def materialize_standalone_distribution(
         )
 
     target_dir = target_dir.resolve()
-    target_dir.mkdir(parents=True, exist_ok=True)
+    if target_dir.exists():
+        if not target_dir.is_dir():
+            raise StandaloneClosureValidationError(
+                f"Materialization target exists and is not a directory: {target_dir}"
+            )
+        existing_items = list(target_dir.iterdir())
+        if existing_items:
+            raise StandaloneClosureValidationError(
+                f"Materialization target directory must be empty or absent, but contains {len(existing_items)} existing item(s): {target_dir}"
+            )
+    else:
+        target_dir.mkdir(parents=True, exist_ok=True)
 
     dist_boundary = manifest_data["distribution_boundary"]
     forbidden_surfaces = set(manifest_data.get("forbidden_runtime_surfaces", []))
+    repo_resolved = repo_root.resolve()
+    copied_manifest_paths: list[str] = []
 
     for section_name in (
         "core_packages",
@@ -258,7 +407,7 @@ def materialize_standalone_distribution(
     ):
         items = dist_boundary.get(section_name, [])
         for rel_path_str in items:
-            rel_path = Path(rel_path_str)
+            rel_path = admit_manifest_relative_path_v1(rel_path_str)
             src_path = repo_root / rel_path
             dest_path = target_dir / rel_path
 
@@ -269,16 +418,51 @@ def materialize_standalone_distribution(
                         f"Refusing to materialize forbidden surface: {rel_path_str}"
                     )
 
+            # Check resolved source confinement
+            resolved_src = src_path.resolve()
+            if not (resolved_src == repo_resolved or resolved_src.is_relative_to(repo_resolved)):
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
+                )
+
+            # Check destination confinement
+            resolved_dest = dest_path.resolve()
+            if not resolved_dest.is_relative_to(target_dir):
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
+                )
+
             if src_path.is_file():
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_path)
+                copied_manifest_paths.append(rel_path_str)
             elif src_path.is_dir():
+                for sub in src_path.rglob("*"):
+                    resolved_sub = sub.resolve()
+                    if not (resolved_sub == repo_resolved or resolved_sub.is_relative_to(repo_resolved)):
+                        raise StandaloneClosureValidationError(
+                            f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub}"
+                        )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(
                     src_path,
                     dest_path,
                     dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                )
+                copied_manifest_paths.append(rel_path_str)
+
+    # Output closure check: verify every materialized file belongs to the declared boundary
+    for item in target_dir.rglob("*"):
+        if item.is_file():
+            rel_to_target = item.relative_to(target_dir).as_posix()
+            is_declared = any(
+                rel_to_target == decl or rel_to_target.startswith(decl.rstrip("/") + "/")
+                for decl in copied_manifest_paths
+            )
+            if not is_declared:
+                raise StandaloneClosureValidationError(
+                    f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
                 )
 
     return target_dir

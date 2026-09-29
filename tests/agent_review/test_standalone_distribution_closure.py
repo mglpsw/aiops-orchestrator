@@ -472,14 +472,14 @@ def test_countermodel_m5_missing_install_contract() -> None:
         "requirements-agent-review.lock"
     )
     errors_lock = validator.validate_manifest(mutated_omit_lock, repo_root=REPO_ROOT)
-    assert any("Required install contract artifact(s) omitted from install_boundary" in err for err in errors_lock)
+    assert any("Required anchor(s) omitted from 'install_boundary'" in err for err in errors_lock)
     assert any("requirements-agent-review.lock" in err for err in errors_lock)
 
     # Case B: Completely empty install_boundary: []
     mutated_empty = copy.deepcopy(manifest)
     mutated_empty["distribution_boundary"]["install_boundary"] = []
     errors_empty = validator.validate_manifest(mutated_empty, repo_root=REPO_ROOT)
-    assert any("Required install contract artifact(s) omitted from install_boundary" in err for err in errors_empty)
+    assert any("cannot be empty" in err for err in errors_empty)
 
     # Case C: Declared artifact missing on filesystem (distinguishes omission from missing file)
     mutated_nonexistent = copy.deepcopy(manifest)
@@ -492,6 +492,192 @@ def test_countermodel_m5_missing_install_contract() -> None:
     mutated_schema["schema_id"] = "agent-review.unsupported.schema.v99"
     errors_schema = validator.validate_manifest(mutated_schema, repo_root=REPO_ROOT)
     assert any("Unsupported or missing schema_id" in err for err in errors_schema)
+
+
+def test_countermodel_t01_structural_non_vacuity_of_required_boundary_sections() -> None:
+    """T-01: Manifest cannot omit or empty mandatory core, package roots, assets, CLIs, or install anchors."""
+    manifest = validator.load_manifest()
+
+    # 1. Remove core_packages section
+    mutated_no_core = copy.deepcopy(manifest)
+    del mutated_no_core["distribution_boundary"]["core_packages"]
+    errs = validator.validate_manifest(mutated_no_core, repo_root=REPO_ROOT)
+    assert any("Required boundary section 'core_packages' is missing" in err for err in errs)
+
+    # 2. core_packages = []
+    mutated_empty_core = copy.deepcopy(manifest)
+    mutated_empty_core["distribution_boundary"]["core_packages"] = []
+    errs = validator.validate_manifest(mutated_empty_core, repo_root=REPO_ROOT)
+    assert any("Section 'core_packages' in distribution_boundary cannot be empty" in err for err in errs)
+
+    # 3. Remove mandatory app/agent_review anchor from core_packages
+    mutated_core_anchor = copy.deepcopy(manifest)
+    mutated_core_anchor["distribution_boundary"]["core_packages"] = ["app/some_other_package"]
+    errs = validator.validate_manifest(mutated_core_anchor, repo_root=REPO_ROOT)
+    assert any("Required anchor(s) omitted from 'core_packages': ['app/agent_review']" in err for err in errs)
+
+    # 4. package_roots = []
+    mutated_empty_roots = copy.deepcopy(manifest)
+    mutated_empty_roots["distribution_boundary"]["package_roots"] = []
+    errs = validator.validate_manifest(mutated_empty_roots, repo_root=REPO_ROOT)
+    assert any("Section 'package_roots' in distribution_boundary cannot be empty" in err for err in errs)
+
+    # 5. required_asset_trees = []
+    mutated_empty_assets = copy.deepcopy(manifest)
+    mutated_empty_assets["distribution_boundary"]["required_asset_trees"] = []
+    errs = validator.validate_manifest(mutated_empty_assets, repo_root=REPO_ROOT)
+    assert any("Section 'required_asset_trees' in distribution_boundary cannot be empty" in err for err in errs)
+
+    # 6. Remove one mandatory asset tree
+    mutated_assets = copy.deepcopy(manifest)
+    mutated_assets["distribution_boundary"]["required_asset_trees"].remove("schemas/agent-review/v2")
+    errs = validator.validate_manifest(mutated_assets, repo_root=REPO_ROOT)
+    assert any("Required anchor(s) omitted from 'required_asset_trees': ['schemas/agent-review/v2']" in err for err in errs)
+
+    # 7. distribution_clis = []
+    mutated_empty_clis = copy.deepcopy(manifest)
+    mutated_empty_clis["distribution_boundary"]["distribution_clis"] = []
+    errs = validator.validate_manifest(mutated_empty_clis, repo_root=REPO_ROOT)
+    assert any("Section 'distribution_clis' in distribution_boundary cannot be empty" in err for err in errs)
+
+    # 8. Remove required CLI anchor (e.g. scripts/agent-review-target-pack-v2.py)
+    mutated_clis = copy.deepcopy(manifest)
+    mutated_clis["distribution_boundary"]["distribution_clis"].remove("scripts/agent-review-target-pack-v2.py")
+    errs = validator.validate_manifest(mutated_clis, repo_root=REPO_ROOT)
+    assert any("Required anchor(s) omitted from 'distribution_clis': ['scripts/agent-review-target-pack-v2.py']" in err for err in errs)
+
+    # 9. Invariant: Omission from manifest is distinguished from declared-but-missing on disk
+    mutated_missing_disk = copy.deepcopy(manifest)
+    mutated_missing_disk["distribution_boundary"]["distribution_clis"].append("scripts/nonexistent-cli-anchor.py")
+    errs_disk = validator.validate_manifest(mutated_missing_disk, repo_root=REPO_ROOT)
+    assert any("Declared distribution path does not exist: scripts/nonexistent-cli-anchor.py" in err for err in errs_disk)
+    assert not any("omitted from 'distribution_clis'" in err for err in errs_disk)
+
+
+def test_countermodel_t02_import_from_submodule_escape_and_star_import(tmp_path: Path) -> None:
+    """T-02: ImportFrom cannot bypass forbidden module checks via allowed parent; internal star imports fail closed."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_t02"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    target_cli = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_cli.read_text(encoding="utf-8")
+
+    # Case A: from app import models -> MUST FAIL (forbidden app.models)
+    target_cli.write_text("from app import models\n" + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models' imported" in err for err in errs_a)
+
+    # Case B: from app.services import orchestrator -> MUST FAIL (forbidden app.services.orchestrator)
+    target_cli.write_text("from app.services import orchestrator\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.services.orchestrator' imported" in err for err in errs_b)
+
+    # Case C: from app.agent_review import contracts_v2 -> MUST PASS
+    target_cli.write_text("from app.agent_review import contracts_v2\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("contracts_v2" in err for err in errs_c)
+
+    # Case D: from app.common import strict_json -> MUST PASS
+    target_cli.write_text("from app.common import strict_json\n" + original_code, encoding="utf-8")
+    errs_d = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("strict_json" in err for err in errs_d)
+
+    # Case E: from app.common.strict_json import strict_json_loads -> MUST PASS (symbol, not module)
+    target_cli.write_text("from app.common.strict_json import strict_json_loads\n" + original_code, encoding="utf-8")
+    errs_e = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("strict_json_loads" in err for err in errs_e)
+
+    # Case F: from app import * -> MUST FAIL (ambiguous internal star import fail-closed)
+    target_cli.write_text("from app import *\n" + original_code, encoding="utf-8")
+    errs_f = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Ambiguous internal star import 'app.*'" in err for err in errs_f)
+
+
+def test_countermodel_t03_declared_path_confinement_and_symlink_escape(tmp_path: Path) -> None:
+    """T-03: Paths must be canonical POSIX repository-relative without parent traversal, absolute paths, or symlink escapes."""
+    manifest = validator.load_manifest()
+
+    # Case A: Parent traversal ../
+    mutated_parent = copy.deepcopy(manifest)
+    mutated_parent["distribution_boundary"]["core_packages"].append("../other_dir")
+    errs_a = validator.validate_manifest(mutated_parent, repo_root=REPO_ROOT)
+    assert any("Parent-traversal '..' component not permitted" in err for err in errs_a)
+
+    # Case B: Absolute path
+    mutated_abs = copy.deepcopy(manifest)
+    mutated_abs["distribution_boundary"]["core_packages"].append("/etc/passwd")
+    errs_b = validator.validate_manifest(mutated_abs, repo_root=REPO_ROOT)
+    assert any("Absolute paths not permitted" in err for err in errs_b)
+
+    # Case C: Nested parent traversal attempting escape to forbidden runtime surface
+    mutated_nested = copy.deepcopy(manifest)
+    mutated_nested["distribution_boundary"]["core_packages"].append("app/agent_review/../models/__init__.py")
+    errs_c = validator.validate_manifest(mutated_nested, repo_root=REPO_ROOT)
+    assert any("Parent-traversal '..' component not permitted" in err for err in errs_c)
+
+    # Case D: Source symlink escaping repository root
+    temp_repo = tmp_path / "temp_repo_t03"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    outside_file = tmp_path / "outside_secret.txt"
+    outside_file.write_text("secret outside repo", encoding="utf-8")
+    symlink_file = temp_repo / "app" / "agent_review" / "escaping_symlink.py"
+    symlink_file.symlink_to(outside_file)
+
+    errs_d = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("escapes repository root" in err for err in errs_d)
+
+
+def test_countermodel_t04_explicit_empty_manifest_fallback(tmp_path: Path) -> None:
+    """T-04: Explicit empty manifest is validated and rejected, never silently falling back to default."""
+    target = tmp_path / "target_t04"
+
+    # Case A: manifest={} raises StandaloneClosureValidationError
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target, manifest={})
+    assert "Unsupported or missing schema_id" in str(exc_info.value) or "missing required 'distribution_boundary'" in str(exc_info.value)
+
+    # Case B: manifest={"distribution_boundary": {}} raises StandaloneClosureValidationError
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info_b:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target, manifest={"distribution_boundary": {}})
+    assert "Unsupported or missing schema_id" in str(exc_info_b.value)
+
+    # Case C: manifest=None uses repository default and succeeds
+    target_c = tmp_path / "target_t04_default"
+    dest = validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_c, manifest=None)
+    assert dest.exists()
+    assert (dest / "app" / "agent_review").is_dir()
+
+
+def test_countermodel_t05_clean_materialization_target_and_output_closure(tmp_path: Path) -> None:
+    """T-05: Nonempty target is rejected without deleting existing files; output closure is enforced."""
+    manifest = validator.load_manifest()
+
+    # Case A: Absent target directory is created and populated
+    target_absent = tmp_path / "target_absent"
+    assert not target_absent.exists()
+    dest_a = validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_absent)
+    assert dest_a.is_dir()
+
+    # Case B: Existing empty target directory is accepted
+    target_empty = tmp_path / "target_empty"
+    target_empty.mkdir()
+    dest_b = validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_empty)
+    assert dest_b.is_dir()
+
+    # Case C: Existing nonempty target is rejected fail-closed; pre-seeded dirty file is NOT deleted
+    target_dirty = tmp_path / "target_dirty"
+    target_dirty.mkdir()
+    dirty_marker = target_dirty / "app" / "models" / "database.py"
+    dirty_marker.parent.mkdir(parents=True)
+    dirty_marker.write_text("# preexisting dirty runtime file", encoding="utf-8")
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info_c:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_dirty, manifest=manifest)
+    assert "Materialization target directory must be empty or absent" in str(exc_info_c.value)
+
+    # Invariant: Materializer did NOT mutate or delete the caller's dirty file
+    assert dirty_marker.exists()
+    assert dirty_marker.read_text(encoding="utf-8") == "# preexisting dirty runtime file"
 
 
 def test_countermodel_m6_v1_or_v2_partial_boundary(tmp_path: Path) -> None:
