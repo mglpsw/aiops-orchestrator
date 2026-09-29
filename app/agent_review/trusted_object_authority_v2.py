@@ -1179,7 +1179,8 @@ class AuthorizedGitStorageSetV2:
         already made before raising. `contains_fd` is unaffected.
         """
         duplicates: list[AuthorizedStorageRootDuplicateV2] = []
-        made: list[int] = []
+        # Pre-sized, so recording a new descriptor cannot itself allocate and fail.
+        made: list[int | None] = [None] * len(self._root_fds)
         with self._lock:
             if self._closed:
                 raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2)
@@ -1190,7 +1191,7 @@ class AuthorizedGitStorageSetV2:
             try:
                 for index, root_fd in enumerate(self._root_fds):
                     dup_fd = fcntl.fcntl(root_fd, fcntl.F_DUPFD_CLOEXEC, 0)
-                    made.append(dup_fd)  # owned before anything else can fail
+                    made[index] = dup_fd  # owned before anything else can fail
                     dup_stat = os.fstat(dup_fd)
                     if (dup_stat.st_dev, dup_stat.st_ino) != self._bound_dev_ino[index]:
                         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
@@ -1202,13 +1203,17 @@ class AuthorizedGitStorageSetV2:
                             locator=self._root_locators[index],
                         )
                     )
+                # Built inside the protected region: if even this fails, every
+                # duplicate is closed (Codex 4133784308).
+                result = tuple(duplicates)
             except BaseException as exc:
                 for dup_fd in made:
-                    _close_ignoring_errors_v2(dup_fd)
+                    if dup_fd is not None:
+                        _close_ignoring_errors_v2(dup_fd)
                 if isinstance(exc, OSError):
                     raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
                 raise
-        return tuple(duplicates)
+        return result
 
     def close(self) -> None:
         with self._lock:

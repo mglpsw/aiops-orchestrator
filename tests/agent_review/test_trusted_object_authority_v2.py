@@ -3301,3 +3301,27 @@ def test_s1a_direct_root_locators_must_be_absolute_normalised_names(tmp_path: Pa
             )
     finally:
         os.close(fd)
+
+
+def test_s1a_failure_building_the_result_closes_every_duplicate(tmp_path: Path, monkeypatch) -> None:
+    """Codex 4133784308: even the final tuple construction is inside the
+    protected region; a failure there leaks no duplicate."""
+    roots = [tmp_path / "a", tmp_path / "b"]
+    for root in roots:
+        root.mkdir()
+    capability = AuthorizedGitStorageSetV2.from_roots(roots)
+    before = set(os.listdir("/proc/self/fd"))
+
+    def failing_tuple(*args, **kwargs):
+        raise MemoryError("injected")
+
+    monkeypatch.setattr(trusted_object_authority_module_v2, "tuple", failing_tuple, raising=False)
+    try:
+        with pytest.raises(MemoryError):
+            capability.duplicate_authorized_roots()
+    finally:
+        monkeypatch.undo()
+    try:
+        assert set(os.listdir("/proc/self/fd")) == before
+    finally:
+        capability.close()

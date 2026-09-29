@@ -1039,6 +1039,18 @@ class _SourceSessionV2:
         _close_once_v2(fd)
         return data
 
+    def check_listed_candidate(self, parent: _AdmittedDirV2, name: str) -> None:
+        """Classify an object-looking name that will NOT be copied: one charged
+        no-follow open, type checked on the same fd, closed; no byte is read."""
+        self._tracker.charge(descriptor_opens=1)
+        try:
+            fd = _open_regular_file_no_follow_v2(parent.fd, name, missing_is_legitimate=False)
+        except TrustedObjectAuthorityError as exc:
+            raise _source_refusal_from_v2(exc) from exc
+        if fd is None:
+            raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_CHANGED_DURING_READ_REASON_V2)
+        _close_once_v2(fd)
+
     def read_listed_object(self, parent: _AdmittedDirV2, name: str) -> bytes:
         """A file already seen in a listing: charged as a copied file and an
         open BEFORE it is opened; its bytes are charged from `fstat` before
@@ -1422,7 +1434,15 @@ class _PhysicalCopierV2:
                     _require_v2(match is not None)
                     present.setdefault(match.group(1), set()).add(match.group(2))
                 for base in sorted(present):
-                    if present[base] != {"pack", "idx"} or base in self._packs:
+                    if base in self._packs:
+                        continue  # duplicate physical occurrence: charged as an entry, not opened (§10)
+                    if present[base] != {"pack", "idx"}:
+                        # Incomplete pair: not copied, but an object-looking name is
+                        # still classified by a charged no-follow open, so a symlink or
+                        # special file is refused rather than skipped silently (§11b;
+                        # Codex 4133784323).
+                        for suffix in sorted(present[base]):
+                            session.check_listed_candidate(pack_dir, base + "." + suffix)
                         continue
                     for suffix in ("idx", "pack"):
                         data = session.read_listed_object(pack_dir, base + "." + suffix)

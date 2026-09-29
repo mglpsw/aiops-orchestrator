@@ -2270,3 +2270,36 @@ def test_mutation_l8_admitted_dir_sharing_the_root_descriptor_is_killed(tmp_path
     monkeypatch.setattr(psv._SourceSessionV2, "release", release_without_closing_roots)
     monkeypatch.setattr(psv._SourceSessionV2, "close", never_close_twice)
     assert _l8_shared_descriptors(tmp_path, monkeypatch), "intended discriminator (single owner) did not fire"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "regular"])
+def test_a5_a6_incomplete_pack_pair_candidates_are_classified_not_skipped(tmp_path: Path, kind: str) -> None:
+    """Codex 4133784323 / §11b: a lone `pack-<hex>.pack` is not copied, but an
+    object-looking name is still opened no-follow (charged): a symlink or a
+    special file is refused, a regular lone file is ignored."""
+    repo = _make_repo(tmp_path / "src" / "repo")
+    lone = repo / ".git" / "objects" / "pack" / ("pack-" + "e" * 40 + ".pack")
+    if kind == "symlink":
+        (tmp_path / "src" / "elsewhere.pack").write_bytes(b"x")
+        lone.symlink_to(tmp_path / "src" / "elsewhere.pack")
+    elif kind == "fifo":
+        os.mkfifo(lone)
+    else:
+        lone.write_bytes(b"x")
+    with _deadline():
+        outcome = _publish([tmp_path / "src"], repo, tmp_path / "pub")
+    if kind == "regular":
+        snapshot = _complete(outcome)
+        try:
+            (committed,) = _committed_entries(tmp_path / "pub")
+            assert not (committed / "objects" / "pack" / lone.name).exists()
+        finally:
+            snapshot.close()
+    else:
+        assert isinstance(outcome, NotPublishedV2)
+        expected = (
+            psv.PHYSICAL_SNAPSHOT_SYMLINK_REJECTED_REASON_V2
+            if kind == "symlink"
+            else psv.PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2
+        )
+        assert outcome.reason_code == expected
