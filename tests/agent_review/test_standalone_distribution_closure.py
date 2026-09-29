@@ -157,6 +157,11 @@ from pathlib import Path
 # Verify modules can be imported
 from app.agent_review.contracts_v2 import ChunkPayloadV2
 from app.agent_review.schemas import FinalReviewVerdict
+from app.agent_review.semantic_chunker import classify_file
+from app.agent_review.authoritative_check_policy_v2 import load_authoritative_check_policy_v2
+from app.agent_review.target_pack_build_v2 import build_target_pack_manifest_v2
+from app.agent_review.schema_export_v2 import render_v2_json_schemas
+from app.agent_review.cli import build_intake
 from app.common.strict_json import strict_json_loads, canonical_json_text
 from app.services.environment_context import build_environment_context
 
@@ -164,10 +169,15 @@ from app.services.environment_context import build_environment_context
 standalone_root = str(Path('.').resolve())
 import app.agent_review.contracts_v2 as mod_c2
 import app.agent_review.schemas as mod_s
+import app.agent_review.semantic_chunker as mod_sc
+import app.agent_review.authoritative_check_policy_v2 as mod_ac
+import app.agent_review.target_pack_build_v2 as mod_tp
+import app.agent_review.schema_export_v2 as mod_se
+import app.agent_review.cli as mod_cli
 import app.common.strict_json as mod_sj
 import app.services.environment_context as mod_ec
 
-for mod in (mod_c2, mod_s, mod_sj, mod_ec):
+for mod in (mod_c2, mod_s, mod_sc, mod_ac, mod_tp, mod_se, mod_cli, mod_sj, mod_ec):
     origin = getattr(mod, '__file__', '')
     assert origin.startswith(standalone_root), f"Escape detected: {mod} origin {origin} is outside {standalone_root}"
 
@@ -624,7 +634,7 @@ def test_countermodel_t03_declared_path_confinement_and_symlink_escape(tmp_path:
     symlink_file.symlink_to(outside_file)
 
     errs_d = validator.validate_manifest(manifest, repo_root=temp_repo)
-    assert any("escapes repository root" in err for err in errs_d)
+    assert any("Symlink found" in err or "escapes repository root" in err for err in errs_d)
 
 
 def test_countermodel_t04_explicit_empty_manifest_fallback(tmp_path: Path) -> None:
@@ -779,13 +789,21 @@ def test_countermodel_u03_symlink_leaving_declared_subtree(tmp_path: Path) -> No
     symlink_dir.symlink_to(forbidden_target)
 
     errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
-    assert any("leaves declared subtree" in err or "resolves to forbidden surface" in err for err in errs_a)
+    assert any("Symlink found" in err or "leaves declared subtree" in err or "resolves to forbidden surface" in err for err in errs_a)
 
     # Invariant: materialize_standalone_distribution rejects it fail-closed
     target_out = tmp_path / "target_out_u03"
     with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
         validator.materialize_standalone_distribution(repo_root=temp_repo, target_dir=target_out, manifest=manifest)
-    assert "leaves declared subtree" in str(exc_info.value) or "symlink to forbidden surface" in str(exc_info.value)
+    assert any(
+        msg in str(exc_info.value)
+        for msg in (
+            "Symlink found in declared distribution tree",
+            "Refusing to materialize distribution tree containing symlink",
+            "leaves declared subtree",
+            "symlink to forbidden surface",
+        )
+    )
 
 
 def test_countermodel_u04_target_overlapping_declared_source_paths(tmp_path: Path) -> None:
@@ -830,3 +848,105 @@ def test_countermodel_u05_bidirectional_forbidden_surface_overlap() -> None:
     # Case C: Sibling directory path sharing prefix without component boundary does NOT falsely overlap
     assert not validator.paths_overlap("app/models_extra", "app/models")
     assert not validator.paths_overlap("app/services_extra", "app/services/orchestrator.py")
+
+
+def test_countermodel_r01_negative_boundary_non_vacuity() -> None:
+    """R-01: Negative boundary cannot be omitted, empty, or missing required runtime surface anchors."""
+    manifest = validator.load_manifest()
+
+    # Case A: Missing forbidden_runtime_surfaces section
+    mutated_a = copy.deepcopy(manifest)
+    del mutated_a["forbidden_runtime_surfaces"]
+    errs_a = validator.validate_manifest(mutated_a, repo_root=REPO_ROOT)
+    assert any("forbidden_runtime_surfaces" in err for err in errs_a)
+
+    # Case B: Empty forbidden_runtime_surfaces list
+    mutated_b = copy.deepcopy(manifest)
+    mutated_b["forbidden_runtime_surfaces"] = []
+    errs_b = validator.validate_manifest(mutated_b, repo_root=REPO_ROOT)
+    assert any("cannot be empty" in err for err in errs_b)
+
+    # Case C: Removal of a mandatory negative anchor (e.g. config/actions.yaml)
+    mutated_c = copy.deepcopy(manifest)
+    mutated_c["forbidden_runtime_surfaces"].remove("config/actions.yaml")
+    errs_c = validator.validate_manifest(mutated_c, repo_root=REPO_ROOT)
+    assert any("Required negative runtime anchor(s) omitted" in err and "config/actions.yaml" in err for err in errs_c)
+
+    # Case D: Positive control - declaring a forbidden surface in positive boundary fails overlap check
+    mutated_d = copy.deepcopy(manifest)
+    mutated_d["distribution_boundary"]["core_packages"].append("app/main.py")
+    errs_d = validator.validate_manifest(mutated_d, repo_root=REPO_ROOT)
+    assert any("Forbidden runtime surface declared in distribution_boundary: app/main.py" in err for err in errs_d)
+
+
+def test_countermodel_r02_relative_target_and_symlinked_target(tmp_path: Path) -> None:
+    """R-02: Target destination confinement functions correctly with relative targets and rejects symlinked targets fail-closed."""
+    # Case A: Relative target path materializes cleanly without spurious escaping errors
+    rel_target_str = os.path.relpath(tmp_path / "relative_target", Path.cwd())
+    rel_target = Path(rel_target_str)
+    assert not rel_target.is_absolute()
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=rel_target)
+    assert (rel_target / "app" / "agent_review" / "contracts_v2.py").is_file()
+
+    # Case B: Symlinked target directory fails closed
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    symlink_target = tmp_path / "symlink_target"
+    symlink_target.symlink_to(real_dir)
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=symlink_target)
+    assert "Materialization target directory cannot be a symlink" in str(exc_b.value)
+
+
+def test_countermodel_r03_symlink_cycles_and_internal_symlinks(tmp_path: Path) -> None:
+    """R-03: Cyclic symlinks and broken internal symlinks within declared distribution members fail closed."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_r03"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    # Ensure forbidden surfaces exist in temp_repo so manifest validation satisfies non-vacuity check
+    for forbidden in manifest["forbidden_runtime_surfaces"]:
+        p = temp_repo / forbidden
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if "." in p.name:
+            p.write_text("# dummy\n", encoding="utf-8")
+        else:
+            p.mkdir(parents=True, exist_ok=True)
+
+    # Case A: Cyclic symlink inside declared tree
+    cycle_dir = temp_repo / "app" / "agent_review" / "sub_cycle"
+    cycle_dir.mkdir(parents=True, exist_ok=True)
+    (cycle_dir / "loop").symlink_to(cycle_dir)
+
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Symlink found in declared distribution tree" in err for err in errs_a)
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=temp_repo, target_dir=tmp_path / "out_cycle", manifest=manifest)
+    assert any(
+        msg in str(exc_a.value)
+        for msg in (
+            "Symlink found in declared distribution tree",
+            "Refusing to materialize distribution tree containing symlink",
+        )
+    )
+
+    # Clean up cycle_dir so Case B can run independently
+    (cycle_dir / "loop").unlink()
+    cycle_dir.rmdir()
+
+    # Case B: Broken internal symlink pointing to nonexistent target
+    broken_link = temp_repo / "app" / "agent_review" / "broken_link.py"
+    broken_link.symlink_to(temp_repo / "app" / "agent_review" / "nonexistent_target.py")
+
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Symlink found in declared distribution tree" in err for err in errs_b)
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=temp_repo, target_dir=tmp_path / "out_broken", manifest=manifest)
+    assert any(
+        msg in str(exc_b.value)
+        for msg in (
+            "Symlink found in declared distribution tree",
+            "Refusing to materialize distribution tree containing symlink",
+        )
+    )

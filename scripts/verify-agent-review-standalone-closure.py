@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Deterministic validator and materializer for AgentReview standalone distribution (#351-B0).
 
-Proves that AgentReview can be materialized, imported, and exercised from an explicit
-product boundary without depending on source or packages belonging exclusively to the
-legacy AIOps Runtime.
+Implements Layer S (Static Boundary Contract) and Layer M (Safe Materializer).
+Executable isolation is proven by Layer E test suite, and the offline installation
+contract is proven by Layer I (requirements-agent-review.lock + toolrepo install tests).
+
+Explicit Non-Claims:
+  B0-N1: Universal static proof of every possible dynamic/latent Python import is NOT claimed.
+  B0-N2: Universal static mapping between AST import names and PyPI distributions is NOT claimed.
+  B0-N3: Standalone wheel/package packaging is deferred to subsequent slice (#351-B1).
+  B0-N4: Proof of every latent unexecuted execution path is NOT claimed.
 """
 
 from __future__ import annotations
@@ -59,6 +65,25 @@ REQUIRED_BOUNDARY_ANCHORS_V1: dict[str, frozenset[str]] = {
 }
 
 REQUIRED_INSTALL_BOUNDARY_V1 = REQUIRED_BOUNDARY_ANCHORS_V1["install_boundary"]
+
+REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: frozenset[str] = frozenset(
+    {
+        "app/main.py",
+        "app/api",
+        "app/agent_router",
+        "app/models",
+        "app/policies",
+        "app/adapters",
+        "app/utils",
+        "app/services/orchestrator.py",
+        "app/services/provider_registry.py",
+        "app/caem_consumer",
+        "app/ri_b0a",
+        "app/projectops",
+        "deploy",
+        "config/actions.yaml",
+    }
+)
 
 
 def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
@@ -242,12 +267,29 @@ def validate_manifest(
                 f"Required anchor(s) omitted from '{section_name}': {missing_anchors}"
             )
 
-    forbidden_surfaces = set(manifest.get("forbidden_runtime_surfaces", []))
+    # 2. Negative boundary contract enforcement (Layer S)
+    if "forbidden_runtime_surfaces" not in manifest:
+        errors.append("Manifest is missing required 'forbidden_runtime_surfaces' list.")
+        return errors
+    raw_forbidden = manifest.get("forbidden_runtime_surfaces")
+    if not isinstance(raw_forbidden, list):
+        errors.append("Field 'forbidden_runtime_surfaces' must be a list.")
+        return errors
+    if not raw_forbidden:
+        errors.append("Field 'forbidden_runtime_surfaces' cannot be empty.")
+        return errors
+
+    forbidden_surfaces = set(raw_forbidden)
+    missing_negative_anchors = sorted(REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1 - forbidden_surfaces)
+    if missing_negative_anchors:
+        errors.append(
+            f"Required negative runtime anchor(s) omitted from 'forbidden_runtime_surfaces': {missing_negative_anchors}"
+        )
+
     dep_closure = manifest.get("dependency_closure", {})
     forbidden_packages = {p.lower() for p in dep_closure.get("forbidden_runtime_packages", [])}
-    allowed_packages = {p.lower() for p in dep_closure.get("allowed_third_party_packages", [])}
 
-    # 2. Check for existence, path confinement and runtime surface leaks in declared files
+    # 3. Check for existence, path confinement and runtime surface leaks in declared files
     declared_paths: list[str] = []
     root_resolved = root.resolve()
 
@@ -276,7 +318,14 @@ def validate_manifest(
                 errors.append(f"Declared distribution path does not exist: {rel_path_str}")
                 continue
 
-            # Resolved-source confinement check (prevent symlink escape)
+            # Symlinks not permitted in distribution boundary (Layer S/M fail-closed policy)
+            if full_path.is_symlink():
+                errors.append(
+                    f"Symlinks not permitted in distribution boundary: {rel_path_str}"
+                )
+                continue
+
+            # Resolved-source confinement check (prevent repository root escape)
             try:
                 resolved_full = full_path.resolve()
                 if not (resolved_full == root_resolved or resolved_full.is_relative_to(root_resolved)):
@@ -296,31 +345,13 @@ def validate_manifest(
                 errors.append(f"Failed to resolve path {rel_path_str}: {exc}")
                 continue
 
-            # If directory, ensure no contained symlinks escape repository root or leave declared subtree
+            # If directory, ensure no contained item is a symlink
             if full_path.is_dir():
                 for sub in full_path.rglob("*"):
-                    try:
-                        resolved_sub = sub.resolve()
-                        if not (resolved_sub == resolved_full or resolved_sub.is_relative_to(resolved_full)):
-                            if not (resolved_sub == root_resolved or resolved_sub.is_relative_to(root_resolved)):
-                                errors.append(
-                                    f"Symlink in distribution tree escapes repository root: {sub.relative_to(root)} -> {resolved_sub}"
-                                )
-                            else:
-                                errors.append(
-                                    f"Symlink or descendant in distribution tree '{rel_path_str}' leaves declared subtree: {sub.relative_to(root)} -> {resolved_sub}"
-                                )
-                            continue
-                        if resolved_sub.is_relative_to(root_resolved):
-                            sub_rel_str = resolved_sub.relative_to(root_resolved).as_posix()
-                            for forbidden in forbidden_surfaces:
-                                if paths_overlap(sub_rel_str, forbidden):
-                                    errors.append(
-                                        f"Symlink or descendant in distribution tree '{rel_path_str}' resolves to forbidden surface: {sub_rel_str} overlaps {forbidden}"
-                                    )
-                                    break
-                    except Exception as exc:
-                        errors.append(f"Failed to resolve item {sub}: {exc}")
+                    if sub.is_symlink():
+                        errors.append(
+                            f"Symlink found in declared distribution tree '{rel_path_str}': {sub.relative_to(root)}"
+                        )
 
             # Check if any forbidden runtime surface is declared
             for forbidden in forbidden_surfaces:
@@ -377,18 +408,12 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages
+        # Check external packages: direct imports of forbidden runtime packages fail closed
         for pkg in ext_pkgs:
             pkg_lower = pkg.lower()
             if pkg_lower in forbidden_packages:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
-                )
-            elif pkg not in stdlib_top_levels and pkg_lower not in allowed_packages:
-                if pkg_lower == "yaml" and "pyyaml" in allowed_packages:
-                    continue
-                errors.append(
-                    f"Unallowed third-party package '{pkg}' imported by {py_file.relative_to(root)}"
                 )
 
         # Check local app imports
@@ -475,6 +500,11 @@ def materialize_standalone_distribution(
                 f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
             )
 
+    if target_dir.is_symlink():
+        raise StandaloneClosureValidationError(
+            f"Materialization target directory cannot be a symlink: {target_dir}"
+        )
+
     if target_dir.exists():
         if not target_dir.is_dir():
             raise StandaloneClosureValidationError(
@@ -519,43 +549,29 @@ def materialize_standalone_distribution(
                     f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
                 )
 
-            # Check destination confinement
+            # Check destination confinement against target_resolved (supports relative and absolute target paths)
             resolved_dest = dest_path.resolve()
-            if not resolved_dest.is_relative_to(target_dir):
+            if not (resolved_dest == target_resolved or resolved_dest.is_relative_to(target_resolved)):
                 raise StandaloneClosureValidationError(
                     f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
                 )
 
+            # Symlinks not permitted in declared distribution members (fail-closed policy)
+            if src_path.is_symlink():
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize symlink member in distribution: {rel_path_str}"
+                )
+
             if src_path.is_file():
-                if resolved_src.is_relative_to(repo_resolved):
-                    src_rel_str = resolved_src.relative_to(repo_resolved).as_posix()
-                    for forbidden in forbidden_surfaces:
-                        if paths_overlap(src_rel_str, forbidden):
-                            raise StandaloneClosureValidationError(
-                                f"Refusing to materialize file resolving to forbidden surface: {src_rel_str} overlaps {forbidden}"
-                            )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_path)
                 copied_manifest_paths.append(rel_path_str)
             elif src_path.is_dir():
                 for sub in src_path.rglob("*"):
-                    resolved_sub = sub.resolve()
-                    if not (resolved_sub == resolved_src or resolved_sub.is_relative_to(resolved_src)):
-                        if not (resolved_sub == repo_resolved or resolved_sub.is_relative_to(repo_resolved)):
-                            raise StandaloneClosureValidationError(
-                                f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub} (escapes repository root)"
-                            )
-                        else:
-                            raise StandaloneClosureValidationError(
-                                f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub} (leaves declared subtree {rel_path_str})"
-                            )
-                    if resolved_sub.is_relative_to(repo_resolved):
-                        sub_rel_str = resolved_sub.relative_to(repo_resolved).as_posix()
-                        for forbidden in forbidden_surfaces:
-                            if paths_overlap(sub_rel_str, forbidden):
-                                raise StandaloneClosureValidationError(
-                                    f"Refusing to materialize tree containing symlink to forbidden surface: {sub_rel_str} overlaps {forbidden}"
-                                )
+                    if sub.is_symlink():
+                        raise StandaloneClosureValidationError(
+                            f"Refusing to materialize distribution tree containing symlink: {sub.relative_to(repo_root)}"
+                        )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(
                     src_path,
@@ -618,7 +634,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {err}", file=sys.stderr)
         return 1
 
-    print("OK: Standalone distribution boundary and AST import closure are valid.")
+    print("OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid.")
+    print("NOTE: Executable isolation evidence is certified by Layer E test suite.")
 
     if args.materialize_to:
         try:
