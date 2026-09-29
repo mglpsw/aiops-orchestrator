@@ -137,9 +137,9 @@ def test_install_script_rejects_incompatible_interpreter_before_venv_creation(tm
     fake_python = tmp_path / "fake_python312.sh"
     fake_python.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = \"-c\" ]; then\n"
-        "    echo \"CPython 3.12\"\n"
-        "    exit 0\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "CPython 3.12"\n'
+        '    exit 0\n'
         "fi\n"
         "exit 1\n",
         encoding="utf-8",
@@ -166,12 +166,12 @@ def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp
     fake_python = tmp_path / "fake_python311.sh"
     fake_python.write_text(
         "#!/bin/sh\n"
-        "if [ \"$1\" = \"-c\" ]; then\n"
-        "    echo \"CPython 3.11\"\n"
-        "    exit 0\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "CPython 3.11"\n'
+        '    exit 0\n'
         "fi\n"
         "# Reached venv creation: echo marker and exit 42\n"
-        "echo \"GUARD_PASSED_CALLED_WITH: $@\" >&2\n"
+        'echo "GUARD_PASSED_CALLED_WITH: $@" >&2\n'
         "exit 42\n",
         encoding="utf-8",
     )
@@ -190,6 +190,50 @@ def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp
     assert result.returncode == 42
     assert "requirements-agent-review.lock is qualified for CPython 3.11" not in result.stderr
     assert "GUARD_PASSED_CALLED_WITH: -m venv" in result.stderr
+
+
+def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Path) -> None:
+    """H1: Ambient PYTHONPATH with malicious sitecustomize is ignored by isolated identity probe (-I -S)."""
+    sc_dir = tmp_path / "ambient_site"
+    sc_dir.mkdir()
+    marker = tmp_path / "sitecustomize_executed.marker"
+    sc = sc_dir / "sitecustomize.py"
+    sc.write_text(
+        f"import sys\n"
+        f"from pathlib import Path\n"
+        f'Path("{marker}").write_text("SITECUSTOMIZE_RAN", encoding="utf-8")\n'
+        f'print("CPython 3.11")\n'
+        f"sys.exit(0)\n",
+        encoding="utf-8",
+    )
+
+    controlled_py = tmp_path / "controlled_python.sh"
+    controlled_py.write_text(
+        f"#!/bin/sh\n"
+        f'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        f'    "{sys.executable}" -I -S -c "pass"\n'
+        f'    echo "CPython 3.14"\n'
+        f"    exit 0\n"
+        f"fi\n"
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    controlled_py.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv_h1"
+    env = dict(os.environ, PYTHONPATH=str(sc_dir), AGENT_REVIEW_PYTHON=str(controlled_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert not marker.exists(), "sitecustomize hook must NOT be executed by identity probe"
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when interpreter is incompatible"
+    assert "requirements-agent-review.lock is qualified for CPython 3.11" in result.stderr
+    assert "CPython 3.14" in result.stderr
 
 
 @pytest.mark.requires_network

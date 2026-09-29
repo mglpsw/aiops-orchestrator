@@ -50,7 +50,7 @@ The script:
 2. verifies that SHA against `git rev-parse HEAD` of the current checkout,
    rejecting a mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
-   is CPython 3.11, refusing incompatible interpreters fail-closed before creating any venv;
+   is CPython 3.11 via an isolated/no-site probe (`-I -S`), refusing incompatible interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. creates a fresh venv at `<venv-dir>` using the verified CPython 3.11 interpreter;
 5. installs `requirements-agent-review.lock` with
    `pip install --require-hashes --no-deps`.

@@ -508,6 +508,46 @@ def test_countermodel_m4_inject_runtime_only_dependency(tmp_path: Path) -> None:
     )
 
 
+def test_countermodel_h2_forbidden_import_roots_contract(tmp_path: Path) -> None:
+    """H2: Known forbidden runtime dependencies are checked by import root (not distribution name).
+
+    Verifies that AST import scanning catches:
+      - pydantic_settings (from distribution 'pydantic-settings')
+      - duckduckgo_search (from distribution 'duckduckgo-search')
+      - multipart (from distribution 'python-multipart')
+      - fastapi (standard package)
+      - sqlalchemy (standard package)
+    And does not reject allowed packages such as pydantic.
+    """
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_h2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    target_file = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_file.read_text(encoding="utf-8")
+
+    # Forbidden import roots must fail closed
+    forbidden_cases = [
+        ("pydantic_settings", "import pydantic_settings\n"),
+        ("duckduckgo_search", "import duckduckgo_search\n"),
+        ("multipart", "import multipart\n"),
+        ("fastapi", "import fastapi\n"),
+        ("sqlalchemy", "import sqlalchemy\n"),
+    ]
+    for root_name, injection in forbidden_cases:
+        target_file.write_text(injection + original_code, encoding="utf-8")
+        errors = validator.validate_manifest(manifest, repo_root=temp_repo)
+        assert any(f"Forbidden runtime package '{root_name}'" in err for err in errors), (
+            f"Expected forbidden runtime package error for {root_name}, got: {errors}"
+        )
+
+    # Allowed package import must NOT be rejected by known-negative gate
+    target_file.write_text("import pydantic\n" + original_code, encoding="utf-8")
+    errors_allowed = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("pydantic" in err for err in errors_allowed), (
+        f"Allowed package 'pydantic' was rejected unexpectedly: {errors_allowed}"
+    )
+
+
 def test_countermodel_m5_missing_install_contract() -> None:
     """Countermodel M5: Required install contract artifacts cannot be omitted from the manifest, and declared files must exist."""
     manifest = validator.load_manifest()

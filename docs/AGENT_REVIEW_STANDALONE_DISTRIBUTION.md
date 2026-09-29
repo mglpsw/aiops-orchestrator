@@ -117,9 +117,10 @@ O manifesto declara explicitamente a lista `forbidden_runtime_surfaces`, cuja pr
 - `deploy`
 - `config/actions.yaml`
 
-### Pacotes Proibidos de Runtime
+### Pacotes e Raízes de Importação Proibidos de Runtime
 O closure do AgentReview em modo standalone não requer nem importa pacotes pertencentes exclusivamente ao runtime:
-- `fastapi`, `uvicorn`, `sqlalchemy`, `aiosqlite`, `asyncpg`, `psycopg`, `psycopg2`, `httpx`
+- Distribuições do PyPI: `aiosqlite`, `asyncpg`, `duckduckgo-search`, `fastapi`, `httpx`, `psycopg`, `psycopg2`, `pydantic-settings`, `python-multipart`, `sqlalchemy`, `starlette`, `uvicorn`.
+- Raízes de importação Python (projeção do contrato conhecido de dependências negativas `KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1`): `aiosqlite`, `asyncpg`, `duckduckgo_search`, `fastapi`, `httpx`, `psycopg`, `psycopg2`, `pydantic_settings`, `multipart`, `python_multipart`, `sqlalchemy`, `starlette`, `uvicorn`. A checagem de AST (Layer S) valida contra as raízes de importação, distinguindo-as formalmente dos nomes de distribuição de pacotes sem reivindicar mapeamento universal AST -> PyPI (preservando B0-N2).
 
 ### Política de Symlinks Fail-Closed
 Nenhum arquivo ou diretório declarado na distribuição pode ser um link simbólico, nem conter symlinks internos (`any sub.is_symlink() -> FAIL CLOSED`). Qualquer link simbólico detectado na validação ou na materialização causa rejeição imediata, eliminando deterministicamente riscos de ciclos, travessia de subárvores ou escapes do repositório. Da mesma forma, o diretório de destino da materialização não pode ser um symlink.
@@ -185,6 +186,8 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **F-04** | Provas imunes a `PYTHONOPTIMIZE` | Probes em subprocesso utilizam helper explícito `require()`, e `_clean_env` expurga `PYTHONOPTIMIZE`, impedindo anulação de checagens sob flags de otimização. |
 | **F-05** | Confinamento de origem por componentes | Verificação de origem de módulo utiliza `origin_path.is_relative_to(root)` em vez de prefixo de string, rejeitando diretórios irmãos (`/standalone-old`). |
 | **F-02** | Composição Layer E × Layer I | Teste composto (`test_lock_built_venv_executes_materialized_standalone_agentreview`) exercita a árvore materializada com o interpretador criado a partir de `requirements-agent-review.lock` (`requires_network`). O instalador vincula estritamente o contrato canônico a CPython 3.11, recusando interpretadores incompatíveis fail-closed antes da criação do venv. Qualificado no ambiente canônico CPython 3.11 do repositório (GitHub Actions). |
+| **H-01** | Isolamento do probe do interpretador | O probe de versão e implementação em `install-agent-review-toolrepo.sh` executa com flags isoladas/sem site (`-I -S`), provando que hooks de inicialização ambiental (`sitecustomize.py` via `PYTHONPATH`) não alteram a identidade reportada antes da criação do venv. |
+| **H-02** | Contrato de import roots conhecidos | Distingue nomes de distribuição do PyPI (ex.: `pydantic-settings`, `duckduckgo-search`, `python-multipart`) de suas raízes de importação Python (`pydantic_settings`, `duckduckgo_search`, `multipart`), garantindo detecção precisa de dependências proibidas na Layer S sem reivindicar mapeamento universal AST -> PyPI. |
 
 ---
 

@@ -85,21 +85,29 @@ REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: frozenset[str] = frozenset(
     }
 )
 
+KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1: dict[str, frozenset[str]] = {
+    "aiosqlite": frozenset({"aiosqlite"}),
+    "asyncpg": frozenset({"asyncpg"}),
+    "duckduckgo-search": frozenset({"duckduckgo_search"}),
+    "fastapi": frozenset({"fastapi"}),
+    "httpx": frozenset({"httpx"}),
+    "psycopg": frozenset({"psycopg"}),
+    "psycopg2": frozenset({"psycopg2"}),
+    "pydantic-settings": frozenset({"pydantic_settings"}),
+    "python-multipart": frozenset({"multipart", "python_multipart"}),
+    "sqlalchemy": frozenset({"sqlalchemy"}),
+    "starlette": frozenset({"starlette"}),
+    "uvicorn": frozenset({"uvicorn"}),
+}
+
 REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1: frozenset[str] = frozenset(
-    {
-        "aiosqlite",
-        "asyncpg",
-        "duckduckgo-search",
-        "fastapi",
-        "httpx",
-        "psycopg",
-        "psycopg2",
-        "pydantic-settings",
-        "python-multipart",
-        "sqlalchemy",
-        "starlette",
-        "uvicorn",
-    }
+    KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1.keys()
+)
+
+REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
+    root
+    for roots in KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1.values()
+    for root in roots
 )
 
 
@@ -330,6 +338,14 @@ def validate_manifest(
             f"Required negative runtime package anchor(s) omitted from 'forbidden_runtime_packages': {missing_negative_pkg_anchors}"
         )
 
+    # Project declared forbidden packages to import roots via known contract
+    forbidden_import_roots: set[str] = set(REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1)
+    for pkg in forbidden_packages:
+        if pkg in KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1:
+            forbidden_import_roots.update(KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1[pkg])
+        else:
+            forbidden_import_roots.add(pkg.replace("-", "_"))
+
     # 3. Check for existence, path confinement and runtime surface leaks in declared files
     declared_paths: list[str] = []
     root_resolved = root.resolve()
@@ -449,10 +465,10 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages: direct imports of forbidden runtime packages fail closed
+        # Check external packages: direct imports of forbidden runtime dependencies fail closed
         for pkg in ext_pkgs:
             pkg_lower = pkg.lower()
-            if pkg_lower in forbidden_packages:
+            if pkg_lower in forbidden_import_roots:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
                 )

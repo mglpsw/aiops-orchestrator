@@ -62,7 +62,7 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     exit 2
 fi
 
-INTERP_INFO="$("$PYTHON_BIN" -c '
+INTERP_INFO="$("$PYTHON_BIN" -I -S -c '
 import sys, platform
 impl = platform.python_implementation()
 ver = f"{sys.version_info.major}.{sys.version_info.minor}"
