@@ -110,12 +110,22 @@ countermodels: - app/agent_review/ (AgentReview v1/v2) is NOT part of this runti
                - "legacy executor path inventoried" != "AIOps Runtime execution inventoried": the
                  Diagnostic Engine's /v1/aiops/actions/run → execute_action() is a second,
                  independent executable surface with its own persisted data
-retirement_gate: #19 must inventory the legacy approvals/task execution path, the Diagnostic
-               Engine execution path and its three persisted stores (see
-               diagnostic_engine_execution_path), executor configuration, live callers and
-               deployment state, then prove cutover/desuse before source/runtime
-               removal; nothing here authorizes CT102 changes. The gate covers BOTH executable paths
-               above and below; inventorying only the legacy /v1/approvals path does not satisfy it
+               - JsonlStoresAccountedFor != AllPersistentRuntimeStateAccountedFor: the legacy
+                 orchestrator's relational database (TaskRecord, AuditRecord, ProviderCallRecord,
+                 ExecutionRecord) is a separate persistence family omitted if only JSONL is checked
+               - DefaultDatabaseURLKnownFromSource != LiveDatabaseLocationObserved: source sets
+                 Settings.database_url default to sqlite+aiosqlite:///data/aiops.db, but the actual
+                 runtime database path/volume/health remains UNKNOWN_PENDING_19
+retirement_gate: #19 must inventory both executable runtime families (the legacy approvals/task path
+               and the Diagnostic Engine path), inventory all known persistence families — both the
+               Diagnostic Engine JSONL stores (var/audit, var/approvals, var/runs) and the legacy
+               orchestrator relational database (observing the live database URL/path/volume if
+               runtime exists, identifying owner/consumer/retention requirements) —, executor
+               configuration, live callers and deployment state, then prove cutover/desuse, define
+               backup, prove restore or document retention waiver under proper authority, and define
+               rollback before source/runtime removal; nothing here authorizes CT102 changes. The
+               gate covers both executable paths and both persistence families above and below;
+               inventorying only the legacy approvals path or only JSONL stores does not satisfy it
 diagnostic_engine_execution_path (independent of the legacy path above — its own approval
                concept, executor and stores; app/agent_router/ is retired with this row):
                - routes (all behind require_api_token, app/agent_router/main.py:65):
@@ -143,16 +153,32 @@ diagnostic_engine_execution_path (independent of the legacy path above — its o
                  live callers and all three stores, and decide retain/archive/discard for the
                  persisted records before any source retirement; #351 slice C must not remove
                  app/agent_router/ or its stores until that decision exists
+legacy_orchestrator_database (relational persistence family of the legacy chat/task orchestrator):
+               - source configuration: app/core/config.py:34 (Settings.database_url,
+                 default: "sqlite+aiosqlite:///data/aiops.db")
+               - persisted models: app/models/database.py defines TaskRecord, AuditRecord,
+                 ProviderCallRecord, and ExecutionRecord; manipulated via TaskService and
+                 the legacy orchestrator to persist tasks, plans, approvals, provider calls and runs
+               - source state: IMPLEMENTED at master@3aab1aa
+               - runtime location state: UNKNOWN_PENDING_19 — source proves the default and logical
+                 schema, but does NOT prove whether a live CT102 deployment runs this exact build, uses
+                 the default data/aiops.db path, what host volume/mount holds it, or its current health
+               - #19 gate: inventory live runtime database URL/path/volume, verify existing records and
+                 callers, define backup, prove restore or document retention waiver, and define rollback
+                 before any retirement/source removal under #351 slice C
 evidence: #19 (OPEN), #351 (OPEN), app/api/routes.py:87-110,
                app/services/orchestrator.py:execute_approved_task,
                app/services/provider_registry.py:get_executor,
+               app/models/database.py:TaskRecord/AuditRecord/ProviderCallRecord/ExecutionRecord,
+               app/core/config.py:34 (database_url),
                app/agent_router/main.py:508-729, app/agent_router/services/action_runner.py:467,
                app/agent_router/services/{approval_store,run_store,audit_log}.py,
                app/core/config.py:79-95, app/services/aiops_chat_router.py:16-20,
                docs/PROJECT_STATUS.md:82-83, docs/RI_A1_ADR_OWNERSHIP_MAP.md
-limitations: source-observed reachability only; actual deployment/external callers remain UNKNOWN
-               until #19 live inventory. Whether the Diagnostic Engine's allowlisted runners are
-               side-effect-free is documented (README.md, RI_A1) but not re-verified here
+limitations: source-observed reachability and default configuration only; actual deployment, live callers,
+               live database location/volume and store contents remain UNKNOWN until #19 live inventory.
+               Whether the Diagnostic Engine's allowlisted runners are side-effect-free is documented
+               (README.md, RI_A1) but not re-verified here
 status: FINAL_OWNER_ASSIGNED only
 ```
 
