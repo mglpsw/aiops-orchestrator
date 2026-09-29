@@ -102,7 +102,7 @@ def test_ast_import_closure_has_zero_forbidden_runtime_dependencies() -> None:
         for mod in local_app:
             for fb in forbidden_surfaces:
                 if fb.startswith("app/"):
-                    fb_mod = fb.replace("/", ".")
+                    fb_mod = fb.replace("/", ".").removesuffix(".py")
                     assert not (mod == fb_mod or mod.startswith(fb_mod + ".")), (
                         f"{py_file.relative_to(REPO_ROOT)} imports forbidden runtime surface '{mod}'"
                     )
@@ -704,3 +704,129 @@ except (ImportError, ModuleNotFoundError):
     )
     assert result.returncode == 0
     assert "V2_PARTIAL_BOUNDARY_DETECTED" in result.stdout
+
+
+def test_countermodel_u01_relative_import_from_submodule_escape(tmp_path: Path) -> None:
+    """U-01: Relative ImportFrom nodes resolve against their package hierarchy and block leaks to forbidden surfaces."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_u01"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    target_cli = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_cli.read_text(encoding="utf-8")
+
+    # Case A: from .. import models -> MUST FAIL (relative import into forbidden app.models)
+    target_cli.write_text("from .. import models\n" + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models' imported" in err for err in errs_a)
+
+    # Case B: from ..models import database -> MUST FAIL (forbidden app.models)
+    target_cli.write_text("from ..models import database\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime module 'app.models" in err for err in errs_b)
+
+    # Case C: from ... import beyond_root -> MUST FAIL (escapes package root)
+    target_cli.write_text("from ... import beyond_root\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Relative import with level 3 escapes top-level package" in err for err in errs_c)
+
+    # Case D: Positive control - legitimate relative import within package
+    target_cli.write_text("from . import contracts_v2\n" + original_code, encoding="utf-8")
+    errs_d = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("contracts_v2" in err for err in errs_d)
+
+    # Case E: Positive control - legitimate relative import of shared primitive
+    target_cli.write_text("from ..common import strict_json\n" + original_code, encoding="utf-8")
+    errs_e = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("strict_json" in err for err in errs_e)
+
+
+def test_countermodel_u02_component_prefix_boundary_enforcement(tmp_path: Path) -> None:
+    """U-02: Component prefix boundary enforces exact package boundaries (e.g. app.agent_review vs app.agent_review_runtime)."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_u02"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+    target_cli = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_cli.read_text(encoding="utf-8")
+
+    # Case A: Sibling package starting with app.agent_review prefix -> MUST FAIL
+    target_cli.write_text("import app.agent_review_runtime\n" + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Local module 'app.agent_review_runtime' imported" in err and "outside declared boundary" in err for err in errs_a)
+
+    # Case B: Sibling package under app.common that is not declared -> MUST FAIL
+    target_cli.write_text("import app.common.extra_helper\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Local module 'app.common.extra_helper' imported" in err and "outside declared boundary" in err for err in errs_b)
+
+    # Case C: Positive control - exact allowed package and submodule
+    target_cli.write_text("import app.agent_review\nimport app.agent_review.cli\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("outside declared boundary" in err for err in errs_c)
+
+
+def test_countermodel_u03_symlink_leaving_declared_subtree(tmp_path: Path) -> None:
+    """U-03: Symlinks inside declared trees must not leave their declared source subtree or point to forbidden surfaces."""
+    manifest = validator.load_manifest()
+    temp_repo = tmp_path / "temp_repo_u03"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+
+    # Case A: Internal symlink pointing to an undeclared repository directory
+    forbidden_target = temp_repo / "app" / "models"
+    forbidden_target.mkdir(parents=True, exist_ok=True)
+    (forbidden_target / "leak.py").write_text("# leak", encoding="utf-8")
+
+    symlink_dir = temp_repo / "app" / "agent_review" / "leak_dir"
+    symlink_dir.symlink_to(forbidden_target)
+
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("leaves declared subtree" in err or "resolves to forbidden surface" in err for err in errs_a)
+
+    # Invariant: materialize_standalone_distribution rejects it fail-closed
+    target_out = tmp_path / "target_out_u03"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(repo_root=temp_repo, target_dir=target_out, manifest=manifest)
+    assert "leaves declared subtree" in str(exc_info.value) or "symlink to forbidden surface" in str(exc_info.value)
+
+
+def test_countermodel_u04_target_overlapping_declared_source_paths(tmp_path: Path) -> None:
+    """U-04: Materialization target must be disjoint from every declared source path before creation."""
+    # Case A: Target nested inside a declared source directory
+    nested_target = REPO_ROOT / "app" / "agent_review" / "nested_target_probe"
+    assert not nested_target.exists()
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=nested_target)
+    assert "Target directory is nested inside declared source path" in str(exc_a.value)
+    # Critical invariant: Target directory must NOT have been created on disk
+    assert not nested_target.exists(), "Target directory was created before disjointness check!"
+
+    # Case B: Target equals a declared source path
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=REPO_ROOT / "app" / "agent_review")
+    assert "Target directory overlaps declared source path" in str(exc_b.value)
+
+    # Case C: Target is an ancestor of declared source paths (e.g. repo_root itself)
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_c:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=REPO_ROOT)
+    assert "Declared source path is nested inside target directory" in str(exc_c.value)
+
+
+def test_countermodel_u05_bidirectional_forbidden_surface_overlap() -> None:
+    """U-05: Bidirectional overlap check rejects declared paths that are ancestors, descendants, or equal to forbidden surfaces."""
+    manifest = validator.load_manifest()
+
+    # Case A: Declaring an ancestor directory of a forbidden surface (e.g. "config" which contains forbidden "config/actions.yaml")
+    mutated_ancestor = copy.deepcopy(manifest)
+    mutated_ancestor["distribution_boundary"]["core_packages"].append("config")
+    errs_a = validator.validate_manifest(mutated_ancestor, repo_root=REPO_ROOT)
+    assert any("Forbidden runtime surface declared in distribution_boundary: config overlaps config/actions.yaml" in err for err in errs_a)
+
+    # Case B: Declaring "app" which is ancestor of "app/main.py", "app/models", etc.
+    mutated_app = copy.deepcopy(manifest)
+    mutated_app["distribution_boundary"]["core_packages"].append("app")
+    errs_b = validator.validate_manifest(mutated_app, repo_root=REPO_ROOT)
+    assert any("Forbidden runtime surface declared in distribution_boundary: app overlaps" in err for err in errs_b)
+
+    # Case C: Sibling directory path sharing prefix without component boundary does NOT falsely overlap
+    assert not validator.paths_overlap("app/models_extra", "app/models")
+    assert not validator.paths_overlap("app/services_extra", "app/services/orchestrator.py")

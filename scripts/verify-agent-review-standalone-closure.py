@@ -86,6 +86,14 @@ def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
     return Path(rel_path_str)
 
 
+def paths_overlap(path_a: str, path_b: str) -> bool:
+    """Return True if path_a and path_b are identical or one is an ancestor/descendant of the other."""
+    parts_a = [p for p in path_a.strip("/").split("/") if p and p != "."]
+    parts_b = [p for p in path_b.strip("/").split("/") if p and p != "."]
+    min_len = min(len(parts_a), len(parts_b))
+    return bool(parts_a and parts_b and parts_a[:min_len] == parts_b[:min_len])
+
+
 class StandaloneClosureValidationError(Exception):
     """Raised when the distribution manifest or AST import closure fails validation."""
 
@@ -114,6 +122,21 @@ def derive_ast_imports_from_file(
     root = repo_root or REPO_ROOT
     forbidden = forbidden_surfaces or set()
 
+    # Determine relative path of file_path to root to establish package hierarchy
+    root_resolved = root.resolve()
+    try:
+        rel_file = file_path.resolve().relative_to(root_resolved)
+    except ValueError:
+        try:
+            rel_file = file_path.relative_to(root)
+        except ValueError:
+            rel_file = file_path
+
+    if rel_file.is_absolute():
+        pkg_parts: list[str] = []
+    else:
+        pkg_parts = [p for p in rel_file.parent.parts if p and p != "."]
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -123,20 +146,34 @@ def derive_ast_imports_from_file(
                 else:
                     external_pkgs.add(name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
+            if node.level > 0:
+                if node.level > len(pkg_parts):
+                    raise ValueError(
+                        f"Relative import with level {node.level} escapes top-level package in {rel_file}"
+                    )
+                steps_up = node.level - 1
+                base_parts = pkg_parts[: len(pkg_parts) - steps_up]
+                if node.module:
+                    mod = ".".join(base_parts + node.module.split("."))
+                else:
+                    mod = ".".join(base_parts)
+            else:
+                mod = node.module or ""
+
             if mod.startswith("app"):
                 app_imports.add(mod)
                 for alias in node.names:
                     if alias.name == "*":
                         app_imports.add(f"{mod}.*")
                     else:
-                        candidate = f"{mod}.{alias.name}"
+                        candidate = f"{mod}.{alias.name}" if mod else alias.name
                         # Check whether candidate is a submodule / package on disk or forbidden surface
                         is_submodule = False
 
                         candidate_slash = candidate.replace(".", "/")
                         for fb in forbidden:
-                            if candidate_slash == fb or candidate_slash.startswith(fb.rstrip("/") + "/"):
+                            fb_clean = fb.removesuffix(".py")
+                            if paths_overlap(candidate_slash, fb_clean):
                                 is_submodule = True
                                 break
 
@@ -247,27 +284,49 @@ def validate_manifest(
                         f"Resolved source path escapes repository root: {rel_path_str} -> {resolved_full}"
                     )
                     continue
+                if resolved_full.is_relative_to(root_resolved):
+                    resolved_rel_str = resolved_full.relative_to(root_resolved).as_posix()
+                    for forbidden in forbidden_surfaces:
+                        if paths_overlap(resolved_rel_str, forbidden):
+                            errors.append(
+                                f"Resolved source path resolves to forbidden surface: {rel_path_str} -> {resolved_rel_str} overlaps {forbidden}"
+                            )
+                            break
             except Exception as exc:
                 errors.append(f"Failed to resolve path {rel_path_str}: {exc}")
                 continue
 
-            # If directory, ensure no contained symlinks escape repository root
+            # If directory, ensure no contained symlinks escape repository root or leave declared subtree
             if full_path.is_dir():
                 for sub in full_path.rglob("*"):
                     try:
                         resolved_sub = sub.resolve()
-                        if not (resolved_sub == root_resolved or resolved_sub.is_relative_to(root_resolved)):
-                            errors.append(
-                                f"Symlink in distribution tree escapes repository root: {sub.relative_to(root)} -> {resolved_sub}"
-                            )
+                        if not (resolved_sub == resolved_full or resolved_sub.is_relative_to(resolved_full)):
+                            if not (resolved_sub == root_resolved or resolved_sub.is_relative_to(root_resolved)):
+                                errors.append(
+                                    f"Symlink in distribution tree escapes repository root: {sub.relative_to(root)} -> {resolved_sub}"
+                                )
+                            else:
+                                errors.append(
+                                    f"Symlink or descendant in distribution tree '{rel_path_str}' leaves declared subtree: {sub.relative_to(root)} -> {resolved_sub}"
+                                )
+                            continue
+                        if resolved_sub.is_relative_to(root_resolved):
+                            sub_rel_str = resolved_sub.relative_to(root_resolved).as_posix()
+                            for forbidden in forbidden_surfaces:
+                                if paths_overlap(sub_rel_str, forbidden):
+                                    errors.append(
+                                        f"Symlink or descendant in distribution tree '{rel_path_str}' resolves to forbidden surface: {sub_rel_str} overlaps {forbidden}"
+                                    )
+                                    break
                     except Exception as exc:
                         errors.append(f"Failed to resolve item {sub}: {exc}")
 
             # Check if any forbidden runtime surface is declared
             for forbidden in forbidden_surfaces:
-                if rel_path_str == forbidden or rel_path_str.startswith(forbidden.rstrip("/") + "/"):
+                if paths_overlap(rel_path_str, forbidden):
                     errors.append(
-                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path_str} matches {forbidden}"
+                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path_str} overlaps {forbidden}"
                     )
 
     # 3. Gather all Python files in the distribution boundary
@@ -342,8 +401,7 @@ def validate_manifest(
 
             # Check forbidden runtime prefixes
             is_forbidden = any(
-                mod == fb.replace("/", ".").rstrip(".py")
-                or mod.startswith(fb.replace("/", ".").rstrip(".py") + ".")
+                paths_overlap(mod.replace(".", "/"), fb.removesuffix(".py"))
                 for fb in forbidden_surfaces
                 if fb.startswith("app/")
             )
@@ -353,7 +411,12 @@ def validate_manifest(
                 )
 
             # Check that mod is within allowed local modules or app.agent_review.*
-            if not (mod.startswith("app.agent_review") or mod in allowed_local_modules):
+            is_allowed = (
+                mod == "app.agent_review"
+                or mod.startswith("app.agent_review.")
+                or mod in allowed_local_modules
+            )
+            if not is_allowed:
                 errors.append(
                     f"Local module '{mod}' imported by {py_file.relative_to(root)} is outside declared boundary"
                 )
@@ -378,7 +441,40 @@ def materialize_standalone_distribution(
             f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
         )
 
-    target_dir = target_dir.resolve()
+    repo_resolved = repo_root.resolve()
+    target_resolved = target_dir.resolve()
+
+    dist_boundary = manifest_data.get("distribution_boundary", {})
+    all_declared_items: list[str] = []
+    for section_name in (
+        "core_packages",
+        "package_roots",
+        "shared_primitives",
+        "required_asset_trees",
+        "install_boundary",
+        "distribution_clis",
+    ):
+        items = dist_boundary.get(section_name, [])
+        if isinstance(items, list):
+            all_declared_items.extend(items)
+
+    # Disjointness check between target and declared source paths (run BEFORE creating target)
+    for rel_path_str in all_declared_items:
+        src_path = repo_root / admit_manifest_relative_path_v1(rel_path_str)
+        src_resolved = src_path.resolve()
+        if target_resolved == src_resolved:
+            raise StandaloneClosureValidationError(
+                f"Target directory overlaps declared source path: {target_dir} equals {src_path}"
+            )
+        if target_resolved.is_relative_to(src_resolved):
+            raise StandaloneClosureValidationError(
+                f"Target directory is nested inside declared source path: {target_dir} inside {src_path}"
+            )
+        if src_resolved.is_relative_to(target_resolved):
+            raise StandaloneClosureValidationError(
+                f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
+            )
+
     if target_dir.exists():
         if not target_dir.is_dir():
             raise StandaloneClosureValidationError(
@@ -392,9 +488,7 @@ def materialize_standalone_distribution(
     else:
         target_dir.mkdir(parents=True, exist_ok=True)
 
-    dist_boundary = manifest_data["distribution_boundary"]
     forbidden_surfaces = set(manifest_data.get("forbidden_runtime_surfaces", []))
-    repo_resolved = repo_root.resolve()
     copied_manifest_paths: list[str] = []
 
     for section_name in (
@@ -413,9 +507,9 @@ def materialize_standalone_distribution(
 
             # Guard against copying forbidden surfaces
             for forbidden in forbidden_surfaces:
-                if rel_path_str == forbidden or rel_path_str.startswith(forbidden.rstrip("/") + "/"):
+                if paths_overlap(rel_path_str, forbidden):
                     raise StandaloneClosureValidationError(
-                        f"Refusing to materialize forbidden surface: {rel_path_str}"
+                        f"Refusing to materialize forbidden surface: {rel_path_str} overlaps {forbidden}"
                     )
 
             # Check resolved source confinement
@@ -433,16 +527,35 @@ def materialize_standalone_distribution(
                 )
 
             if src_path.is_file():
+                if resolved_src.is_relative_to(repo_resolved):
+                    src_rel_str = resolved_src.relative_to(repo_resolved).as_posix()
+                    for forbidden in forbidden_surfaces:
+                        if paths_overlap(src_rel_str, forbidden):
+                            raise StandaloneClosureValidationError(
+                                f"Refusing to materialize file resolving to forbidden surface: {src_rel_str} overlaps {forbidden}"
+                            )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_path)
                 copied_manifest_paths.append(rel_path_str)
             elif src_path.is_dir():
                 for sub in src_path.rglob("*"):
                     resolved_sub = sub.resolve()
-                    if not (resolved_sub == repo_resolved or resolved_sub.is_relative_to(repo_resolved)):
-                        raise StandaloneClosureValidationError(
-                            f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub}"
-                        )
+                    if not (resolved_sub == resolved_src or resolved_sub.is_relative_to(resolved_src)):
+                        if not (resolved_sub == repo_resolved or resolved_sub.is_relative_to(repo_resolved)):
+                            raise StandaloneClosureValidationError(
+                                f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub} (escapes repository root)"
+                            )
+                        else:
+                            raise StandaloneClosureValidationError(
+                                f"Refusing to materialize tree containing escaping symlink: {sub} -> {resolved_sub} (leaves declared subtree {rel_path_str})"
+                            )
+                    if resolved_sub.is_relative_to(repo_resolved):
+                        sub_rel_str = resolved_sub.relative_to(repo_resolved).as_posix()
+                        for forbidden in forbidden_surfaces:
+                            if paths_overlap(sub_rel_str, forbidden):
+                                raise StandaloneClosureValidationError(
+                                    f"Refusing to materialize tree containing symlink to forbidden surface: {sub_rel_str} overlaps {forbidden}"
+                                )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(
                     src_path,
@@ -457,7 +570,7 @@ def materialize_standalone_distribution(
         if item.is_file():
             rel_to_target = item.relative_to(target_dir).as_posix()
             is_declared = any(
-                rel_to_target == decl or rel_to_target.startswith(decl.rstrip("/") + "/")
+                paths_overlap(rel_to_target, decl)
                 for decl in copied_manifest_paths
             )
             if not is_declared:
