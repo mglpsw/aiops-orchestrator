@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "manifest_version": "1.0.0",
+  "schema_id": "agent-review.standalone-distribution-manifest.v1",
+  "product": "AgentReview",
+  "description": "Deterministic distribution boundary projection for standalone AgentReview (#351-B0).",
+  "provenance": {
+    "source_repository": "mglpsw/aiops-orchestrator",
+    "owner_issue": "#351",
+    "roadmap_issue": "#46",
+    "dissolution_matrix_reference": "docs/CROSS_REPO_DISSOLUTION_MATRIX.md",
+    "authority_effect": "projection_only"
+  },
+  "distribution_boundary": {
+    "core_packages": [
+      "app/agent_review"
+    ],
+    "package_roots": [
+      "app/__init__.py"
+    ],
+    "shared_primitives": [
+      "app/common/strict_json.py",
+      "app/common/__init__.py",
+      "app/services/environment_context.py",
+      "app/services/__init__.py"
+    ],
+    "required_asset_trees": [
+      "templates/agentreview-v2-target-pack",
+      "schemas/agent-review/v2"
+    ],
+    "install_boundary": [
+      "requirements-agent-review.lock",
+      "scripts/install-agent-review-toolrepo.sh",
+      "docs/AGENT_REVIEW_V2_INSTALLATION.md"
+    ],
+    "distribution_clis": [
+      "scripts/agent-review-target-pack-v2.py",
+      "scripts/aiops-acquire-authoritative-checks-v2.py",
+      "scripts/aiops-review-build-payload-set-v2.py",
+      "scripts/aiops-review-build-payloads.py",
+      "scripts/aiops-review-false-positives.py",
+      "scripts/aiops-review-intake.py",
+      "scripts/aiops-review-parse-chunks.py",
+      "scripts/aiops-review-plan-chunks.py",
+      "scripts/aiops-review-quality-gate-v2.py",
+      "scripts/aiops-review-quality-gate.py",
+      "scripts/aiops-review-synthesize.py",
+      "scripts/aiops-review-telemetry.py",
+      "scripts/export-agent-review-v2-schemas.py",
+      "scripts/github_agent_review.py",
+      "scripts/migrate-agent-review-profile-v1-v2.py",
+      "scripts/verify-agent-review-v2-conformance.py"
+    ]
+  },
+  "qualification_boundary": {
+    "test_trees": [
+      "tests/agent_review",
+      "tests/evals",
+      "tests/test_github_agent_review.py"
+    ],
+    "eval_trees": [
+      "evals/agent_review_v2"
+    ],
+    "qualification_scripts": [
+      "scripts/compare-review-observations.py",
+      "scripts/generate-benchmark-corpus-manifest.py",
+      "scripts/generate-benchmark-identity-final.py",
+      "scripts/generate-benchmark-premanifest.py",
+      "scripts/generate-benchmark-report.py",
+      "scripts/materialize-benchmark-case.py",
+      "scripts/run-agent-review-v2-evals.py",
+      "scripts/validate-benchmark-corpus-safety.py",
+      "scripts/verify-agent-review-standalone-closure.py"
+    ]
+  },
+  "forbidden_runtime_surfaces": [
+    "app/main.py",
+    "app/api",
+    "app/agent_router",
+    "app/models",
+    "app/policies",
+    "app/adapters",
+    "app/utils",
+    "app/services/orchestrator.py",
+    "app/services/provider_registry.py",
+    "app/services/task_service.py",
+    "app/services/action_planner.py",
+    "app/services/action_catalog.py",
+    "app/services/aiops_chat_router.py",
+    "app/caem_consumer",
+    "app/ri_b0a",
+    "app/projectops",
+    "deploy",
+    "config/actions.yaml",
+    "config/policies.yml",
+    "config/providers.yml",
+    "config/routes.yml",
+    "scripts/aiops-runtime-backup-manifest.py",
+    "scripts/aiops-runtime-inventory.py",
+    "scripts/aiops-runtime-postcheck.py",
+    "scripts/backup.sh",
+    "scripts/rollback.sh",
+    "scripts/install.sh",
+    "scripts/smoke_test.sh",
+    "scripts/validate_actions_catalog.sh",
+    "scripts/validate_bluegreen.sh",
+    "scripts/compare_aiops_runtimes.sh",
+    "scripts/migrate_savings_to_sqlite.py"
+  ],
+  "dependency_closure": {
+    "allowed_third_party_packages": [
+      "annotated-types",
+      "pydantic",
+      "pydantic-core",
+      "pyyaml",
+      "typing-extensions",
+      "typing-inspection"
+    ],
+    "forbidden_runtime_packages": [
+      "aiosqlite",
+      "asyncpg",
+      "duckduckgo-search",
+      "fastapi",
+      "httpx",
+      "psycopg",
+      "psycopg2",
+      "pydantic-settings",
+      "python-multipart",
+      "sqlalchemy",
+      "starlette",
+      "uvicorn"
+    ]
+  }
+}
