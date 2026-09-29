@@ -698,3 +698,107 @@ The definitive terminal rule is the maintainer's:
   - dynamic universality is explicitly not claimed;
   - N3 is calibrated and CI is green.
 - **`STOP_NEW_FAILURE_CLASS`**: only a new MATERIAL production defect, a declared-domain invalidation, or a direct falsification of the finite N2 predicate.
+
+---
+
+## 13. `2a46728`: direct falsification of the finite N2 predicate; execution-region model (append-only)
+
+```yaml
+subject_reviewed: 2a46728dbb659ec7b5153a39133ccc5fcf21f3b3
+exact_head_ci: "run 36631863677: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+independent_review: "production_material_findings=0, declared_domain_invalidations=0, N1 causal, N3 calibrated; N2 admits explicit .syscall / ctypes.CDLL on the real wrapper's decorators and parameter defaults"
+codex_exact_head: "4138474041 (P2): the same counterexample (default-argument `.syscall`)"
+author_disposition_at_the_time: STOP_NEW_FAILURE_CLASS   # correct under the terminal rule of §12.4
+maintainer_adjudication:   # 2026-09-29
+  production_failure_family_new: false
+  production_material_findings: 0
+  declared_domain_invalidations: 0
+  qualification_predicate:
+    N2: DIRECTLY_FALSIFIED
+    cause: FunctionDef_descendant_was_confused_with_wrapper_body_execution_region
+  disposition: TEST_DOCS_ONLY_STRUCTURAL_CORRECTION_AUTHORIZED
+  write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+production_changes_this_round: none   # app/agent_review/*.py byte-identical to 0672d16
+```
+
+### 13.1 What was falsified and why
+
+§12.2 admitted a node when "its nearest enclosing scope is that FunctionDef". Decorators, positional defaults, keyword defaults and annotations are **AST children** of the `FunctionDef`, but Python evaluates them in the **enclosing (module) scope** when `def` runs, not in the wrapper's body. Four explicit static forms on the real, still unique wrapper's header were admitted, with census `[]`:
+
+- a default containing `.syscall`;
+- a default using walrus with `ctypes.CDLL` plus `.syscall`;
+- a decorator `.syscall`;
+- a decorator with an arbitrary receiver `.syscall`.
+
+That is a direct falsification of the finite predicate. `STOP_NEW_FAILURE_CLASS` was the correct disposition under the terminal rule of that round. The later analysis classifies the finding as a **qualification-predicate failure, not a production failure-family recurrence**: production is byte-identical to 0672d16, and the real wrapper has no decorators or defaults.
+
+### 13.2 Execution-region model
+
+```text
+W := the unique top-level FunctionDef(name="_syscall_v2")
+WrapperRuntimeRegion(node, W) != DescendantOfFunctionDef(node, W)
+```
+
+A node is inside the wrapper's runtime region only if it descends from a statement **directly in `W.body`**, and the path from the node up to that statement crosses no `FunctionDef`, `AsyncFunctionDef`, `Lambda`, `ClassDef`, `ListComp`, `SetComp`, `DictComp` or `GeneratorExp`. `W` itself is the only scope that may be reached, and it must be reached through `W.body`.
+
+The following are therefore **outside** the region, even though they are AST children of `W`:
+- `W.decorator_list`
+- `W.args.defaults`
+- `W.args.kw_defaults`
+- `W.returns`
+- argument annotations
+
+Every explicit `<receiver>.syscall` (the receiver grants no authority) and every explicit `ctypes.CDLL(...)` must lie in the region. The rule of §12.2 is **superseded**.
+
+### 13.3 Canonical wrapper header guard
+
+```yaml
+_syscall_v2:
+  unique_top_level_definition: required     # asserted on the exact source
+  plain_FunctionDef: required               # async def refused
+  decorators: forbidden
+  positional_defaults: forbidden
+  keyword_defaults_with_values: forbidden
+```
+
+This is the canonical grammar of this S1-A, not a law of Python. It fails closed even on a harmless decorator or default. A future need must be re-adjudicated and must not silently widen N2.
+
+### 13.4 Canonical libc-handle grammar
+
+```text
+libc = ctypes.CDLL(...)     # simple Assign, one Name target, value an explicit ctypes.CDLL(...), inside WrapperRuntimeRegion
+CanonicalStaticGrammar != CompletePythonDataFlowAnalysis
+```
+
+A walrus (`(libc := ctypes.CDLL(...))`), an attribute target (`self.libc = ctypes.CDLL(...)`) or any other carrier would need data-flow. So each is **outside the canonical grammar** and refused, even inside the wrapper body. This closes the reviewer's walrus observation on 2a46728 as a finite language restriction, not as an alias-analysis campaign.
+
+### 13.5 Witnesses (RED = the 2a46728 census, GREEN = this one)
+
+| Form | 2a46728 | candidate |
+|---|---|---|
+| default with `.syscall` | `[]` | rejected by the region predicate (and by the header guard) |
+| default: walrus `ctypes.CDLL` + `.syscall` | `[]` | rejected by the region predicate (2 facts) and by the handle grammar and header guard |
+| decorator `.syscall` | `[]` | rejected by the region predicate (and by the header guard) |
+| decorator with an arbitrary receiver `.syscall` | `[]` | rejected by the region predicate (and by the header guard) |
+| keyword-only default with `.syscall` | `[]` | rejected by the region predicate (and by the header guard) |
+| walrus `CDLL` handle inside the body | `[]` | outside the canonical grammar |
+| harmless decorator / default / keyword default / `async def` on the wrapper | — | header guard |
+| **positive control**: the same `.syscall` / `CDLL` content as statements in the real body | `[]` | `[]` (accepted) |
+
+The region predicate alone, with the header guard disabled, rejects every header form. So the kill comes from the intended discriminator and not only from the guard. The §12 witnesses (nested and method same-name, `self.libc`, arbitrary receiver, `CDLL` outside) remain RED.
+
+### 13.6 Requalification and terminal rule
+
+Requalification runs on the new exact head: every item in the maintainer's list (the N2 witnesses, the N1 and N3 corpora, the mutation corpus, the MemoryError and KeyboardInterrupt sweeps, S1-A + C2_A, the full suite, the gates, CI, independent review and Codex). The reviewers' question is restricted to:
+
+> Does the exact head contain a material production defect, a declared-domain invalidation, or a direct static N2 counterexample in which an explicit `.syscall`/`ctypes.CDLL` form outside the declared wrapper runtime body is admitted?
+
+The disposition is **`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`** when all of these hold:
+- 0 production material findings and 0 domain invalidations;
+- N1 is causal;
+- every N2 condition of §13.2–§13.5 holds;
+- dynamic universality is not claimed;
+- N3 is calibrated and CI is green;
+- the reviewers bring no new refutation of production, of the domain or of this explicit static predicate.
+
+NITs and dynamic equivalences outside the declared language do not open a round.

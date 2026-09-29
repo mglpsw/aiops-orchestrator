@@ -3164,15 +3164,28 @@ def _module_handle_violations(tree, parent) -> list[str]:
     if len(wrappers) > 1:
         violations.append(f"line {wrappers[1].lineno}: {_RAW_SYSCALL_WRAPPER} is not the unique top-level wrapper")
     wrapper = wrappers[0] if len(wrappers) == 1 and isinstance(wrappers[0], ast.FunctionDef) else None
+    if len(wrappers) == 1 and wrapper is None:
+        violations.append(f"line {wrappers[0].lineno}: {_RAW_SYSCALL_WRAPPER} must be a plain FunctionDef")
+    violations.extend(_wrapper_header_violations(wrapper))
 
     def in_wrapper(node) -> bool:
-        """True only if the NEAREST enclosing scope is the unique top-level
-        `_syscall_v2` (control-flow blocks inside it are fine; any
-        intermediate function, lambda, class or comprehension scope is not)."""
-        while node in parent:
-            node = parent[node]
-            if isinstance(node, _SCOPE_NODES):
-                return wrapper is not None and node is wrapper
+        """`WrapperRuntimeRegion(node, W) != DescendantOfFunctionDef(node, W)`.
+
+        Admitted only if `node` descends from a statement DIRECTLY in
+        `W.body`, and the path from `node` up to that statement crosses no
+        scope (function, lambda, class, comprehension). Decorators, defaults,
+        kw-defaults and annotations are children of `W` but run in the
+        ENCLOSING scope when `def` executes: they are outside the region."""
+        if wrapper is None:
+            return False
+        current = node
+        while current in parent:
+            up = parent[current]
+            if up is wrapper:
+                return any(current is statement for statement in wrapper.body)
+            if isinstance(up, _SCOPE_NODES):
+                return False
+            current = up
         return False
 
     changed = True
@@ -3210,17 +3223,42 @@ def _module_handle_violations(tree, parent) -> list[str]:
         # UniversalDynamicPythonCallGraph`).
         if isinstance(node, ast.Attribute) and node.attr == "syscall" and not in_wrapper(node):
             violations.append(f"{where}: raw syscall outside {_RAW_SYSCALL_WRAPPER}")
-        if (
-            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "CDLL"
-            and not in_wrapper(node)
-        ):
-            violations.append(f"{where}: libc handle created outside {_RAW_SYSCALL_WRAPPER}")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "CDLL":
+            if not in_wrapper(node):
+                violations.append(f"{where}: libc handle created outside {_RAW_SYSCALL_WRAPPER}")
+            # Canonical handle grammar: `libc = ctypes.CDLL(...)`, a simple
+            # Assign to one Name; a walrus, attribute target or any other
+            # carrier would need data-flow the census does not claim
+            # (`CanonicalStaticGrammar != CompletePythonDataFlowAnalysis`).
+            if not (
+                isinstance(up, ast.Assign) and up.value is node and len(up.targets) == 1
+                and isinstance(up.targets[0], ast.Name)
+            ):
+                violations.append(f"{where}: libc handle outside the canonical `name = ctypes.CDLL(...)` grammar")
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
             callee = node.value.func
             if isinstance(callee, ast.Attribute) and callee.attr == "CDLL":
                 violations.append(f"{where}: attribute of an unnamed libc handle")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BUILTINS:
             violations.append(f"{where}: namespace/IO builtin {node.func.id}")
+    return violations
+
+
+def _wrapper_header_violations(wrapper) -> list[str]:
+    """Canonical header of the unique `_syscall_v2` (this S1-A's grammar, not
+    a law of Python): no decorators, no positional defaults, no keyword
+    defaults with values. The production wrapper needs none of them; a
+    future need must fail here and be re-adjudicated, never widen N2."""
+    if wrapper is None:
+        return []
+    where = f"line {wrapper.lineno}: canonical {_RAW_SYSCALL_WRAPPER} header"
+    violations = []
+    if wrapper.decorator_list:
+        violations.append(f"{where}: decorators forbidden")
+    if wrapper.args.defaults:
+        violations.append(f"{where}: positional defaults forbidden")
+    if any(default is not None for default in wrapper.args.kw_defaults):
+        violations.append(f"{where}: keyword defaults with values forbidden")
     return violations
 
 
@@ -3377,6 +3415,11 @@ def _duplicate_authorized_roots_source() -> str:
 def test_c11_static_census_every_acquisition_installs_into_a_pre_existing_owner() -> None:
     psv_source = Path(_PSV_FILE).read_text()
     assert _acquisition_census(psv_source) == []
+    top_level = [
+        stmt for stmt in ast.parse(psv_source).body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == _RAW_SYSCALL_WRAPPER
+    ]
+    assert len(top_level) == 1 and type(top_level[0]) is ast.FunctionDef  # unique_top_level_definition: required
     # The limitation never hides a form present in the exact source.
     assert [m for m in _OUTSIDE_STATIC_CENSUS_MARKERS if m in psv_source] == []
     kinds = {t.kind for t in _ownership_transitions(psv_source)}
@@ -4266,7 +4309,7 @@ def test_n2_ctypes_cdll_outside_the_unique_top_level_wrapper_is_rejected() -> No
         "\n\n_MODULE_LIBC_V2 = ctypes.CDLL(None)\n",
     ):
         violations = _acquisition_census(source + escape)
-        assert violations and all(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+        assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
 
 
 def test_n2_positive_control_the_real_top_level_wrapper_is_accepted_by_context_not_name() -> None:
@@ -4285,3 +4328,80 @@ def test_n2_positive_control_the_real_top_level_wrapper_is_accepted_by_context_n
     assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations)
     duplicated = _acquisition_census(source + "\n\n" + wrapper)
     assert any("is not the unique top-level wrapper" in v for v in duplicated), duplicated
+
+
+# -- N2 execution-region model (maintainer adjudication of the 2a46728 STOP) ----------------
+
+_WRAPPER_HEADER = "def _syscall_v2(name: str, *args: object) -> tuple[int, int]:"
+#: The four counterexamples reproduced on 2a46728, plus a keyword-only default:
+#: each puts an explicit `.syscall` / `ctypes.CDLL` on the wrapper's HEADER,
+#: which Python evaluates in the enclosing scope when `def` runs.
+_N2_HEADER_ESCAPES = {
+    "default-syscall": "def _syscall_v2(name: str, *args: object, _p=_LIBC_V2.syscall(2, b'x', 0)) -> tuple[int, int]:",
+    "default-walrus-cdll-syscall": (
+        "def _syscall_v2(name: str, *args: object, _h=(_RAW := ctypes.CDLL(None)), "
+        "_fd=_RAW.syscall(ctypes.c_long(2), ctypes.c_char_p(b'x'), ctypes.c_long(0))) -> tuple[int, int]:"
+    ),
+    "decorator-syscall": "@_LIBC_V2.syscall\n" + _WRAPPER_HEADER,
+    "decorator-arbitrary-receiver": "@x.syscall\n" + _WRAPPER_HEADER,
+    "kw-default-syscall": "def _syscall_v2(name: str, *args: object, _k=x.syscall(2)) -> tuple[int, int]:",
+}
+
+
+def _with_wrapper_header(header: str) -> str:
+    source = Path(_PSV_FILE).read_text()
+    assert source.count(_WRAPPER_HEADER) == 1
+    return source.replace(_WRAPPER_HEADER, header, 1)
+
+
+@pytest.mark.parametrize("shape", sorted(_N2_HEADER_ESCAPES))
+def test_n2_explicit_forms_on_the_wrapper_header_are_outside_its_runtime_region(shape: str) -> None:
+    """`WrapperRuntimeRegion != DescendantOfFunctionDef`: the N2 region
+    predicate ITSELF rejects each header form (`raw syscall outside`), in
+    addition to the canonical header guard. The 2a46728 census accepted the
+    four reproduced forms (`[]`)."""
+    violations = _acquisition_census(_with_wrapper_header(_N2_HEADER_ESCAPES[shape]))
+    assert any(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+    if "cdll" in shape:
+        assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+
+
+def test_n2_same_content_inside_the_real_wrapper_body_is_the_positive_control() -> None:
+    """Positive control: the very expressions of the header escapes, placed
+    as statements in the real wrapper's BODY, are inside the region."""
+    body = (
+        _WRAPPER_HEADER
+        + "\n    _p = _LIBC_V2.syscall(2, b'x', 0)"
+        + "\n    raw = ctypes.CDLL(None)"
+        + "\n    _fd = raw.syscall(ctypes.c_long(2), ctypes.c_char_p(b'x'), ctypes.c_long(0))"
+    )
+    assert _acquisition_census(_with_wrapper_header(body)) == []
+
+
+@pytest.mark.parametrize(
+    "header, message",
+    [
+        ("@_identity_v2\n" + _WRAPPER_HEADER, "decorators forbidden"),
+        ("def _syscall_v2(name: str = 'renameat2', *args: object) -> tuple[int, int]:", "positional defaults forbidden"),
+        ("def _syscall_v2(name: str, *args: object, flag: int = 0) -> tuple[int, int]:", "keyword defaults with values forbidden"),
+        ("async def _syscall_v2(name: str, *args: object) -> tuple[int, int]:", "must be a plain FunctionDef"),
+    ],
+)
+def test_n2_canonical_wrapper_header_guard_fails_closed(header: str, message: str) -> None:
+    """Even a HARMLESS decorator/default is refused: the grammar change must
+    be re-adjudicated, not silently widen N2."""
+    violations = _acquisition_census(_with_wrapper_header(header))
+    assert any(message in v for v in violations), violations
+
+
+def test_n2_walrus_cdll_handle_is_outside_the_canonical_grammar() -> None:
+    """The reviewer's observation on 2a46728, closed as a finite language
+    restriction (no data-flow analysis): a handle created by walrus -- even
+    INSIDE the wrapper body -- is not the canonical `name = ctypes.CDLL(...)`
+    form and is refused; so are attribute-held handles."""
+    for statement in (
+        "\n    global _W\n    (_W := ctypes.CDLL(None))",
+        "\n    holder.libc = ctypes.CDLL(None)",
+    ):
+        violations = _acquisition_census(_with_wrapper_header(_WRAPPER_HEADER + statement))
+        assert any("outside the canonical `name = ctypes.CDLL(...)` grammar" in v for v in violations), violations
