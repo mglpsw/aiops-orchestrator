@@ -1445,8 +1445,9 @@ class _StagingWriterV2:
 
     def abort(self) -> bool:
         """Pre-commit cleanup, descriptor-relative. Returns True if staging
-        residue may remain (reported, never hidden). Idempotent; an
-        interrupted abort leaves what it did not release with its owner."""
+        residue may remain (reported, never hidden). Idempotent once it has
+        succeeded; after residue (or an interruption) a later call tries
+        again and reports the state it finds, never a stale False."""
         if self._aborted:
             return False
         for slot in list(self._dirs.values()):
@@ -1469,7 +1470,10 @@ class _StagingWriterV2:
                     os.rmdir(self.snapshot_id, dir_fd=self._staging.fd)
                 except OSError:
                     residue = True
-        self._aborted = True
+        if not residue:
+            # Removed: nothing left to re-target by name, ever.
+            self.created = False
+            self._aborted = True
         return residue
 
 
@@ -2135,17 +2139,24 @@ def publish_physical_snapshot_v2(
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
     run = _PublicationRunV2(tracker, snapshot_id, committed_identity)
     outcome: PublicationOutcomeV2 | None = None
+    carried: PublicationOutcomeV2 | None = None
     try:
         outcome = _publish_run_v2(run, source_authority, source_locator, object_format, root)
+    except BaseException as primary:
+        # An interruption after the commit point already carries its outcome
+        # (`_commit_v2`); remember it in case cleanup is interrupted too.
+        carried = getattr(primary, "physical_snapshot_outcome", None)
+        raise
     finally:
         try:
             run.settle()
         except BaseException as interruption:
             # Settling is resumable: finish it, then report. An outcome that
-            # already exists is never lost behind a cleanup failure (a
-            # committed snapshot must stay visible to the caller, C10).
+            # already exists -- returned, or carried by the interruption being
+            # propagated -- is never lost behind a cleanup failure (C10).
             run.settle()
-            if outcome is not None:
-                interruption.physical_snapshot_outcome = outcome  # type: ignore[attr-defined]
+            known = outcome if outcome is not None else carried
+            if known is not None:
+                interruption.physical_snapshot_outcome = known  # type: ignore[attr-defined]
             raise
     return outcome

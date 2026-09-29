@@ -2369,17 +2369,39 @@ _NONFAILING_OPCODES_V311 = frozenset(
 )
 
 
-def _marked_lines(filename: str, text: str) -> set[tuple[str, int]]:
+def _marked_lines(filename: str, text: str) -> dict[tuple[str, int], str]:
+    marked: dict[tuple[str, int], str] = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        if "# fd-install" in line:
+            marked[(filename, number)] = "install"
+        elif "# fd-release" in line:
+            marked[(filename, number)] = "release"
+    return marked
+
+
+def _source_window_lines() -> dict[tuple[str, int], str]:
     return {
-        (filename, number)
-        for number, line in enumerate(text.splitlines(), 1)
-        if any(marker in line for marker in _WINDOW_MARKERS)
+        **_marked_lines(_PSV_FILE, Path(_PSV_FILE).read_text()),
+        **_marked_lines(_TOA_FILE, Path(_TOA_FILE).read_text()),
     }
 
 
-def _source_window_lines() -> set[tuple[str, int]]:
-    lines = _marked_lines(_PSV_FILE, Path(_PSV_FILE).read_text())
-    return lines | _marked_lines(_TOA_FILE, Path(_TOA_FILE).read_text())
+#: What the declared window may contain AFTER the syscall returned: on an
+#: install line only the evaluation of a pre-evaluated owner expression and
+#: the slot store; on a release line the detach store and the close call.
+#: A call or any other opcode after the syscall on a marked line (e.g. an
+#: allocating `setdefault` in the target) is NOT tolerated (review F-A).
+_WINDOW_OPCODES = {
+    "install": frozenset({"LOAD_ATTR", "STORE_ATTR", "STORE_SUBSCR"}),
+    "release": frozenset({"LOAD_ATTR", "STORE_ATTR", "BINARY_OP", "LOAD_GLOBAL", "LOAD_METHOD", "CALL"}),
+}
+
+
+def _tolerated(site, windows: dict[tuple[str, int], str]) -> bool:
+    if site is None:
+        return False
+    kind = windows.get((site[0], site[1]))
+    return kind is not None and site[3] in _WINDOW_OPCODES[kind]
 
 
 _TOA_DUP_CODE = toa.AuthorizedGitStorageSetV2.duplicate_authorized_roots.__code__
@@ -2546,7 +2568,7 @@ def _dotgit_dir_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocator
 
 def _sweep_one(
     base: Path, roots: list[Path], locator: SourceRepositoryLocatorV2, scenario: _SweepScenario, index: int,
-    inject_at: int | None, monkeypatch, windows: set[tuple[str, int]], sites: list | None = None,
+    inject_at: int | None, monkeypatch, windows: dict[tuple[str, int], str], sites: list | None = None,
 ) -> tuple[list[str], int]:
     pub = base / f"pub-{scenario.name}-{index}"
     root = _publication_root(pub)
@@ -2585,7 +2607,7 @@ def _sweep_one(
         for restore in undo:
             restore()
         problems: list[str] = []
-        in_window = site is not None and (site[0], site[1]) in windows
+        in_window = _tolerated(site, windows)
         outcome = result if exc is None else getattr(exc, "physical_snapshot_outcome", None)
         if isinstance(exc, TimeoutError):
             return [f"{scenario.name}@{site}: hang"], count
@@ -2614,6 +2636,14 @@ def _sweep_one(
             problems.append(f"untyped outcome {type(outcome).__name__}")
         if inject_at is None and type(result) is not scenario.expected:
             problems.append(f"baseline outcome {type(result).__name__}, expected {scenario.expected.__name__}")
+        handed = (
+            outcome.snapshot._descriptor.fd if type(outcome) is CompletePublicationV2
+            else outcome.residual._descriptor.fd if type(outcome) is UnconfirmedPublicationV2
+            else None
+        )
+        if type(outcome) in (CompletePublicationV2, UnconfirmedPublicationV2) and ours_committed:
+            if handed is None or _ident(handed) != _ident_of(committed):
+                problems.append("handed-out descriptor is not the committed tree")
         _release_outcome(outcome)
         # Strict: measured while the exception (and its frames) is still
         # alive, so nothing counts as released just because a finalizer ran.
@@ -2652,7 +2682,7 @@ def _injection_points(sites: list) -> list[int]:
 def _sweep(base: Path, scenario: _SweepScenario, monkeypatch, *, only_codes: set | None = None) -> tuple[list[str], int]:
     """Baseline run, then one run per injection point. Returns (violations, runs)."""
     roots, locator = scenario.fixture(base / scenario.name)
-    windows = _source_window_lines() | getattr(scenario, "extra_windows", set())
+    windows = {**_source_window_lines(), **getattr(scenario, "extra_windows", {})}
     sites: list = []
     # The cyclic collector stays off for the whole sweep: no finalizer may
     # release a descriptor behind the census (strict ownership, not GC luck).
@@ -2728,6 +2758,21 @@ def _scenario_unobservable(monkeypatch) -> _SweepScenario:
     return _SweepScenario("unobservable", IndeterminatePublicationV2, prepare=patch)
 
 
+def _scenario_open_stage_failure(monkeypatch) -> _SweepScenario:
+    """`staging/<id>` exists but was never opened: abort removes it by name."""
+
+    def patch(pub: Path):
+        real = psv._StagingWriterV2.open_stage
+
+        def failing(self):
+            raise psv._RefusalV2(psv.PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
+
+        monkeypatch.setattr(psv._StagingWriterV2, "open_stage", failing)
+        return [lambda: monkeypatch.setattr(psv._StagingWriterV2, "open_stage", real)]
+
+    return _SweepScenario("openstage", NotPublishedV2, prepare=patch)
+
+
 def _all_sweep_scenarios(monkeypatch) -> list[_SweepScenario]:
     return [
         _SweepScenario("complete", CompletePublicationV2),
@@ -2738,10 +2783,13 @@ def _all_sweep_scenarios(monkeypatch) -> list[_SweepScenario]:
         _scenario_post_commit_failure(monkeypatch),
         _scenario_rename_error_but_committed(monkeypatch),
         _scenario_unobservable(monkeypatch),
+        _scenario_open_stage_failure(monkeypatch),
     ]
 
 
-_SWEEP_SCENARIO_IDS = ["complete", "bare", "dotgitdir", "budget", "collision", "postcommit", "renameerr", "unobservable"]
+_SWEEP_SCENARIO_IDS = [
+    "complete", "bare", "dotgitdir", "budget", "collision", "postcommit", "renameerr", "unobservable", "openstage",
+]
 
 
 @pytest.mark.parametrize("scenario_index", range(len(_SWEEP_SCENARIO_IDS)), ids=_SWEEP_SCENARIO_IDS)
@@ -2779,7 +2827,7 @@ def test_c11_publication_root_factory_fault_sites_leave_no_unowned_descriptor(tm
                 result.close()
             leaked = sorted(_fd_census() - before)
             del result, exc
-            if leaked and (site[0], site[1]) not in windows:
+            if leaked and not _tolerated(site, windows):
                 violations.append(f"{site}: leaked {leaked}")
             if _ident(caller_fd) is None:
                 violations.append(f"{site}: the caller's descriptor was closed")
@@ -2799,6 +2847,45 @@ _FORBIDDEN_ACQUIRERS = frozenset(
     }
 )
 _RELEASE_FUNCTIONS = frozenset({"close_once", "close_quietly", "_release_roots"})
+#: Allow-lists, not deny-lists (review F-B): every attribute S1-A touches on
+#: these modules is vetted; a new one fails the census until it is.
+_VETTED_ATTRIBUTES = {
+    "os": frozenset(
+        {
+            "O_CLOEXEC", "O_CREAT", "O_DIRECTORY", "O_EXCL", "O_NOFOLLOW", "O_NONBLOCK", "O_RDONLY", "O_WRONLY",
+            "close", "fchmod", "fsencode", "fstat", "fsync", "makedev", "mkdir", "open", "read", "rmdir",
+            "scandir", "stat", "unlink", "write",
+        }
+    ),
+    "fcntl": frozenset({"fcntl", "F_DUPFD_CLOEXEC", "F_GETFL", "F_SETFL"}),
+}
+_VETTED_FCNTL_COMMANDS = frozenset({"F_DUPFD_CLOEXEC", "F_GETFL", "F_SETFL"})
+_VETTED_IMPORTS = frozenset(
+    {
+        "__future__", "ctypes", "enum", "errno", "fcntl", "hashlib", "json", "os", "platform", "re", "secrets",
+        "stat", "struct", "sys", "threading", "weakref", "collections.abc", "dataclasses", "typing",
+        "app.agent_review.trusted_object_authority_v2",
+    }
+)
+_DESCRIPTOR_SYSCALLS_ALLOWED = frozenset({"renameat2", "statx"})  # neither creates a descriptor
+
+
+def _pre_evaluated_owner(target) -> bool:
+    """`name.attr...fd`, `self._roots` or `made[index]`: an owner expression
+    whose evaluation after the syscall is only attribute loads (no call, no
+    subscript, no allocation)."""
+
+    def name_chain(node) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name)
+
+    if isinstance(target, ast.Attribute) and target.attr in ("fd", "_roots"):
+        return name_chain(target.value)
+    return (
+        isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id == "made"
+        and isinstance(target.slice, ast.Name)
+    )
 
 
 def _acquisition_census(source: str) -> list[str]:
@@ -2841,9 +2928,38 @@ def _acquisition_census(source: str) -> list[str]:
         return None
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _VETTED_IMPORTS or alias.asname is not None:
+                    violations.append(f"line {node.lineno}: unvetted import {alias.name} as {alias.asname}")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module not in _VETTED_IMPORTS or node.module in _VETTED_ATTRIBUTES:
+                violations.append(f"line {node.lineno}: unvetted from-import {node.module}")
+        elif (
+            isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id in _VETTED_ATTRIBUTES and node.attr not in _VETTED_ATTRIBUTES[node.value.id]
+        ):
+            violations.append(f"line {node.lineno}: unvetted {node.value.id}.{node.attr}")
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        if isinstance(func, ast.Name) and func.id in ("open", "__import__"):
+            violations.append(f"line {node.lineno}: builtin {func.id}")
+        if (
+            isinstance(func, ast.Name) and func.id == "getattr" and node.args
+            and isinstance(node.args[0], ast.Name) and node.args[0].id in (*_VETTED_ATTRIBUTES, "ctypes", "socket")
+        ):
+            violations.append(f"line {node.lineno}: dynamic attribute of {node.args[0].id}")
+        if (
+            isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+            and func.value.id == "fcntl" and func.attr == "fcntl"
+        ):
+            command = node.args[1] if len(node.args) > 1 else None
+            if not (
+                isinstance(command, ast.Attribute) and isinstance(command.value, ast.Name)
+                and command.value.id == "fcntl" and command.attr in _VETTED_FCNTL_COMMANDS
+            ):
+                violations.append(f"line {node.lineno}: unvetted fcntl command")
         attr = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
         owner = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
         where = f"line {node.lineno}"
@@ -2858,10 +2974,7 @@ def _acquisition_census(source: str) -> list[str]:
         if acquires:
             stmt = parent.get(node)
             target = stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 else None
-            into_owner = (
-                (isinstance(target, ast.Attribute) and target.attr in ("fd", "_roots"))
-                or (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id == "made")
-            )
+            into_owner = target is not None and _pre_evaluated_owner(target)
             if not into_owner or stmt.value is not node:
                 violations.append(f"{where}: descriptor not installed into a pre-existing owner slot")
             elif "# fd-install" not in line_of(node):
@@ -2871,8 +2984,17 @@ def _acquisition_census(source: str) -> list[str]:
                 violations.append(f"{where}: scandir iterator not owned by a with-statement")
         elif owner == "os" and attr == "mkdir":
             follower = next_statement(parent.get(node))
-            ok = follower is not None and (
-                "# fd-install" in lines[follower.lineno - 1]
+            ok = (
+                isinstance(follower, ast.Assign) and len(follower.targets) == 1
+                and "# fd-install" in lines[follower.lineno - 1]
+                and (
+                    (
+                        isinstance(follower.value, ast.Constant) and follower.value.value is True
+                        and isinstance(follower.targets[0], ast.Attribute)
+                        and isinstance(follower.targets[0].value, ast.Name)
+                    )
+                    or _pre_evaluated_owner(follower.targets[0])
+                )
             )
             if not ok:
                 violations.append(f"{where}: mkdir not followed by its installed cleanup obligation")
@@ -2889,6 +3011,8 @@ def _duplicate_authorized_roots_source() -> str:
 def test_c11_static_census_every_acquisition_installs_into_a_pre_existing_owner() -> None:
     psv_source = Path(_PSV_FILE).read_text()
     assert _acquisition_census(psv_source) == []
+    assert set(psv._SYSCALL_NUMBERS_V2["x86_64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
+    assert set(psv._SYSCALL_NUMBERS_V2["aarch64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
     assert _acquisition_census(_duplicate_authorized_roots_source()) == []
     # Anti-vacuity: the census does see the acquisitions it rules on.
     tree = ast.parse(psv_source)
@@ -3035,7 +3159,17 @@ _SEALED_TYPES = (
 )
 
 
+class _QuietInitSubclass:
+    """A base whose `__init_subclass__` does not chain to `super()`: listed
+    first, it keeps `_SealedV2.__init_subclass__` from running (review F-C)."""
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        pass
+
+
 def _subclassable(sealed: type) -> list[str]:
+    """Cooperative subclassing only; the non-cooperative MRO bypass is covered
+    by `test_seal_bypass_through_the_mro_is_still_refused_at_admission`."""
     defined = []
     for bases in ((sealed,), (sealed, psv._SealedV2)):
         try:
@@ -3293,3 +3427,168 @@ def test_skipped_duplicate_occurrence_is_not_reacquired_even_as_a_symlink(tmp_pa
     opened_duplicates = [c for c in audit.calls if c.name == "open" and str(c.args[0]).startswith(base) and "alt" in str(c.where or "")]
     assert opened_duplicates == []
     assert events == []
+
+
+def test_seal_bypass_through_the_mro_is_still_refused_at_admission(tmp_path: Path) -> None:
+    """Review F-C: `class X(Quiet, SealedType)` escapes the definition-time
+    seal (defense in depth only). The load-bearing checks are admission by
+    exact type (W, A) and the minted-snapshot registry (Complete)."""
+    forged_w_type = type("ForgedW", (_QuietInitSubclass, SnapshotPublicationRootV2), {})
+    victim = _victim_dir(tmp_path)
+    forged = object.__new__(forged_w_type)
+    forged.__dict__.update(vars(_unminted_publication_root(victim)))
+    assert _forged_w_outcome(tmp_path, forged) == {
+        "refused": psv.PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2, "victim_written": False,
+    }
+    forged_snapshot_type = type("ForgedSnapshot", (_QuietInitSubclass, PublishedSnapshotV2), {})
+    with pytest.raises(TypeError):
+        CompletePublicationV2(snapshot=object.__new__(forged_snapshot_type))
+
+
+# -- review F-A / F-B: the discriminators reject the shapes they previously accepted ---------------
+
+_ENSURE_DIR_REGISTERED_FIRST = """slot = _FdSlotV2()
+self._dirs[relpath] = slot
+self._manifest[relpath] = ("dir", relpath, _DIR_MODE_V2, 0, "")
+try:
+    os.mkdir(name, _STAGING_DIR_MODE_V2, dir_fd=parent_fd)
+    slot.fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent_fd)  # fd-install"""
+_ENSURE_DIR_REGISTERED_IN_TARGET = """slot = _FdSlotV2()
+self._manifest[relpath] = ("dir", relpath, _DIR_MODE_V2, 0, "")
+try:
+    os.mkdir(name, _STAGING_DIR_MODE_V2, dir_fd=parent_fd)
+    self._dirs.setdefault(relpath, slot).fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent_fd)  # fd-install"""
+
+
+def _setdefault_mutant(indent: str, text: str) -> str:
+    old = textwrap.indent(_ENSURE_DIR_REGISTERED_FIRST, indent)
+    assert old in text
+    return text.replace(old, textwrap.indent(_ENSURE_DIR_REGISTERED_IN_TARGET, indent), 1)
+
+
+def test_mutation_allocating_owner_expression_on_a_marked_line_is_killed_by_the_census() -> None:
+    """Review F-A mutant: the registration moves INTO the marked statement's
+    target (`self._dirs.setdefault(...).fd = os.open(...)`), which Python
+    evaluates after the syscall."""
+    mutated = _setdefault_mutant(" " * 8, Path(_PSV_FILE).read_text())
+    assert any("not installed into a pre-existing owner slot" in v for v in _acquisition_census(mutated))
+
+
+def test_mutation_allocating_owner_expression_on_a_marked_line_is_killed_by_the_fault_sweep(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same F-A mutant under the sweep: a fault at the `setdefault` call
+    AFTER the open is not a tolerated window opcode, so the orphaned staging
+    descriptor is reported."""
+    method = textwrap.dedent(inspect.getsource(psv._StagingWriterV2.ensure_dir))
+    mutant_source = _setdefault_mutant(" " * 4, method)
+    monkeypatch.setattr(psv._StagingWriterV2, "ensure_dir", _compile_mutant(mutant_source))
+    violations = _mutant_sweep(
+        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), mutant_source, {"ensure_dir"},
+    )
+    assert any("leaked" in v and "'CALL'" in v and _MUTANT_FILE in v for v in violations), violations
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "fd = fcntl.fcntl(x, fcntl.F_DUPFD, 0)",
+        "fd = fcntl.fcntl(x, F_DUPFD_CLOEXEC, 0)",
+        "fd = open('x')",
+        "r, w = os.pipe2(0)",
+        "fd = os.pidfd_open(1)",
+        "import socket",
+        "import os as _os",
+        "from os import open as o",
+        "fd = getattr(os, 'open')('x', 0)",
+    ],
+)
+def test_static_census_is_an_allow_list(snippet: str) -> None:
+    """Review F-B: every descriptor source outside the vetted set fails."""
+    assert _acquisition_census(snippet + "\n") != []
+
+
+# -- review F-D / F-E ------------------------------------------------------------------------
+
+
+def _two_interruptions(tmp_path: Path, monkeypatch) -> dict[str, object]:
+    """First interruption after the commit point; a second one during settle."""
+    repo = _make_repo(tmp_path / "src" / "repo", files=1)
+
+    def interrupted_post_commit(run):
+        raise KeyboardInterrupt("first, after the rename")
+
+    real_settle = psv._PublicationRunV2.settle
+    state = {"armed": True}
+
+    def interrupted_settle(self):
+        if state["armed"]:
+            state["armed"] = False
+            raise KeyboardInterrupt("second, during cleanup")
+        return real_settle(self)
+
+    monkeypatch.setattr(psv, "_post_commit_v2", interrupted_post_commit)
+    monkeypatch.setattr(psv._PublicationRunV2, "settle", interrupted_settle)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(tmp_path / "src")])
+    root = _publication_root(tmp_path / "pub")
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            psv.publish_physical_snapshot_v2(
+                source_authority=capability,
+                source_locator=SourceRepositoryLocatorV2.absolute(str(repo)),
+                object_format=SHA1,
+                physical_budget=_budget(),
+                publication_root=root,
+            )
+    finally:
+        capability.close()
+        root.close()
+    carried = getattr(caught.value, "physical_snapshot_outcome", None)
+    facts = {"committed": len(_committed_entries(tmp_path / "pub")), "carried": type(carried).__name__}
+    _release_outcome(carried)
+    _release_outcome(getattr(caught.value.__context__, "physical_snapshot_outcome", None))
+    return facts
+
+
+def test_two_interruptions_never_hide_a_committed_snapshot(tmp_path: Path, monkeypatch) -> None:
+    assert _two_interruptions(tmp_path, monkeypatch) == {"committed": 1, "carried": "UnconfirmedPublicationV2"}
+
+
+def test_mutation_outcome_carried_only_when_returned_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """Mutant (the ad1d696 handler): attach only a RETURNED outcome."""
+    source = textwrap.dedent(inspect.getsource(psv.publish_physical_snapshot_v2))
+    old = "            known = outcome if outcome is not None else carried\n"
+    assert old in source
+    mutant = _compile_mutant(source.replace(old, "            known = outcome\n", 1))
+    monkeypatch.setattr(psv, "publish_physical_snapshot_v2", mutant)
+    assert _two_interruptions(tmp_path, monkeypatch)["carried"] == "NoneType"
+
+
+def _abort_answers_with_persistent_residue(tmp_path: Path, monkeypatch) -> list[bool]:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    slot = psv._FdSlotV2()
+    slot.fd = os.open(str(staging), os.O_RDONLY | os.O_DIRECTORY)
+    writer = psv._StagingWriterV2(slot, "a" * 32)
+    writer.create_stage()
+    writer.open_stage()
+
+    class NoRmdir:
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def rmdir(self, *args, **kwargs):
+            raise OSError(errno.EBUSY, "injected")
+
+    monkeypatch.setattr(psv, "os", NoRmdir())
+    answers = [writer.abort(), writer.abort()]
+    monkeypatch.setattr(psv, "os", os)
+    answers.append(writer.abort())
+    answers.append((staging / ("a" * 32)).exists())
+    slot.close_quietly()
+    return answers
+
+
+def test_abort_never_reports_a_stale_false_after_residue(tmp_path: Path, monkeypatch) -> None:
+    """Review F-E: residue stays reported until it is really removed."""
+    assert _abort_answers_with_persistent_residue(tmp_path, monkeypatch) == [True, True, False, False]

@@ -355,3 +355,39 @@ new exact head → focal countermodels → recurrence-family census (static + sw
 Out of scope, unchanged: S1-B, `S1_CTX_01`, S1-C, S1-D, S_D, E, #298, #314,
 #350; #301 is not concluded. No Ready, merge, release, deploy or provider
 action.
+
+---
+
+## 9. Qualification round of `ad1d696` and proportional corrections (append-only)
+
+```yaml
+subject: ad1d69628ee52fbe291408df8c31ed1b60083c84
+exact_head_ci: "run 36594040811: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+codex_exact_head: "Didn't find any major issues (reviewed commit ad1d69628e)"
+independent_review: "0 MATERIAL, 5 MINOR, 1 NIT + wording NITs; C11 property of the code confirmed by manual audit of every §3.3 site and by a KeyboardInterrupt re-run of the sweep (14,707 runs, 0 violations)"
+recurrence_in_code: none   # the C11 class did not recur in the code; two findings are gaps in its DISCRIMINATORS
+disposition: proportional in-slice corrections on a new head; this section supersedes the sentences it names
+```
+
+| Finding | Class | Correction |
+|---|---|---|
+| F-A: an allocating registration written INSIDE a marked statement's target (`self._dirs.setdefault(k, slot).fd = os.open(...)  # fd-install`) passed the census, the sweep and the suite | C11 discriminator gap | census: the target must be a pre-evaluated owner expression (a `Name.attr…` chain ending in `fd`/`_roots`, or `made[<name>]`); sweep: a fault on a marked line is tolerated only at the opcodes the window may contain after the syscall (install: `LOAD_ATTR`, `STORE_ATTR`, `STORE_SUBSCR`; release: detach store, `os.close` call); the `setdefault` mutant is now killed by both |
+| F-B: the census was a deny-list | C11 discriminator gap | allow-lists: imports, every `os.*` / `fcntl.*` attribute, `fcntl` commands, no builtin `open`, no dynamic `getattr` on those modules; the raw-syscall table may only name `renameat2`/`statx`; 9 bypass shapes as witnesses |
+| F-C: `class X(Quiet, SealedType)` with a non-cooperative `__init_subclass__` escapes the definition-time seal | sealing wording | **§5 and §3.4 are corrected**: the seal is cooperative defense in depth; the load-bearing protection is admission by exact type (W, A) plus the minted-snapshot registry (Complete). Witness: the MRO-bypass subclass is still refused at admission |
+| F-D: an interruption after the commit point followed by a second one during `settle` escaped without `physical_snapshot_outcome` | C10 wording / two-fault path | the entry point now remembers the outcome carried by the in-flight interruption and attaches it to a cleanup interruption; §3.1's "a committed snapshot is never hidden behind a cleanup failure" now holds for that path too (witness + mutant of the ad1d696 handler) |
+| F-E: a second `abort()` answered False after residue | residue reporting (latent) | `abort()` becomes final only after a successful removal (then `created = False`); until then every call re-attempts and reports what it finds |
+| F-F: ScandirIterator faults are clean because its C finalizer closes the dup | wording | **§3.4 is corrected**: "finalizers are never counted as release" applies to S1-A's Python-level owners; the `os.scandir` iterator is a C-level owner of its internal dup by declaration (§4 `also_declared`) |
+
+Wording NITs, corrected here:
+
+- The file opens also gained O_CLOEXEC. The claim in §3.2 is extended to them; behaviour is otherwise unchanged.
+- On a `fd-release` line, `os.close` may raise OSError. It does so only after the kernel has released the descriptor, so ownership is not affected.
+- `self._roots_released += 1` can allocate once there are more than 256 roots. That happens before the detach, so the descriptor is still owned. The §4 wording "no operation that can fail synchronously" is refined accordingly: nothing that can fail synchronously occurs **between the kernel-side creation or detach and the slot store or close**.
+- The sweep gained a ninth shape (`openstage`: `staging/<id>` exists but was never opened, and abort removes it by name).
+- Its baseline now checks that the descriptor handed out in Complete and Unconfirmed is the committed tree itself.
+
+RED/GREEN for this round:
+
+- On `ad1d696`, the F-D witness escapes with no carried outcome (`NoneType`), and the F-E witness answers `[True, False, False, True]`: a stale False while the residue exists.
+- On the candidate, both are GREEN.
+- F-A and F-B are witnessed on the discriminators themselves (mutant and bypass shapes), as the reviewer reproduced them on `ad1d696`.
