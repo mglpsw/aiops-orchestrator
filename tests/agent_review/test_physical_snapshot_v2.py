@@ -1,8 +1,10 @@
 """`#301-S1-A` -- physical Git snapshot: countermodels, positive controls,
 Git parity and mutation discrimination.
 
-Contract: `docs/engineering/agent-review-v2-301-s1a/ARCHITECTURE_FREEZE.md`.
-Countermodel ids (A1-A13, R1-R14, P1-P19, L1-L10) and claim ids (C1-C12)
+Contract: `docs/engineering/agent-review-v2-301-s1a/ARCHITECTURE_FREEZE.md`,
+refined append-only by `IMPLEMENTATION_ADJUDICATION.md` in the same folder
+(C11 structural redesign and its fault-injection census, capability sealing,
+duplicate-occurrence semantics). Countermodel ids (A1-A13, R1-R14, P1-P19, L1-L10) and claim ids (C1-C12)
 are the freeze's; each test names the ones it exercises.
 
 Discriminators are functions that return the observed facts; the real code
@@ -422,7 +424,8 @@ def _layout_resolution(roots: list[Path], locator: Path) -> Path:
     """The objects directory S1-A resolves, as an absolute path (test-only)."""
     capability = AuthorizedGitStorageSetV2.from_roots([str(r) for r in roots])
     try:
-        session = psv._SourceSessionV2(capability, PhysicalWorkTrackerV2(_budget()))
+        session = psv._SourceSessionV2(PhysicalWorkTrackerV2(_budget()))
+        session.acquire_roots(capability)
         try:
             objects = psv._resolve_primary_store_v2(session, SourceRepositoryLocatorV2.absolute(str(locator)))
             root_locator = session._roots[objects.position.root_index].locator
@@ -846,16 +849,16 @@ def test_a7_rebind_between_descents_never_follows_outside_the_capability(tmp_pat
     repo = _make_repo(src / "repo")
     outside = _make_repo(tmp_path / "outside" / "victim")
     swapped = {"done": False}
-    real_open_dir = psv._try_open_dir_no_follow_v2
+    real_open_dir = psv._open_source_dir_into_v2
 
-    def swapping_open(dir_fd, name):
+    def swapping_open(slot, dir_fd, name):
         if name == "repo" and not swapped["done"]:
             swapped["done"] = True
             repo.rename(src / "orig-repo")
             repo.symlink_to(outside)
-        return real_open_dir(dir_fd, name)
+        return real_open_dir(slot, dir_fd, name)
 
-    monkeypatch.setattr(psv, "_try_open_dir_no_follow_v2", swapping_open)
+    monkeypatch.setattr(psv, "_open_source_dir_into_v2", swapping_open)
     inotify = _Inotify()
     inotify.watch(outside)
     inotify.watch(outside / ".git")
@@ -1651,21 +1654,21 @@ def test_mutation_c12_missing_source_parent_fsync_after_rename_is_killed(tmp_pat
     """Mutant: after the cross-directory rename, sync the moved root and
     committed/ but NOT the source parent staging/ (the Codex 4124401154 shape)."""
 
-    def post_commit_without_staging_sync(context):
-        stage_fd = context.writer.stage_fd
+    def post_commit_without_staging_sync(run):
+        stage_fd = run.writer.stage.fd
         psv.os.fchmod(stage_fd, 0o555)
         psv.os.fsync(stage_fd)
-        psv.os.fsync(context.committed_fd)
+        psv.os.fsync(run.committed.fd)
         info = psv.os.fstat(stage_fd)
         identity = psv._statx_identity_v2(stage_fd)
         binding = psv.PublishedSnapshotBindingV2(
-            snapshot_id=context.snapshot_id, mount_id=identity.mount_id, st_dev=info.st_dev, st_ino=info.st_ino,
-            st_uid=info.st_uid, st_gid=info.st_gid, committed_parent_identity=context.committed_identity,
+            snapshot_id=run.snapshot_id, mount_id=identity.mount_id, st_dev=info.st_dev, st_ino=info.st_ino,
+            st_uid=info.st_uid, st_gid=info.st_gid, committed_parent_identity=run.committed_identity,
         )
-        snapshot = psv.PublishedSnapshotV2(
-            _sentinel=psv._SNAPSHOT_SENTINEL_V2, fd=context.writer.take_stage_fd(), binding=binding, receipt=context.receipt
-        )
-        return CompletePublicationV2(snapshot=snapshot)
+        snapshot = psv.PublishedSnapshotV2(_sentinel=psv._SNAPSHOT_SENTINEL_V2, binding=binding, receipt=run.receipt)
+        outcome = CompletePublicationV2(snapshot=snapshot)
+        run.writer.stage.move_to(snapshot._descriptor)
+        return outcome
 
     monkeypatch.setattr(psv, "_post_commit_v2", post_commit_without_staging_sync)
     assert "post-commit sequence" in _c12_sequence(tmp_path, monkeypatch)
@@ -1939,10 +1942,7 @@ def test_indeterminate_commit_state_is_never_reported_as_not_published(tmp_path:
 def test_p15_publication_authority_cannot_come_from_a_path(tmp_path: Path) -> None:
     assert not hasattr(SnapshotPublicationRootV2, "from_path")
     with pytest.raises(PhysicalSnapshotErrorV2):
-        SnapshotPublicationRootV2(
-            _sentinel=object(), root_fd=0, staging_fd=0, committed_fd=0,
-            root_identity=None, staging_identity=None, committed_identity=None,  # type: ignore[arg-type]
-        )
+        SnapshotPublicationRootV2(_sentinel=object())
     with pytest.raises(PhysicalSnapshotErrorV2):
         SnapshotPublicationRootV2.from_directory_fd(str(tmp_path))  # type: ignore[arg-type]
 
@@ -2018,10 +2018,10 @@ def test_mutation_c2_direct_creation_in_committed_is_killed(tmp_path: Path, monk
     """Review F2(b): a create directly in committed/ through committed_fd (§6 forbids it)."""
     real_commit = psv._commit_v2
 
-    def planting_commit(context):
-        fd = psv.os.open("planted", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=context.committed_fd)
+    def planting_commit(run):
+        fd = psv.os.open("planted", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=run.committed.fd)
         psv.os.close(fd)
-        return real_commit(context)
+        return real_commit(run)
 
     monkeypatch.setattr(psv, "_commit_v2", planting_commit)
     violations = _c2_discriminator(tmp_path, monkeypatch)
@@ -2033,19 +2033,30 @@ def test_mutation_c2_direct_creation_in_committed_is_killed(tmp_path: Path, monk
 # ================================================================================
 
 
+def _test_receipt_and_binding() -> tuple[psv.PublishedSnapshotReceiptV2, psv.PublishedSnapshotBindingV2]:
+    """Genuinely-typed receipt and binding (values irrelevant) for type-state tests."""
+    receipt = psv.PublishedSnapshotReceiptV2(
+        schema_version=psv.PHYSICAL_SNAPSHOT_RECEIPT_SCHEMA_V2, snapshot_id="e" * 32, declared_object_format="sha1",
+        physical_work=(), alternate_sources=0, max_alternate_depth_seen=0, files_copied=0, copied_bytes=0,
+        source_root_identities=(), snapshot_fileset_digest="0" * 64,
+    )
+    binding = psv.PublishedSnapshotBindingV2(
+        snapshot_id="e" * 32, mount_id=0, st_dev=0, st_ino=0, st_uid=0, st_gid=0,
+        committed_parent_identity=psv.KernelObjectIdentityV2(mount_id=0, st_dev=0, st_ino=0),
+    )
+    return receipt, binding
+
+
 def test_l7_published_snapshot_exists_only_inside_complete(tmp_path: Path) -> None:
-    fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        with pytest.raises(PhysicalSnapshotErrorV2):
-            PublishedSnapshotV2(_sentinel=object(), fd=fd, binding=None, receipt=None)  # type: ignore[arg-type]
-    finally:
-        os.close(fd)
+    receipt, binding = _test_receipt_and_binding()
+    with pytest.raises(PhysicalSnapshotErrorV2):
+        PublishedSnapshotV2(_sentinel=object(), binding=binding, receipt=receipt)
     assert _unconfirmed_accepts_published_snapshot(tmp_path) is False
 
 
 def _unconfirmed_accepts_published_snapshot(tmp_path: Path) -> bool:
-    fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
-    snapshot = PublishedSnapshotV2(_sentinel=psv._SNAPSHOT_SENTINEL_V2, fd=fd, binding=None, receipt=None)  # type: ignore[arg-type]
+    receipt, binding = _test_receipt_and_binding()
+    snapshot = PublishedSnapshotV2(_sentinel=psv._SNAPSHOT_SENTINEL_V2, binding=binding, receipt=receipt)
     try:
         UnconfirmedPublicationV2(residual=snapshot)  # type: ignore[arg-type]
         return True
@@ -2121,19 +2132,26 @@ def test_mutation_l1_close_before_owner_transfer_is_killed(tmp_path: Path, monke
 
     def unlinear_admit(self, position, missing_reason):
         root = self._roots[position.root_index]
+        admitted = self._new_admitted(position)
         if not position.components:
             self._tracker.charge(descriptor_opens=1)
-            return self._register(position, psv.fcntl.fcntl(root.fd, psv.fcntl.F_DUPFD_CLOEXEC, 0))
+            admitted.fd = psv.fcntl.fcntl(root.fd, psv.fcntl.F_DUPFD_CLOEXEC, 0)
+            return admitted
         current, owned = root.fd, None
         for component in position.components:
             self._tracker.charge(descriptor_opens=1, path_components=1)
-            successor = psv._try_open_dir_no_follow_v2(current, component)
-            if successor is None:
+            carrier = psv._FdSlotV2()
+            if not psv._open_source_dir_into_v2(carrier, current, component):
                 raise psv._RefusalV2(missing_reason)
+            successor, carrier.fd = carrier.fd, None  # the successor now has no owner
             if owned is not None:
-                psv._close_once_v2(owned)  # may raise while `successor` has no owner
+                try:
+                    psv.os.close(owned)  # may raise while `successor` has no owner
+                except OSError as exc:
+                    raise psv._RefusalV2(psv.PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2) from exc
             owned = current = successor
-        return self._register(position, owned)
+        admitted.fd = owned
+        return admitted
 
     monkeypatch.setattr(psv._SourceSessionV2, "admit", unlinear_admit)
     facts = _l1_discriminator(tmp_path, monkeypatch)
@@ -2177,20 +2195,32 @@ def test_l6_l10_fd_census_is_clean_on_budget_refusal_mid_listing(tmp_path: Path)
     assert _fd_census() == before
 
 
+def _check_single_owner(monkeypatch) -> list[str]:
+    """Every admitted directory handed out by `admit`/`child` holds a
+    descriptor no other live owner (admitted dir or root duplicate) holds."""
+    shared: list[str] = []
+
+    def checked(real):
+        def wrapper(self, *args, **kwargs):
+            admitted = real(self, *args, **kwargs)
+            others = {other.fd for other in self._live if other is not admitted and other.fd is not None}
+            others |= {root.fd for root in self._roots}
+            if admitted.fd in others:
+                shared.append(f"{admitted.fd}")
+            return admitted
+
+        return wrapper
+
+    monkeypatch.setattr(psv._SourceSessionV2, "admit", checked(psv._SourceSessionV2.admit))
+    monkeypatch.setattr(psv._SourceSessionV2, "child", checked(psv._SourceSessionV2.child))
+    return shared
+
+
 def test_l8_no_descriptor_is_shared_between_admitted_directories(tmp_path: Path, monkeypatch) -> None:
     main = _make_repo(tmp_path / "src" / "main")
     worktree = tmp_path / "src" / "wt"
     _git(main, "worktree", "add", "-q", "--detach", str(worktree))
-    shared: list[str] = []
-    real_register = psv._SourceSessionV2._register
-
-    def checking_register(self, position, fd):
-        live = {admitted.fd for admitted in self._live} | {root.fd for root in self._roots}
-        if fd in live:
-            shared.append(f"{fd}")
-        return real_register(self, position, fd)
-
-    monkeypatch.setattr(psv._SourceSessionV2, "_register", checking_register)
+    shared = _check_single_owner(monkeypatch)
     snapshot = _complete(_publish([tmp_path / "src"], worktree, tmp_path / "pub"))
     snapshot.close()
     assert shared == []
@@ -2212,16 +2242,7 @@ def test_budget_tracker_refuses_whole_events_and_never_returns_budget() -> None:
 def _l8_shared_descriptors(tmp_path: Path, monkeypatch) -> list[str]:
     """Registrations whose fd is already owned by a live admitted dir or a root dup."""
     repo = _make_repo(tmp_path / "src" / "repo", files=1)
-    shared: list[str] = []
-    real_register = psv._SourceSessionV2._register
-
-    def checking_register(self, position, fd):
-        live = {admitted.fd for admitted in self._live} | {root.fd for root in self._roots}
-        if fd in live:
-            shared.append(f"{fd}")
-        return real_register(self, position, fd)
-
-    monkeypatch.setattr(psv._SourceSessionV2, "_register", checking_register)
+    shared = _check_single_owner(monkeypatch)
     capability = AuthorizedGitStorageSetV2.from_roots([str(repo)])
     try:
         outcome = _publish([], 0, tmp_path / "pub", authority=capability)
@@ -2243,20 +2264,19 @@ def test_mutation_l8_admitted_dir_sharing_the_root_descriptor_is_killed(tmp_path
 
     def sharing_admit(self, position, missing_reason):
         if not position.components:
-            return self._register(position, self._roots[position.root_index].fd)
+            admitted = self._new_admitted(position)
+            admitted.fd = self._roots[position.root_index].fd
+            return admitted
         return real_admit(self, position, missing_reason)
 
     def never_close_twice(self):
-        live, self._live = self._live, []
         roots = {root.fd for root in self._roots}
-        for admitted in live:
+        while self._live:
+            admitted = self._live.pop()
             if admitted.fd is not None and admitted.fd not in roots:
                 os.close(admitted.fd)
             admitted.fd = None
-        for root in self._roots:
-            os.close(root.fd)
-        self._roots = ()
-        self._closed = True
+        self._release_roots()
 
     def release_without_closing_roots(self, admitted):
         if admitted.fd is not None and admitted.fd in {root.fd for root in self._roots}:
@@ -2303,3 +2323,973 @@ def test_a5_a6_incomplete_pack_pair_candidates_are_classified_not_skipped(tmp_pa
             else psv.PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2
         )
         assert outcome.reason_code == expected
+
+
+# ================================================================================
+# C11 recurrence-family census (IMPLEMENTATION_ADJUDICATION: structural redesign)
+#
+# The ba3800e STOP showed that fixing known sites one by one does not close the
+# class "a descriptor exists before an owner able to survive every failure".
+# So the class is checked MECHANICALLY over every site, two ways:
+#   static  -- every acquisition in the S1-A write-set installs into a
+#              pre-existing slot by the statement that makes the call (AST);
+#   dynamic -- a single synchronous fault is injected before EACH executed
+#              S1-A opcode that can fail (one run per site, first and last
+#              occurrence), and every run must end with no descriptor left
+#              unreleased, none closed twice, and a truthful outcome.
+# The only tolerated exceptions are the marked statements
+# (`# fd-install` / `# fd-release`): the declared
+# PYTHON_FD_OWNERSHIP_INSTALLATION_WINDOW, which holds no operation that can
+# fail synchronously in CPython 3.11.
+# ================================================================================
+
+import ast  # noqa: E402
+import dis  # noqa: E402
+import gc  # noqa: E402
+import inspect  # noqa: E402
+import textwrap  # noqa: E402
+
+_PSV_FILE = psv.__file__
+_TOA_FILE = toa.__file__
+_MUTANT_FILE = "<s1a-mutant>"
+_WINDOW_MARKERS = ("# fd-install", "# fd-release")
+
+#: Opcodes that cannot raise synchronously in CPython 3.11 on the values S1-A
+#: gives them (no allocation, no user code). Every OTHER opcode is a fault site.
+_NONFAILING_OPCODES_V311 = frozenset(
+    {
+        "CACHE", "COPY", "COPY_FREE_VARS", "EXTENDED_ARG", "IS_OP", "JUMP_BACKWARD",
+        "JUMP_BACKWARD_NO_INTERRUPT", "JUMP_FORWARD", "KW_NAMES", "LOAD_CLOSURE", "LOAD_CONST",
+        "LOAD_DEREF", "LOAD_FAST", "MAKE_CELL", "NOP", "POP_EXCEPT", "POP_JUMP_BACKWARD_IF_FALSE",
+        "POP_JUMP_BACKWARD_IF_NONE", "POP_JUMP_BACKWARD_IF_NOT_NONE", "POP_JUMP_BACKWARD_IF_TRUE",
+        "POP_JUMP_FORWARD_IF_FALSE", "POP_JUMP_FORWARD_IF_NONE", "POP_JUMP_FORWARD_IF_NOT_NONE",
+        "POP_JUMP_FORWARD_IF_TRUE", "POP_TOP", "PRECALL", "PUSH_EXC_INFO", "PUSH_NULL", "RERAISE",
+        "RESUME", "RETURN_VALUE", "STORE_DEREF", "STORE_FAST", "SWAP",
+    }
+)
+
+
+def _marked_lines(filename: str, text: str) -> set[tuple[str, int]]:
+    return {
+        (filename, number)
+        for number, line in enumerate(text.splitlines(), 1)
+        if any(marker in line for marker in _WINDOW_MARKERS)
+    }
+
+
+def _source_window_lines() -> set[tuple[str, int]]:
+    lines = _marked_lines(_PSV_FILE, Path(_PSV_FILE).read_text())
+    return lines | _marked_lines(_TOA_FILE, Path(_TOA_FILE).read_text())
+
+
+_TOA_DUP_CODE = toa.AuthorizedGitStorageSetV2.duplicate_authorized_roots.__code__
+
+
+def _in_scope(code) -> bool:
+    return code.co_filename in (_PSV_FILE, _MUTANT_FILE) or code is _TOA_DUP_CODE
+
+
+class _CloseAudit:
+    """`os` proxy for the sweep: counts EBADF on close (a double close or a
+    close of a number nobody owns). Its frames are outside the traced scope."""
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.ebadf = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+    def close(self, fd: int) -> None:
+        try:
+            self._real.close(fd)
+        except OSError as exc:
+            if exc.errno == errno.EBADF:
+                self.ebadf += 1
+            raise
+
+
+_WITH_EXIT_CALLS: dict[object, frozenset[int]] = {}
+
+
+def _with_exit_calls(code) -> frozenset[int]:
+    """Offsets of the normal-exit `__exit__(None, None, None)` CALL of every
+    `with` block in `code` (3.11: LOAD_CONST None x3, PRECALL 2, CALL 2).
+    Every context manager S1-A uses is C-implemented (`threading.Lock`,
+    `os.scandir`'s iterator): that call cannot fail synchronously, and a fault
+    injected there would model a lock that is never released -- an artifact
+    of the model, not a behaviour of CPython. Declared, not hidden."""
+    cached = _WITH_EXIT_CALLS.get(code)
+    if cached is None:
+        real = [i for i in dis.get_instructions(code) if i.opname != "CACHE"]
+        found = set()
+        for k in range(4, len(real)):
+            window = real[k - 4 : k + 1]
+            if (
+                window[4].opname == "CALL" and window[4].arg == 2 and window[3].opname == "PRECALL"
+                and all(i.opname == "LOAD_CONST" and i.argval is None for i in window[:3])
+            ):
+                found.add(window[4].offset)
+        cached = _WITH_EXIT_CALLS[code] = frozenset(found)
+    return cached
+
+
+def _traced(fn: Callable[[], object], *, inject_at: int | None, sites: list | None = None):
+    """Run `fn` with opcode tracing on S1-A frames only. Returns
+    (result, exception, fault_site, fault_sites_seen). At most ONE fault is
+    raised; CPython unsets the tracer when it raises, so every cleanup that
+    follows runs fault-free (the one-fault model)."""
+    state = {"count": 0, "site": None}
+
+    def local(frame, event, arg):
+        if event == "opcode":
+            code = frame.f_code
+            name = dis.opname[code.co_code[frame.f_lasti]]
+            if name not in _NONFAILING_OPCODES_V311 and frame.f_lasti not in _with_exit_calls(code):
+                state["count"] += 1
+                if sites is not None:
+                    sites.append((code, frame.f_lasti))
+                if state["count"] == inject_at:
+                    state["site"] = (code.co_filename, frame.f_lineno, code.co_name, name, frame.f_lasti)
+                    raise MemoryError("s1a-injected-fault")
+        return local
+
+    def tracer(frame, event, arg):
+        if _in_scope(frame.f_code):
+            frame.f_trace_opcodes = True
+            return local
+        return None
+
+    sys.settrace(tracer)
+    try:
+        result, exc = fn(), None
+    except BaseException as caught:  # noqa: BLE001 - the injected fault or its consequence
+        result, exc = None, caught
+    finally:
+        sys.settrace(None)
+    return result, exc, state["site"], state["count"]
+
+
+def _sweep_fixture(base: Path) -> tuple[Path, Path]:
+    """Synthetic store touching every acquisition path: `.git` file ->
+    worktree gitdir -> commondir `../..` -> objects/ with fanout, a complete
+    pack pair, a lone idx (candidate check), info/alternates (comment line +
+    relative pointer) -> an alternate holding a duplicate and a new loose."""
+    src = base / "src"
+    objects = src / "main" / ".git" / "objects"
+    (objects / "ab").mkdir(parents=True)
+    (objects / "ab" / ("c" * 38)).write_bytes(b"loose-1")
+    (objects / "pack").mkdir()
+    (objects / "pack" / ("pack-" + "1" * 40 + ".pack")).write_bytes(b"PACK")
+    (objects / "pack" / ("pack-" + "1" * 40 + ".idx")).write_bytes(b"IDX")
+    (objects / "pack" / ("pack-" + "2" * 40 + ".idx")).write_bytes(b"lone")
+    (objects / "info").mkdir()
+    (objects / "info" / "alternates").write_text("# comment\n../../../alt/objects\n")
+    alternate = src / "alt" / "objects"
+    (alternate / "ab").mkdir(parents=True)
+    (alternate / "ab" / ("c" * 38)).write_bytes(b"loose-1")
+    (alternate / "cd").mkdir()
+    (alternate / "cd" / ("e" * 38)).write_bytes(b"loose-2")
+    gitdir = src / "main" / ".git" / "worktrees" / "wt"
+    gitdir.mkdir(parents=True)
+    (gitdir / "commondir").write_text("../..\n")
+    repo = src / "wt"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: ../main/.git/worktrees/wt\n")
+    return src, repo
+
+
+_SWEEP_ID = "f" * 32
+
+
+def _release_outcome(outcome) -> None:
+    if type(outcome) is CompletePublicationV2:
+        outcome.snapshot.close()
+    elif type(outcome) is UnconfirmedPublicationV2:
+        outcome.residual.close()
+
+
+class _SweepScenario:
+    """One publication shape the sweep replays; `prepare` may plant state or
+    patch a scenario fault (the injected fault is then the second one)."""
+
+    def __init__(self, name: str, expected: type, *, budget=None, prepare=None, fixture=None) -> None:
+        self.name = name
+        self.expected = expected
+        self.budget = budget
+        self.prepare = prepare
+        self.fixture = fixture or _worktree_alternates_fixture
+
+
+def _worktree_alternates_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocatorV2]:
+    src, repo = _sweep_fixture(base)
+    return [src], SourceRepositoryLocatorV2.absolute(str(repo))
+
+
+def _bare_root_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocatorV2]:
+    """A bare store that IS a root of A (root-index locator: the no-component
+    duplicate path; `.git` absent)."""
+    bare = base / "src" / "bare.git"
+    (bare / "objects" / "ab").mkdir(parents=True)
+    (bare / "objects" / "ab" / ("d" * 38)).write_bytes(b"loose")
+    return [bare], SourceRepositoryLocatorV2.root(0)
+
+
+def _dotgit_dir_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocatorV2]:
+    """`.git` is a directory (the probe hands its descriptor to the gitdir owner)."""
+    repo = base / "src" / "a" / "repo"
+    (repo / ".git" / "objects" / "pack").mkdir(parents=True)
+    (repo / ".git" / "objects" / "pack" / ("pack-" + "4" * 40 + ".pack")).write_bytes(b"P")
+    (repo / ".git" / "objects" / "pack" / ("pack-" + "4" * 40 + ".idx")).write_bytes(b"I")
+    return [base / "src"], SourceRepositoryLocatorV2.absolute(str(repo))
+
+
+def _sweep_one(
+    base: Path, roots: list[Path], locator: SourceRepositoryLocatorV2, scenario: _SweepScenario, index: int,
+    inject_at: int | None, monkeypatch, windows: set[tuple[str, int]], sites: list | None = None,
+) -> tuple[list[str], int]:
+    pub = base / f"pub-{scenario.name}-{index}"
+    root = _publication_root(pub)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(r) for r in roots])
+    audit = _CloseAudit(os)
+    undo = []
+    try:
+        if scenario.prepare is not None:
+            undo = scenario.prepare(pub) or []
+        before = {fd: _ident(int(fd)) for fd in _fd_census()}
+        monkeypatch.setattr(psv, "os", audit)
+        monkeypatch.setattr(toa, "os", audit)
+
+        def call():
+            return publish_physical_snapshot_v2(
+                source_authority=capability,
+                source_locator=locator,
+                object_format=SHA1,
+                physical_budget=scenario.budget or _budget(),
+                publication_root=root,
+                _snapshot_id=_SWEEP_ID,
+            )
+
+        def expire(signum, frame):
+            raise TimeoutError("s1a-sweep-hang")
+
+        previous = signal.signal(signal.SIGALRM, expire)
+        signal.setitimer(signal.ITIMER_REAL, 10)
+        try:
+            result, exc, site, count = _traced(call, inject_at=inject_at, sites=sites)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        monkeypatch.setattr(psv, "os", os)
+        monkeypatch.setattr(toa, "os", os)
+        for restore in undo:
+            restore()
+        problems: list[str] = []
+        in_window = site is not None and (site[0], site[1]) in windows
+        outcome = result if exc is None else getattr(exc, "physical_snapshot_outcome", None)
+        if isinstance(exc, TimeoutError):
+            return [f"{scenario.name}@{site}: hang"], count
+        if exc is not None and not isinstance(exc, MemoryError):
+            problems.append(f"unexpected exception {type(exc).__name__}: {exc}")
+        committed = pub / "committed" / _SWEEP_ID
+        ours_committed = os.path.lexists(committed) and not os.path.lexists(committed / "planted")
+        staged = os.path.lexists(pub / "staging" / _SWEEP_ID)
+        if outcome is None:
+            if ours_committed:
+                problems.append("committed without any outcome")
+            if staged and not in_window:
+                problems.append("staging residue without any outcome")
+        elif type(outcome) is CompletePublicationV2:
+            if not ours_committed or staged:
+                problems.append("complete but not (committed and not staged)")
+        elif type(outcome) is NotPublishedV2:
+            if ours_committed:
+                problems.append("not-published while committed")
+            if staged and not outcome.staging_residue:
+                problems.append("staging residue hidden")
+        elif type(outcome) is UnconfirmedPublicationV2:
+            if not ours_committed:
+                problems.append("unconfirmed but nothing committed")
+        elif type(outcome) is not IndeterminatePublicationV2:
+            problems.append(f"untyped outcome {type(outcome).__name__}")
+        if inject_at is None and type(result) is not scenario.expected:
+            problems.append(f"baseline outcome {type(result).__name__}, expected {scenario.expected.__name__}")
+        _release_outcome(outcome)
+        # Strict: measured while the exception (and its frames) is still
+        # alive, so nothing counts as released just because a finalizer ran.
+        after = _fd_census()
+        leaked = sorted(set(after) - set(before))
+        altered = sorted(
+            fd for fd, ident in before.items() if ident is not None and fd in after and _ident(int(fd)) != ident
+        )
+        closed_foreign = sorted(fd for fd, ident in before.items() if ident is not None and fd not in after)
+        del exc, result, outcome
+        if leaked and not in_window:
+            problems.append(f"leaked {leaked}")
+        if closed_foreign or altered:
+            problems.append(f"pre-existing descriptors closed {closed_foreign} altered {altered}")
+        if audit.ebadf:
+            problems.append(f"close of an unowned descriptor x{audit.ebadf}")
+        return [f"{scenario.name}@{site}: {p}" for p in problems], count
+    finally:
+        monkeypatch.setattr(psv, "os", os)
+        monkeypatch.setattr(toa, "os", os)
+        capability.close()
+        root.close()
+
+
+def _injection_points(sites: list) -> list[int]:
+    """1-based fault indices: the first and the last occurrence of every
+    distinct (code, offset) site."""
+    first: dict[tuple, int] = {}
+    last: dict[tuple, int] = {}
+    for index, site in enumerate(sites, 1):
+        first.setdefault(site, index)
+        last[site] = index
+    return sorted(set(first.values()) | set(last.values()))
+
+
+def _sweep(base: Path, scenario: _SweepScenario, monkeypatch, *, only_codes: set | None = None) -> tuple[list[str], int]:
+    """Baseline run, then one run per injection point. Returns (violations, runs)."""
+    roots, locator = scenario.fixture(base / scenario.name)
+    windows = _source_window_lines() | getattr(scenario, "extra_windows", set())
+    sites: list = []
+    # The cyclic collector stays off for the whole sweep: no finalizer may
+    # release a descriptor behind the census (strict ownership, not GC luck).
+    gc.collect()
+    gc.disable()
+    try:
+        violations, _ = _sweep_one(base, roots, locator, scenario, 0, None, monkeypatch, windows, sites)
+        points = _injection_points(sites)
+        if only_codes is not None:
+            points = [
+                p for p in points if sites[p - 1][0].co_name in only_codes or sites[p - 1][0].co_filename == _MUTANT_FILE
+            ]
+        for run, point in enumerate(points, 1):
+            found, _ = _sweep_one(base, roots, locator, scenario, run, point, monkeypatch, windows)
+            violations.extend(found)
+    finally:
+        gc.enable()
+        gc.collect()
+    return violations, len(points)
+
+
+def _scenario_budget_refusal() -> _SweepScenario:
+    # Refused mid-copy, after files were staged: the abort path runs fault-free.
+    return _SweepScenario("budget", NotPublishedV2, budget=_budget(max_files_copied=3))
+
+
+def _scenario_collision() -> _SweepScenario:
+    def plant(pub: Path):
+        (pub / "committed" / _SWEEP_ID).mkdir()
+        (pub / "committed" / _SWEEP_ID / "planted").write_bytes(b"")
+        return []
+
+    return _SweepScenario("collision", NotPublishedV2, prepare=plant)
+
+
+def _scenario_post_commit_failure(monkeypatch) -> _SweepScenario:
+    def patch(pub: Path):
+        real = psv._statx_identity_v2
+
+        def failing(fd):
+            raise psv._MountIdentityUnavailableV2()
+
+        monkeypatch.setattr(psv, "_statx_identity_v2", failing)
+        return [lambda: monkeypatch.setattr(psv, "_statx_identity_v2", real)]
+
+    return _SweepScenario("postcommit", UnconfirmedPublicationV2, prepare=patch)
+
+
+def _scenario_rename_error_but_committed(monkeypatch) -> _SweepScenario:
+    def patch(pub: Path):
+        real = psv._renameat2_noreplace_v2
+
+        def renamed_then_eio(*args):
+            assert real(*args) == 0
+            return errno.EIO
+
+        monkeypatch.setattr(psv, "_renameat2_noreplace_v2", renamed_then_eio)
+        return [lambda: monkeypatch.setattr(psv, "_renameat2_noreplace_v2", real)]
+
+    return _SweepScenario("renameerr", UnconfirmedPublicationV2, prepare=patch)
+
+
+def _scenario_unobservable(monkeypatch) -> _SweepScenario:
+    def patch(pub: Path):
+        real_rename, real_observe = psv._renameat2_noreplace_v2, psv._observe_commit_v2
+        monkeypatch.setattr(psv, "_renameat2_noreplace_v2", lambda *args: errno.EIO)
+        monkeypatch.setattr(psv, "_observe_commit_v2", lambda run: "indeterminate")
+        return [
+            lambda: monkeypatch.setattr(psv, "_renameat2_noreplace_v2", real_rename),
+            lambda: monkeypatch.setattr(psv, "_observe_commit_v2", real_observe),
+        ]
+
+    return _SweepScenario("unobservable", IndeterminatePublicationV2, prepare=patch)
+
+
+def _all_sweep_scenarios(monkeypatch) -> list[_SweepScenario]:
+    return [
+        _SweepScenario("complete", CompletePublicationV2),
+        _SweepScenario("bare", CompletePublicationV2, fixture=_bare_root_fixture),
+        _SweepScenario("dotgitdir", CompletePublicationV2, fixture=_dotgit_dir_fixture),
+        _scenario_budget_refusal(),
+        _scenario_collision(),
+        _scenario_post_commit_failure(monkeypatch),
+        _scenario_rename_error_but_committed(monkeypatch),
+        _scenario_unobservable(monkeypatch),
+    ]
+
+
+_SWEEP_SCENARIO_IDS = ["complete", "bare", "dotgitdir", "budget", "collision", "postcommit", "renameerr", "unobservable"]
+
+
+@pytest.mark.parametrize("scenario_index", range(len(_SWEEP_SCENARIO_IDS)), ids=_SWEEP_SCENARIO_IDS)
+def test_c11_every_synchronous_fault_site_leaves_no_unowned_descriptor(tmp_path: Path, monkeypatch, scenario_index: int) -> None:
+    """C11 (refined) + C10 under faults: for EVERY fault site S1-A executes in
+    this publication shape, a single injected synchronous failure leaves no
+    descriptor unreleased, none closed twice, no pre-existing one touched,
+    and a truthful outcome. Tolerated only inside the marked window."""
+    scenario = _all_sweep_scenarios(monkeypatch)[scenario_index]
+    assert scenario.name == _SWEEP_SCENARIO_IDS[scenario_index]
+    violations, runs = _sweep(tmp_path, scenario, monkeypatch)
+    assert runs > 50, "the sweep must actually exercise the fault sites"
+    assert violations == []
+
+
+def test_c11_publication_root_factory_fault_sites_leave_no_unowned_descriptor(tmp_path: Path) -> None:
+    """The W factory is an acquisition path of its own (three descriptors)."""
+    (tmp_path / "staging").mkdir()
+    (tmp_path / "committed").mkdir()
+    windows = _source_window_lines()
+    caller_fd = os.open(str(tmp_path), os.O_RDONLY | os.O_DIRECTORY)
+    violations: list[str] = []
+    gc.collect()
+    gc.disable()
+    try:
+        sites: list = []
+        result, exc, _, _ = _traced(lambda: SnapshotPublicationRootV2.from_directory_fd(caller_fd), inject_at=None, sites=sites)
+        assert exc is None
+        result.close()
+        points = _injection_points(sites)
+        for point in points:
+            before = _fd_census()
+            result, exc, site, _ = _traced(lambda: SnapshotPublicationRootV2.from_directory_fd(caller_fd), inject_at=point)
+            if result is not None:
+                result.close()
+            leaked = sorted(_fd_census() - before)
+            del result, exc
+            if leaked and (site[0], site[1]) not in windows:
+                violations.append(f"{site}: leaked {leaked}")
+            if _ident(caller_fd) is None:
+                violations.append(f"{site}: the caller's descriptor was closed")
+    finally:
+        gc.enable()
+        os.close(caller_fd)
+    assert len(points) > 20
+    assert violations == []
+
+
+# -- static census: every acquisition / release site in the S1-A write-set -------------------
+
+_FORBIDDEN_ACQUIRERS = frozenset(
+    {
+        "_open_regular_file_no_follow_v2", "_try_open_dir_no_follow_v2", "_open_dir_no_follow_v2",
+        "dup", "dup2", "pipe", "openpty", "fdopen", "memfd_create", "socket", "eventfd",
+    }
+)
+_RELEASE_FUNCTIONS = frozenset({"close_once", "close_quietly", "_release_roots"})
+
+
+def _acquisition_census(source: str) -> list[str]:
+    """Structural C11 census of one module's source: returns violations.
+
+    - `os.open`, `fcntl.fcntl(..., F_DUPFD_CLOEXEC, ...)` and
+      `.duplicate_authorized_roots()` must be the whole right-hand side of a
+      single-target assignment INTO a pre-existing owner (`<slot>.fd`,
+      `made[...]`, `self._roots`) on a `# fd-install` line;
+    - `os.scandir` only as a `with` context (the iterator is a C-level owner
+      created together with its internal dup);
+    - `os.mkdir` must be followed immediately by the statement that installs
+      its cleanup obligation (`# fd-install`) or the open into a slot;
+    - `os.close` only on `# fd-release` lines inside the release primitives;
+    - no other descriptor-producing primitive, and no G1C helper that hands
+      back a bare descriptor.
+    """
+    tree = ast.parse(source)
+    lines = source.splitlines()
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    violations: list[str] = []
+
+    def line_of(node) -> str:
+        return lines[node.lineno - 1]
+
+    def enclosing_function(node) -> str | None:
+        while node in parent:
+            node = parent[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return None
+
+    def next_statement(stmt):
+        holder = parent.get(stmt)
+        for field in ("body", "orelse", "finalbody"):
+            body = getattr(holder, field, None)
+            if isinstance(body, list) and stmt in body:
+                index = body.index(stmt)
+                return body[index + 1] if index + 1 < len(body) else None
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        attr = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else None
+        owner = func.value.id if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) else None
+        where = f"line {node.lineno}"
+        if attr in _FORBIDDEN_ACQUIRERS:
+            violations.append(f"{where}: forbidden descriptor source {attr}")
+            continue
+        is_dup = (
+            owner == "fcntl" and attr == "fcntl" and len(node.args) > 1
+            and isinstance(node.args[1], ast.Attribute) and node.args[1].attr == "F_DUPFD_CLOEXEC"
+        )
+        acquires = (owner == "os" and attr == "open") or is_dup or attr == "duplicate_authorized_roots"
+        if acquires:
+            stmt = parent.get(node)
+            target = stmt.targets[0] if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 else None
+            into_owner = (
+                (isinstance(target, ast.Attribute) and target.attr in ("fd", "_roots"))
+                or (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id == "made")
+            )
+            if not into_owner or stmt.value is not node:
+                violations.append(f"{where}: descriptor not installed into a pre-existing owner slot")
+            elif "# fd-install" not in line_of(node):
+                violations.append(f"{where}: install statement not marked")
+        elif owner == "os" and attr == "scandir":
+            if not isinstance(parent.get(node), ast.withitem):
+                violations.append(f"{where}: scandir iterator not owned by a with-statement")
+        elif owner == "os" and attr == "mkdir":
+            follower = next_statement(parent.get(node))
+            ok = follower is not None and (
+                "# fd-install" in lines[follower.lineno - 1]
+            )
+            if not ok:
+                violations.append(f"{where}: mkdir not followed by its installed cleanup obligation")
+        elif owner == "os" and attr == "close":
+            if "# fd-release" not in line_of(node) or enclosing_function(node) not in _RELEASE_FUNCTIONS:
+                violations.append(f"{where}: close outside the release primitives")
+    return violations
+
+
+def _duplicate_authorized_roots_source() -> str:
+    return textwrap.dedent(inspect.getsource(toa.AuthorizedGitStorageSetV2.duplicate_authorized_roots))
+
+
+def test_c11_static_census_every_acquisition_installs_into_a_pre_existing_owner() -> None:
+    psv_source = Path(_PSV_FILE).read_text()
+    assert _acquisition_census(psv_source) == []
+    assert _acquisition_census(_duplicate_authorized_roots_source()) == []
+    # Anti-vacuity: the census does see the acquisitions it rules on.
+    tree = ast.parse(psv_source)
+    opens = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "open"]
+    assert len(opens) >= 10
+    installs = [line for line in psv_source.splitlines() if "# fd-install" in line]
+    releases = [line for line in psv_source.splitlines() if "# fd-release" in line]
+    assert len(installs) >= 12 and len(releases) >= 6
+
+
+_RESOURCE_BEFORE_OWNER_CHILD = '''
+def child(self, parent, name, missing_reason):
+    if name in ("", ".", "..") or "/" in name or "\\x00" in name or parent.fd is None:
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
+    self._tracker.charge(descriptor_opens=1, path_components=1)
+    carrier = _FdSlotV2()
+    if not _open_source_dir_into_v2(carrier, parent.fd, name):
+        raise _RefusalV2(missing_reason)
+    fd = carrier.fd
+    carrier.fd = None
+    admitted = self._new_admitted(
+        _AdmittedPositionV2(parent.position.root_index, parent.position.components + (name,))
+    )
+    admitted.fd = fd
+    return admitted
+'''
+
+
+def test_mutation_c11_resource_before_owner_is_killed_by_the_static_census() -> None:
+    """Mutant (the ba3800e shape): `child` opens into a local, THEN builds and
+    registers the owner. The census rejects the bare-local descriptor."""
+    source = Path(_PSV_FILE).read_text()
+    original = textwrap.indent(textwrap.dedent(inspect.getsource(psv._SourceSessionV2.child)), "    ")
+    assert original in source
+    mutated = source.replace(original, textwrap.indent(_RESOURCE_BEFORE_OWNER_CHILD.lstrip("\n"), "    "), 1)
+    mutated = mutated.replace("carrier = _FdSlotV2()", "carrier = _FdSlotV2()", 1)
+    # Reintroduce the pre-redesign bare open as well (resource before owner):
+    mutated = mutated.replace(
+        "        if not _open_source_dir_into_v2(carrier, parent.fd, name):\n            raise _RefusalV2(missing_reason)\n        fd = carrier.fd\n        carrier.fd = None\n",
+        "        fd = os.open(name, _SOURCE_DIR_OPEN_FLAGS_V2, dir_fd=parent.fd)\n",
+        1,
+    )
+    violations = _acquisition_census(mutated)
+    assert any("not installed into a pre-existing owner slot" in v for v in violations), violations
+
+
+def test_mutation_c11_close_outside_release_primitives_is_killed_by_the_static_census() -> None:
+    """Mutant: release by a bare close before detaching (the pre-redesign
+    `_close_once_v2` shape)."""
+    source = Path(_PSV_FILE).read_text()
+    old = "        admitted.close_once()\n        try:\n            self._live.remove(admitted)"
+    assert old in source
+    mutated = source.replace(old, "        os.close(admitted.fd)\n        try:\n            self._live.remove(admitted)", 1)
+    assert any("close outside the release primitives" in v for v in _acquisition_census(mutated))
+
+
+# -- dynamic mutants: the sweep kills each reintroduced shape by the intended fact --------------
+
+
+def _compile_mutant(source: str):
+    namespace: dict[str, object] = {}
+    exec(compile(textwrap.dedent(source), _MUTANT_FILE, "exec"), vars(psv), namespace)  # noqa: S102
+    (function,) = [value for value in namespace.values() if callable(value)]
+    return function
+
+
+def _mutant_sweep(tmp_path: Path, monkeypatch, scenario: _SweepScenario, source: str, focus: set[str]) -> list[str]:
+    scenario.extra_windows = _marked_lines(_MUTANT_FILE, textwrap.dedent(source))
+    violations, runs = _sweep(tmp_path, scenario, monkeypatch, only_codes=focus)
+    assert runs > 0
+    return violations
+
+
+def test_mutation_c11_resource_before_owner_is_killed_by_the_fault_sweep(tmp_path: Path, monkeypatch) -> None:
+    """Mutant: the successor descriptor exists before its owner is built and
+    registered. Killed ONLY by a leak observed at the owner construction /
+    registration step (outside the declared window)."""
+    monkeypatch.setattr(psv._SourceSessionV2, "child", _compile_mutant(_RESOURCE_BEFORE_OWNER_CHILD))
+    violations = _mutant_sweep(
+        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2),
+        _RESOURCE_BEFORE_OWNER_CHILD, {"_new_admitted", "__init__"},
+    )
+    assert any("leaked" in v and ("child" in v or "_new_admitted" in v or "__init__" in v) for v in violations), violations
+
+
+_REGISTRATION_AFTER_RELEASE_POST_COMMIT = '''
+def _post_commit_v2(run):
+    stage_fd = run.writer.stage.fd
+    if stage_fd is None or run.staging.fd is None or run.committed.fd is None:
+        raise RuntimeError("descriptor missing at the commit point")
+    try:
+        os.fchmod(stage_fd, _DIR_MODE_V2)
+        os.fsync(stage_fd)
+        os.fsync(run.committed.fd)
+        os.fsync(run.staging.fd)
+        info = os.fstat(stage_fd)
+        identity = _statx_identity_v2(stage_fd)
+    except (OSError, _MountIdentityUnavailableV2):
+        return _unconfirmed_v2(run, PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2)
+    binding = PublishedSnapshotBindingV2(
+        snapshot_id=run.snapshot_id,
+        mount_id=identity.mount_id,
+        st_dev=info.st_dev,
+        st_ino=info.st_ino,
+        st_uid=info.st_uid,
+        st_gid=info.st_gid,
+        committed_parent_identity=run.committed_identity,
+    )
+    fd = run.writer.stage.fd
+    run.writer.stage.fd = None
+    snapshot = PublishedSnapshotV2(_sentinel=_SNAPSHOT_SENTINEL_V2, binding=binding, receipt=run.receipt)
+    snapshot._descriptor.fd = fd
+    return CompletePublicationV2(snapshot=snapshot)
+'''
+
+
+def test_mutation_c11_registration_after_release_is_killed_by_the_fault_sweep(tmp_path: Path, monkeypatch) -> None:
+    """Mutant (the `take_stage_fd` shape, F1e): the writer's slot is released
+    first, the new owner allocated afterwards. Killed by a leak observed at
+    the new owner's construction."""
+    monkeypatch.setattr(psv, "_post_commit_v2", _compile_mutant(_REGISTRATION_AFTER_RELEASE_POST_COMMIT))
+    violations = _mutant_sweep(
+        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2),
+        _REGISTRATION_AFTER_RELEASE_POST_COMMIT, {"__init__"},
+    )
+    assert any("leaked" in v and _MUTANT_FILE in v for v in violations), violations
+
+
+# ================================================================================
+# Capability sealing (Codex 4133910390; IMPLEMENTATION_ADJUDICATION)
+# ================================================================================
+
+_SEALED_TYPES = (
+    SnapshotPublicationRootV2,
+    PublishedSnapshotV2,
+    CommittedSnapshotResidualV2,
+    psv.PublicationResidualV2,
+    psv.PublishedSnapshotReceiptV2,
+    psv.PublishedSnapshotBindingV2,
+    CompletePublicationV2,
+    UnconfirmedPublicationV2,
+    IndeterminatePublicationV2,
+    NotPublishedV2,
+)
+
+
+def _subclassable(sealed: type) -> list[str]:
+    defined = []
+    for bases in ((sealed,), (sealed, psv._SealedV2)):
+        try:
+            type("Forged", bases, {})
+            defined.append("+".join(b.__name__ for b in bases))
+        except TypeError:
+            pass
+    return defined
+
+
+def test_sealed_capability_and_state_types_cannot_be_subclassed() -> None:
+    assert {sealed.__name__: _subclassable(sealed) for sealed in _SEALED_TYPES} == {
+        sealed.__name__: [] for sealed in _SEALED_TYPES
+    }
+
+
+def test_mutation_seal_removed_is_killed(monkeypatch) -> None:
+    """Mutant: no `__init_subclass__` refusal (the ba3800e state)."""
+    monkeypatch.setattr(psv._SealedV2, "__init_subclass__", classmethod(lambda cls, **kwargs: None))
+    assert _subclassable(SnapshotPublicationRootV2)
+
+
+def _victim_dir(tmp_path: Path) -> Path:
+    victim = tmp_path / "victim"
+    (victim / "staging").mkdir(parents=True)
+    (victim / "committed").mkdir()
+    return victim
+
+
+def _attacker_slots(victim: Path) -> tuple[int, int]:
+    return (
+        os.open(str(victim / "staging"), os.O_RDONLY | os.O_DIRECTORY),
+        os.open(str(victim / "committed"), os.O_RDONLY | os.O_DIRECTORY),
+    )
+
+
+def _spoofed_publication_root(victim: Path):
+    """No subclass: an unrelated object whose `__class__` claims to be W, and
+    which hands out descriptors of a directory the caller chose."""
+
+    class Spoof:
+        __class__ = property(lambda self: SnapshotPublicationRootV2)  # type: ignore[assignment]
+        closed = False
+        committed_identity = KernelObjectIdentityV2(mount_id=0, st_dev=0, st_ino=0)
+
+        def _duplicate_publication_fds_into(self, staging, committed):
+            staging.fd, committed.fd = _attacker_slots(victim)
+
+    return Spoof()
+
+
+def _unminted_publication_root(victim: Path) -> SnapshotPublicationRootV2:
+    """Exact type, but never built by `from_directory_fd` (no sentinel, no registry)."""
+    forged = object.__new__(SnapshotPublicationRootV2)
+    forged._lock = __import__("threading").Lock()
+    forged._closed = False
+    forged._root, forged._staging, forged._committed = psv._FdSlotV2(), psv._FdSlotV2(), psv._FdSlotV2()
+    forged._staging.fd, forged._committed.fd = _attacker_slots(victim)
+    forged._identities = (KernelObjectIdentityV2(0, 0, 0),) * 3
+    return forged
+
+
+def _forged_w_outcome(tmp_path: Path, forged) -> dict[str, object]:
+    """What a publication through a forged W does to the victim directory."""
+    victim = tmp_path / "victim"
+    repo = _make_repo(tmp_path / "src" / "repo", files=1)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(tmp_path / "src")])
+    try:
+        try:
+            outcome = psv.publish_physical_snapshot_v2(
+                source_authority=capability,
+                source_locator=SourceRepositoryLocatorV2.absolute(str(repo)),
+                object_format=SHA1,
+                physical_budget=_budget(),
+                publication_root=forged,
+            )
+            _release_outcome(outcome)
+            refused = None
+        except PhysicalSnapshotErrorV2 as exc:
+            refused = exc.reason_code
+    finally:
+        capability.close()
+    return {"refused": refused, "victim_written": any((victim / "committed").iterdir()) or any((victim / "staging").iterdir())}
+
+
+def test_forged_publication_root_by_class_spoof_is_refused(tmp_path: Path) -> None:
+    facts = _forged_w_outcome(tmp_path, _spoofed_publication_root(_victim_dir(tmp_path)))
+    assert facts == {"refused": psv.PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2, "victim_written": False}
+
+
+def test_forged_publication_root_without_its_factory_is_refused(tmp_path: Path) -> None:
+    facts = _forged_w_outcome(tmp_path, _unminted_publication_root(_victim_dir(tmp_path)))
+    assert facts == {"refused": psv.PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2, "victim_written": False}
+
+
+_ISINSTANCE_W_ADMISSION = '''
+def _admit_publication_root_v2(publication_root):
+    if not isinstance(publication_root, SnapshotPublicationRootV2):
+        raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
+    return publication_root
+'''
+
+
+@pytest.mark.parametrize("forgery", ["spoof", "unminted"])
+def test_mutation_isinstance_admission_of_w_is_killed(tmp_path: Path, monkeypatch, forgery: str) -> None:
+    """Mutant (the ba3800e admission): `isinstance` at the W boundary, no
+    factory registry. Killed by the forged W writing into the victim."""
+    monkeypatch.setattr(psv, "_admit_publication_root_v2", _compile_mutant(_ISINSTANCE_W_ADMISSION))
+    victim = _victim_dir(tmp_path)
+    forged = _spoofed_publication_root(victim) if forgery == "spoof" else _unminted_publication_root(victim)
+    facts = _forged_w_outcome(tmp_path, forged)
+    assert facts["victim_written"] is True
+
+
+def _outside_authority_subclass(outside: Path):
+    """A subclass of A that answers `duplicate_authorized_roots` with a
+    duplicate of a directory A never authorized."""
+
+    class WideningAuthority(AuthorizedGitStorageSetV2):
+        def duplicate_authorized_roots(self):
+            fd = os.open(str(outside), os.O_RDONLY | os.O_DIRECTORY)
+            info = os.fstat(fd)
+            return (toa.AuthorizedStorageRootDuplicateV2(index=0, fd=fd, dev_ino=(info.st_dev, info.st_ino), locator=None),)
+
+    return WideningAuthority
+
+
+def _forged_a_outcome(tmp_path: Path, forged_factory) -> dict[str, object]:
+    src = tmp_path / "src"
+    _make_repo(src / "repo", files=1)
+    outside = _make_repo(tmp_path / "outside" / "victim", files=1)
+    forged = forged_factory(src, outside)
+    root = _publication_root(tmp_path / "pub")
+    try:
+        try:
+            outcome = psv.publish_physical_snapshot_v2(
+                source_authority=forged,
+                source_locator=SourceRepositoryLocatorV2.root(0),
+                object_format=SHA1,
+                physical_budget=_budget(),
+                publication_root=root,
+            )
+            published = type(outcome) is CompletePublicationV2
+            _release_outcome(outcome)
+            refused = None
+        except PhysicalSnapshotErrorV2 as exc:
+            refused, published = exc.reason_code, False
+    finally:
+        root.close()
+        close = getattr(forged, "close", None)
+        if callable(close):
+            close()
+    return {"refused": refused, "published_outside": published}
+
+
+def _subclass_authority(src: Path, outside: Path):
+    return _outside_authority_subclass(outside).from_roots([str(src)])
+
+
+def _spoofed_authority(src: Path, outside: Path):
+    widening = _outside_authority_subclass(outside)
+
+    class Spoof:
+        __class__ = property(lambda self: AuthorizedGitStorageSetV2)  # type: ignore[assignment]
+        root_count = 1
+        duplicate_authorized_roots = widening.duplicate_authorized_roots
+
+    return Spoof()
+
+
+@pytest.mark.parametrize("forgery", [_subclass_authority, _spoofed_authority], ids=["subclass", "spoof"])
+def test_forged_polymorphic_source_authority_is_refused(tmp_path: Path, forgery) -> None:
+    """S1-A's ingress admits A by exact type (`ExactType(A) != Provenance(A)`;
+    C2_A itself is unchanged and still subclassable)."""
+    assert _forged_a_outcome(tmp_path, forgery) == {
+        "refused": psv.PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2, "published_outside": False,
+    }
+
+
+@pytest.mark.parametrize("forgery", [_subclass_authority, _spoofed_authority], ids=["subclass", "spoof"])
+def test_mutation_isinstance_admission_of_a_is_killed(tmp_path: Path, monkeypatch, forgery) -> None:
+    """Mutant: `isinstance` at the A boundary. Killed by a publication built
+    from a directory A never authorized."""
+    source = textwrap.dedent(inspect.getsource(psv.publish_physical_snapshot_v2))
+    old = "    if type(source_authority) is not AuthorizedGitStorageSetV2:\n"
+    assert old in source
+    mutant = _compile_mutant(source.replace(old, "    if not isinstance(source_authority, AuthorizedGitStorageSetV2):\n", 1))
+    monkeypatch.setattr(psv, "publish_physical_snapshot_v2", mutant)
+    assert _forged_a_outcome(tmp_path, forgery)["published_outside"] is True
+
+
+def test_c2a_semantics_unchanged_subclassing_a_is_still_possible(tmp_path: Path) -> None:
+    """The adjudication does NOT seal C2_A globally: only S1-A's ingress refuses."""
+    assert _outside_authority_subclass(tmp_path).__mro__[1] is AuthorizedGitStorageSetV2
+
+
+def test_complete_publication_requires_a_minted_snapshot() -> None:
+    unminted = object.__new__(PublishedSnapshotV2)
+    with pytest.raises(TypeError):
+        CompletePublicationV2(snapshot=unminted)
+
+
+def test_mutation_complete_without_registry_is_killed(monkeypatch) -> None:
+    """Mutant: `CompletePublicationV2` checks the exact type only."""
+
+    def exact_type_only(self):
+        if type(self.snapshot) is not PublishedSnapshotV2:
+            raise TypeError("wrong type")
+
+    monkeypatch.setattr(CompletePublicationV2, "__post_init__", exact_type_only)
+    CompletePublicationV2(snapshot=object.__new__(PublishedSnapshotV2))  # accepted: the mutant is observable
+
+
+def test_published_snapshot_state_is_read_only(tmp_path: Path) -> None:
+    receipt, binding = _test_receipt_and_binding()
+    snapshot = PublishedSnapshotV2(_sentinel=psv._SNAPSHOT_SENTINEL_V2, binding=binding, receipt=receipt)
+    for name in ("binding", "receipt", "committed_dir_fd"):
+        with pytest.raises(AttributeError):
+            setattr(snapshot, name, None)
+
+
+# -- duplicate occurrence (IMPLEMENTATION_ADJUDICATION §6) ---------------------------------
+
+
+def test_skipped_duplicate_occurrence_is_not_reacquired_even_as_a_symlink(tmp_path: Path, monkeypatch) -> None:
+    """First-wins (§10): a later physical occurrence of an already-copied pack
+    is charged as an entry and NOT opened, even if it is a symlink pointing
+    outside A. `SkippedDuplicateOccurrence -> no filesystem-type claim`."""
+    src = tmp_path / "src"
+    primary = src / "repo" / ".git" / "objects"
+    alternate = src / "alt" / "objects"
+    base = "pack-" + "3" * 40
+    for store in (primary, alternate):
+        (store / "pack").mkdir(parents=True)
+        (store / "info").mkdir(exist_ok=True)
+    (primary / "pack" / (base + ".pack")).write_bytes(b"PACK")
+    (primary / "pack" / (base + ".idx")).write_bytes(b"IDX")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "x.pack").write_bytes(b"outside")
+    (alternate / "pack" / (base + ".pack")).symlink_to(outside / "x.pack")
+    (alternate / "pack" / (base + ".idx")).symlink_to(outside / "x.pack")
+    (primary / "info" / "alternates").write_text(str(alternate) + "\n")
+    inotify = _Inotify()
+    inotify.watch(outside)
+    inotify.drain()
+    try:
+        with _audited(monkeypatch) as audit:
+            outcome = _publish([src], src / "repo", tmp_path / "pub")
+        events = inotify.drain()
+    finally:
+        inotify.close()
+    snapshot = _complete(outcome)
+    snapshot.close()
+    opened_duplicates = [c for c in audit.calls if c.name == "open" and str(c.args[0]).startswith(base) and "alt" in str(c.where or "")]
+    assert opened_duplicates == []
+    assert events == []

@@ -1178,42 +1178,42 @@ class AuthorizedGitStorageSetV2:
         `STORAGE_CAPABILITY_CLOSED`; any failure closes every duplicate
         already made before raising. `contains_fd` is unaffected.
         """
-        duplicates: list[AuthorizedStorageRootDuplicateV2] = []
-        # Pre-sized, so recording a new descriptor cannot itself allocate and fail.
+        # C11 (IMPLEMENTATION_ADJUDICATION): the owner of every duplicate is
+        # this pre-sized list, built before any descriptor exists; each dup is
+        # installed into its slot by the statement that makes it; the
+        # protected region covers everything up to and including the return
+        # (lock release included), so no failure can strand a duplicate.
         made: list[int | None] = [None] * len(self._root_fds)
-        with self._lock:
-            if self._closed:
-                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2)
-            # A directly-constructed capability may carry misaligned bindings;
-            # refuse it typed before any descriptor exists.
-            if len(self._bound_dev_ino) != len(self._root_fds) or len(self._root_locators) != len(self._root_fds):
-                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
-            try:
+        try:
+            with self._lock:
+                if self._closed:
+                    raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2)
+                # A directly-constructed capability may carry misaligned bindings;
+                # refuse it typed before any descriptor exists.
+                if len(self._bound_dev_ino) != len(self._root_fds) or len(self._root_locators) != len(self._root_fds):
+                    raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
+                duplicates: list[AuthorizedStorageRootDuplicateV2] = []
                 for index, root_fd in enumerate(self._root_fds):
-                    dup_fd = fcntl.fcntl(root_fd, fcntl.F_DUPFD_CLOEXEC, 0)
-                    made[index] = dup_fd  # owned before anything else can fail
-                    dup_stat = os.fstat(dup_fd)
+                    made[index] = fcntl.fcntl(root_fd, fcntl.F_DUPFD_CLOEXEC, 0)  # fd-install
+                    dup_stat = os.fstat(made[index])
                     if (dup_stat.st_dev, dup_stat.st_ino) != self._bound_dev_ino[index]:
                         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
                     duplicates.append(
                         AuthorizedStorageRootDuplicateV2(
                             index=index,
-                            fd=dup_fd,
+                            fd=made[index],
                             dev_ino=self._bound_dev_ino[index],
                             locator=self._root_locators[index],
                         )
                     )
-                # Built inside the protected region: if even this fails, every
-                # duplicate is closed (Codex 4133784308).
-                result = tuple(duplicates)
-            except BaseException as exc:
-                for dup_fd in made:
-                    if dup_fd is not None:
-                        _close_ignoring_errors_v2(dup_fd)
-                if isinstance(exc, OSError):
-                    raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
-                raise
-        return result
+                return tuple(duplicates)
+        except BaseException as exc:
+            for dup_fd in made:
+                if dup_fd is not None:
+                    _close_ignoring_errors_v2(dup_fd)
+            if isinstance(exc, OSError):
+                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+            raise
 
     def close(self) -> None:
         with self._lock:

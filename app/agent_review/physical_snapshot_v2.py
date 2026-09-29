@@ -1,9 +1,12 @@
 """`#301-S1-A` -- publish an authorized physical Git object-store snapshot.
 
 Contract: `docs/engineering/agent-review-v2-301-s1a/ARCHITECTURE_FREEZE.md`
-(integrated at `3aab1aad`, blob `6e89a64b`). That file is the authority for
-every rule below; this docstring only maps it onto the code. Where the two
-disagree, the freeze wins.
+(integrated at `3aab1aad`, blob `6e89a64b`), as refined append-only by
+`docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md`
+(C11 ownership redesign and its declared limitation, capability sealing,
+duplicate-occurrence semantics). Those files are the authority for every
+rule below; this docstring only maps them onto the code. Where they
+disagree with it, they win.
 
 ## What this module does
 
@@ -59,19 +62,16 @@ import stat
 import struct
 import sys
 import threading
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Union
 
 from app.agent_review.trusted_object_authority_v2 import (
-    TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2,
-    TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     AuthorizedGitStorageSetV2,
     AuthorizedStorageRootDuplicateV2,
     TrustedObjectAuthorityError,
-    _open_regular_file_no_follow_v2,
-    _try_open_dir_no_follow_v2,
 )
 
 __all__ = [
@@ -290,7 +290,9 @@ class PhysicalWorkTrackerV2:
     """
 
     def __init__(self, budget: PhysicalWorkBudgetV2) -> None:
-        if not isinstance(budget, PhysicalWorkBudgetV2):
+        # Exact type: a subclass could answer differently at validation time
+        # and at charge time.
+        if type(budget) is not PhysicalWorkBudgetV2:
             raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_BUDGET_REASON_V2)
         self._budget = budget
         self._consumed = dict.fromkeys(_BUDGET_AXES_V2, 0)
@@ -509,11 +511,33 @@ def _distinct_namespaces_v2(first: KernelObjectIdentityV2, second: KernelObjectI
     return first != second
 
 
-# -- descriptor ownership helpers (freeze §21) ---------------------------------------
+# -- descriptor ownership (freeze §21; IMPLEMENTATION_ADJUDICATION C11) ---------------
 #
-# `DescriptorNumber != DescriptorIdentityAfterClose`: a descriptor is closed at
-# most once; its owner record is cleared BEFORE close() is attempted; a close
-# error means "released, and it failed", never "retry".
+# ONE ownership primitive for every descriptor S1-A receives:
+#
+#   owner state exists -> owner registered -> acquisition syscall
+#     -> descriptor installed into the owner's pre-existing, empty slot
+#
+# The acquisition call and the slot store are the SAME statement, marked
+# `fd-install`; nothing that can fail synchronously (no allocation, no
+# `list.append`, no `dict[...] =`, no owner construction) runs between them.
+# A transfer is a slot move between two owners that both already exist
+# (`_FdSlotV2.move_to`), never "release the old owner, then build the new
+# one". A release detaches the descriptor from its slot BEFORE `close()`
+# (`DescriptorNumber != DescriptorIdentityAfterClose`: closed at most once; a
+# close error means "released, and it failed", never "retry"); the detach and
+# the close are marked `fd-release`.
+#
+# A LOCAL owner is released explicitly on the normal path; its `finally` is the
+# failure path only (a release that itself fails must not leave the owner
+# pinned to a frame a traceback keeps alive). Cleanup is idempotent and
+# resumable, and an interrupted cleanup step is retried once.
+#
+# The marked statements are the only places where a descriptor is held by no
+# owner, and they contain no operation that can fail synchronously. An
+# asynchronous, interpreter-level interruption landing exactly there is the
+# declared limitation `PYTHON_FD_OWNERSHIP_INSTALLATION_WINDOW`: no universal
+# close claim is made for it, and no positive result is inferred from it.
 
 
 def _require_v2(condition: bool, reason_code: str = PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) -> None:
@@ -522,137 +546,208 @@ def _require_v2(condition: bool, reason_code: str = PHYSICAL_SNAPSHOT_SOURCE_ACQ
         raise _RefusalV2(reason_code)
 
 
-def _close_once_v2(fd: int, reason_code: str = PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2) -> None:
-    try:
-        os.close(fd)
-    except OSError as exc:
-        raise _RefusalV2(reason_code) from exc
+class _FdSlotV2:
+    """The C11 primitive: one slot, at most one descriptor, exactly one owner.
+
+    Created empty BEFORE the syscall that fills it. `__slots__` makes the
+    slot store a plain member write that cannot allocate. The finalizer is
+    the last-resort owner (an owner dropped while still holding a descriptor
+    closes it once); no normal path relies on it.
+    """
+
+    __slots__ = ("fd",)
+
+    def __init__(self) -> None:
+        self.fd: int | None = None
+
+    def move_to(self, owner: _FdSlotV2) -> None:
+        """Transfer to an owner that already exists and is empty."""
+        if owner.fd is not None or self.fd is None:
+            raise RuntimeError("descriptor slot transfer requires a full source and an empty target")
+        fd = self.fd
+        self.fd = None  # fd-install
+        owner.fd = fd  # fd-install
+
+    def close_once(self, reason_code: str = PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2) -> None:
+        """Detach, then close; a close error is a typed refusal (the descriptor
+        is released either way)."""
+        fd = self.fd
+        if fd is None:
+            return
+        try:
+            self.fd = None  # fd-release
+            os.close(fd)  # fd-release
+        except OSError as exc:
+            raise _RefusalV2(reason_code) from exc
+
+    def close_quietly(self) -> None:
+        fd = self.fd
+        if fd is None:
+            return
+        try:
+            self.fd = None  # fd-release
+            os.close(fd)  # fd-release
+        except OSError:
+            pass
+
+    def __del__(self) -> None:
+        try:
+            if self.fd is not None:
+                self.close_quietly()
+        except Exception:  # pragma: no cover - interpreter teardown
+            pass
 
 
-def _close_quietly_v2(fd: int) -> None:
-    try:
-        os.close(fd)
-    except OSError:
-        pass
+class _SharedFdSlotV2(_FdSlotV2):
+    """A slot handed to a caller (`PublishedSnapshotV2`, the residual): the
+    same primitive, with reads and the single close serialized by a lock."""
+
+    __slots__ = ("_lock",)
+
+    def __init__(self) -> None:
+        self.fd = None
+        self._lock = threading.Lock()
+
+    def get(self) -> int:
+        with self._lock:
+            fd = self.fd
+        if fd is None:
+            raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
+        return fd
+
+    def close_quietly(self) -> None:
+        with self._lock:
+            _FdSlotV2.close_quietly(self)
 
 
-def _source_refusal_from_v2(exc: TrustedObjectAuthorityError) -> _RefusalV2:
-    if exc.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2:
-        return _RefusalV2(PHYSICAL_SNAPSHOT_SYMLINK_REJECTED_REASON_V2)
-    if exc.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2:
-        return _RefusalV2(PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2)
-    return _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2)
+# -- sealed capability and state types (IMPLEMENTATION_ADJUDICATION, Codex 4133910390) --
+#
+# `ExactType + NoSubclassPolymorphism + FactoryInvariant`. A subclass could
+# skip the sentinel and hand S1-A caller-chosen descriptors, so no S1-A type
+# that carries authority or qualified state can be subclassed; boundaries
+# admit by `type(x) is T`, never `isinstance` (which also trusts a spoofed
+# `__class__`); the authority objects S1-A mints are registered by identity
+# when their factory completes, so an instance made without the factory
+# (`object.__new__`) is not admitted either. `ExactType(A) != Provenance(A)`.
+
+
+class _SealedV2:
+    """Marker base: its direct subclasses are sealed, and nothing may derive
+    from them."""
+
+    __slots__ = ()
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if any(base is not _SealedV2 and issubclass(base, _SealedV2) for base in cls.__mro__[1:]):
+            raise TypeError("S1-A capability and state types are sealed; subclassing is refused")
+
+
+_GENUINE_PUBLICATION_ROOTS_V2: weakref.WeakSet[SnapshotPublicationRootV2] = weakref.WeakSet()
+_GENUINE_SNAPSHOTS_V2: weakref.WeakSet[PublishedSnapshotV2] = weakref.WeakSet()
 
 
 # -- publication root W (freeze §6) --------------------------------------------------
 
 
-class SnapshotPublicationRootV2:
+class SnapshotPublicationRootV2(_SealedV2):
     """`W`: the only namespace S1-A may write in (`PublicationRootLocator != PublicationRootAuthority`).
 
     Built ONLY from a descriptor the caller already opened; there is no
-    `from_path`. Who opened that descriptor, with which authority, and the
-    ownership/modes of `staging/` and `committed/` are U3 premises, as is
-    `W ∩ A = ∅`; none is proven here. What is checked: both children exist
-    as real directories (no-follow), carry a kernel identity with a mount id,
-    sit on the same mount, and are distinct kernel objects.
+    `from_path`, and the class is sealed. Who opened that descriptor, with
+    which authority, and the ownership/modes of `staging/` and `committed/`
+    are U3 premises, as is `W ∩ A = ∅`; none is proven here. What is checked:
+    both children exist as real directories (no-follow), carry a kernel
+    identity with a mount id, sit on the same mount, and are distinct kernel
+    objects.
     """
 
-    def __init__(
-        self,
-        *,
-        _sentinel: object,
-        root_fd: int,
-        staging_fd: int,
-        committed_fd: int,
-        root_identity: KernelObjectIdentityV2,
-        staging_identity: KernelObjectIdentityV2,
-        committed_identity: KernelObjectIdentityV2,
-    ) -> None:
+    def __init__(self, *, _sentinel: object) -> None:
         if _sentinel is not _PUBLICATION_ROOT_SENTINEL_V2:
             raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
-        self._fds: list[int] = [root_fd, staging_fd, committed_fd]
-        self._root_fd = root_fd
-        self._staging_fd = staging_fd
-        self._committed_fd = committed_fd
-        self.root_identity = root_identity
-        self.staging_identity = staging_identity
-        self.committed_identity = committed_identity
-        self._closed = False
         self._lock = threading.Lock()
+        self._closed = False
+        self._root = _FdSlotV2()
+        self._staging = _FdSlotV2()
+        self._committed = _FdSlotV2()
+        self._identities: tuple[KernelObjectIdentityV2, KernelObjectIdentityV2, KernelObjectIdentityV2] | None = None
 
     @classmethod
     def from_directory_fd(cls, fd: int) -> SnapshotPublicationRootV2:
         if type(fd) is not int or fd < 0:
             raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-        owned: list[int] = []
+        root = SnapshotPublicationRootV2(_sentinel=_PUBLICATION_ROOT_SENTINEL_V2)
         try:
             try:
-                root_fd = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 0)
-                owned.append(root_fd)
-                if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                root._root.fd = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 0)  # fd-install
+                if not stat.S_ISDIR(os.fstat(root._root.fd).st_mode):
                     raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_PUBLICATION_ROOT_UNUSABLE_REASON_V2)
-                staging_fd = os.open("staging", _DIR_OPEN_FLAGS_V2, dir_fd=root_fd)
-                owned.append(staging_fd)
-                committed_fd = os.open("committed", _DIR_OPEN_FLAGS_V2, dir_fd=root_fd)
-                owned.append(committed_fd)
+                root._staging.fd = os.open("staging", _DIR_OPEN_FLAGS_V2, dir_fd=root._root.fd)  # fd-install
+                root._committed.fd = os.open("committed", _DIR_OPEN_FLAGS_V2, dir_fd=root._root.fd)  # fd-install
             except OSError as exc:
                 raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_PUBLICATION_ROOT_UNUSABLE_REASON_V2) from exc
             try:
-                root_identity = _statx_identity_v2(root_fd)
-                staging_identity = _statx_identity_v2(staging_fd)
-                committed_identity = _statx_identity_v2(committed_fd)
+                identities = (
+                    _statx_identity_v2(root._root.fd),
+                    _statx_identity_v2(root._staging.fd),
+                    _statx_identity_v2(root._committed.fd),
+                )
             except _MountIdentityUnavailableV2 as exc:
                 raise PhysicalSnapshotErrorV2(
                     PHYSICAL_SNAPSHOT_PUBLICATION_MOUNT_IDENTITY_UNAVAILABLE_REASON_V2
                 ) from exc
-            if not _same_rename_domain_v2(staging_identity, committed_identity):
+            if not _same_rename_domain_v2(identities[1], identities[2]):
                 raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_PUBLICATION_CROSS_MOUNT_REASON_V2)
-            if not _distinct_namespaces_v2(staging_identity, committed_identity):
+            if not _distinct_namespaces_v2(identities[1], identities[2]):
                 raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_PUBLICATION_NAMESPACES_NOT_DISTINCT_REASON_V2)
-            return cls(
-                _sentinel=_PUBLICATION_ROOT_SENTINEL_V2,
-                root_fd=root_fd,
-                staging_fd=staging_fd,
-                committed_fd=committed_fd,
-                root_identity=root_identity,
-                staging_identity=staging_identity,
-                committed_identity=committed_identity,
-            )
+            root._identities = identities
+            _GENUINE_PUBLICATION_ROOTS_V2.add(root)
         except BaseException:
-            for owned_fd in owned:
-                _close_quietly_v2(owned_fd)
+            root.close()
             raise
+        return root
+
+    @property
+    def root_identity(self) -> KernelObjectIdentityV2 | None:
+        return None if self._identities is None else self._identities[0]
+
+    @property
+    def staging_identity(self) -> KernelObjectIdentityV2 | None:
+        return None if self._identities is None else self._identities[1]
+
+    @property
+    def committed_identity(self) -> KernelObjectIdentityV2 | None:
+        return None if self._identities is None else self._identities[2]
 
     @property
     def closed(self) -> bool:
         return self._closed
 
-    def _duplicate_publication_fds(self) -> tuple[int, int]:
-        """Caller-owned duplicates of (staging, committed) for one publication,
-        taken under the lock, so closing W later cannot recycle a descriptor
-        number the publication is still using."""
+    def _duplicate_publication_fds_into(self, staging: _FdSlotV2, committed: _FdSlotV2) -> None:
+        """Install caller-owned duplicates of (staging, committed) into the
+        caller's pre-existing slots, under the lock, so closing W later cannot
+        recycle a descriptor number the publication is still using. On a
+        failure the caller's slots own whatever was installed."""
         with self._lock:
             if self._closed:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_ROOT_CLOSED_REASON_V2)
-            staging_dup = committed_dup = None
+            _require_v2(
+                self._staging.fd is not None and self._committed.fd is not None,
+                PHYSICAL_SNAPSHOT_PUBLICATION_ROOT_CLOSED_REASON_V2,
+            )
             try:
-                staging_dup = fcntl.fcntl(self._staging_fd, fcntl.F_DUPFD_CLOEXEC, 0)
-                committed_dup = fcntl.fcntl(self._committed_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+                staging.fd = fcntl.fcntl(self._staging.fd, fcntl.F_DUPFD_CLOEXEC, 0)  # fd-install
+                committed.fd = fcntl.fcntl(self._committed.fd, fcntl.F_DUPFD_CLOEXEC, 0)  # fd-install
             except OSError as exc:
-                if staging_dup is not None:
-                    _close_quietly_v2(staging_dup)
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-            return staging_dup, committed_dup
 
     def close(self) -> None:
+        """Idempotent and resumable: each slot is detached, then closed once."""
         with self._lock:
-            if self._closed:
-                return
             self._closed = True
-            fds, self._fds = self._fds, []
-        for owned_fd in fds:
-            _close_quietly_v2(owned_fd)
+            self._root.close_quietly()
+            self._staging.close_quietly()
+            self._committed.close_quietly()
 
     def __enter__(self) -> SnapshotPublicationRootV2:
         return self
@@ -660,9 +755,14 @@ class SnapshotPublicationRootV2:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        if getattr(self, "_lock", None) is not None:
-            self.close()
+
+def _admit_publication_root_v2(publication_root: object) -> SnapshotPublicationRootV2:
+    """Exact type AND minted by `from_directory_fd` (identity registry)."""
+    if type(publication_root) is not SnapshotPublicationRootV2:
+        raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
+    if publication_root not in _GENUINE_PUBLICATION_ROOTS_V2:
+        raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
+    return publication_root
 
 
 # -- pointer grammar (freeze §9) -------------------------------------------------------
@@ -843,14 +943,66 @@ class _AdmittedPositionV2:
     components: tuple[str, ...]
 
 
-class _AdmittedDirV2:
-    """One admitted source directory: exactly one descriptor, one owner."""
+# S1-A's own source acquisition primitives. They install straight into the
+# caller's pre-existing slot (the G1C helpers they replace returned a bare
+# descriptor after further fallible steps, i.e. resource before owner). Same
+# observable rules: no-follow; a regular file is opened O_NONBLOCK, its type
+# is checked on the SAME fd, and O_NONBLOCK is cleared only once S_ISREG holds.
+_SOURCE_DIR_OPEN_FLAGS_V2 = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_SOURCE_FILE_OPEN_FLAGS_V2 = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
-    __slots__ = ("position", "fd")
 
-    def __init__(self, position: _AdmittedPositionV2, fd: int) -> None:
+def _open_source_dir_into_v2(slot: _FdSlotV2, dir_fd: int, name: str) -> bool:
+    """One no-follow directory open into `slot`. False if `name` is absent;
+    a symlink or a non-directory is refused, never treated as absent."""
+    try:
+        slot.fd = os.open(name, _SOURCE_DIR_OPEN_FLAGS_V2, dir_fd=dir_fd)  # fd-install
+    except FileNotFoundError:
+        return False
+    except ValueError as exc:
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _RefusalV2(PHYSICAL_SNAPSHOT_SYMLINK_REJECTED_REASON_V2) from exc
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    return True
+
+
+def _open_source_file_into_v2(slot: _FdSlotV2, dir_fd: int, name: str, *, missing_is_legitimate: bool) -> bool:
+    """One no-follow regular-file open into `slot`. False only if `name` is
+    absent AND that is legitimate; a vanished listed entry is refused. On any
+    refusal after the open, the descriptor stays in `slot` for its owner."""
+    try:
+        slot.fd = os.open(name, _SOURCE_FILE_OPEN_FLAGS_V2, dir_fd=dir_fd)  # fd-install
+    except FileNotFoundError as exc:
+        if missing_is_legitimate:
+            return False
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    except ValueError as exc:
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise _RefusalV2(PHYSICAL_SNAPSHOT_SYMLINK_REJECTED_REASON_V2) from exc
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(slot.fd).st_mode):
+            raise _RefusalV2(PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2)
+        flags = fcntl.fcntl(slot.fd, fcntl.F_GETFL)
+        fcntl.fcntl(slot.fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
+    except OSError as exc:
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
+    return True
+
+
+class _AdmittedDirV2(_FdSlotV2):
+    """One admitted source directory: one slot, registered in the session
+    BEFORE the open that fills it."""
+
+    __slots__ = ("position",)
+
+    def __init__(self, position: _AdmittedPositionV2) -> None:
+        self.fd = None
         self.position = position
-        self.fd: int | None = fd
 
 
 class _SourceSessionV2:
@@ -861,16 +1013,25 @@ class _SourceSessionV2:
     under a descriptor obtained that way. A pointer is resolved LEXICALLY
     first; it is opened only once it names a position under a root of A,
     re-descending from that root. Nothing ever climbs.
+
+    Ownership: the session exists (empty) before any source descriptor; the
+    root duplicates are installed as one unit by the statement that receives
+    them; every admitted directory is registered before its open. `close()`
+    is idempotent and resumable: an interrupted close leaves every
+    not-yet-released descriptor with its owner.
     """
 
-    def __init__(self, storage: AuthorizedGitStorageSetV2, tracker: PhysicalWorkTrackerV2) -> None:
+    def __init__(self, tracker: PhysicalWorkTrackerV2) -> None:
         self._tracker = tracker
         self._roots: tuple[AuthorizedStorageRootDuplicateV2, ...] = ()
+        self._roots_released = 0
         self._live: list[_AdmittedDirV2] = []
-        self._closed = False
-        tracker.charge(descriptor_opens=storage.root_count)
+
+    def acquire_roots(self, storage: AuthorizedGitStorageSetV2) -> None:
+        _require_v2(not self._roots)
+        self._tracker.charge(descriptor_opens=storage.root_count)
         try:
-            self._roots = storage.duplicate_authorized_roots()
+            self._roots = storage.duplicate_authorized_roots()  # fd-install
         except TrustedObjectAuthorityError as exc:
             if exc.reason_code == TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_CAPABILITY_CLOSED_REASON_V2) from exc
@@ -882,40 +1043,46 @@ class _SourceSessionV2:
 
     # ownership ------------------------------------------------------------
 
-    def _register(self, position: _AdmittedPositionV2, fd: int) -> _AdmittedDirV2:
-        admitted = _AdmittedDirV2(position, fd)
+    def _new_admitted(self, position: _AdmittedPositionV2) -> _AdmittedDirV2:
+        """Owner first: built and registered while it is still empty."""
+        admitted = _AdmittedDirV2(position)
         self._live.append(admitted)
         return admitted
 
     def release(self, admitted: _AdmittedDirV2) -> None:
-        fd = admitted.fd
-        if fd is None:
-            return
-        admitted.fd = None
-        self._live.remove(admitted)
-        _close_once_v2(fd)
+        """Close (detach first), THEN forget; forgetting an empty owner is
+        harmless if it fails."""
+        admitted.close_once()
+        try:
+            self._live.remove(admitted)
+        except ValueError:
+            pass
 
-    def close(self) -> None:
-        """Close every remaining descriptor exactly once; report any failure
-        only after all of them were released."""
-        if self._closed:
-            return
-        self._closed = True
+    def _release_roots(self) -> bool:
         failed = False
-        live, self._live = self._live, []
-        for admitted in live:
-            fd, admitted.fd = admitted.fd, None
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    failed = True
-        roots, self._roots = self._roots, ()
-        for root in roots:
+        roots = self._roots
+        while self._roots_released < len(roots):
+            fd = roots[self._roots_released].fd
             try:
-                os.close(root.fd)
+                self._roots_released += 1  # fd-release
+                os.close(fd)  # fd-release
             except OSError:
                 failed = True
+        return failed
+
+    def close(self) -> None:
+        """Release every remaining descriptor exactly once; report a close
+        failure only after all of them were released."""
+        failed = False
+        while self._live:
+            admitted = self._live[-1]
+            try:
+                admitted.close_once()
+            except _RefusalV2:
+                failed = True
+            self._live.pop()
+        if self._release_roots():
+            failed = True
         if failed:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2)
 
@@ -929,54 +1096,45 @@ class _SourceSessionV2:
 
     def admit(self, position: _AdmittedPositionV2, missing_reason: str) -> _AdmittedDirV2:
         """Re-descend from the root dup to `position`, one charged openat per
-        component. The successor is registered before its predecessor is
-        released (`NewOwnerAcquisition` before `PreviousOwnerRelease`)."""
+        component. The successor is owned (by `successor`) before its
+        predecessor is released, then moved into the admitted owner
+        (`NewOwnerAcquisition` before `PreviousOwnerRelease`)."""
         root = self._roots[position.root_index]
+        admitted = self._new_admitted(position)
         if not position.components:
             self._tracker.charge(descriptor_opens=1)
             try:
-                fd = fcntl.fcntl(root.fd, fcntl.F_DUPFD_CLOEXEC, 0)
+                admitted.fd = fcntl.fcntl(root.fd, fcntl.F_DUPFD_CLOEXEC, 0)  # fd-install
             except OSError as exc:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
-            return self._register(position, fd)
-        owned: int | None = None
+            return admitted
+        successor = _FdSlotV2()
         try:
             current = root.fd
             for component in position.components:
                 if component in ("", ".", "..") or "/" in component or "\x00" in component:
                     raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
                 self._tracker.charge(descriptor_opens=1, path_components=1)
-                try:
-                    successor = _try_open_dir_no_follow_v2(current, component)
-                except TrustedObjectAuthorityError as exc:
-                    raise _source_refusal_from_v2(exc) from exc
-                if successor is None:
+                if not _open_source_dir_into_v2(successor, current, component):
                     raise _RefusalV2(missing_reason)
-                predecessor, owned = owned, successor
-                current = successor
-                if predecessor is not None:
-                    _close_once_v2(predecessor)
-            final, owned = owned, None
-        except BaseException:
-            if owned is not None:
-                _close_quietly_v2(owned)
-            raise
-        return self._register(position, final)
+                admitted.close_once()
+                successor.move_to(admitted)
+                current = admitted.fd
+        finally:
+            successor.close_quietly()
+        return admitted
 
     def child(self, parent: _AdmittedDirV2, name: str, missing_reason: str) -> _AdmittedDirV2:
         """One charged descent from an already-admitted directory."""
         if name in ("", ".", "..") or "/" in name or "\x00" in name or parent.fd is None:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
-        self._tracker.charge(descriptor_opens=1, path_components=1)
-        try:
-            fd = _try_open_dir_no_follow_v2(parent.fd, name)
-        except TrustedObjectAuthorityError as exc:
-            raise _source_refusal_from_v2(exc) from exc
-        if fd is None:
-            raise _RefusalV2(missing_reason)
-        return self._register(
-            _AdmittedPositionV2(parent.position.root_index, parent.position.components + (name,)), fd
+        admitted = self._new_admitted(
+            _AdmittedPositionV2(parent.position.root_index, parent.position.components + (name,))
         )
+        self._tracker.charge(descriptor_opens=1, path_components=1)
+        if not _open_source_dir_into_v2(admitted, parent.fd, name):
+            raise _RefusalV2(missing_reason)
+        return admitted
 
     def resolve_locator(self, locator: SourceRepositoryLocatorV2) -> _AdmittedDirV2:
         refusal = PHYSICAL_SNAPSHOT_REPOSITORY_LOCATOR_OUTSIDE_AUTHORIZED_STORAGE_REASON_V2
@@ -1024,60 +1182,62 @@ class _SourceSessionV2:
     # reads ----------------------------------------------------------------
 
     def read_optional_pointer(self, parent: _AdmittedDirV2, name: str) -> bytes | None:
-        self._tracker.charge(descriptor_opens=1)
+        _require_v2(parent.fd is not None)
+        slot = _FdSlotV2()
         try:
-            fd = _open_regular_file_no_follow_v2(parent.fd, name, missing_is_legitimate=True)
-        except TrustedObjectAuthorityError as exc:
-            raise _source_refusal_from_v2(exc) from exc
-        if fd is None:
-            return None
-        try:
-            data = _read_charged_v2(self._tracker, fd, pointer=True)
-        except BaseException:
-            _close_quietly_v2(fd)
-            raise
-        _close_once_v2(fd)
+            self._tracker.charge(descriptor_opens=1)
+            if not _open_source_file_into_v2(slot, parent.fd, name, missing_is_legitimate=True):
+                return None
+            data = _read_charged_v2(self._tracker, slot.fd, pointer=True)
+            slot.close_once()
+        finally:
+            slot.close_quietly()
         return data
 
     def check_listed_candidate(self, parent: _AdmittedDirV2, name: str) -> None:
-        """Classify an object-looking name that will NOT be copied: one charged
-        no-follow open, type checked on the same fd, closed; no byte is read."""
-        self._tracker.charge(descriptor_opens=1)
+        """Classify an object-looking name that will NOT be copied (an
+        incomplete pack pair, Codex 4133784323): one charged no-follow open,
+        type checked on the same fd, closed; no byte is read. A skipped
+        DUPLICATE occurrence never comes here (§10: not reacquired)."""
+        _require_v2(parent.fd is not None)
+        slot = _FdSlotV2()
         try:
-            fd = _open_regular_file_no_follow_v2(parent.fd, name, missing_is_legitimate=False)
-        except TrustedObjectAuthorityError as exc:
-            raise _source_refusal_from_v2(exc) from exc
-        if fd is None:
-            raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_CHANGED_DURING_READ_REASON_V2)
-        _close_once_v2(fd)
+            self._tracker.charge(descriptor_opens=1)
+            _open_source_file_into_v2(slot, parent.fd, name, missing_is_legitimate=False)
+            slot.close_once()
+        finally:
+            slot.close_quietly()
 
     def read_listed_object(self, parent: _AdmittedDirV2, name: str) -> bytes:
         """A file already seen in a listing: charged as a copied file and an
         open BEFORE it is opened; its bytes are charged from `fstat` before
         they are read. A vanished or swapped entry is refused."""
-        self._tracker.charge(files_copied=1, descriptor_opens=1)
+        _require_v2(parent.fd is not None)
+        slot = _FdSlotV2()
         try:
-            fd = _open_regular_file_no_follow_v2(parent.fd, name, missing_is_legitimate=False)
-        except TrustedObjectAuthorityError as exc:
-            raise _source_refusal_from_v2(exc) from exc
-        if fd is None:
-            raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_CHANGED_DURING_READ_REASON_V2)
-        try:
-            data = _read_charged_v2(self._tracker, fd, pointer=False)
-        except BaseException:
-            _close_quietly_v2(fd)
-            raise
-        _close_once_v2(fd)
+            self._tracker.charge(files_copied=1, descriptor_opens=1)
+            _open_source_file_into_v2(slot, parent.fd, name, missing_is_legitimate=False)
+            data = _read_charged_v2(self._tracker, slot.fd, pointer=False)
+            slot.close_once()
+        finally:
+            slot.close_quietly()
         return data
 
     def probe_dotgit(self, repo: _AdmittedDirV2) -> tuple[str, _AdmittedDirV2 | bytes | None]:
         """ONE charged open of `.git` (no O_DIRECTORY, O_NONBLOCK), classified
-        on the same fd: a directory becomes the gitdir fd itself; a regular
-        file is read as the `gitdir:` pointer; absence means a bare layout."""
+        on the same fd: a directory becomes the gitdir owner itself; a regular
+        file is read as the `gitdir:` pointer; absence means a bare layout.
+        The gitdir owner is registered before the open; if `.git` turns out
+        not to be a directory it is released like any other owner."""
+        _require_v2(repo.fd is not None)
+        gitdir = self._new_admitted(
+            _AdmittedPositionV2(repo.position.root_index, repo.position.components + (".git",))
+        )
         self._tracker.charge(descriptor_opens=1, path_components=1)
         try:
-            fd = os.open(".git", _PROBE_OPEN_FLAGS_V2, dir_fd=repo.fd)
+            gitdir.fd = os.open(".git", _PROBE_OPEN_FLAGS_V2, dir_fd=repo.fd)  # fd-install
         except FileNotFoundError:
+            self.release(gitdir)
             return "absent", None
         except OSError as exc:
             if exc.errno == errno.ELOOP:
@@ -1086,22 +1246,15 @@ class _SourceSessionV2:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2) from exc
             raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
         try:
-            mode = os.fstat(fd).st_mode
-            if stat.S_ISDIR(mode):
-                gitdir = self._register(
-                    _AdmittedPositionV2(repo.position.root_index, repo.position.components + (".git",)), fd
-                )
-                return "dir", gitdir
-            if not stat.S_ISREG(mode):
-                raise _RefusalV2(PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2)
-            data = _read_charged_v2(self._tracker, fd, pointer=True)
+            mode = os.fstat(gitdir.fd).st_mode
         except OSError as exc:
-            _close_quietly_v2(fd)
             raise _RefusalV2(PHYSICAL_SNAPSHOT_SOURCE_ACQUISITION_FAILED_REASON_V2) from exc
-        except BaseException:
-            _close_quietly_v2(fd)
-            raise
-        _close_once_v2(fd)
+        if stat.S_ISDIR(mode):
+            return "dir", gitdir
+        if not stat.S_ISREG(mode):
+            raise _RefusalV2(PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2)
+        data = _read_charged_v2(self._tracker, gitdir.fd, pointer=True)
+        self.release(gitdir)
         return "file", data
 
 
@@ -1112,11 +1265,11 @@ def _resolve_primary_store_v2(session: _SourceSessionV2, locator: SourceReposito
     repo = session.resolve_locator(locator)
     kind, value = session.probe_dotgit(repo)
     if kind == "dir":
-        _require_v2(isinstance(value, _AdmittedDirV2))
+        _require_v2(type(value) is _AdmittedDirV2)
         gitdir = value  # type: ignore[assignment]
         session.release(repo)
     elif kind == "file":
-        _require_v2(isinstance(value, bytes))
+        _require_v2(type(value) is bytes)
         pointer = _parse_gitfile_v2(tracker, value)  # type: ignore[arg-type]
         position = repo.position
         session.release(repo)
@@ -1158,71 +1311,83 @@ class _StagingWriterV2:
     finalized bottom-up (fchmod 0555 -> fsync). The snapshot root stays 0700
     until after the commit point: moving a directory to another parent needs
     write permission on the directory itself.
+
+    Ownership: every bookkeeping structure exists before the first syscall
+    (the constructor makes none); each directory slot is registered before
+    its `mkdir`/`open`; the staging directory's cleanup obligation (`created`)
+    is recorded by the statement right after its `mkdir`. `abort()` is
+    idempotent and resumable.
     """
 
-    def __init__(self, staging_fd: int, snapshot_id: str) -> None:
+    def __init__(self, staging: _FdSlotV2, snapshot_id: str) -> None:
         self.snapshot_id = snapshot_id
-        self._staging_fd = staging_fd
-        self.stage_fd: int | None = None
-        self._dirs: dict[str, int] = {}
-        self._manifest: dict[str, tuple[str, str, int, int, str]] = {}
+        self._staging = staging
+        self.stage = _FdSlotV2()
+        self._dirs: dict[str, _FdSlotV2] = {}
+        self._manifest: dict[str, tuple[str, str, int, int, str]] = {".": ("dir", ".", _DIR_MODE_V2, 0, "")}
         self.copied_files = 0
         self.copied_bytes = 0
+        self.created = False
+        self._aborted = False
+
+    @property
+    def stage_fd(self) -> int | None:
+        return self.stage.fd
+
+    def create_stage(self) -> None:
+        _require_v2(self._staging.fd is not None and not self.created, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
         try:
-            os.mkdir(snapshot_id, _STAGING_DIR_MODE_V2, dir_fd=staging_fd)
+            os.mkdir(self.snapshot_id, _STAGING_DIR_MODE_V2, dir_fd=self._staging.fd)
+            self.created = True  # fd-install
         except FileExistsError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_SNAPSHOT_ID_COLLISION_REASON_V2) from exc
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-        self.created = True
-        self._manifest["."] = ("dir", ".", _DIR_MODE_V2, 0, "")
 
     def open_stage(self) -> None:
-        """Open the directory `__init__` created. Kept separate so that a
-        failure here happens AFTER the caller owns this writer: its `abort()`
-        then removes (or reports) what was created, never hides it."""
+        """Open the directory `create_stage` made, into the pre-existing slot."""
+        _require_v2(self.created and self.stage.fd is None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
         try:
-            self.stage_fd = os.open(self.snapshot_id, _DIR_OPEN_FLAGS_V2, dir_fd=self._staging_fd)
+            self.stage.fd = os.open(self.snapshot_id, _DIR_OPEN_FLAGS_V2, dir_fd=self._staging.fd)  # fd-install
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
 
     def ensure_dir(self, relpath: str) -> int:
         if relpath == ".":
-            _require_v2(self.stage_fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
-            return self.stage_fd  # type: ignore[return-value]
+            _require_v2(self.stage.fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
+            return self.stage.fd  # type: ignore[return-value]
         existing = self._dirs.get(relpath)
         if existing is not None:
-            return existing
+            _require_v2(existing.fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
+            return existing.fd  # type: ignore[return-value]
         parent_rel, _, name = relpath.rpartition("/")
         parent_fd = self.ensure_dir(parent_rel or ".")
+        slot = _FdSlotV2()
+        self._dirs[relpath] = slot
+        self._manifest[relpath] = ("dir", relpath, _DIR_MODE_V2, 0, "")
         try:
             os.mkdir(name, _STAGING_DIR_MODE_V2, dir_fd=parent_fd)
-            fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent_fd)
+            slot.fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent_fd)  # fd-install
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-        self._dirs[relpath] = fd
-        self._manifest[relpath] = ("dir", relpath, _DIR_MODE_V2, 0, "")
-        return fd
+        return slot.fd
 
     def write_file(self, dir_rel: str, name: str, data: bytes, *, copied: bool) -> None:
         dir_fd = self.ensure_dir(dir_rel)
         relpath = name if dir_rel == "." else dir_rel + "/" + name
+        slot = _FdSlotV2()
         try:
-            fd = os.open(name, _CREATE_FILE_FLAGS_V2, _STAGING_FILE_MODE_V2, dir_fd=dir_fd)
-        except OSError as exc:
-            raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-        try:
-            _write_all_v2(fd, data)
-            digest = hashlib.sha256(data).hexdigest()
-            os.fchmod(fd, _FILE_MODE_V2)
-            os.fsync(fd)
-        except OSError as exc:
-            _close_quietly_v2(fd)
-            raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-        except BaseException:
-            _close_quietly_v2(fd)
-            raise
-        _close_once_v2(fd)
+            try:
+                slot.fd = os.open(name, _CREATE_FILE_FLAGS_V2, _STAGING_FILE_MODE_V2, dir_fd=dir_fd)  # fd-install
+                _write_all_v2(slot.fd, data)
+                digest = hashlib.sha256(data).hexdigest()
+                os.fchmod(slot.fd, _FILE_MODE_V2)
+                os.fsync(slot.fd)
+            except OSError as exc:
+                raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
+            slot.close_once()
+        finally:
+            slot.close_quietly()
         if relpath != PHYSICAL_SNAPSHOT_RECEIPT_FILENAME_V2:
             self._manifest[relpath] = ("file", relpath, _FILE_MODE_V2, len(data), digest)
         if copied:
@@ -1252,51 +1417,59 @@ class _StagingWriterV2:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def finalize_subdirectories(self) -> None:
-        """Bottom-up: fchmod 0555 -> fsync, deepest first; the root is left 0700."""
+        """Bottom-up: fchmod 0555 -> fsync -> close once, deepest first; the
+        root is left 0700. A finalized slot stays registered, empty."""
         for relpath in sorted(self._dirs, key=lambda rel: (-rel.count("/"), rel)):
-            fd = self._dirs[relpath]
+            slot = self._dirs[relpath]
+            _require_v2(slot.fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
             try:
-                os.fchmod(fd, _DIR_MODE_V2)
-                os.fsync(fd)
+                os.fchmod(slot.fd, _DIR_MODE_V2)  # type: ignore[arg-type]
+                os.fsync(slot.fd)  # type: ignore[arg-type]
             except OSError as exc:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-            del self._dirs[relpath]
-            _close_once_v2(fd)
+            slot.close_once()
 
     def fsync_stage_root(self) -> None:
-        _require_v2(self.stage_fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
+        _require_v2(self.stage.fd is not None, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
         try:
-            os.fsync(self.stage_fd)  # type: ignore[arg-type]
+            os.fsync(self.stage.fd)  # type: ignore[arg-type]
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
 
-    def take_stage_fd(self) -> int:
-        fd, self.stage_fd = self.stage_fd, None
-        if fd is None:
-            raise RuntimeError("staging descriptor already transferred")
-        return fd
+    def release_descriptors(self) -> None:
+        """Close every descriptor still owned, removing nothing (used once the
+        commit point was attempted: the tree may already be committed)."""
+        for slot in list(self._dirs.values()):
+            slot.close_quietly()
+        self.stage.close_quietly()
 
     def abort(self) -> bool:
         """Pre-commit cleanup, descriptor-relative. Returns True if staging
-        residue may remain (reported, never hidden)."""
+        residue may remain (reported, never hidden). Idempotent; an
+        interrupted abort leaves what it did not release with its owner."""
+        if self._aborted:
+            return False
+        for slot in list(self._dirs.values()):
+            slot.close_quietly()
         residue = False
-        dirs, self._dirs = self._dirs, {}
-        for fd in dirs.values():
-            _close_quietly_v2(fd)
-        stage_fd, self.stage_fd = self.stage_fd, None
-        if stage_fd is None:
-            return self.created and not _remove_tree_by_name_v2(self._staging_fd, self.snapshot_id)
-        try:
-            os.fchmod(stage_fd, _STAGING_DIR_MODE_V2)
-            residue = not _remove_children_v2(stage_fd)
-        except OSError:
-            residue = True
-        finally:
-            _close_quietly_v2(stage_fd)
-        try:
-            os.rmdir(self.snapshot_id, dir_fd=self._staging_fd)
-        except OSError:
-            residue = True
+        if self.stage.fd is None:
+            if self.created:
+                residue = not _remove_tree_by_name_v2(self._staging, self.snapshot_id)
+        else:
+            try:
+                os.fchmod(self.stage.fd, _STAGING_DIR_MODE_V2)
+                residue = not _remove_children_v2(self.stage.fd)
+            except OSError:
+                residue = True
+            self.stage.close_quietly()
+            if self._staging.fd is None:
+                residue = True
+            else:
+                try:
+                    os.rmdir(self.snapshot_id, dir_fd=self._staging.fd)
+                except OSError:
+                    residue = True
+        self._aborted = True
         return residue
 
 
@@ -1317,18 +1490,17 @@ def _remove_children_v2(dir_fd: int) -> bool:
             ok = False
             continue
         if stat.S_ISDIR(info.st_mode):
+            child = _FdSlotV2()
             try:
-                child = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=dir_fd)
-            except OSError:
-                ok = False
-                continue
-            try:
-                os.fchmod(child, _STAGING_DIR_MODE_V2)
-                ok = _remove_children_v2(child) and ok
-            except OSError:
-                ok = False
+                try:
+                    child.fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=dir_fd)  # fd-install
+                    os.fchmod(child.fd, _STAGING_DIR_MODE_V2)
+                    ok = _remove_children_v2(child.fd) and ok
+                except OSError:
+                    ok = False
+                child.close_quietly()
             finally:
-                _close_quietly_v2(child)
+                child.close_quietly()
             try:
                 os.rmdir(name, dir_fd=dir_fd)
             except OSError:
@@ -1341,22 +1513,27 @@ def _remove_children_v2(dir_fd: int) -> bool:
     return ok
 
 
-def _remove_tree_by_name_v2(parent_fd: int, name: str) -> bool:
-    try:
-        fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return True
-    except OSError:
+def _remove_tree_by_name_v2(parent: _FdSlotV2, name: str) -> bool:
+    if parent.fd is None:
         return False
+    slot = _FdSlotV2()
     try:
-        os.fchmod(fd, _STAGING_DIR_MODE_V2)
-        ok = _remove_children_v2(fd)
-    except OSError:
-        ok = False
+        try:
+            slot.fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=parent.fd)  # fd-install
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        try:
+            os.fchmod(slot.fd, _STAGING_DIR_MODE_V2)
+            ok = _remove_children_v2(slot.fd)
+        except OSError:
+            ok = False
+        slot.close_quietly()
     finally:
-        _close_quietly_v2(fd)
+        slot.close_quietly()
     try:
-        os.rmdir(name, dir_fd=parent_fd)
+        os.rmdir(name, dir_fd=parent.fd)
     except OSError:
         ok = False
     return ok
@@ -1418,6 +1595,9 @@ class _PhysicalCopierV2:
                 for name, _ in sorted(_scan_directory_v2(self._tracker, fanout_dir.fd, self._classify_loose)):
                     object_key = fanout + name
                     if object_key in self._loose:
+                        # SkippedDuplicateOccurrence (§10, adjudicated): charged as an
+                        # entry, not reacquired, not copied, not followed -- hence no
+                        # filesystem-type claim about it, and no open to make one.
                         continue
                     data = session.read_listed_object(fanout_dir, name)
                     self._writer.write_file("objects/" + fanout, name, data, copied=True)
@@ -1435,7 +1615,7 @@ class _PhysicalCopierV2:
                     present.setdefault(match.group(1), set()).add(match.group(2))
                 for base in sorted(present):
                     if base in self._packs:
-                        continue  # duplicate physical occurrence: charged as an entry, not opened (§10)
+                        continue  # SkippedDuplicateOccurrence (§10): charged, not reacquired, no type claim
                     if present[base] != {"pack", "idx"}:
                         # Incomplete pair: not copied, but an object-looking name is
                         # still classified by a charged no-follow open, so a symlink or
@@ -1473,7 +1653,7 @@ class _PhysicalCopierV2:
 
 
 @dataclass(frozen=True)
-class PublishedSnapshotReceiptV2:
+class PublishedSnapshotReceiptV2(_SealedV2):
     """Traceability only: `PublishedSnapshotReceipt != ObjectAuthenticityProof`.
 
     Describes the INTENDED final state (root 0555 included); it is asserted
@@ -1509,7 +1689,7 @@ class PublishedSnapshotReceiptV2:
 
 
 @dataclass(frozen=True)
-class PublishedSnapshotBindingV2:
+class PublishedSnapshotBindingV2(_SealedV2):
     """Observed kernel identity of the committed snapshot; an observation,
     not a proof of who produced it."""
 
@@ -1522,59 +1702,47 @@ class PublishedSnapshotBindingV2:
     committed_parent_identity: KernelObjectIdentityV2
 
 
-class _OwnedDescriptorV2:
-    """Idempotent, lock-protected single close of one owned descriptor."""
-
-    def __init__(self, fd: int) -> None:
-        self._fd: int | None = fd
-        self._lock = threading.Lock()
-
-    def fd(self) -> int:
-        with self._lock:
-            if self._fd is None:
-                raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-            return self._fd
-
-    @property
-    def closed(self) -> bool:
-        return self._fd is None
-
-    def close(self) -> None:
-        with self._lock:
-            fd, self._fd = self._fd, None
-        if fd is not None:
-            _close_quietly_v2(fd)
-
-
-class PublishedSnapshotV2:
+class PublishedSnapshotV2(_SealedV2):
     """The qualified capability. Exists ONLY inside `CompletePublicationV2`
-    (`PublishedSnapshotV2 <=> PUBLISHED_SYNC_COMPLETE`); the constructor
-    refuses any caller without this module's sentinel."""
+    (`PublishedSnapshotV2 <=> PUBLISHED_SYNC_COMPLETE`). Sealed; the
+    constructor refuses any caller without this module's sentinel and
+    registers the instance by identity; its descriptor slot is created empty
+    and filled by a slot move only once the whole outcome exists."""
 
     def __init__(
         self,
         *,
         _sentinel: object,
-        fd: int,
         binding: PublishedSnapshotBindingV2,
         receipt: PublishedSnapshotReceiptV2,
     ) -> None:
         if _sentinel is not _SNAPSHOT_SENTINEL_V2:
             raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
-        self._descriptor = _OwnedDescriptorV2(fd)
-        self.binding = binding
-        self.receipt = receipt
+        if type(binding) is not PublishedSnapshotBindingV2 or type(receipt) is not PublishedSnapshotReceiptV2:
+            raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
+        self._descriptor = _SharedFdSlotV2()
+        self._binding = binding
+        self._receipt = receipt
+        _GENUINE_SNAPSHOTS_V2.add(self)
+
+    @property
+    def binding(self) -> PublishedSnapshotBindingV2:
+        return self._binding
+
+    @property
+    def receipt(self) -> PublishedSnapshotReceiptV2:
+        return self._receipt
 
     @property
     def committed_dir_fd(self) -> int:
-        return self._descriptor.fd()
+        return self._descriptor.get()
 
     @property
     def closed(self) -> bool:
-        return self._descriptor.closed
+        return self._descriptor.fd is None
 
     def close(self) -> None:
-        self._descriptor.close()
+        self._descriptor.close_quietly()
 
     def __enter__(self) -> PublishedSnapshotV2:
         return self
@@ -1582,33 +1750,47 @@ class PublishedSnapshotV2:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        descriptor = getattr(self, "_descriptor", None)
-        if descriptor is not None:
-            descriptor.close()
 
-
-class CommittedSnapshotResidualV2:
+class CommittedSnapshotResidualV2(_SealedV2):
     """A snapshot that IS in committed/ but whose publication was not
     confirmed. Holds its own descriptor for quarantine/diagnosis only; it is
-    not a `PublishedSnapshotV2` and is not accepted by S1-B/S1-C."""
+    not a `PublishedSnapshotV2` and is not accepted by S1-B/S1-C. Sealed and
+    sentinel-gated like the capability it must never be mistaken for."""
 
-    def __init__(self, *, fd: int, snapshot_id: str, receipt: PublishedSnapshotReceiptV2, reason_code: str) -> None:
-        self._descriptor = _OwnedDescriptorV2(fd)
-        self.snapshot_id = snapshot_id
-        self.receipt = receipt
-        self.reason_code = reason_code
+    def __init__(
+        self, *, _sentinel: object, snapshot_id: str, receipt: PublishedSnapshotReceiptV2, reason_code: str
+    ) -> None:
+        if _sentinel is not _SNAPSHOT_SENTINEL_V2:
+            raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
+        if type(receipt) is not PublishedSnapshotReceiptV2 or type(reason_code) is not str:
+            raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
+        self._descriptor = _SharedFdSlotV2()
+        self._snapshot_id = snapshot_id
+        self._receipt = receipt
+        self._reason_code = reason_code
+
+    @property
+    def snapshot_id(self) -> str:
+        return self._snapshot_id
+
+    @property
+    def receipt(self) -> PublishedSnapshotReceiptV2:
+        return self._receipt
+
+    @property
+    def reason_code(self) -> str:
+        return self._reason_code
 
     @property
     def fd(self) -> int:
-        return self._descriptor.fd()
+        return self._descriptor.get()
 
     @property
     def closed(self) -> bool:
-        return self._descriptor.closed
+        return self._descriptor.fd is None
 
     def close(self) -> None:
-        self._descriptor.close()
+        self._descriptor.close_quietly()
 
     def __enter__(self) -> CommittedSnapshotResidualV2:
         return self
@@ -1616,14 +1798,9 @@ class CommittedSnapshotResidualV2:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    def __del__(self) -> None:
-        descriptor = getattr(self, "_descriptor", None)
-        if descriptor is not None:
-            descriptor.close()
-
 
 @dataclass(frozen=True)
-class PublicationResidualV2:
+class PublicationResidualV2(_SealedV2):
     """What is known when the commit state could not be established."""
 
     snapshot_id: str
@@ -1632,34 +1809,34 @@ class PublicationResidualV2:
 
 
 @dataclass(frozen=True)
-class CompletePublicationV2:
+class CompletePublicationV2(_SealedV2):
     snapshot: PublishedSnapshotV2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.snapshot, PublishedSnapshotV2):
-            raise TypeError("CompletePublicationV2 requires a PublishedSnapshotV2")
+        if type(self.snapshot) is not PublishedSnapshotV2 or self.snapshot not in _GENUINE_SNAPSHOTS_V2:
+            raise TypeError("CompletePublicationV2 requires a PublishedSnapshotV2 minted by this module")
 
 
 @dataclass(frozen=True)
-class UnconfirmedPublicationV2:
+class UnconfirmedPublicationV2(_SealedV2):
     residual: CommittedSnapshotResidualV2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.residual, CommittedSnapshotResidualV2):
+        if type(self.residual) is not CommittedSnapshotResidualV2:
             raise TypeError("UnconfirmedPublicationV2 carries a CommittedSnapshotResidualV2, never a PublishedSnapshotV2")
 
 
 @dataclass(frozen=True)
-class IndeterminatePublicationV2:
+class IndeterminatePublicationV2(_SealedV2):
     residual: PublicationResidualV2
 
     def __post_init__(self) -> None:
-        if not isinstance(self.residual, PublicationResidualV2):
+        if type(self.residual) is not PublicationResidualV2:
             raise TypeError("IndeterminatePublicationV2 carries a PublicationResidualV2")
 
 
 @dataclass(frozen=True)
-class NotPublishedV2:
+class NotPublishedV2(_SealedV2):
     reason_code: str
     exceeded_axis: str | None
     staging_residue: bool
@@ -1672,51 +1849,90 @@ class NotPublishedV2:
 PublicationOutcomeV2 = Union[CompletePublicationV2, UnconfirmedPublicationV2, IndeterminatePublicationV2, NotPublishedV2]
 
 
-# -- commit point and post-commit (freeze §12 steps 8-11, §13) -----------------------------
+# -- the publication run: one owner tree for one call (C11) ---------------------------------
 
 
-class _PublicationContextV2:
-    __slots__ = ("writer", "staging_fd", "committed_fd", "receipt", "snapshot_id", "committed_identity", "attempted")
+class _PublicationRunV2:
+    """Every owner one publication will ever need, built BEFORE its first
+    syscall: the two publication duplicates, the source session, the staging
+    writer. `settle()` runs on every exit path and releases whatever is still
+    owned -- nothing is released by building a new owner."""
 
-    def __init__(
-        self,
-        writer: _StagingWriterV2,
-        staging_fd: int,
-        committed_fd: int,
-        receipt: PublishedSnapshotReceiptV2,
-        committed_identity: KernelObjectIdentityV2,
-    ) -> None:
-        self.writer = writer
-        self.staging_fd = staging_fd
-        self.committed_fd = committed_fd
-        self.receipt = receipt
-        self.snapshot_id = writer.snapshot_id
+    __slots__ = ("tracker", "snapshot_id", "staging", "committed", "session", "writer", "receipt", "committed_identity", "attempted")
+
+    def __init__(self, tracker: PhysicalWorkTrackerV2, snapshot_id: str, committed_identity: KernelObjectIdentityV2) -> None:
+        self.tracker = tracker
+        self.snapshot_id = snapshot_id
+        self.staging = _FdSlotV2()
+        self.committed = _FdSlotV2()
+        self.session = _SourceSessionV2(tracker)
+        self.writer = _StagingWriterV2(self.staging, snapshot_id)
+        self.receipt: PublishedSnapshotReceiptV2 | None = None
         self.committed_identity = committed_identity
         self.attempted = False
 
+    def _settle_writer(self) -> None:
+        if self.attempted:
+            self.writer.release_descriptors()
+        else:
+            self.writer.abort()
 
-def _observe_commit_v2(context: _PublicationContextV2) -> str:
+    def settle(self) -> None:
+        """Pre-commit leftovers are aborted (removed); once the commit point
+        was attempted nothing is removed, only descriptors are released.
+
+        Every step is idempotent and resumable, and every step runs even if
+        an earlier one was interrupted (nested `finally`); an interrupted step
+        is retried once, so a single failure inside cleanup cannot strand what
+        the interrupted attempt had not yet released."""
+        try:
+            _retry_once_v2(self.session.close_quietly)
+        finally:
+            try:
+                _retry_once_v2(self._settle_writer)
+            finally:
+                try:
+                    _retry_once_v2(self.staging.close_quietly)
+                finally:
+                    _retry_once_v2(self.committed.close_quietly)
+
+
+def _retry_once_v2(step: Callable[[], object]) -> None:
+    """Run an idempotent, resumable cleanup step; if it is interrupted, run it
+    again (releasing what the first attempt did not), then re-raise."""
+    try:
+        step()
+    except BaseException:
+        step()
+        raise
+
+
+# -- commit point and post-commit (freeze §12 steps 8-11, §13) -----------------------------
+
+
+def _observe_commit_v2(run: _PublicationRunV2) -> str:
     """Decide from descriptors, never from errno: 'committed', 'staging' or
     'indeterminate'. `ours` is the inode behind the staging descriptor, which
     a rename does not change."""
-    if context.writer.stage_fd is None:
+    stage_fd, staging_fd, committed_fd = run.writer.stage.fd, run.staging.fd, run.committed.fd
+    if stage_fd is None or staging_fd is None or committed_fd is None:
         return "indeterminate"
     try:
-        ours = os.fstat(context.writer.stage_fd)
+        ours = os.fstat(stage_fd)
     except OSError:
         return "indeterminate"
 
     def holds_ours(dir_fd: int) -> bool | None:
         try:
-            info = os.stat(context.snapshot_id, dir_fd=dir_fd, follow_symlinks=False)
+            info = os.stat(run.snapshot_id, dir_fd=dir_fd, follow_symlinks=False)
         except FileNotFoundError:
             return False
         except OSError:
             return None
         return (info.st_dev, info.st_ino) == (ours.st_dev, ours.st_ino)
 
-    in_committed = holds_ours(context.committed_fd)
-    in_staging = holds_ours(context.staging_fd)
+    in_committed = holds_ours(committed_fd)
+    in_staging = holds_ours(staging_fd)
     if in_committed is True and in_staging is False:
         return "committed"
     if in_staging is True and in_committed is False:
@@ -1734,106 +1950,151 @@ def _rename_reason_v2(err: int) -> str:
     return PHYSICAL_SNAPSHOT_RENAME_FAILED_REASON_V2
 
 
-def _classify_after_attempt_v2(context: _PublicationContextV2, reason_code: str) -> PublicationOutcomeV2:
+def _unconfirmed_v2(run: _PublicationRunV2, reason_code: str) -> UnconfirmedPublicationV2:
+    """The committed tree, not confirmed: the residual and its outcome are
+    built first; the staging descriptor moves into them last."""
+    _require_v2(type(run.receipt) is PublishedSnapshotReceiptV2, PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2)
+    residual = CommittedSnapshotResidualV2(
+        _sentinel=_SNAPSHOT_SENTINEL_V2, snapshot_id=run.snapshot_id, receipt=run.receipt, reason_code=reason_code
+    )
+    outcome = UnconfirmedPublicationV2(residual=residual)
+    run.writer.stage.move_to(residual._descriptor)
+    return outcome
+
+
+def _classify_after_attempt_v2(run: _PublicationRunV2, reason_code: str) -> PublicationOutcomeV2:
     """The only way to report a state after a commit attempt: observe first."""
-    state = _observe_commit_v2(context)
+    state = _observe_commit_v2(run)
     if state == "staging":
-        residue = context.writer.abort()
+        residue = run.writer.abort()
         return NotPublishedV2(reason_code=reason_code, exceeded_axis=None, staging_residue=residue)
     if state == "committed":
-        residual = CommittedSnapshotResidualV2(
-            fd=context.writer.take_stage_fd(),
-            snapshot_id=context.snapshot_id,
-            receipt=context.receipt,
-            reason_code=reason_code
+        return _unconfirmed_v2(
+            run,
+            reason_code
             if reason_code in (PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
             else PHYSICAL_SNAPSHOT_RENAME_ERROR_BUT_COMMITTED_REASON_V2,
         )
-        return UnconfirmedPublicationV2(residual=residual)
-    stage_fd = context.writer.stage_fd
-    if stage_fd is not None:
-        context.writer.stage_fd = None
-        _close_quietly_v2(stage_fd)
-    return IndeterminatePublicationV2(
+    outcome = IndeterminatePublicationV2(
         residual=PublicationResidualV2(
-            snapshot_id=context.snapshot_id,
+            snapshot_id=run.snapshot_id,
             reason_code=PHYSICAL_SNAPSHOT_COMMIT_STATE_UNOBSERVABLE_REASON_V2,
             observation=(("attempt_reason", reason_code),),
         )
     )
+    run.writer.stage.close_quietly()
+    return outcome
 
 
-def _on_rename_failure_v2(context: _PublicationContextV2, err: int) -> PublicationOutcomeV2:
+def _on_rename_failure_v2(run: _PublicationRunV2, err: int) -> PublicationOutcomeV2:
     """`rename returned error` does NOT imply `nothing happened`."""
-    return _classify_after_attempt_v2(context, _rename_reason_v2(err))
+    return _classify_after_attempt_v2(run, _rename_reason_v2(err))
 
 
-def _post_commit_v2(context: _PublicationContextV2) -> PublicationOutcomeV2:
-    stage_fd = context.writer.stage_fd
-    if stage_fd is None:
-        raise RuntimeError("staging descriptor missing at the commit point")
+def _post_commit_v2(run: _PublicationRunV2) -> PublicationOutcomeV2:
+    stage_fd = run.writer.stage.fd
+    if stage_fd is None or run.staging.fd is None or run.committed.fd is None:
+        raise RuntimeError("descriptor missing at the commit point")
     try:
         os.fchmod(stage_fd, _DIR_MODE_V2)
         os.fsync(stage_fd)
-        os.fsync(context.committed_fd)
-        os.fsync(context.staging_fd)
+        os.fsync(run.committed.fd)
+        os.fsync(run.staging.fd)
         info = os.fstat(stage_fd)
         identity = _statx_identity_v2(stage_fd)
     except (OSError, _MountIdentityUnavailableV2):
-        residual = CommittedSnapshotResidualV2(
-            fd=context.writer.take_stage_fd(),
-            snapshot_id=context.snapshot_id,
-            receipt=context.receipt,
-            reason_code=PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2,
-        )
-        return UnconfirmedPublicationV2(residual=residual)
+        return _unconfirmed_v2(run, PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2)
     binding = PublishedSnapshotBindingV2(
-        snapshot_id=context.snapshot_id,
+        snapshot_id=run.snapshot_id,
         mount_id=identity.mount_id,
         st_dev=info.st_dev,
         st_ino=info.st_ino,
         st_uid=info.st_uid,
         st_gid=info.st_gid,
-        committed_parent_identity=context.committed_identity,
+        committed_parent_identity=run.committed_identity,
     )
-    snapshot = PublishedSnapshotV2(
-        _sentinel=_SNAPSHOT_SENTINEL_V2, fd=context.writer.take_stage_fd(), binding=binding, receipt=context.receipt
-    )
-    return CompletePublicationV2(snapshot=snapshot)
+    snapshot = PublishedSnapshotV2(_sentinel=_SNAPSHOT_SENTINEL_V2, binding=binding, receipt=run.receipt)  # type: ignore[arg-type]
+    outcome = CompletePublicationV2(snapshot=snapshot)
+    run.writer.stage.move_to(snapshot._descriptor)
+    return outcome
 
 
-def _commit_v2(context: _PublicationContextV2) -> PublicationOutcomeV2:
+def _commit_v2(run: _PublicationRunV2) -> PublicationOutcomeV2:
     try:
         try:
-            context.attempted = True
-            err = _renameat2_noreplace_v2(context.staging_fd, context.snapshot_id, context.committed_fd, context.snapshot_id)
+            run.attempted = True
+            err = _renameat2_noreplace_v2(run.staging.fd, run.snapshot_id, run.committed.fd, run.snapshot_id)  # type: ignore[arg-type]
         except _SyscallUnavailableV2:
-            context.attempted = False
-            residue = context.writer.abort()
+            run.attempted = False
+            residue = run.writer.abort()
             return NotPublishedV2(
                 reason_code=PHYSICAL_SNAPSHOT_NOREPLACE_UNSUPPORTED_REASON_V2, exceeded_axis=None, staging_residue=residue
             )
         if err != 0:
-            return _on_rename_failure_v2(context, err)
-        return _post_commit_v2(context)
+            return _on_rename_failure_v2(run, err)
+        return _post_commit_v2(run)
     except Exception:
-        return _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
+        return _classify_after_attempt_v2(run, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
     except BaseException as interruption:
-        if context.attempted:
-            outcome = _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
+        if run.attempted:
+            outcome = _classify_after_attempt_v2(run, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
         else:
             outcome = NotPublishedV2(
                 reason_code=PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2,
                 exceeded_axis=None,
-                staging_residue=context.writer.abort(),
+                staging_residue=run.writer.abort(),
             )
-        # Ownership of any descriptor moves to the attached variant; nothing
+        # Ownership of any descriptor moved to the attached variant; nothing
         # it holds has been closed behind its back.
         interruption.physical_snapshot_outcome = outcome  # type: ignore[attr-defined]
         raise
 
 
 # -- entry point ---------------------------------------------------------------------------
+
+
+def _publish_run_v2(
+    run: _PublicationRunV2,
+    source_authority: AuthorizedGitStorageSetV2,
+    source_locator: SourceRepositoryLocatorV2,
+    object_format: DeclaredGitObjectFormatV2,
+    publication_root: SnapshotPublicationRootV2,
+) -> PublicationOutcomeV2:
+    try:
+        publication_root._duplicate_publication_fds_into(run.staging, run.committed)
+    except _RefusalV2 as refusal:
+        return NotPublishedV2(reason_code=refusal.reason_code, exceeded_axis=None, staging_residue=False)
+    session, writer, tracker = run.session, run.writer, run.tracker
+    try:
+        session.acquire_roots(source_authority)
+        primary = _resolve_primary_store_v2(session, source_locator)
+        writer.create_stage()
+        writer.open_stage()
+        copier = _PhysicalCopierV2(session, writer, object_format)
+        copier.copy_store(primary, hop=0)
+        writer.write_skeleton(object_format)
+        consumed = tracker.consumed()
+        run.receipt = PublishedSnapshotReceiptV2(
+            schema_version=PHYSICAL_SNAPSHOT_RECEIPT_SCHEMA_V2,
+            snapshot_id=run.snapshot_id,
+            declared_object_format=object_format.value,
+            physical_work=tuple((axis, consumed[axis]) for axis in _BUDGET_AXES_V2),
+            alternate_sources=copier.alternate_sources,
+            max_alternate_depth_seen=consumed["alternate_depth"],
+            files_copied=writer.copied_files,
+            copied_bytes=writer.copied_bytes,
+            source_root_identities=session.root_identities,
+            snapshot_fileset_digest=writer.fileset_digest(),
+        )
+        writer.write_file(".", PHYSICAL_SNAPSHOT_RECEIPT_FILENAME_V2, run.receipt.canonical_bytes(), copied=False)
+        session.close()  # step 5b: no source close can fail after the commit point
+        writer.finalize_subdirectories()
+        writer.fsync_stage_root()
+    except _RefusalV2 as refusal:
+        session.close_quietly()
+        residue = writer.abort()
+        return NotPublishedV2(reason_code=refusal.reason_code, exceeded_axis=refusal.exceeded_axis, staging_residue=residue)
+    return _commit_v2(run)
 
 
 def publish_physical_snapshot_v2(
@@ -1850,72 +2111,41 @@ def publish_physical_snapshot_v2(
     `physical_budget`. See the module docstring and the freeze.
 
     Raises `PhysicalSnapshotErrorV2` only for caller-contract violations
-    (wrong types, invalid budget). Every acquisition/publication refusal is a
-    returned `PublicationOutcomeV2` variant.
+    (wrong or forged types, invalid budget). Every acquisition/publication
+    refusal is a returned `PublicationOutcomeV2` variant.
+
+    Admission is by EXACT type (`ExactType(A) != Provenance(A)`: a subclass
+    of `AuthorizedGitStorageSetV2` is refused here without changing C2_A;
+    who produced A stays C2_B/#331), and W must also be one
+    `from_directory_fd` minted.
     """
-    if not isinstance(source_authority, AuthorizedGitStorageSetV2):
+    if type(source_authority) is not AuthorizedGitStorageSetV2:
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-    if not isinstance(source_locator, SourceRepositoryLocatorV2):
+    if type(source_locator) is not SourceRepositoryLocatorV2:
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-    if not isinstance(object_format, DeclaredGitObjectFormatV2):
+    if type(object_format) is not DeclaredGitObjectFormatV2:
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-    if not isinstance(publication_root, SnapshotPublicationRootV2):
-        raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
+    root = _admit_publication_root_v2(publication_root)
     tracker = PhysicalWorkTrackerV2(physical_budget)
     snapshot_id = secrets.token_hex(16) if _snapshot_id is None else _snapshot_id
     if type(snapshot_id) is not str or not _SNAPSHOT_ID_RE_V2.fullmatch(snapshot_id):
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_INVALID_INPUT_REASON_V2)
-
+    committed_identity = root.committed_identity
+    if type(committed_identity) is not KernelObjectIdentityV2:
+        raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
+    run = _PublicationRunV2(tracker, snapshot_id, committed_identity)
+    outcome: PublicationOutcomeV2 | None = None
     try:
-        staging_fd, committed_fd = publication_root._duplicate_publication_fds()
-    except _RefusalV2 as refusal:
-        return NotPublishedV2(reason_code=refusal.reason_code, exceeded_axis=None, staging_residue=False)
-    try:
-        session: _SourceSessionV2 | None = None
-        writer: _StagingWriterV2 | None = None
-        try:
-            session = _SourceSessionV2(source_authority, tracker)
-            primary = _resolve_primary_store_v2(session, source_locator)
-            writer = _StagingWriterV2(staging_fd, snapshot_id)
-            writer.open_stage()
-            copier = _PhysicalCopierV2(session, writer, object_format)
-            copier.copy_store(primary, hop=0)
-            writer.write_skeleton(object_format)
-            root_identities = session.root_identities
-            consumed = tracker.consumed()
-            receipt = PublishedSnapshotReceiptV2(
-                schema_version=PHYSICAL_SNAPSHOT_RECEIPT_SCHEMA_V2,
-                snapshot_id=snapshot_id,
-                declared_object_format=object_format.value,
-                physical_work=tuple((axis, consumed[axis]) for axis in _BUDGET_AXES_V2),
-                alternate_sources=copier.alternate_sources,
-                max_alternate_depth_seen=consumed["alternate_depth"],
-                files_copied=writer.copied_files,
-                copied_bytes=writer.copied_bytes,
-                source_root_identities=root_identities,
-                snapshot_fileset_digest=writer.fileset_digest(),
-            )
-            writer.write_file(".", PHYSICAL_SNAPSHOT_RECEIPT_FILENAME_V2, receipt.canonical_bytes(), copied=False)
-            closing, session = session, None
-            closing.close()  # step 5b: no source close can fail after the commit point
-            writer.finalize_subdirectories()
-            writer.fsync_stage_root()
-        except _RefusalV2 as refusal:
-            if session is not None:
-                session.close_quietly()
-            residue = writer.abort() if writer is not None else False
-            return NotPublishedV2(
-                reason_code=refusal.reason_code, exceeded_axis=refusal.exceeded_axis, staging_residue=residue
-            )
-        except BaseException:
-            if session is not None:
-                session.close_quietly()
-            if writer is not None:
-                writer.abort()
-            raise
-        return _commit_v2(
-            _PublicationContextV2(writer, staging_fd, committed_fd, receipt, publication_root.committed_identity)
-        )
+        outcome = _publish_run_v2(run, source_authority, source_locator, object_format, root)
     finally:
-        _close_quietly_v2(staging_fd)
-        _close_quietly_v2(committed_fd)
+        try:
+            run.settle()
+        except BaseException as interruption:
+            # Settling is resumable: finish it, then report. An outcome that
+            # already exists is never lost behind a cleanup failure (a
+            # committed snapshot must stay visible to the caller, C10).
+            run.settle()
+            if outcome is not None:
+                interruption.physical_snapshot_outcome = outcome  # type: ignore[attr-defined]
+            raise
+    return outcome
