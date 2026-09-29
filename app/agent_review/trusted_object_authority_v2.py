@@ -956,7 +956,16 @@ class AuthorizedGitStorageSetV2:
             locators: tuple[PurePosixPath | None, ...] = (None,) * len(root_fds)
         else:
             locators = tuple(root_locators)
-            if len(locators) != len(root_fds):
+            if len(locators) != len(root_fds) or not all(
+                locator is None
+                or (
+                    isinstance(locator, PurePosixPath)
+                    and str(locator).startswith("/")
+                    and not str(locator).startswith("//")
+                    and not any(part in (".", "..") for part in locator.parts)
+                )
+                for locator in locators
+            ):
                 raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
         self._root_fds = tuple(root_fds)
         self._bound_paths: tuple[Path, ...] = tuple(bound_paths)
@@ -1170,12 +1179,21 @@ class AuthorizedGitStorageSetV2:
         already made before raising. `contains_fd` is unaffected.
         """
         duplicates: list[AuthorizedStorageRootDuplicateV2] = []
+        made: list[int] = []
         with self._lock:
             if self._closed:
                 raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_STORAGE_CAPABILITY_CLOSED_REASON_V2)
+            # A directly-constructed capability may carry misaligned bindings;
+            # refuse it typed before any descriptor exists.
+            if len(self._bound_dev_ino) != len(self._root_fds) or len(self._root_locators) != len(self._root_fds):
+                raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
             try:
                 for index, root_fd in enumerate(self._root_fds):
                     dup_fd = fcntl.fcntl(root_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+                    made.append(dup_fd)  # owned before anything else can fail
+                    dup_stat = os.fstat(dup_fd)
+                    if (dup_stat.st_dev, dup_stat.st_ino) != self._bound_dev_ino[index]:
+                        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
                     duplicates.append(
                         AuthorizedStorageRootDuplicateV2(
                             index=index,
@@ -1184,12 +1202,9 @@ class AuthorizedGitStorageSetV2:
                             locator=self._root_locators[index],
                         )
                     )
-                    dup_stat = os.fstat(dup_fd)
-                    if (dup_stat.st_dev, dup_stat.st_ino) != self._bound_dev_ino[index]:
-                        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
             except BaseException as exc:
-                for duplicate in duplicates:
-                    _close_ignoring_errors_v2(duplicate.fd)
+                for dup_fd in made:
+                    _close_ignoring_errors_v2(dup_fd)
                 if isinstance(exc, OSError):
                     raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
                 raise

@@ -357,6 +357,14 @@ class _Inotify:
 # ================================================================================
 
 
+def test_parity_oracle_version_is_recorded(record_property) -> None:
+    """§26 parity_oracle: the Git version used as the upstream oracle is part
+    of the evidence (junit property + stdout)."""
+    record_property("git_oracle_version", GIT_VERSION)
+    print(f"git_oracle_version={GIT_VERSION}")
+    assert GIT_VERSION.startswith("git version ")
+
+
 def test_positive_standard_repository_publishes_complete_snapshot(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "src" / "repo")
     pub = tmp_path / "pub"
@@ -632,6 +640,8 @@ def _a1_discriminator(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "outside_parent_open_events": events,
         "dotdot_lookups": [lookup for lookup in lookups if ".." in str(lookup[1]).split("/")],
         "unanchored_lookups": [lookup for lookup in lookups if lookup[2] is None],
+        # the kernel ignores dir_fd for an absolute name
+        "absolute_lookups": [lookup for lookup in lookups if str(lookup[1]).startswith("/")],
     }
 
 
@@ -642,6 +652,7 @@ def test_a1_storage_root_parent_probe_escape_is_never_opened(tmp_path: Path, mon
     assert facts["outside_parent_open_events"] == []
     assert facts["dotdot_lookups"] == []
     assert facts["unanchored_lookups"] == []
+    assert facts["absolute_lookups"] == []
 
 
 def test_mutation_a1_g1c_style_parent_probe_is_killed_by_inotify(tmp_path: Path, monkeypatch) -> None:
@@ -681,6 +692,25 @@ def test_mutation_a1_lookup_only_probe_is_killed_by_audit(tmp_path: Path, monkey
     facts = _a1_discriminator(tmp_path, monkeypatch)
     assert facts["outside_parent_open_events"] == []  # inotify: blind, as declared
     assert facts["dotdot_lookups"], "intended discriminator (audit) did not observe the lookup"
+
+
+def test_mutation_a1_absolute_lookup_with_a_dir_fd_is_killed_by_audit(tmp_path: Path, monkeypatch) -> None:
+    """Mutant: `fstatat(<absolute outside path>, dir_fd=store)` -- the dir_fd is
+    ignored by the kernel. Killed by the absolute-name audit fact."""
+    original = psv._PhysicalCopierV2.copy_store
+
+    def absolute_peek(self, store, hop):
+        if hop > 0 and store.fd is not None:
+            try:
+                psv.os.stat(str(tmp_path / "outside" / "HEAD"), dir_fd=store.fd, follow_symlinks=False)
+            except OSError:
+                pass
+        return original(self, store, hop)
+
+    monkeypatch.setattr(psv._PhysicalCopierV2, "copy_store", absolute_peek)
+    facts = _a1_discriminator(tmp_path, monkeypatch)
+    assert facts["dotdot_lookups"] == [] and facts["unanchored_lookups"] == []
+    assert facts["absolute_lookups"], "intended discriminator (absolute-name audit) did not fire"
 
 
 def test_a2_alternate_outside_capability_is_refused_without_open(tmp_path: Path) -> None:
@@ -808,14 +838,13 @@ def test_a6_special_files_are_refused_without_blocking(tmp_path: Path, where: st
     assert outcome.reason_code == psv.PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2
 
 
-def test_a7_rebind_between_descents_stays_inside_the_capability(tmp_path: Path, monkeypatch) -> None:
-    """A component swapped between two openat steps is still a child of an
-    admitted descriptor: the result is inside A (never outside), even though
-    parity with Git is not claimed under concurrent mutation."""
+def test_a7_rebind_between_descents_never_follows_outside_the_capability(tmp_path: Path, monkeypatch) -> None:
+    """A7: between two descents the next component is swapped for a symlink to
+    a repository OUTSIDE A. A resolver that followed it would open outside
+    (inotify would see it); the no-follow descent refuses it instead."""
     src = tmp_path / "src"
     repo = _make_repo(src / "repo")
-    decoy = _make_repo(src / "decoy")
-    outside = _make_repo(tmp_path / "outside" / "x")
+    outside = _make_repo(tmp_path / "outside" / "victim")
     swapped = {"done": False}
     real_open_dir = psv._try_open_dir_no_follow_v2
 
@@ -823,11 +852,12 @@ def test_a7_rebind_between_descents_stays_inside_the_capability(tmp_path: Path, 
         if name == "repo" and not swapped["done"]:
             swapped["done"] = True
             repo.rename(src / "orig-repo")
-            decoy.rename(repo)
+            repo.symlink_to(outside)
         return real_open_dir(dir_fd, name)
 
     monkeypatch.setattr(psv, "_try_open_dir_no_follow_v2", swapping_open)
     inotify = _Inotify()
+    inotify.watch(outside)
     inotify.watch(outside / ".git")
     inotify.drain()
     try:
@@ -835,11 +865,27 @@ def test_a7_rebind_between_descents_stays_inside_the_capability(tmp_path: Path, 
         events = inotify.drain()
     finally:
         inotify.close()
-    if isinstance(outcome, CompletePublicationV2):
-        outcome.snapshot.close()
     assert swapped["done"] is True
+    assert isinstance(outcome, NotPublishedV2)
+    assert outcome.reason_code == psv.PHYSICAL_SNAPSHOT_SYMLINK_REJECTED_REASON_V2
     assert events == []
-    assert isinstance(outcome, (CompletePublicationV2, NotPublishedV2))
+
+
+def test_a7_positive_control_following_resolver_would_be_seen(tmp_path: Path) -> None:
+    """Anti-vacuity for A7: opening through that symlink IS observed by the watch."""
+    outside = _make_repo(tmp_path / "outside" / "victim")
+    link = tmp_path / "link"
+    link.symlink_to(outside)
+    inotify = _Inotify()
+    inotify.watch(outside / ".git")
+    inotify.drain()
+    try:
+        fd = os.open(str(link / ".git"), os.O_RDONLY | os.O_DIRECTORY)
+        os.close(fd)
+        events = inotify.drain()
+    finally:
+        inotify.close()
+    assert events
 
 
 def test_a8_closed_source_capability_is_refused(tmp_path: Path) -> None:
@@ -890,6 +936,8 @@ def test_a9_missing_or_wrong_capability_is_a_contract_error(tmp_path: Path) -> N
         (b"gitdir: a\x00b\n", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
         (b"gitdir:\n", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
         (b"worktree: x\n", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
+        (b"gitdir: ..\n", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
+        (b"gitdir: ../..\n", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
     ],
 )
 def test_a10_malformed_gitfile_pointers_are_refused(tmp_path: Path, content: bytes, reason: str) -> None:
@@ -908,6 +956,8 @@ def test_a10_malformed_gitfile_pointers_are_refused(tmp_path: Path, content: byt
         ("../x/./objects", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
         ("x/../objects", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
         (" /abs/objects", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
+        ("..", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
+        ("../..", psv.PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2),
     ],
 )
 def test_a10_malformed_alternate_lines_are_refused(tmp_path: Path, line: str, reason: str) -> None:
@@ -1426,6 +1476,33 @@ def test_p4_failure_before_the_commit_point_never_publishes(tmp_path: Path, monk
     assert _fd_census() == before
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_p4_stage_open_failure_after_mkdir_is_cleaned_or_reported(tmp_path: Path, monkeypatch, cleanup_fails: bool) -> None:
+    """Codex 4128747291 / review F1: `staging/<id>` exists when its open fails;
+    the writer already owns it, so it is removed -- or reported as residue."""
+    repo = _make_repo(tmp_path / "src" / "repo", files=1)
+    snapshot_id = "c" * 32
+
+    armed = {"once": True}
+
+    def fail_stage_open(real, name, flags, *args, **kwargs):
+        if name == snapshot_id and not flags & os.O_CREAT and armed["once"]:
+            armed["once"] = False  # only the writer's open; the cleanup may open it again
+            raise OSError(errno.EMFILE, "injected")
+        return real(name, flags, *args, **kwargs)
+
+    with _audited(monkeypatch) as audit:
+        audit.faults["open"] = fail_stage_open
+        if cleanup_fails:
+            audit.faults["rmdir"] = _fail_on("rmdir")[1]
+        outcome = _publish([tmp_path / "src"], repo, tmp_path / "pub", snapshot_id=snapshot_id)
+    assert isinstance(outcome, NotPublishedV2)
+    assert outcome.reason_code == psv.PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2
+    left = _staging_entries(tmp_path / "pub")
+    assert outcome.staging_residue is cleanup_fails
+    assert (left != []) is cleanup_fails  # residue reported exactly when it exists
+
+
 def _p5_p6_discriminator(tmp_path: Path) -> dict[str, object]:
     repo = _make_repo(tmp_path / "src" / "repo", files=1)
     pub = tmp_path / "pub"
@@ -1811,6 +1888,7 @@ def test_p14_l9_interruption_at_the_commit_point_is_truthful_and_owned(tmp_path:
     outcome = excinfo.value.physical_snapshot_outcome
     facts = _unconfirmed_facts(tmp_path, outcome)
     assert facts["type"] == "UnconfirmedPublicationV2"
+    assert facts["reason"] == psv.PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2
     assert facts["residual_points_at_committed"] is True
 
 
@@ -1869,20 +1947,34 @@ def test_p15_publication_authority_cannot_come_from_a_path(tmp_path: Path) -> No
         SnapshotPublicationRootV2.from_directory_fd(str(tmp_path))  # type: ignore[arg-type]
 
 
+_C2_SNAPSHOT_ID = "d" * 32
+
+
 def _c2_discriminator(tmp_path: Path, monkeypatch) -> list[str]:
-    """C2: every publication-side creation is *at-relative to W's descriptors."""
+    """C2: every publication-side mutation lands under `staging/` (creation,
+    write, mode change, removal); the only thing ever touched in committed/ is
+    the moved snapshot root itself (its post-commit fchmod). Nothing is
+    created or removed in the source, or directly in committed/."""
     repo = _make_repo(tmp_path / "src" / "repo", files=1)
+    pub = tmp_path / "pub"
     with _audited(monkeypatch) as audit:
-        outcome = _publish([tmp_path / "src"], repo, tmp_path / "pub")
+        outcome = _publish([tmp_path / "src"], repo, pub, snapshot_id=_C2_SNAPSHOT_ID)
     if isinstance(outcome, CompletePublicationV2):
         outcome.snapshot.close()
-    return [
-        str(call.args[0])
-        for call in audit.calls
-        if call.name in ("open", "mkdir")
-        and call.kwargs.get("dir_fd") is None
-        and (call.name == "mkdir" or (len(call.args) > 1 and call.args[1] & os.O_CREAT))
-    ]
+    staging = str(pub / "staging")
+    moved_root = str(pub / "committed" / _C2_SNAPSHOT_ID)
+    violations = []
+    for call in audit.calls:
+        creates = call.name == "mkdir" or (
+            call.name == "open" and len(call.args) > 1 and call.args[1] & (os.O_CREAT | os.O_WRONLY | os.O_RDWR)
+        )
+        if creates or call.name in ("unlink", "rmdir", "write"):
+            anchored = call.kwargs.get("dir_fd") is not None or call.name == "write"
+            if not anchored or not str(call.where or "").startswith(staging) or str(call.args[0]).startswith("/"):
+                violations.append(f"{call.name}:{call.where}:{call.args[0]}")
+        elif call.name == "fchmod" and not (str(call.where or "").startswith(staging) or call.where == moved_root):
+            violations.append(f"fchmod:{call.where}")
+    return violations
 
 
 def test_c2_every_publication_write_is_descriptor_relative(tmp_path: Path, monkeypatch) -> None:
@@ -1905,6 +1997,35 @@ def test_mutation_c2_path_based_receipt_write_is_killed(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(psv._StagingWriterV2, "write_file", path_based)
     assert _c2_discriminator(tmp_path, monkeypatch), "intended discriminator (unanchored create) did not fire"
+
+
+def test_mutation_c2_write_into_the_source_tree_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """Review F2(a): an anchored create through an ADMITTED SOURCE descriptor."""
+    original = psv._PhysicalCopierV2.copy_store
+
+    def planting_copy_store(self, store, hop):
+        if store.fd is not None:
+            fd = psv.os.open("planted", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=store.fd)
+            psv.os.close(fd)
+        return original(self, store, hop)
+
+    monkeypatch.setattr(psv._PhysicalCopierV2, "copy_store", planting_copy_store)
+    violations = _c2_discriminator(tmp_path, monkeypatch)
+    assert any("/src/" in violation for violation in violations)
+
+
+def test_mutation_c2_direct_creation_in_committed_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """Review F2(b): a create directly in committed/ through committed_fd (§6 forbids it)."""
+    real_commit = psv._commit_v2
+
+    def planting_commit(context):
+        fd = psv.os.open("planted", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=context.committed_fd)
+        psv.os.close(fd)
+        return real_commit(context)
+
+    monkeypatch.setattr(psv, "_commit_v2", planting_commit)
+    violations = _c2_discriminator(tmp_path, monkeypatch)
+    assert any("/committed" in violation for violation in violations)
 
 
 # ================================================================================

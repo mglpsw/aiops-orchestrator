@@ -89,6 +89,7 @@ __all__ = [
     "PHYSICAL_SNAPSHOT_POINTER_OUTSIDE_AUTHORIZED_STORAGE_REASON_V2",
     "PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2",
     "PHYSICAL_SNAPSHOT_PUBLICATION_CROSS_MOUNT_REASON_V2",
+    "PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2",
     "PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2",
     "PHYSICAL_SNAPSHOT_PUBLICATION_MOUNT_IDENTITY_UNAVAILABLE_REASON_V2",
     "PHYSICAL_SNAPSHOT_PUBLICATION_NAMESPACES_NOT_DISTINCT_REASON_V2",
@@ -189,6 +190,7 @@ PHYSICAL_SNAPSHOT_RENAME_FAILED_REASON_V2 = "physical_snapshot_rename_failed"
 PHYSICAL_SNAPSHOT_RENAME_ERROR_BUT_COMMITTED_REASON_V2 = "physical_snapshot_rename_error_but_committed"
 PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2 = "physical_snapshot_post_commit_sync_failed"
 PHYSICAL_SNAPSHOT_COMMIT_STATE_UNOBSERVABLE_REASON_V2 = "physical_snapshot_commit_state_unobservable"
+PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2 = "physical_snapshot_publication_interrupted"
 
 PHYSICAL_SNAPSHOT_RECEIPT_SCHEMA_V2 = "ar301-s1a.physical-snapshot-receipt.v1"
 PHYSICAL_SNAPSHOT_RECEIPT_FILENAME_V2 = "agentreview-physical-snapshot-receipt.json"
@@ -673,11 +675,13 @@ class _ParsedPointerV2:
     parts: tuple[str, ...]
 
 
-def _parse_pointer_path_v2(text: str) -> _ParsedPointerV2:
+def _parse_pointer_path_v2(text: str, *, allow_parents_only: bool = False) -> _ParsedPointerV2:
     """Strict subset of Git's pointer paths. Anything else is refused, typed:
     the declared over-rejection of the freeze (`..` after a descending
     component, `.`, empty components, trailing '/', '//', surrounding
-    whitespace, NUL, CR)."""
+    whitespace, NUL, CR). A relative pointer needs at least one descending
+    component (§9); a pointer made only of `..` is admitted solely where the
+    freeze names it -- `commondir` (`../..`, §11.3)."""
     if not text or text != text.strip() or any(c in text for c in ("\x00", "\r", "\n")):
         raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
     if text.startswith("/"):
@@ -693,6 +697,8 @@ def _parse_pointer_path_v2(text: str) -> _ParsedPointerV2:
         ups += 1
     rest = tuple(raw[ups:])
     if any(part in (".", "..") for part in rest):
+        raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
+    if not rest and not allow_parents_only:
         raise _RefusalV2(PHYSICAL_SNAPSHOT_POINTER_MALFORMED_REASON_V2)
     return _ParsedPointerV2(absolute=False, ups=ups, parts=rest)
 
@@ -728,7 +734,7 @@ def _parse_gitfile_v2(tracker: PhysicalWorkTrackerV2, data: bytes) -> _ParsedPoi
 
 
 def _parse_commondir_v2(tracker: PhysicalWorkTrackerV2, data: bytes) -> _ParsedPointerV2:
-    pointer = _parse_pointer_path_v2(_single_line_v2(tracker, data))
+    pointer = _parse_pointer_path_v2(_single_line_v2(tracker, data), allow_parents_only=True)
     tracker.charge(pointers_followed=1)
     return pointer
 
@@ -1157,11 +1163,16 @@ class _StagingWriterV2:
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
         self.created = True
+        self._manifest["."] = ("dir", ".", _DIR_MODE_V2, 0, "")
+
+    def open_stage(self) -> None:
+        """Open the directory `__init__` created. Kept separate so that a
+        failure here happens AFTER the caller owns this writer: its `abort()`
+        then removes (or reports) what was created, never hides it."""
         try:
-            self.stage_fd = os.open(snapshot_id, _DIR_OPEN_FLAGS_V2, dir_fd=staging_fd)
+            self.stage_fd = os.open(self.snapshot_id, _DIR_OPEN_FLAGS_V2, dir_fd=self._staging_fd)
         except OSError as exc:
             raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
-        self._manifest["."] = ("dir", ".", _DIR_MODE_V2, 0, "")
 
     def ensure_dir(self, relpath: str) -> int:
         if relpath == ".":
@@ -1714,9 +1725,9 @@ def _classify_after_attempt_v2(context: _PublicationContextV2, reason_code: str)
             fd=context.writer.take_stage_fd(),
             snapshot_id=context.snapshot_id,
             receipt=context.receipt,
-            reason_code=PHYSICAL_SNAPSHOT_RENAME_ERROR_BUT_COMMITTED_REASON_V2
-            if reason_code != PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2
-            else reason_code,
+            reason_code=reason_code
+            if reason_code in (PHYSICAL_SNAPSHOT_POST_COMMIT_SYNC_FAILED_REASON_V2, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
+            else PHYSICAL_SNAPSHOT_RENAME_ERROR_BUT_COMMITTED_REASON_V2,
         )
         return UnconfirmedPublicationV2(residual=residual)
     stage_fd = context.writer.stage_fd
@@ -1786,13 +1797,13 @@ def _commit_v2(context: _PublicationContextV2) -> PublicationOutcomeV2:
             return _on_rename_failure_v2(context, err)
         return _post_commit_v2(context)
     except Exception:
-        return _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_RENAME_FAILED_REASON_V2)
+        return _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
     except BaseException as interruption:
         if context.attempted:
-            outcome = _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_RENAME_FAILED_REASON_V2)
+            outcome = _classify_after_attempt_v2(context, PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2)
         else:
             outcome = NotPublishedV2(
-                reason_code=PHYSICAL_SNAPSHOT_RENAME_FAILED_REASON_V2,
+                reason_code=PHYSICAL_SNAPSHOT_PUBLICATION_INTERRUPTED_REASON_V2,
                 exceeded_axis=None,
                 staging_residue=context.writer.abort(),
             )
@@ -1846,6 +1857,7 @@ def publish_physical_snapshot_v2(
             session = _SourceSessionV2(source_authority, tracker)
             primary = _resolve_primary_store_v2(session, source_locator)
             writer = _StagingWriterV2(staging_fd, snapshot_id)
+            writer.open_stage()
             copier = _PhysicalCopierV2(session, writer, object_format)
             copier.copy_store(primary, hop=0)
             writer.write_skeleton(object_format)

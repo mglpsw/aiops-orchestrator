@@ -3268,3 +3268,36 @@ def test_s1a_captured_locator_is_normalised_to_single_leading_slash(tmp_path: Pa
         os.close(duplicate.fd)
     finally:
         capability.close()
+
+
+def test_s1a_misaligned_direct_construction_is_refused_without_leak(tmp_path: Path) -> None:
+    """Review F4: a direct construction whose bindings are shorter than its
+    fds is refused typed before any duplicate exists."""
+    real = tmp_path / "real"
+    real.mkdir()
+    fd = os.open(str(real), os.O_RDONLY | os.O_DIRECTORY)
+    capability = AuthorizedGitStorageSetV2(root_fds=[fd], bound_paths=[real], bound_dev_ino=[])
+    before = set(os.listdir("/proc/self/fd"))
+    try:
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            capability.duplicate_authorized_roots()
+        assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+        assert set(os.listdir("/proc/self/fd")) == before
+    finally:
+        capability.close()
+
+
+@pytest.mark.parametrize("locator", [PurePosixPath("x/y"), PurePosixPath("/a/../b"), "/a", PurePosixPath("//a")])
+def test_s1a_direct_root_locators_must_be_absolute_normalised_names(tmp_path: Path, locator) -> None:
+    """Review F6: a directly supplied locator is a NAME used for lexical
+    matching, so it must be absolute and normalised (or None)."""
+    real = tmp_path / "real"
+    real.mkdir()
+    fd = os.open(str(real), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(TrustedObjectAuthorityError):
+            AuthorizedGitStorageSetV2(
+                root_fds=[fd], bound_paths=[real], bound_dev_ino=[(0, 0)], owns_fds=False, root_locators=[locator]
+            )
+    finally:
+        os.close(fd)
