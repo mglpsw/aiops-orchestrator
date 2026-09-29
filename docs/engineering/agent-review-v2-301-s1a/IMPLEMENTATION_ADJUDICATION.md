@@ -391,3 +391,131 @@ RED/GREEN for this round:
 - On `ad1d696`, the F-D witness escapes with no carried outcome (`NoneType`), and the F-E witness answers `[True, False, False, True]`: a stale False while the residue exists.
 - On the candidate, both are GREEN.
 - F-A and F-B are witnessed on the discriminators themselves (mutant and bypass shapes), as the reviewer reproduced them on `ad1d696`.
+
+---
+
+## 10. Re-review of `0672d16`, maintainer adjudication and evidence-contract hardening (append-only)
+
+```yaml
+subject_reviewed: 0672d16e65e8be1ee4bd0b57c06fcb49a7d331e0
+exact_head_ci: "run 36598493549: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+codex_exact_head: "Didn't find any major issues (0672d16e65)"
+independent_re_review: "0 MATERIAL; 3 MINOR (N1, N2, N3); 3 NIT; windowless and KeyboardInterrupt sweeps: 0 violations on 9 shapes"
+recurrence: "N1 recurs F-A, N2 recurs F-B, N3 recurs F-D -- in the QUALIFICATION layer (discriminators) and in claim wording, not in the production mechanism"
+maintainer_adjudication:   # 2026-09-29
+  production_mechanism: {status: PRESERVE_0672D16}
+  third_production_redesign: {authorized: false}
+  qualification_contract_hardening: {authorized: true}
+  write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+production_changes_this_round: none   # app/agent_review/*.py byte-identical to 0672d16
+```
+
+### 10.1 Superseded historical claims
+
+These sentences stand in their sections as the record of what was claimed. They are **historical claims, superseded** by this section:
+
+- **§3.4 and §9.** "Every descriptor source outside the vetted set fails" and "allow-lists" read as completeness of the static census over Python. That is superseded by §10.3.
+- **§9, F-A row.** "Sweep: a fault on a marked line is tolerated only at the opcodes the window may contain after the syscall (… release: detach store, `os.close` call)". The 0672d16 implementation tolerated *any* call on a release-marked line (N1). That is superseded by §10.2.
+- **§3.1 and §9, F-D row.** "A committed snapshot is never hidden behind a cleanup failure", and "now holds for that path too" read as universal. That is superseded by §10.4.
+
+### 10.2 N1: marker semantics (`MarkerPresent != MarkerSemanticsSatisfied`)
+
+A marker is not enough. Every marked line must be a statement of one admitted class, checked on the AST:
+
+| Class | Admitted form | Marker | Tolerated opcodes after the syscall |
+|---|---|---|---|
+| install-call | `<pre-evaluated owner> = <acquiring call>` | `fd-install` | `LOAD_ATTR`, `STORE_ATTR`, `STORE_SUBSCR` |
+| install-store | `<chain>.fd = <name>` (slot move), `<name>.created = True` | `fd-install` | `LOAD_ATTR`, `STORE_ATTR` |
+| detach | `<chain>.fd = None`, `<name>._roots_released += 1` | either | `LOAD_ATTR`, `STORE_ATTR`, `BINARY_OP` |
+| close | `os.close(<name>)` | `fd-release` | `LOAD_GLOBAL`, `LOAD_ATTR`, `LOAD_METHOD`, `CALL` |
+| invalid | anything else on a marked line | — | none, and it is a census violation |
+
+A CALL is tolerated only on the `os.close(<name>)` statement itself.
+
+The N1 mutant is an allocating call between the detach and the close, carrying `fd-release`. It is killed by both intended discriminators:
+- the census: "marked statement is not an admitted window statement class";
+- the sweep: a leak at the `append` CALL on an `invalid` statement.
+
+RED/GREEN with the same mutant:
+- the 0672d16 discriminators accept it (census `[]`, sweep 0 violations);
+- the candidate's discriminators report the census violation and 6 leak violations.
+
+The classifier's own anti-vacuity is shown by one example of each admitted class being recognised, and by wrong-marker and wrong-shape statements being rejected.
+
+### 10.3 N2: what the static census is (and is not)
+
+```text
+Static census        = enforcement of the canonical source forms admitted by S1-A
+Behavioral sweep     = evidence over actually exercised qualification paths
+Independent review   = novelty / escape detection
+StaticCensusCanonicalCoverage != CompleteSemanticCoverageOfDynamicPython
+```
+
+Cheap guardrails were added against the families observed. Module handles (`os`, `fcntl`, `ctypes`, `sys`) may appear only as `mod.attr`. `os`/`fcntl` functions may appear only as the callee of a direct call. `sys`/`ctypes` attributes are allow-listed. The libc handle, including every name bound from `ctypes.CDLL(...)` or from another handle, may be used only as `.syscall`. There is no attribute access on an unnamed `CDLL(...)`, and no `vars`/`globals`/`locals`/`eval`/`exec`/`compile`/`__import__`/`open`.
+
+The 8 alias families from the re-review are:
+- `_os = os`
+- `_open = os.open`
+- `sys.modules[...]`
+- `vars(os)`
+- an extra libc handle
+- `ctypes.CDLL(None).open`
+- `opener = fcntl.fcntl`
+- `[os.open][0]`
+
+The 0672d16 census accepted 8 of 8; the candidate census accepts 0 of 8.
+
+```yaml
+limitation: PYTHON_DYNAMIC_INDIRECTION_OUTSIDE_STATIC_CENSUS
+statement: >
+  forms of dynamic Python indirection beyond the canonical grammar (e.g.
+  reflection through the type system: object.__subclasses__, __dict__,
+  __getattribute__, fileno of a foreign object, importlib, mmap) are outside
+  the static census's completeness claim; they are named, not enforced.
+guard_on_exact_source: >
+  this limitation never makes a bypass in the exact production source
+  acceptable: the exact source must stay inside the canonical grammar
+  (census = []), and it is asserted to contain none of the named
+  outside-form markers.
+witness: test_n2_dynamic_indirection_outside_the_static_census_is_declared_not_claimed
+```
+
+### 10.4 N3: qualified fault domain
+
+Refined claim, which replaces the universal sentences listed in §10.1:
+
+```text
+Within the declared single-fault synchronous/allocation model and the
+explicitly exercised asynchronous-interruption paths, a committed
+publication is not hidden by cleanup failure.
+```
+
+Exercised asynchronous paths:
+- a single KeyboardInterrupt before every executed fault site, in the 9 publication shapes (`test_c11_every_asynchronous_interruption_site_leaves_no_unowned_descriptor[*]`);
+- an interruption at the commit point followed by one during cleanup (`test_commit_interruption_then_one_cleanup_interruption_carries_the_outcome`).
+
+```yaml
+outside_qualified_fault_model: MULTIPLE_ASYNC_INTERRUPTION_DURING_CLEANUP
+boundary_counterexample: >
+  test_n3_returned_outcome_then_two_cleanup_interruptions_is_outside_the_qualified_fault_model
+  -- a RETURNED Complete outcome, then two interruptions during cleanup:
+  committed/<id> exists and no exception in the chain carries an outcome.
+  Kept reproducible, labelled OUTSIDE_QUALIFIED_FAULT_MODEL; nothing is
+  inferred from it, and no assertion in the suite claims the contrary.
+also_declared: >
+  an interruption injected into a finalizer is swallowed by CPython
+  ("exception ignored"); the sweep collects it via sys.unraisablehook and the
+  census still decides whether any descriptor was affected (none was).
+```
+
+### 10.5 Evidence of this round (before the exact-head gates)
+
+```yaml
+no_tolerance_sweeps:
+  MemoryError: {runs: 15673, raw_violations: 293, outside_an_admitted_window_statement: 0}
+  KeyboardInterrupt: {runs: 15673, raw_violations: 293, outside_an_admitted_window_statement: 0}
+suite_s1a_plus_c2a: "301 passed, 1 skipped (mknod), with -W error::PytestUnraisableExceptionWarning"
+qualification_mutants_new: [N1 census, N1 sweep, N2 x8 families, classifier anti-vacuity]
+```
+
+The exact head, CI, independent review and Codex review of this round are recorded in PR #361 under that head (a document cannot name its own commit). Terminal rule, per the maintainer: 0 production material findings, 0 declared-domain invalidations, a causal N1 discriminator, calibrated N2/N3 claims, green CI, and no material finding from the reviewer or Codex together give `301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`. A new material refutation of the code or the domain gives `STOP_NEW_FAILURE_CLASS`.

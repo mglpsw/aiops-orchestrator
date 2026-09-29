@@ -2369,14 +2369,89 @@ _NONFAILING_OPCODES_V311 = frozenset(
 )
 
 
+def _name_chain(node) -> bool:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
+def _is_acquiring_call(node) -> bool:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    func = node.func
+    owner = func.value.id if isinstance(func.value, ast.Name) else None
+    if owner == "os" and func.attr == "open":
+        return True
+    if owner == "fcntl" and func.attr == "fcntl" and len(node.args) > 1:
+        command = node.args[1]
+        return isinstance(command, ast.Attribute) and command.attr == "F_DUPFD_CLOEXEC"
+    return func.attr == "duplicate_authorized_roots" and not node.args and not node.keywords
+
+
+def _marked_statement_kind(stmt, marker: str) -> str:
+    """`MarkerPresent != MarkerSemanticsSatisfied` (maintainer adjudication, N1).
+
+    A marked line gets window tolerance only if its statement is one of the
+    statement CLASSES the current mechanism admits:
+      install-call   `<pre-evaluated owner> = <acquiring call>`
+      install-store  `<chain>.fd = <name>` (slot move) | `<name>.created = True`
+      detach         `<chain>.fd = None` | `<name>._roots_released += 1`
+      close          `os.close(<name>)`
+    `fd-install` admits install-call, install-store, detach (the source side
+    of a slot move); `fd-release` admits detach and close. Anything else on a
+    marked line -- an allocating call between detach and close, a registration
+    inside the target -- is `invalid`: no tolerance, and a census violation."""
+    kind = "invalid"
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target, value = stmt.targets[0], stmt.value
+        if _is_acquiring_call(value) and _pre_evaluated_owner(target):
+            kind = "install-call"
+        elif isinstance(target, ast.Attribute) and target.attr == "fd" and _name_chain(target.value):
+            if isinstance(value, ast.Constant) and value.value is None:
+                kind = "detach"
+            elif isinstance(value, ast.Name):
+                kind = "install-store"
+        elif (
+            isinstance(target, ast.Attribute) and target.attr == "created" and isinstance(target.value, ast.Name)
+            and isinstance(value, ast.Constant) and value.value is True
+        ):
+            kind = "install-store"
+    elif (
+        isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, ast.Add)
+        and isinstance(stmt.target, ast.Attribute) and stmt.target.attr == "_roots_released"
+        and isinstance(stmt.target.value, ast.Name) and isinstance(stmt.value, ast.Constant) and stmt.value.value == 1
+    ):
+        kind = "detach"
+    elif (
+        isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and not stmt.value.keywords
+        and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == "close"
+        and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == "os"
+        and len(stmt.value.args) == 1 and isinstance(stmt.value.args[0], ast.Name)
+    ):
+        kind = "close"
+    admitted = {"# fd-install": {"install-call", "install-store", "detach"}, "# fd-release": {"detach", "close"}}
+    return kind if kind in admitted[marker] else "invalid"
+
+
+def _marked_statements(text: str) -> dict[int, str]:
+    """Line -> admitted statement class, for every marked line of `text`."""
+    lines = text.splitlines()
+    marked = {
+        number: marker
+        for number, line in enumerate(lines, 1)
+        for marker in _WINDOW_MARKERS
+        if marker in line
+    }
+    kinds = dict.fromkeys(marked, "invalid")
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.stmt) and node.lineno in marked and node.end_lineno == node.lineno:
+            if not isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.FunctionDef, ast.ClassDef)):
+                kinds[node.lineno] = _marked_statement_kind(node, marked[node.lineno])
+    return kinds
+
+
 def _marked_lines(filename: str, text: str) -> dict[tuple[str, int], str]:
-    marked: dict[tuple[str, int], str] = {}
-    for number, line in enumerate(text.splitlines(), 1):
-        if "# fd-install" in line:
-            marked[(filename, number)] = "install"
-        elif "# fd-release" in line:
-            marked[(filename, number)] = "release"
-    return marked
+    return {(filename, number): kind for number, kind in _marked_statements(text).items()}
 
 
 def _source_window_lines() -> dict[tuple[str, int], str]:
@@ -2386,14 +2461,16 @@ def _source_window_lines() -> dict[tuple[str, int], str]:
     }
 
 
-#: What the declared window may contain AFTER the syscall returned: on an
-#: install line only the evaluation of a pre-evaluated owner expression and
-#: the slot store; on a release line the detach store and the close call.
-#: A call or any other opcode after the syscall on a marked line (e.g. an
-#: allocating `setdefault` in the target) is NOT tolerated (review F-A).
+#: What the declared window may contain, PER STATEMENT CLASS (N1): after an
+#: acquiring call only the owner-expression loads and the slot store; a slot
+#: move or detach only its store; a CALL only on the `os.close(<name>)`
+#: statement itself. An `invalid` marked statement gets no tolerance at all.
 _WINDOW_OPCODES = {
-    "install": frozenset({"LOAD_ATTR", "STORE_ATTR", "STORE_SUBSCR"}),
-    "release": frozenset({"LOAD_ATTR", "STORE_ATTR", "BINARY_OP", "LOAD_GLOBAL", "LOAD_METHOD", "CALL"}),
+    "install-call": frozenset({"LOAD_ATTR", "STORE_ATTR", "STORE_SUBSCR"}),
+    "install-store": frozenset({"LOAD_ATTR", "STORE_ATTR"}),
+    "detach": frozenset({"LOAD_ATTR", "STORE_ATTR", "BINARY_OP"}),
+    "close": frozenset({"LOAD_GLOBAL", "LOAD_ATTR", "LOAD_METHOD", "CALL"}),
+    "invalid": frozenset(),
 }
 
 
@@ -2456,7 +2533,9 @@ def _with_exit_calls(code) -> frozenset[int]:
     return cached
 
 
-def _traced(fn: Callable[[], object], *, inject_at: int | None, sites: list | None = None):
+def _traced(
+    fn: Callable[[], object], *, inject_at: int | None, sites: list | None = None, fault: type = MemoryError
+):
     """Run `fn` with opcode tracing on S1-A frames only. Returns
     (result, exception, fault_site, fault_sites_seen). At most ONE fault is
     raised; CPython unsets the tracer when it raises, so every cleanup that
@@ -2473,7 +2552,7 @@ def _traced(fn: Callable[[], object], *, inject_at: int | None, sites: list | No
                     sites.append((code, frame.f_lasti))
                 if state["count"] == inject_at:
                     state["site"] = (code.co_filename, frame.f_lineno, code.co_name, name, frame.f_lasti)
-                    raise MemoryError("s1a-injected-fault")
+                    raise fault("s1a-injected-fault")
         return local
 
     def tracer(frame, event, arg):
@@ -2569,6 +2648,7 @@ def _dotgit_dir_fixture(base: Path) -> tuple[list[Path], SourceRepositoryLocator
 def _sweep_one(
     base: Path, roots: list[Path], locator: SourceRepositoryLocatorV2, scenario: _SweepScenario, index: int,
     inject_at: int | None, monkeypatch, windows: dict[tuple[str, int], str], sites: list | None = None,
+    fault: type = MemoryError,
 ) -> tuple[list[str], int]:
     pub = base / f"pub-{scenario.name}-{index}"
     root = _publication_root(pub)
@@ -2598,7 +2678,7 @@ def _sweep_one(
         previous = signal.signal(signal.SIGALRM, expire)
         signal.setitimer(signal.ITIMER_REAL, 10)
         try:
-            result, exc, site, count = _traced(call, inject_at=inject_at, sites=sites)
+            result, exc, site, count = _traced(call, inject_at=inject_at, sites=sites, fault=fault)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous)
@@ -2611,7 +2691,7 @@ def _sweep_one(
         outcome = result if exc is None else getattr(exc, "physical_snapshot_outcome", None)
         if isinstance(exc, TimeoutError):
             return [f"{scenario.name}@{site}: hang"], count
-        if exc is not None and not isinstance(exc, MemoryError):
+        if exc is not None and not isinstance(exc, fault):
             problems.append(f"unexpected exception {type(exc).__name__}: {exc}")
         committed = pub / "committed" / _SWEEP_ID
         ours_committed = os.path.lexists(committed) and not os.path.lexists(committed / "planted")
@@ -2688,17 +2768,25 @@ def _sweep(base: Path, scenario: _SweepScenario, monkeypatch, *, only_codes: set
     # release a descriptor behind the census (strict ownership, not GC luck).
     gc.collect()
     gc.disable()
+    # An interruption injected into a finalizer is swallowed by CPython
+    # ("exception ignored"); the census below still decides whether any
+    # descriptor was affected. Collected, not printed.
+    swallowed: list = []
+    previous_hook = sys.unraisablehook
+    sys.unraisablehook = swallowed.append
     try:
-        violations, _ = _sweep_one(base, roots, locator, scenario, 0, None, monkeypatch, windows, sites)
+        fault = getattr(scenario, "fault", MemoryError)
+        violations, _ = _sweep_one(base, roots, locator, scenario, 0, None, monkeypatch, windows, sites, fault)
         points = _injection_points(sites)
         if only_codes is not None:
             points = [
                 p for p in points if sites[p - 1][0].co_name in only_codes or sites[p - 1][0].co_filename == _MUTANT_FILE
             ]
         for run, point in enumerate(points, 1):
-            found, _ = _sweep_one(base, roots, locator, scenario, run, point, monkeypatch, windows)
+            found, _ = _sweep_one(base, roots, locator, scenario, run, point, monkeypatch, windows, None, fault)
             violations.extend(found)
     finally:
+        sys.unraisablehook = previous_hook
         gc.enable()
         gc.collect()
     return violations, len(points)
@@ -2805,6 +2893,22 @@ def test_c11_every_synchronous_fault_site_leaves_no_unowned_descriptor(tmp_path:
     assert violations == []
 
 
+@pytest.mark.parametrize("scenario_index", range(len(_SWEEP_SCENARIO_IDS)), ids=_SWEEP_SCENARIO_IDS)
+def test_c11_every_asynchronous_interruption_site_leaves_no_unowned_descriptor(
+    tmp_path: Path, monkeypatch, scenario_index: int
+) -> None:
+    """The exercised asynchronous-interruption path: the same single fault
+    as a KeyboardInterrupt (a BaseException), which reaches the
+    `except BaseException` branches the MemoryError sweep never does. One
+    interruption per run; MULTIPLE_ASYNC_INTERRUPTION_DURING_CLEANUP is
+    outside the qualified fault model."""
+    scenario = _all_sweep_scenarios(monkeypatch)[scenario_index]
+    scenario.fault = KeyboardInterrupt
+    violations, runs = _sweep(tmp_path, scenario, monkeypatch)
+    assert runs > 50
+    assert violations == []
+
+
 def test_c11_publication_root_factory_fault_sites_leave_no_unowned_descriptor(tmp_path: Path) -> None:
     """The W factory is an acquisition path of its own (three descriptors)."""
     (tmp_path / "staging").mkdir()
@@ -2870,6 +2974,71 @@ _VETTED_IMPORTS = frozenset(
 _DESCRIPTOR_SYSCALLS_ALLOWED = frozenset({"renameat2", "statx"})  # neither creates a descriptor
 
 
+#: Canonical source forms for module handles (N2). The static census enforces
+#: THESE forms; it is not a verifier of dynamic Python
+#: (`StaticCensusCanonicalCoverage != CompleteSemanticCoverageOfDynamicPython`,
+#: limitation PYTHON_DYNAMIC_INDIRECTION_OUTSIDE_STATIC_CENSUS).
+_MODULE_HANDLES = frozenset({"os", "fcntl", "ctypes", "sys"})
+_CALL_ONLY_MODULES = frozenset({"os", "fcntl"})  # their functions may only be called directly
+_VETTED_HANDLE_ATTRIBUTES = {
+    "sys": frozenset({"platform"}),
+    "ctypes": frozenset(
+        {"CDLL", "c_char_p", "c_long", "c_ulong", "create_string_buffer", "get_errno", "set_errno"}
+    ),
+}
+_LIBC_METHODS = frozenset({"syscall"})
+_FORBIDDEN_BUILTINS = frozenset({"vars", "globals", "locals", "eval", "exec", "compile", "__import__", "open"})
+#: Forms known to be OUTSIDE the canonical grammar's detection power. They
+#: are named, not enforced; the exact production source must contain none.
+_OUTSIDE_STATIC_CENSUS_MARKERS = ("__subclasses__", "__dict__", "__getattribute__", "fileno", "importlib", "mmap")
+
+
+def _module_handle_violations(tree, parent) -> list[str]:
+    """Module handles appear only as `mod.attr`; `os`/`fcntl` functions only
+    as the callee of a direct call; the libc handle only as `.syscall`; no
+    namespace-reflection builtins. Covers the observed alias families
+    (`_os = os`, `_open = os.open`, `sys.modules`, `vars(os)`, extra
+    libc/ctypes handles, `[os.open][0]`)."""
+    violations: list[str] = []
+    libc_names: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                value = node.value
+                from_cdll = (
+                    isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                    and value.func.attr == "CDLL"
+                )
+                from_handle = isinstance(value, ast.Name) and value.id in libc_names
+                if (from_cdll or from_handle) and node.targets[0].id not in libc_names:
+                    libc_names.add(node.targets[0].id)
+                    changed = True
+    for node in ast.walk(tree):
+        where = f"line {getattr(node, 'lineno', '?')}"
+        up = parent.get(node)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in _MODULE_HANDLES:
+            if not (isinstance(up, ast.Attribute) and up.value is node):
+                violations.append(f"{where}: module handle {node.id} escapes as a value")
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            module = node.value.id
+            if module in _VETTED_HANDLE_ATTRIBUTES and node.attr not in _VETTED_HANDLE_ATTRIBUTES[module]:
+                violations.append(f"{where}: unvetted {module}.{node.attr}")
+            if module in _CALL_ONLY_MODULES and node.attr[:1].islower():
+                if not (isinstance(up, ast.Call) and up.func is node):
+                    violations.append(f"{where}: {module}.{node.attr} escapes as a value")
+            if module in libc_names and node.attr not in _LIBC_METHODS:
+                violations.append(f"{where}: libc handle used beyond {sorted(_LIBC_METHODS)}")
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
+            callee = node.value.func
+            if isinstance(callee, ast.Attribute) and callee.attr == "CDLL":
+                violations.append(f"{where}: attribute of an unnamed libc handle")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BUILTINS:
+            violations.append(f"{where}: namespace/IO builtin {node.func.id}")
+    return violations
+
+
 def _pre_evaluated_owner(target) -> bool:
     """`name.attr...fd`, `self._roots` or `made[index]`: an owner expression
     whose evaluation after the syscall is only attribute loads (no call, no
@@ -2926,6 +3095,11 @@ def _acquisition_census(source: str) -> list[str]:
                 index = body.index(stmt)
                 return body[index + 1] if index + 1 < len(body) else None
         return None
+
+    for number, kind in _marked_statements(source).items():
+        if kind == "invalid":
+            violations.append(f"line {number}: marked statement is not an admitted window statement class")
+    violations.extend(_module_handle_violations(tree, parent))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -3011,6 +3185,10 @@ def _duplicate_authorized_roots_source() -> str:
 def test_c11_static_census_every_acquisition_installs_into_a_pre_existing_owner() -> None:
     psv_source = Path(_PSV_FILE).read_text()
     assert _acquisition_census(psv_source) == []
+    # The limitation never hides a form present in the exact source.
+    assert [m for m in _OUTSIDE_STATIC_CENSUS_MARKERS if m in psv_source] == []
+    kinds = _marked_statements(psv_source)
+    assert "invalid" not in kinds.values() and {"install-call", "install-store", "detach", "close"} <= set(kinds.values())
     assert set(psv._SYSCALL_NUMBERS_V2["x86_64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
     assert set(psv._SYSCALL_NUMBERS_V2["aarch64"]) <= _DESCRIPTOR_SYSCALLS_ALLOWED
     assert _acquisition_census(_duplicate_authorized_roots_source()) == []
@@ -3501,6 +3679,15 @@ def test_mutation_allocating_owner_expression_on_a_marked_line_is_killed_by_the_
         "import os as _os",
         "from os import open as o",
         "fd = getattr(os, 'open')('x', 0)",
+        # N2 families observed on 0672d16:
+        "_os = os\nfd = _os.open('x', 0)",
+        "_open = os.open\nfd = _open('x', 0)",
+        "fd = sys.modules['os'].open('x', 0)",
+        "fd = vars(os)['open']('x', 0)",
+        "libc = ctypes.CDLL(None)\n_LIBC_V2 = libc\nfd = _LIBC_V2.openat(-100, b'x', 0)",
+        "fd = ctypes.CDLL(None).open(b'x', 0)",
+        "opener = fcntl.fcntl\nfd = opener(x, fcntl.F_DUPFD_CLOEXEC, 0)",
+        "fd = [os.open][0]('x', 0)",
     ],
 )
 def test_static_census_is_an_allow_list(snippet: str) -> None:
@@ -3550,7 +3737,10 @@ def _two_interruptions(tmp_path: Path, monkeypatch) -> dict[str, object]:
     return facts
 
 
-def test_two_interruptions_never_hide_a_committed_snapshot(tmp_path: Path, monkeypatch) -> None:
+def test_commit_interruption_then_one_cleanup_interruption_carries_the_outcome(tmp_path: Path, monkeypatch) -> None:
+    """An EXERCISED asynchronous path (first interruption at the commit
+    point, one during cleanup). Not a universal claim: see the N3 boundary
+    counterexample below (MULTIPLE_ASYNC_INTERRUPTION_DURING_CLEANUP)."""
     assert _two_interruptions(tmp_path, monkeypatch) == {"committed": 1, "carried": "UnconfirmedPublicationV2"}
 
 
@@ -3592,3 +3782,136 @@ def _abort_answers_with_persistent_residue(tmp_path: Path, monkeypatch) -> list[
 def test_abort_never_reports_a_stale_false_after_residue(tmp_path: Path, monkeypatch) -> None:
     """Review F-E: residue stays reported until it is really removed."""
     assert _abort_answers_with_persistent_residue(tmp_path, monkeypatch) == [True, True, False, False]
+
+
+
+# ================================================================================
+# Final qualification round (maintainer adjudication of N1/N2/N3 on 0672d16)
+# ================================================================================
+
+_RELEASE_WITH_BOOKKEEPING = """def close_quietly(self):
+    fd = self.fd
+    if fd is None:
+        return
+    try:
+        self.fd = None  # fd-release
+        _RELEASED_LOG_V2.append(fd)  # fd-release
+        os.close(fd)  # fd-release
+    except OSError:
+        pass
+"""
+
+
+def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_the_census() -> None:
+    """N1: `MarkerPresent != MarkerSemanticsSatisfied`. An allocating call
+    between detach and close, carrying `fd-release`, is not an admitted
+    window statement class."""
+    source = Path(_PSV_FILE).read_text()
+    old = "            self.fd = None  # fd-release\n            os.close(fd)  # fd-release\n        except OSError:\n            pass\n"
+    assert source.count(old) == 1
+    mutated = source.replace(
+        old,
+        "            self.fd = None  # fd-release\n            _RELEASED_LOG_V2.append(fd)  # fd-release\n"
+        "            os.close(fd)  # fd-release\n        except OSError:\n            pass\n",
+        1,
+    )
+    assert any("not an admitted window statement class" in v for v in _acquisition_census(mutated))
+
+
+def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_the_fault_sweep(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The same N1 mutant under the sweep: the fault at the `append` call
+    after the detach is on an `invalid` marked statement, so the orphaned
+    descriptor is reported (the 0672d16 tolerance accepted it)."""
+    monkeypatch.setattr(psv, "_RELEASED_LOG_V2", [], raising=False)
+    monkeypatch.setattr(psv._FdSlotV2, "close_quietly", _compile_mutant(_RELEASE_WITH_BOOKKEEPING))
+    assert _marked_statements(_RELEASE_WITH_BOOKKEEPING) == {6: "detach", 7: "invalid", 8: "close"}
+    violations = _mutant_sweep(
+        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), _RELEASE_WITH_BOOKKEEPING,
+        {"close_quietly"},
+    )
+    assert any("leaked" in v and _MUTANT_FILE in v and "'CALL'" in v for v in violations), violations
+
+
+def test_n1_marker_semantics_classify_every_admitted_statement_class() -> None:
+    """Anti-vacuity of the classifier: each admitted class is recognised, and
+    a marker on the wrong class is invalid."""
+    source = (
+        "slot.fd = os.open('x', 0)  # fd-install\n"
+        "owner.fd = fd  # fd-install\n"
+        "self.created = True  # fd-install\n"
+        "self.fd = None  # fd-release\n"
+        "self._roots_released += 1  # fd-release\n"
+        "os.close(fd)  # fd-release\n"
+        "os.close(fd)  # fd-install\n"
+        "slot.fd = os.open('x', 0)  # fd-release\n"
+        "log.append(fd)  # fd-release\n"
+        "self._dirs.setdefault(k, slot).fd = os.open('x', 0)  # fd-install\n"
+    )
+    assert _marked_statements(source) == {
+        1: "install-call", 2: "install-store", 3: "install-store", 4: "detach", 5: "detach", 6: "close",
+        7: "invalid", 8: "invalid", 9: "invalid", 10: "invalid",
+    }
+
+
+_OUTSIDE_STATIC_CENSUS_EXAMPLES = [
+    # Reflection through the type system: not a canonical S1-A source form and
+    # not detected by the census (PYTHON_DYNAMIC_INDIRECTION_OUTSIDE_STATIC_CENSUS).
+    "io_type = [c for c in object.__subclasses__() if c.__name__ == 'FileIO'][0]\nfd = io_type('x').fileno()\n",
+]
+
+
+@pytest.mark.parametrize("snippet", _OUTSIDE_STATIC_CENSUS_EXAMPLES)
+def test_n2_dynamic_indirection_outside_the_static_census_is_declared_not_claimed(snippet: str) -> None:
+    """N2: `StaticCensusCanonicalCoverage != CompleteSemanticCoverageOfDynamicPython`.
+    Such a form passes the census -- it is OUTSIDE its completeness claim,
+    by declaration -- and every such form carries a marker the exact
+    production source is asserted not to contain."""
+    assert _acquisition_census(snippet) == []
+    assert any(marker in snippet for marker in _OUTSIDE_STATIC_CENSUS_MARKERS)
+    assert not any(marker in Path(_PSV_FILE).read_text() for marker in _OUTSIDE_STATIC_CENSUS_MARKERS)
+
+
+def test_n3_returned_outcome_then_two_cleanup_interruptions_is_outside_the_qualified_fault_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """N3 boundary counterexample, preserved: a Complete outcome is RETURNED,
+    then two asynchronous interruptions hit cleanup (1st and 3rd session
+    closes). The escaping exception carries no outcome while the snapshot is
+    committed. MULTIPLE_ASYNC_INTERRUPTION_DURING_CLEANUP is OUTSIDE the
+    qualified fault model: nothing is inferred from this path, and no
+    universal assertion in this suite contradicts it."""
+    repo = _make_repo(tmp_path / "src" / "repo", files=1)
+    real_close = psv._SourceSessionV2.close_quietly
+    calls = {"n": 0}
+
+    def interrupted_close(self):
+        calls["n"] += 1
+        if calls["n"] in (1, 3):
+            raise KeyboardInterrupt(f"async interruption #{calls['n']} during cleanup")
+        return real_close(self)
+
+    monkeypatch.setattr(psv._SourceSessionV2, "close_quietly", interrupted_close)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(tmp_path / "src")])
+    root = _publication_root(tmp_path / "pub")
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            psv.publish_physical_snapshot_v2(
+                source_authority=capability,
+                source_locator=SourceRepositoryLocatorV2.absolute(str(repo)),
+                object_format=SHA1,
+                physical_budget=_budget(),
+                publication_root=root,
+            )
+        chain, exc = [], caught.value
+        while exc is not None:
+            chain.append(getattr(exc, "physical_snapshot_outcome", None))
+            exc = exc.__context__
+        facts = {"committed": len(_committed_entries(tmp_path / "pub")), "carried": chain, "calls": calls["n"]}
+        del caught, exc
+        gc.collect()  # the lost Complete outcome is released by its owner's finalizer
+    finally:
+        capability.close()
+        root.close()
+    assert facts == {"committed": 1, "carried": [None, None], "calls": 4}, "OUTSIDE_QUALIFIED_FAULT_MODEL"
