@@ -802,3 +802,125 @@ The disposition is **`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`** when all of these
 - the reviewers bring no new refutation of production, of the domain or of this explicit static predicate.
 
 NITs and dynamic equivalences outside the declared language do not open a round.
+
+---
+
+## 14. `58ef4ca`: N2 refuted on the CDLL side; StaticCapabilityReferenceClosure (append-only)
+
+```yaml
+subject_reviewed: 58ef4ca0e1bdf1e14a26cc849ed98851924209bf
+exact_head_ci: "run 36635925919: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+codex_exact_head: CLEAN_WITHIN_ITS_REVIEW          # "Didn't find any major issues"
+independent_review: "explicit N2 counterexample: `@ctypes.CDLL` (incl. stacked over `@print`) builds a real CDLL handle outside the wrapper region; `from ctypes import CDLL; CDLL(None)`; both census []"
+author_reproduction: CONFIRMED                      # py3.11: census [], runtime type CDLL, `.openat` on it also census []
+author_disposition_at_the_time: STOP_NEW_FAILURE_CLASS
+maintainer_adjudication:   # 2026-09-29
+  production: {material_findings: 0, declared_domain_invalidations: 0, app_lineage: byte-identical_to_0672d16, modification_required: false}
+  N1: CLOSED
+  N3: CALIBRATED
+  N2: DIRECTLY_REFUTED   # qualification layer only
+  classification: "STOP of the qualification predicate != new production failure family"
+  redesign: StaticCapabilityReferenceClosure
+  write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+production_changes_this_round: none
+```
+
+`N2_STOP != production_failure`. A clean Codex review does not cancel an independent counterexample. One valid counterexample refutes the predicate.
+
+### 14.1 The recurrence and why call syntax does not converge
+
+```text
+raw syscall call → wrapper bare-name → wrapper structural context → WrapperRuntimeRegion → CDLL decorator / from-import escape
+CallSyntaxClosure != CapabilityReferenceClosure
+```
+
+Each round closed one *call shape* and the next round found another static syntax reaching the same capability. The `.syscall` side stopped regressing once it became **reference**-based: every `Attribute(attr="syscall")` counts, whether or not it is called. The same discipline now applies to `ctypes.CDLL`.
+
+### 14.2 The closure
+
+```text
+CapabilityReferenceKnown != CapabilityCallShapeKnown
+```
+
+- **`.syscall`** (unchanged). Every `Attribute(attr="syscall")`, whatever the receiver, must lie in the `WrapperRuntimeRegion` of the unique top-level `_syscall_v2` (§13.2). Otherwise it is rejected.
+- **`ctypes.CDLL`.** *Every* `Attribute(value=Name("ctypes"), attr="CDLL")` gets exactly one disposition, and none is left unclassified:
+
+| Disposition | Condition |
+|---|---|
+| `canonical_runtime_construction` | the reference is the `func` of a `Call` that is the value of a simple `Assign` with one `Name` target (`<name> = ctypes.CDLL(...)`), inside `WrapperRuntimeRegion` (no intermediate scope) |
+| `non_evaluated_annotation` | the reference is structurally inside an annotation slot (`AnnAssign.annotation`, `arg.annotation`, `returns`), **and** the module has `from __future__ import annotations`. It does not cover a sibling executable reference in the same statement, nor defaults or decorators. |
+| `violation` | anything else: a decorator (including stacked ones), an alias (`F = ctypes.CDLL`), `return ctypes.CDLL`, a container (`[ctypes.CDLL]`), a walrus, the wrapper's decorators, defaults or keyword defaults, an evaluated annotation, a nested scope, or a module-level construction |
+
+- **Aliases need no alias analysis.** `F = ctypes.CDLL` is itself a violation, so `F(...)` can never be reached through an admitted alias.
+- **Import grammar.** `from ctypes import …` is forbidden whatever the symbol, including `as` and submodules. The canonical namespace is `ctypes.<capability>`, and `import ctypes` is the only form. `from ctypes import CDLL; H = CDLL(None)` is RED at the import.
+- **Handle grammar** (unchanged). A canonically created handle is tracked as before and may be used only for the admitted methods (`.syscall`). `CanonicalStaticGrammar != CompletePythonDataFlowAnalysis`, so a walrus stays outside the grammar and its `ctypes.CDLL` reference is a violation.
+
+On the exact source, the completeness invariant holds. Every `ctypes.CDLL` reference is classified: one `canonical_runtime_construction` (`libc = ctypes.CDLL(None, use_errno=True)` in `_syscall_v2`) and otherwise only `non_evaluated_annotation` (`_LIBC_V2: ctypes.CDLL | None = None`). The census is `[]`.
+
+### 14.3 Witnesses (RED = the 58ef4ca census, GREEN = this one)
+
+- **Accepted by 58ef4ca with census `[]`, now each rejected by its own reference fact:**
+  - `@ctypes.CDLL`, and `@print` stacked over `@ctypes.CDLL`;
+  - `F = ctypes.CDLL`;
+  - `return ctypes.CDLL`;
+  - `[ctypes.CDLL]`;
+  - `from ctypes import CDLL` / `… as X`, now rejected at the import.
+- **The wrapper's decorator:** 58ef4ca flagged only the header guard and produced no CDLL fact; now it gets the reference fact.
+- **Already refused by 58ef4ca by the call-shape rules, now refused by the reference closure:**
+  - wrapper positional and keyword defaults;
+  - a walrus at module level and in the wrapper body;
+  - a module-level construction;
+  - a construction in a nested scope inside the wrapper;
+  - a CDLL in an evaluated annotation (the future import removed);
+  - an annotation with an executable sibling reference (exactly one fact).
+- **`.syscall` history, still RED:**
+  - a nested or method-level `_syscall_v2`;
+  - `self.libc.syscall`;
+  - an arbitrary receiver;
+  - a module-level `.syscall`;
+  - header forms.
+- **Positive controls, accepted:**
+  - the unique top-level `_syscall_v2`;
+  - `libc = ctypes.CDLL(...)` and `libc.syscall(...)` in its body;
+  - `_LIBC_V2: ctypes.CDLL | None = None`.
+
+### 14.4 Anti-vacuity, one mutant per property
+
+| Mutant | Property turned off | Witness that survives it | Killed by |
+|---|---|---|---|
+| M-CDLL-REF | reference closure | `F = ctypes.CDLL`; `@ctypes.CDLL` | reference fact |
+| M-IMPORTFROM | `from ctypes import` ban | `from ctypes import CDLL; H = CDLL(None)` | import fact |
+| M-RUNTIME-REGION | region = any descendant of `W` | canonical construction in a nested scope inside `W`; `.syscall` in a wrapper default | region facts |
+| M-CANONICAL-CARRIER | any CDLL call in the region accepted | `(libc := ctypes.CDLL(None))` in the body | reference fact |
+
+For every witness, the fact is present with the property on and absent with it off. The kill therefore comes from the property itself.
+
+A CDLL reference in a wrapper default or decorator cannot be a canonical `Assign`, so for CDLL header forms the carrier rule is what refuses them. The region property is causal for the nested-scope construction and for `.syscall` header forms. That is recorded as it is and not overstated.
+
+### 14.5 Claim boundary
+
+The claim is `StaticCapabilityReferenceClosure`, **not** `UniversalPythonCapabilityReachabilityProof`. Explicitly outside it:
+- `getattr(x, "CDLL")`, `getattr(x, "syscall")`, `sys.modules`;
+- `exec`/`eval`-generated source;
+- runtime monkeypatching and arbitrary reflection;
+- source mutation after qualification.
+
+This does not permit such forms in the exact production source (census `[]`, §10.3).
+
+### 14.6 Requalification and terminal rule
+
+Requalification on the new exact head follows the maintainer's list. The reviewers' question is strictly:
+
+> Does the exact head contain (1) a MATERIAL production defect, (2) a declared-domain invalidation, or (3) an explicit static reference to `ctypes.CDLL` or `.syscall` that escapes the declared StaticCapabilityReferenceClosure?
+
+**`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`** when all of these hold:
+- 0 production material findings and 0 domain invalidations;
+- N1 is closed;
+- N2 reference closure passes for both capabilities: ImportFrom rejected, canonical construction accepted, annotation exception bounded, aliases, decorators, defaults and walrus rejected, historical countermodels killed, dynamic universality not claimed;
+- N3 is calibrated and CI is green;
+- the independent review and Codex report 0 material findings and 0 static N2 counterexamples.
+
+Other outcomes:
+- A new explicit static reference escaping the closure gives `STOP_N2_STATIC_CAPABILITY_REFERENCE_CLOSURE`.
+- A production material finding gives `STOP_NEW_PRODUCTION_FINDING`.
+- NITs, wording and dynamic equivalences outside the claim do not open a round.

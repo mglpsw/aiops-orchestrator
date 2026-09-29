@@ -3157,36 +3157,12 @@ def _module_handle_violations(tree, parent) -> list[str]:
     violations: list[str] = []
     libc_names: set[str] = set()
 
-    wrappers = [
-        stmt for stmt in tree.body
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == _RAW_SYSCALL_WRAPPER
-    ]
+    wrappers, wrapper, in_wrapper = _wrapper_region(tree, parent)
     if len(wrappers) > 1:
         violations.append(f"line {wrappers[1].lineno}: {_RAW_SYSCALL_WRAPPER} is not the unique top-level wrapper")
-    wrapper = wrappers[0] if len(wrappers) == 1 and isinstance(wrappers[0], ast.FunctionDef) else None
     if len(wrappers) == 1 and wrapper is None:
         violations.append(f"line {wrappers[0].lineno}: {_RAW_SYSCALL_WRAPPER} must be a plain FunctionDef")
     violations.extend(_wrapper_header_violations(wrapper))
-
-    def in_wrapper(node) -> bool:
-        """`WrapperRuntimeRegion(node, W) != DescendantOfFunctionDef(node, W)`.
-
-        Admitted only if `node` descends from a statement DIRECTLY in
-        `W.body`, and the path from `node` up to that statement crosses no
-        scope (function, lambda, class, comprehension). Decorators, defaults,
-        kw-defaults and annotations are children of `W` but run in the
-        ENCLOSING scope when `def` executes: they are outside the region."""
-        if wrapper is None:
-            return False
-        current = node
-        while current in parent:
-            up = parent[current]
-            if up is wrapper:
-                return any(current is statement for statement in wrapper.body)
-            if isinstance(up, _SCOPE_NODES):
-                return False
-            current = up
-        return False
 
     changed = True
     while changed:
@@ -3223,25 +3199,124 @@ def _module_handle_violations(tree, parent) -> list[str]:
         # UniversalDynamicPythonCallGraph`).
         if isinstance(node, ast.Attribute) and node.attr == "syscall" and not in_wrapper(node):
             violations.append(f"{where}: raw syscall outside {_RAW_SYSCALL_WRAPPER}")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "CDLL":
-            if not in_wrapper(node):
-                violations.append(f"{where}: libc handle created outside {_RAW_SYSCALL_WRAPPER}")
-            # Canonical handle grammar: `libc = ctypes.CDLL(...)`, a simple
-            # Assign to one Name; a walrus, attribute target or any other
-            # carrier would need data-flow the census does not claim
-            # (`CanonicalStaticGrammar != CompletePythonDataFlowAnalysis`).
-            if not (
-                isinstance(up, ast.Assign) and up.value is node and len(up.targets) == 1
-                and isinstance(up.targets[0], ast.Name)
-            ):
-                violations.append(f"{where}: libc handle outside the canonical `name = ctypes.CDLL(...)` grammar")
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
             callee = node.value.func
             if isinstance(callee, ast.Attribute) and callee.attr == "CDLL":
                 violations.append(f"{where}: attribute of an unnamed libc handle")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BUILTINS:
             violations.append(f"{where}: namespace/IO builtin {node.func.id}")
+    if _N2_SWITCHES["cdll_reference_closure"]:
+        for line, disposition in _cdll_reference_dispositions(tree, parent):
+            if disposition == "violation":
+                violations.append(f"line {line}: ctypes.CDLL reference outside the capability-reference closure")
     return violations
+
+
+#: Property switches for the N2 anti-vacuity mutants ONLY (each mutant turns
+#: one property off and must be killed by the fact that property protects).
+_N2_SWITCHES = {
+    "cdll_reference_closure": True,
+    "importfrom_ctypes_forbidden": True,
+    "runtime_region_is_body_only": True,
+    "canonical_carrier_required": True,
+}
+_CDLL_DISPOSITIONS = ("canonical_runtime_construction", "non_evaluated_annotation", "violation")
+
+
+def _wrapper_region(tree, parent):
+    """(top-level `_syscall_v2` defs, the unique plain one or None, in_region).
+
+    `WrapperRuntimeRegion(node, W) != DescendantOfFunctionDef(node, W)`: a node
+    is in the region only if it descends from a statement DIRECTLY in
+    `W.body` with no intermediate scope on the path. Decorators, defaults,
+    kw-defaults and annotations are children of `W` but run in the enclosing
+    scope when `def` executes."""
+    wrappers = [
+        stmt for stmt in tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == _RAW_SYSCALL_WRAPPER
+    ]
+    wrapper = wrappers[0] if len(wrappers) == 1 and isinstance(wrappers[0], ast.FunctionDef) else None
+
+    def in_region(node) -> bool:
+        if wrapper is None:
+            return False
+        current = node
+        while current in parent:
+            up = parent[current]
+            if up is wrapper:
+                if not _N2_SWITCHES["runtime_region_is_body_only"]:
+                    return True  # mutant M-RUNTIME-REGION: any descendant of W
+                return any(current is statement for statement in wrapper.body)
+            if isinstance(up, _SCOPE_NODES) and _N2_SWITCHES["runtime_region_is_body_only"]:
+                return False
+            current = up
+        return False
+
+    return wrappers, wrapper, in_region
+
+
+def _is_cdll_reference(node) -> bool:
+    return (
+        isinstance(node, ast.Attribute) and node.attr == "CDLL"
+        and isinstance(node.value, ast.Name) and node.value.id == "ctypes"
+    )
+
+
+def _in_annotation(node, parent) -> bool:
+    """True iff `node` sits structurally inside an annotation slot: an
+    `AnnAssign.annotation`, an `arg.annotation` or a function `returns`."""
+    child = node
+    while child in parent:
+        up = parent[child]
+        if (
+            (isinstance(up, ast.AnnAssign) and up.annotation is child)
+            or (isinstance(up, ast.arg) and up.annotation is child)
+            or (isinstance(up, (ast.FunctionDef, ast.AsyncFunctionDef)) and up.returns is child)
+        ):
+            return True
+        child = up
+    return False
+
+
+def _cdll_reference_dispositions(tree, parent) -> list[tuple[int, str]]:
+    """`CapabilityReferenceKnown != CapabilityCallShapeKnown`.
+
+    EVERY explicit `ctypes.CDLL` reference (an `Attribute(Name("ctypes"),
+    "CDLL")`, called or not) gets exactly one disposition:
+      canonical_runtime_construction  the `func` of `<name> = ctypes.CDLL(...)`
+                                      (simple Assign, one Name target) inside
+                                      the wrapper runtime region;
+      non_evaluated_annotation        inside an annotation slot, AND the module
+                                      has `from __future__ import annotations`;
+      violation                       anything else (decorator, alias, return,
+                                      container, walrus, header, other scope)."""
+    future_annotations = any(
+        isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__"
+        and any(alias.name == "annotations" for alias in stmt.names)
+        for stmt in tree.body
+    )
+    _, _, in_region = _wrapper_region(tree, parent)
+    dispositions: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not _is_cdll_reference(node):
+            continue
+        call = parent.get(node)
+        assign = parent.get(call)
+        canonical_carrier = (
+            isinstance(call, ast.Call) and call.func is node
+            and isinstance(assign, ast.Assign) and assign.value is call
+            and len(assign.targets) == 1 and isinstance(assign.targets[0], ast.Name)
+        )
+        if not _N2_SWITCHES["canonical_carrier_required"]:
+            canonical_carrier = isinstance(call, ast.Call) and call.func is node  # mutant M-CANONICAL-CARRIER
+        if canonical_carrier and in_region(node):
+            disposition = "canonical_runtime_construction"
+        elif future_annotations and _in_annotation(node, parent):
+            disposition = "non_evaluated_annotation"
+        else:
+            disposition = "violation"
+        dispositions.append((node.lineno, disposition))
+    return dispositions
 
 
 def _wrapper_header_violations(wrapper) -> list[str]:
@@ -3330,6 +3405,8 @@ def _acquisition_census(source: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             if node.module not in _VETTED_IMPORTS or node.module in _VETTED_ATTRIBUTES:
                 violations.append(f"line {node.lineno}: unvetted from-import {node.module}")
+            if _N2_SWITCHES["importfrom_ctypes_forbidden"] and (node.module or "").split(".")[0] == "ctypes":
+                violations.append(f"line {node.lineno}: from-import of ctypes forbidden (canonical namespace ctypes.<capability>)")
         elif (
             isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
             and node.value.id in _VETTED_ATTRIBUTES and node.attr not in _VETTED_ATTRIBUTES[node.value.id]
@@ -4309,7 +4386,7 @@ def test_n2_ctypes_cdll_outside_the_unique_top_level_wrapper_is_rejected() -> No
         "\n\n_MODULE_LIBC_V2 = ctypes.CDLL(None)\n",
     ):
         violations = _acquisition_census(source + escape)
-        assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+        assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations), violations
 
 
 def test_n2_positive_control_the_real_top_level_wrapper_is_accepted_by_context_not_name() -> None:
@@ -4325,7 +4402,7 @@ def test_n2_positive_control_the_real_top_level_wrapper_is_accepted_by_context_n
     renamed = wrapper.replace("def _syscall_v2(", "def _syscall_other_v2(", 1)
     violations = _acquisition_census(source + "\n\n" + renamed)
     assert any(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations)
-    assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations)
+    assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations)
     duplicated = _acquisition_census(source + "\n\n" + wrapper)
     assert any("is not the unique top-level wrapper" in v for v in duplicated), duplicated
 
@@ -4363,7 +4440,7 @@ def test_n2_explicit_forms_on_the_wrapper_header_are_outside_its_runtime_region(
     violations = _acquisition_census(_with_wrapper_header(_N2_HEADER_ESCAPES[shape]))
     assert any(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
     if "cdll" in shape:
-        assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+        assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations), violations
 
 
 def test_n2_same_content_inside_the_real_wrapper_body_is_the_positive_control() -> None:
@@ -4404,4 +4481,147 @@ def test_n2_walrus_cdll_handle_is_outside_the_canonical_grammar() -> None:
         "\n    holder.libc = ctypes.CDLL(None)",
     ):
         violations = _acquisition_census(_with_wrapper_header(_WRAPPER_HEADER + statement))
-        assert any("outside the canonical `name = ctypes.CDLL(...)` grammar" in v for v in violations), violations
+        assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations), violations
+
+
+# -- N2 StaticCapabilityReferenceClosure (maintainer STOP/REDESIGN after 58ef4ca) ------------
+#
+# `CallSyntaxClosure != CapabilityReferenceClosure`. The census no longer asks
+# "does this call look like a CDLL construction?" but "is EVERY explicit static
+# reference to the capability in an admitted canonical position?" -- the
+# discipline `.syscall` already follows (every `Attribute(attr="syscall")`).
+
+def _psv_plus(fragment: str) -> str:
+    return Path(_PSV_FILE).read_text() + fragment
+
+
+_CDLL_REFERENCE_ESCAPES = {
+    # region escapes on the real wrapper's header
+    "wrapper-decorator": ("header", "@ctypes.CDLL\n" + _WRAPPER_HEADER),
+    "wrapper-positional-default": ("header", "def _syscall_v2(name: str = ctypes.CDLL(None), *args: object) -> tuple[int, int]:"),
+    "wrapper-keyword-default": ("header", "def _syscall_v2(name: str, *args: object, _k=ctypes.CDLL(None)) -> tuple[int, int]:"),
+    # capability-reference carriers anywhere else
+    "decorator": ("append", "\n\n@ctypes.CDLL\ndef _probe_v2():\n    pass\n"),
+    "stacked-decorator": ("append", "\n\n@print\n@ctypes.CDLL\ndef _probe_v2():\n    pass\n"),
+    "alias": ("append", "\n\nF = ctypes.CDLL\n"),
+    "return": ("append", "\n\ndef _probe_v2():\n    return ctypes.CDLL\n"),
+    "container": ("append", "\n\n_X = [ctypes.CDLL]\n"),
+    "walrus-module": ("append", "\n\n(_libc := ctypes.CDLL(None))\n"),
+    "walrus-in-wrapper-body": ("header", _WRAPPER_HEADER + "\n    (libc := ctypes.CDLL(None))"),
+    "module-level-construction": ("append", "\n\n_H = ctypes.CDLL(None)\n"),
+    "nested-scope-in-wrapper": ("header", _WRAPPER_HEADER + "\n    def _inner():\n        libc = ctypes.CDLL(None)"),
+}
+
+
+def _escape_source(kind: str, text: str) -> str:
+    return _with_wrapper_header(text) if kind == "header" else _psv_plus(text)
+
+
+@pytest.mark.parametrize("shape", sorted(_CDLL_REFERENCE_ESCAPES))
+def test_n2_every_non_canonical_cdll_reference_is_rejected(shape: str) -> None:
+    kind, text = _CDLL_REFERENCE_ESCAPES[shape]
+    violations = _acquisition_census(_escape_source(kind, text))
+    assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations), violations
+
+
+def test_n2_cdll_in_an_evaluated_annotation_is_rejected() -> None:
+    """The annotation exception depends on `from __future__ import
+    annotations`: without it the same annotation is evaluated at runtime."""
+    source = Path(_PSV_FILE).read_text()
+    assert source.count("from __future__ import annotations\n") == 1
+    evaluated = source.replace("from __future__ import annotations\n", "", 1)
+    violations = _acquisition_census(evaluated)
+    assert any("ctypes.CDLL reference outside the capability-reference closure" in v for v in violations), violations
+
+
+def test_n2_annotation_exception_does_not_cover_a_sibling_executable_reference() -> None:
+    violations = _acquisition_census(_psv_plus("\n\n_Y: ctypes.CDLL = ctypes.CDLL(None)\n"))
+    lines = [v for v in violations if "ctypes.CDLL reference outside the capability-reference closure" in v]
+    assert len(lines) == 1, violations  # the value reference, not the annotation
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "\n\nfrom ctypes import CDLL\nH = CDLL(None)\n",
+        "\n\nfrom ctypes import CDLL as X\n",
+        "\n\nfrom ctypes import c_long\n",
+        "\n\nfrom ctypes.util import find_library\n",
+    ],
+)
+def test_n2_from_import_of_ctypes_is_rejected_at_the_import(fragment: str) -> None:
+    violations = _acquisition_census(_psv_plus(fragment))
+    assert any("from-import of ctypes forbidden" in v for v in violations), violations
+
+
+def test_n2_reference_completeness_invariant_on_the_exact_source() -> None:
+    """Every explicit `ctypes.CDLL` reference receives exactly one of the
+    three dispositions; on the exact source: one canonical runtime
+    construction, only non-evaluated annotations otherwise, no violation.
+    Positive controls: the real wrapper (`libc = ctypes.CDLL(...)`,
+    `libc.syscall(...)`) and `_LIBC_V2: ctypes.CDLL | None = None`."""
+    source = Path(_PSV_FILE).read_text()
+    tree = ast.parse(source)
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    references = [n for n in ast.walk(tree) if _is_cdll_reference(n)]
+    dispositions = _cdll_reference_dispositions(tree, parent)
+    assert len(dispositions) == len(references) >= 2
+    assert all(d in _CDLL_DISPOSITIONS for _, d in dispositions)
+    assert [d for _, d in dispositions].count("canonical_runtime_construction") == 1
+    assert {d for _, d in dispositions} == {"canonical_runtime_construction", "non_evaluated_annotation"}
+    assert _acquisition_census(source) == []
+    assert "libc.syscall(" in textwrap.dedent(inspect.getsource(psv._syscall_v2))
+
+
+def test_n2_module_level_syscall_reference_is_rejected() -> None:
+    violations = _acquisition_census(_psv_plus("\n\n_P = _LIBC_V2.syscall(2, b'x', 0)\n"))
+    assert any(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+
+
+# -- N2 anti-vacuity: one mutant per property, killed by the fact it protects -------------------
+
+_N2_PROPERTY_MUTANTS = {
+    # M-CDLL-REF: the reference closure off -> alias / decorator references survive
+    "cdll_reference_closure": [
+        _psv_plus("\n\nF = ctypes.CDLL\n"),
+        _psv_plus("\n\n@ctypes.CDLL\ndef _probe_v2():\n    pass\n"),
+    ],
+    # M-IMPORTFROM: the ImportFrom(ctypes) ban off -> the import escape survives
+    "importfrom_ctypes_forbidden": [_psv_plus("\n\nfrom ctypes import CDLL\nH = CDLL(None)\n")],
+    # M-RUNTIME-REGION: region widened to any descendant of W -> a canonical
+    # carrier in a nested scope, and a `.syscall` default, survive
+    "runtime_region_is_body_only": [
+        _with_wrapper_header(_WRAPPER_HEADER + "\n    def _inner():\n        libc = ctypes.CDLL(None)"),
+        _with_wrapper_header(_N2_HEADER_ESCAPES["default-syscall"]),
+    ],
+    # M-CANONICAL-CARRIER: any CDLL call in the region accepted -> walrus survives
+    "canonical_carrier_required": [_with_wrapper_header(_WRAPPER_HEADER + "\n    (libc := ctypes.CDLL(None))")],
+}
+_N2_PROPERTY_FACTS = {
+    "cdll_reference_closure": "ctypes.CDLL reference outside the capability-reference closure",
+    "importfrom_ctypes_forbidden": "from-import of ctypes forbidden",
+    "runtime_region_is_body_only": None,  # either region fact (CDLL or .syscall)
+    "canonical_carrier_required": "ctypes.CDLL reference outside the capability-reference closure",
+}
+
+
+def _region_facts(violations: list[str]) -> list[str]:
+    return [
+        v for v in violations
+        if "ctypes.CDLL reference outside the capability-reference closure" in v
+        or f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v
+    ]
+
+
+@pytest.mark.parametrize("switch", sorted(_N2_PROPERTY_MUTANTS))
+def test_n2_property_mutants_are_killed_by_the_intended_fact(switch: str, monkeypatch) -> None:
+    fact = _N2_PROPERTY_FACTS[switch]
+    for witness in _N2_PROPERTY_MUTANTS[switch]:
+        real = _acquisition_census(witness)
+        real_facts = _region_facts(real) if fact is None else [v for v in real if fact in v]
+        assert real_facts, (switch, real)
+        monkeypatch.setitem(_N2_SWITCHES, switch, False)
+        mutant = _acquisition_census(witness)
+        monkeypatch.setitem(_N2_SWITCHES, switch, True)
+        mutant_facts = _region_facts(mutant) if fact is None else [v for v in mutant if fact in v]
+        assert mutant_facts == [], (switch, mutant)  # the witness survives only because of the property
