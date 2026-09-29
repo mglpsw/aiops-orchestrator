@@ -22,11 +22,24 @@ publish only artifacts allowlisted by the target's own workflow
 A branch name, tag, or abbreviated SHA is never an acceptable pin for the
 `aiops-orchestrator` checkout consumed by a target workflow.
 
+## Interpreter contract
+
+Canonical toolrepo interpreter: **CPython 3.11**
+
+`requirements-agent-review.lock` is platform/interpreter specific; the installer refuses an incompatible Python before installation.
+
 ## Install script
 
 ```bash
 bash scripts/install-agent-review-toolrepo.sh <venv-dir> \
   --toolrepo-sha <full-40-char-lowercase-sha>
+```
+
+On hosts where default `python3` is not CPython 3.11, specify the qualifying interpreter via `AGENT_REVIEW_PYTHON`:
+
+```bash
+AGENT_REVIEW_PYTHON=python3.11 \
+  bash scripts/install-agent-review-toolrepo.sh <venv-dir>
 ```
 
 The script:
@@ -36,8 +49,10 @@ The script:
    is attempted;
 2. verifies that SHA against `git rev-parse HEAD` of the current checkout,
    rejecting a mismatch;
-3. creates a fresh venv at `<venv-dir>`;
-4. installs `requirements-agent-review.lock` with
+3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
+   is CPython 3.11, refusing incompatible interpreters fail-closed before creating any venv;
+4. creates a fresh venv at `<venv-dir>` using the verified CPython 3.11 interpreter;
+5. installs `requirements-agent-review.lock` with
    `pip install --require-hashes --no-deps`.
 
 `--toolrepo-sha` is optional for local iteration but should always be

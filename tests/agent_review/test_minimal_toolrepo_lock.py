@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -129,6 +130,66 @@ def test_install_script_rejects_a_sha_not_matching_head() -> None:
     )
     assert result.returncode != 0
     assert not Path("/tmp/should-not-be-created-wrong-sha").exists()
+
+
+def test_install_script_rejects_incompatible_interpreter_before_venv_creation(tmp_path: Path) -> None:
+    """G1: Incompatible interpreter is rejected fail-closed before venv creation without depending on host Python."""
+    fake_python = tmp_path / "fake_python312.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-c\" ]; then\n"
+        "    echo \"CPython 3.12\"\n"
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when interpreter is incompatible"
+    assert "requirements-agent-review.lock is qualified for CPython 3.11" in result.stderr
+    assert "CPython 3.12" in result.stderr
+
+
+def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp_path: Path) -> None:
+    """G2: Compatible interpreter traverses version guard; fails downstream at venv or completes."""
+    fake_python = tmp_path / "fake_python311.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"-c\" ]; then\n"
+        "    echo \"CPython 3.11\"\n"
+        "    exit 0\n"
+        "fi\n"
+        "# Reached venv creation: echo marker and exit 42\n"
+        "echo \"GUARD_PASSED_CALLED_WITH: $@\" >&2\n"
+        "exit 42\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "venv_g2"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    # Exit code 42 proves the script passed the version check and proceeded to "$PYTHON_BIN -m venv"
+    assert result.returncode == 42
+    assert "requirements-agent-review.lock is qualified for CPython 3.11" not in result.stderr
+    assert "GUARD_PASSED_CALLED_WITH: -m venv" in result.stderr
 
 
 @pytest.mark.requires_network

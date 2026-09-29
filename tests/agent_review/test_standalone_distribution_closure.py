@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1131,10 +1132,17 @@ def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: 
 
     venv_dir = tmp_path / "venv"
     install_script = standalone / "scripts" / "install-agent-review-toolrepo.sh"
+    env = os.environ.copy()
+    if "AGENT_REVIEW_PYTHON" not in env:
+        py311 = shutil.which("python3.11")
+        if py311:
+            env["AGENT_REVIEW_PYTHON"] = py311
+
     install_result = subprocess.run(
         ["bash", str(install_script), str(venv_dir)],
         capture_output=True,
         text=True,
+        env=env,
     )
     assert install_result.returncode == 0, f"Installer failed with returncode {install_result.returncode}:\n{install_result.stderr}\n{install_result.stdout}"
 

@@ -184,7 +184,7 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **F-03** | Semântica de imports AST vs disco | Imports utilizam semântica exata ou descendente (`module_is_same_or_descendant`), permitindo imports legítimos de pacotes-pai (`import app`, `import app.services`) enquanto bloqueia submódulos de runtime (`app.models`). |
 | **F-04** | Provas imunes a `PYTHONOPTIMIZE` | Probes em subprocesso utilizam helper explícito `require()`, e `_clean_env` expurga `PYTHONOPTIMIZE`, impedindo anulação de checagens sob flags de otimização. |
 | **F-05** | Confinamento de origem por componentes | Verificação de origem de módulo utiliza `origin_path.is_relative_to(root)` em vez de prefixo de string, rejeitando diretórios irmãos (`/standalone-old`). |
-| **F-02** | Composição Layer E × Layer I | Teste composto (`test_lock_built_venv_executes_materialized_standalone_agentreview`) exercita a árvore materializada com o interpretador criado a partir de `requirements-agent-review.lock` (`requires_network`). Status de qualificação: implementado (em ambientes onde o lockfile difere da versão de Python do host, falhas de instalação são reportadas fielmente). |
+| **F-02** | Composição Layer E × Layer I | Teste composto (`test_lock_built_venv_executes_materialized_standalone_agentreview`) exercita a árvore materializada com o interpretador criado a partir de `requirements-agent-review.lock` (`requires_network`). O instalador vincula estritamente o contrato canônico a CPython 3.11, recusando interpretadores incompatíveis fail-closed antes da criação do venv. Qualificado no ambiente canônico CPython 3.11 do repositório (GitHub Actions). |
 
 ---
 

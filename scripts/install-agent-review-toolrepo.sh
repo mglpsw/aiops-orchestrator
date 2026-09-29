@@ -56,7 +56,25 @@ if [ ! -f "$LOCK_FILE" ]; then
     exit 2
 fi
 
-python3 -m venv "$VENV_DIR"
+PYTHON_BIN="${AGENT_REVIEW_PYTHON:-python3}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "Blocked: selected Python interpreter '$PYTHON_BIN' not found." >&2
+    exit 2
+fi
+
+INTERP_INFO="$("$PYTHON_BIN" -c '
+import sys, platform
+impl = platform.python_implementation()
+ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+print(f"{impl} {ver}")
+' 2>/dev/null || echo "UNKNOWN")"
+
+if [ "$INTERP_INFO" != "CPython 3.11" ]; then
+    echo "Blocked: requirements-agent-review.lock is qualified for CPython 3.11; selected interpreter is $INTERP_INFO." >&2
+    exit 2
+fi
+
+"$PYTHON_BIN" -m venv "$VENV_DIR"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step
 # would fetch whatever pip version happens to be latest at install time,
 # an unpinned, unverified download that undermines reproducibility between
