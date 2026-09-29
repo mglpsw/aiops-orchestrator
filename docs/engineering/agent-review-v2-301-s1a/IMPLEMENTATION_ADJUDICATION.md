@@ -611,3 +611,90 @@ Terminal rule, given by the maintainer:
   - CI is green, and neither the independent review nor Codex reports a production material finding.
 - **Does not reopen a round:** NITs, wording and non-material observations compatible with the declared limitations.
 - **`STOP_NEW_FAILURE_CLASS`:** only a new material refutation of production or of the qualified domain. The exact-head evidence is recorded in PR #361.
+
+---
+
+## 12. `1f37fbb`: N1 closed; N2 structural-context escape; final bounded grant (append-only)
+
+```yaml
+subject_reviewed: 1f37fbb6067dfbfa973e51a724ab501138bf6557
+exact_head_ci: "run 36625219913: Validate repository SUCCESS, AgentReview release gates SUCCESS"
+independent_review: "production_material_findings=0, declared_domain_invalidations=0; N1 bytecode window causal, declared mutants killed on every transition kind; N2 accepted three static forms outside the wrapper"
+codex_exact_head: "4137971087 (P2): the syscall exemption is bound to the bare name `_syscall_v2`"
+maintainer_adjudication:   # 2026-09-29
+  production_material_findings: 0
+  declared_domain_invalidations: 0
+  N1: CLOSED
+  N2: ONE_FINITE_STATIC_CONTEXT_GAP_REMAINS
+  N3: CALIBRATED
+  production_source_change_required: false
+  grant: "one final qualification-only closure commit"
+  write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+production_changes_this_round: none   # app/agent_review/*.py byte-identical to 0672d16
+```
+
+### 12.1 The escape
+
+On 1f37fbb the N2 rule compared the **bare name** of the nearest enclosing function with `_syscall_v2`, and it followed libc handles only when they were bound to plain names. Three direct static forms were admitted:
+- a nested function named `_syscall_v2`;
+- a method named `_syscall_v2`;
+- an attribute-held handle (`self.libc.syscall(...)`).
+
+Codex 4137971087 found this and the independent reviewer reproduced it. It is the same "same spelling in another context" shape that N1 closed by binding to exact context.
+
+### 12.2 The unique module-level wrapper rule
+
+The only authorised context is structural:
+
+```text
+Module
+└── FunctionDef(name="_syscall_v2")    # must be the UNIQUE top-level FunctionDef of that name
+```
+
+- Any explicit `<receiver>.syscall` is admitted **only** when its nearest enclosing scope is that FunctionDef. The receiver is irrelevant: `libc.syscall`, `self.libc.syscall` and `x.syscall` fall under the same rule.
+- Control-flow blocks inside the wrapper are fine. Any intermediate `FunctionDef`, `AsyncFunctionDef`, `Lambda`, `ClassDef` or comprehension scope is not.
+- Any explicit `ctypes.CDLL(...)` construction is admitted only in the same context.
+- A second top-level `_syscall_v2` makes the wrapper non-unique, and that is a violation.
+
+Witnesses, with RED on the 1f37fbb census and GREEN on this one:
+
+| Form | 1f37fbb census | candidate census |
+|---|---|---|
+| nested function named `_syscall_v2` | accepted | **rejected** |
+| class method named `_syscall_v2` (`self.libc.syscall`) | accepted | **rejected** |
+| attribute-held handle in another method (`self.libc.syscall`) | accepted | **rejected** |
+| arbitrary receiver (`x.syscall`) | accepted | **rejected** |
+| `ctypes.CDLL(...)` in another function / at module level | accepted | **rejected** |
+| lambda bound to the name `_syscall_v2` (control) | rejected | rejected |
+| existing raw-syscall mutant (§11.2) | rejected | rejected |
+| **positive control**: the real, unique module-level `_syscall_v2` | accepted | **accepted** |
+| the same wrapper body under another top-level name | — | **rejected** |
+| a duplicated top-level `_syscall_v2` | — | **rejected** (not unique) |
+
+The last two rows show that the discrimination is by structural context, not by name.
+
+### 12.3 Static / dynamic claim boundary
+
+```text
+StaticExplicitSyscallGrammar != UniversalDynamicPythonCallGraph
+```
+
+The qualification does **not** claim to detect `getattr(x, "syscall")(...)`, `sys.modules[...]`, `vars(...)`, `globals(...)`, runtime monkeypatching, or arbitrary reflection and metaprogramming when they fall outside the explicitly admitted static grammar. That residue stays under `PYTHON_DYNAMIC_INDIRECTION_OUTSIDE_STATIC_CENSUS` (§10.3). This does **not** authorise such forms in the production source: the exact source must obey the canonical grammar in full, and its census is `[]`.
+
+### 12.4 Provenance
+
+The correction was first validated in a scratch copy of 1f37fbb, before the grant: 207 passed, and nothing was committed. That scratch run does **not** qualify the new exact head. The new head is qualified on its own under the maintainer's requalification list, with the reviewers' question restricted to:
+
+1. a MATERIAL production defect;
+2. a declared-domain invalidation; or
+3. an explicit static `*.syscall` / `ctypes.CDLL` form outside the unique module-level `_syscall_v2` that the N2 predicate still wrongly admits.
+
+The definitive terminal rule is the maintainer's:
+
+- **`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`**: when all of these hold:
+  - no MATERIAL production defect and no declared-domain invalidation;
+  - N1 is causal;
+  - every N2 witness above is rejected and the real wrapper is accepted;
+  - dynamic universality is explicitly not claimed;
+  - N3 is calibrated and CI is green.
+- **`STOP_NEW_FAILURE_CLASS`**: only a new MATERIAL production defect, a declared-domain invalidation, or a direct falsification of the finite N2 predicate.

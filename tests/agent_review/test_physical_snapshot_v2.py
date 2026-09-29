@@ -3138,6 +3138,10 @@ _LIBC_METHODS = frozenset({"syscall"})
 #: whose number table is asserted to hold only non-descriptor syscalls
 #: (maintainer adjudication of 3ff700a, Codex 4137344841).
 _RAW_SYSCALL_WRAPPER = "_syscall_v2"
+_SCOPE_NODES = (
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+)
 _FORBIDDEN_BUILTINS = frozenset({"vars", "globals", "locals", "eval", "exec", "compile", "__import__", "open"})
 #: Forms known to be OUTSIDE the canonical grammar's detection power. They
 #: are named, not enforced; the exact production source must contain none.
@@ -3153,12 +3157,23 @@ def _module_handle_violations(tree, parent) -> list[str]:
     violations: list[str] = []
     libc_names: set[str] = set()
 
-    def enclosing(node) -> str | None:
+    wrappers = [
+        stmt for stmt in tree.body
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == _RAW_SYSCALL_WRAPPER
+    ]
+    if len(wrappers) > 1:
+        violations.append(f"line {wrappers[1].lineno}: {_RAW_SYSCALL_WRAPPER} is not the unique top-level wrapper")
+    wrapper = wrappers[0] if len(wrappers) == 1 and isinstance(wrappers[0], ast.FunctionDef) else None
+
+    def in_wrapper(node) -> bool:
+        """True only if the NEAREST enclosing scope is the unique top-level
+        `_syscall_v2` (control-flow blocks inside it are fine; any
+        intermediate function, lambda, class or comprehension scope is not)."""
         while node in parent:
             node = parent[node]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return node.name
-        return None
+            if isinstance(node, _SCOPE_NODES):
+                return wrapper is not None and node is wrapper
+        return False
 
     changed = True
     while changed:
@@ -3189,8 +3204,17 @@ def _module_handle_violations(tree, parent) -> list[str]:
                     violations.append(f"{where}: {module}.{node.attr} escapes as a value")
             if module in libc_names and node.attr not in _LIBC_METHODS:
                 violations.append(f"{where}: libc handle used beyond {sorted(_LIBC_METHODS)}")
-            if module in libc_names and node.attr == "syscall" and enclosing(node) != _RAW_SYSCALL_WRAPPER:
-                violations.append(f"{where}: raw syscall outside {_RAW_SYSCALL_WRAPPER}")
+        # N2 (maintainer final grant on 1f37fbb): receiver-independent, bound
+        # to the STRUCTURAL context Module -> FunctionDef(_syscall_v2), never
+        # to a bare name (`StaticExplicitSyscallGrammar !=
+        # UniversalDynamicPythonCallGraph`).
+        if isinstance(node, ast.Attribute) and node.attr == "syscall" and not in_wrapper(node):
+            violations.append(f"{where}: raw syscall outside {_RAW_SYSCALL_WRAPPER}")
+        if (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "CDLL"
+            and not in_wrapper(node)
+        ):
+            violations.append(f"{where}: libc handle created outside {_RAW_SYSCALL_WRAPPER}")
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
             callee = node.value.func
             if isinstance(callee, ast.Attribute) and callee.attr == "CDLL":
@@ -4197,3 +4221,67 @@ def test_n2_direct_raw_syscall_outside_the_wrapper_is_rejected() -> None:
     assert _acquisition_census(source) == []
     violations = _acquisition_census(source + _RAW_SYSCALL_MUTANT)
     assert violations and all(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+
+
+# -- N2 final closure (maintainer grant on 1f37fbb; Codex 4137971087) ------------------------
+
+_N2_STRUCTURAL_ESCAPES = {
+    "nested-same-name": (
+        "\n\ndef _outer_v2():\n    def _syscall_v2():\n"
+        "        return _LIBC_V2.syscall(ctypes.c_long(2), ctypes.c_char_p(b'x'), ctypes.c_long(0))\n"
+        "    return _syscall_v2()\n"
+    ),
+    "method-same-name": (
+        "\n\nclass _RawV2:\n    def _syscall_v2(self):\n"
+        "        return self.libc.syscall(ctypes.c_long(2), ctypes.c_char_p(b'x'), ctypes.c_long(0))\n"
+    ),
+    "attribute-held-handle": (
+        "\n\nclass _HeldV2:\n    def other(self):\n"
+        "        return self.libc.syscall(ctypes.c_long(2), ctypes.c_char_p(b'x'), ctypes.c_long(0))\n"
+    ),
+    "arbitrary-receiver": "\n\ndef _other_v2(x):\n    return x.syscall(ctypes.c_long(2), 0, 0)\n",
+    "lambda-inside-wrapper-name": (
+        "\n\ndef _outer2_v2():\n    _syscall_v2 = lambda: _LIBC_V2.syscall(ctypes.c_long(2), 0, 0)\n"
+        "    return _syscall_v2()\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_N2_STRUCTURAL_ESCAPES))
+def test_n2_explicit_syscall_outside_the_unique_top_level_wrapper_is_rejected(shape: str) -> None:
+    """`<receiver>.syscall(...)` is admitted ONLY with the unique top-level
+    `_syscall_v2` as its nearest scope, whatever the receiver and whatever
+    the name of the enclosing function (the 1f37fbb census accepted the
+    same-name and attribute-held forms)."""
+    source = Path(_PSV_FILE).read_text()
+    violations = _acquisition_census(source + _N2_STRUCTURAL_ESCAPES[shape])
+    assert violations and all(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+
+
+def test_n2_ctypes_cdll_outside_the_unique_top_level_wrapper_is_rejected() -> None:
+    source = Path(_PSV_FILE).read_text()
+    for escape in (
+        "\n\ndef _other_v2():\n    return ctypes.CDLL(None)\n",
+        "\n\nclass _H2:\n    def _syscall_v2(self):\n        self.libc = ctypes.CDLL(None)\n",
+        "\n\n_MODULE_LIBC_V2 = ctypes.CDLL(None)\n",
+    ):
+        violations = _acquisition_census(source + escape)
+        assert violations and all(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations), violations
+
+
+def test_n2_positive_control_the_real_top_level_wrapper_is_accepted_by_context_not_name() -> None:
+    """Positive control: the exact source's unique module-level `_syscall_v2`
+    (which both creates the handle and calls `.syscall`) is accepted. The
+    discrimination is structural: the SAME wrapper body under another
+    top-level name is rejected, and a second top-level `_syscall_v2` makes
+    the wrapper non-unique."""
+    source = Path(_PSV_FILE).read_text()
+    assert _acquisition_census(source) == []
+    wrapper = textwrap.dedent(inspect.getsource(psv._syscall_v2))
+    assert ".syscall(" in wrapper and "ctypes.CDLL(" in wrapper
+    renamed = wrapper.replace("def _syscall_v2(", "def _syscall_other_v2(", 1)
+    violations = _acquisition_census(source + "\n\n" + renamed)
+    assert any(f"raw syscall outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations)
+    assert any(f"libc handle created outside {_RAW_SYSCALL_WRAPPER}" in v for v in violations)
+    duplicated = _acquisition_census(source + "\n\n" + wrapper)
+    assert any("is not the unique top-level wrapper" in v for v in duplicated), duplicated
