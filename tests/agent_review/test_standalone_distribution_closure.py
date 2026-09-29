@@ -438,32 +438,60 @@ except RuntimeError as exc:
     assert "DETECTOR_REJECTED_OUTSIDE_ORIGIN" in res_detector.stdout
 
 
-def test_countermodel_m4_inject_runtime_only_dependency() -> None:
-    """Countermodel M4: Injecting an AIOps-only runtime dependency into the manifest causes validator to FAIL."""
+def test_countermodel_m4_inject_runtime_only_dependency(tmp_path: Path) -> None:
+    """Countermodel M4: Injecting an AIOps-only runtime dependency into declared distribution source causes validator to FAIL."""
     manifest = validator.load_manifest()
 
-    # Case A: Inject forbidden runtime surface
+    # Case A: Inject forbidden runtime surface into distribution_boundary declaration
     mutated_surfaces = copy.deepcopy(manifest)
     mutated_surfaces["distribution_boundary"]["core_packages"].append("app/models/database.py")
     errors_a = validator.validate_manifest(mutated_surfaces, repo_root=REPO_ROOT)
     assert any("Forbidden runtime surface" in err for err in errors_a)
 
-    # Case B: Inject forbidden package
-    mutated_pkgs = copy.deepcopy(manifest)
-    mutated_pkgs["dependency_closure"]["allowed_third_party_packages"].append("fastapi")
-    mutated_pkgs["dependency_closure"]["forbidden_runtime_packages"].remove("fastapi")
-    # Validator will find that no file imports fastapi, but if we declare it as a forbidden package in a file:
-    assert "fastapi" in manifest["dependency_closure"]["forbidden_runtime_packages"]
+    # Case B: Inject forbidden package import into actual source of a declared distribution file
+    temp_repo = tmp_path / "temp_repo_m4"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=temp_repo)
+
+    target_file = temp_repo / "app" / "agent_review" / "cli.py"
+    original_code = target_file.read_text(encoding="utf-8")
+    target_file.write_text("import fastapi\n" + original_code, encoding="utf-8")
+
+    errors_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime package 'fastapi'" in err for err in errors_b), (
+        f"Expected forbidden package error for fastapi, got: {errors_b}"
+    )
 
 
 def test_countermodel_m5_missing_install_contract() -> None:
-    """Countermodel M5: Missing install contract file causes validation failure."""
+    """Countermodel M5: Required install contract artifacts cannot be omitted from the manifest, and declared files must exist."""
     manifest = validator.load_manifest()
-    mutated = copy.deepcopy(manifest)
-    mutated["distribution_boundary"]["install_boundary"].append("nonexistent-install-contract.lock")
 
-    errors = validator.validate_manifest(mutated, repo_root=REPO_ROOT)
-    assert any("does not exist" in err for err in errors)
+    # Case A: Omit requirements-agent-review.lock from install_boundary
+    mutated_omit_lock = copy.deepcopy(manifest)
+    mutated_omit_lock["distribution_boundary"]["install_boundary"].remove(
+        "requirements-agent-review.lock"
+    )
+    errors_lock = validator.validate_manifest(mutated_omit_lock, repo_root=REPO_ROOT)
+    assert any("Required install contract artifact(s) omitted from install_boundary" in err for err in errors_lock)
+    assert any("requirements-agent-review.lock" in err for err in errors_lock)
+
+    # Case B: Completely empty install_boundary: []
+    mutated_empty = copy.deepcopy(manifest)
+    mutated_empty["distribution_boundary"]["install_boundary"] = []
+    errors_empty = validator.validate_manifest(mutated_empty, repo_root=REPO_ROOT)
+    assert any("Required install contract artifact(s) omitted from install_boundary" in err for err in errors_empty)
+
+    # Case C: Declared artifact missing on filesystem (distinguishes omission from missing file)
+    mutated_nonexistent = copy.deepcopy(manifest)
+    mutated_nonexistent["distribution_boundary"]["install_boundary"].append("nonexistent-install-contract.lock")
+    errors_nonexistent = validator.validate_manifest(mutated_nonexistent, repo_root=REPO_ROOT)
+    assert any("does not exist" in err for err in errors_nonexistent)
+
+    # Case D: Fail-closed on unsupported schema_id or manifest_version
+    mutated_schema = copy.deepcopy(manifest)
+    mutated_schema["schema_id"] = "agent-review.unsupported.schema.v99"
+    errors_schema = validator.validate_manifest(mutated_schema, repo_root=REPO_ROOT)
+    assert any("Unsupported or missing schema_id" in err for err in errors_schema)
 
 
 def test_countermodel_m6_v1_or_v2_partial_boundary(tmp_path: Path) -> None:

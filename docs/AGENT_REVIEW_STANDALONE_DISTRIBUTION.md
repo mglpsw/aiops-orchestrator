@@ -107,8 +107,8 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../../te
 - **M1 — Omissão de primitiva compartilhada:** Remover `strict_json.py` causa falha causal direta (`ModuleNotFoundError`) nos módulos dependentes.
 - **M2 — Omissão de assets de templates:** Remover `templates/agentreview-v2-target-pack` causa falha imediata e controlada em `build_target_pack_manifest_v2` com `TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2)`.
 - **M3 — Escape para o checkout original:** O detector de escape rejeita qualquer resolução de módulo cujo `__file__` aponte para fora da raiz standalone.
-- **M4 — Injeção de dependência de runtime:** Declarar `app/models/database.py` ou `fastapi` na distribuição é imediatamente rejeitado pelo validador.
-- **M5 — Omissão de contrato de instalação:** A ausência de `requirements-agent-review.lock` invalida a distribuição.
+- **M4 — Injeção de dependência ou módulo de runtime:** Declarar uma superfície proibida de runtime (`app/models/database.py`) ou injetar código com importação de pacote proibido (`import fastapi`) em arquivos da distribuição é detectado e rejeitado deterministicamente pelo validador via inspeção de AST.
+- **M5 — Violação do contrato estrutural de instalação:** Omitir artefatos obrigatórios da fronteira de instalação (`requirements-agent-review.lock`, `scripts/install-agent-review-toolrepo.sh`, `docs/AGENT_REVIEW_V2_INSTALLATION.md`), declarar fronteira vazia (`install_boundary: []`), apontar arquivo inexistente ou usar schema/versão não suportada invalida deterministicamente a distribuição.
 - **M6 — Fronteira parcial v1 ou v2:** A exclusão acidental de arquivos de qualquer um dos perfis causa falha no controle positivo correspondente.
 
 ---

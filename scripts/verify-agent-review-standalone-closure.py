@@ -23,6 +23,16 @@ DEFAULT_MANIFEST_PATH = (
 )
 
 
+SUPPORTED_SCHEMA_IDS = frozenset({"agent-review.standalone-distribution-manifest.v1"})
+REQUIRED_INSTALL_BOUNDARY_V1 = frozenset(
+    {
+        "requirements-agent-review.lock",
+        "scripts/install-agent-review-toolrepo.sh",
+        "docs/AGENT_REVIEW_V2_INSTALLATION.md",
+    }
+)
+
+
 class StandaloneClosureValidationError(Exception):
     """Raised when the distribution manifest or AST import closure fails validation."""
 
@@ -72,10 +82,33 @@ def validate_manifest(
     root = repo_root or REPO_ROOT
     errors: list[str] = []
 
+    # 0. Version / schema enforcement (fail-closed on unsupported versions)
+    schema_id = manifest.get("schema_id")
+    if schema_id not in SUPPORTED_SCHEMA_IDS:
+        errors.append(
+            f"Unsupported or missing schema_id: {schema_id!r}. Supported: {sorted(SUPPORTED_SCHEMA_IDS)}"
+        )
+        return errors
+
+    manifest_version = manifest.get("manifest_version", "")
+    if not isinstance(manifest_version, str) or not manifest_version.startswith("1."):
+        errors.append(
+            f"Unsupported or missing manifest_version: {manifest_version!r}. Supported: 1.x"
+        )
+        return errors
+
     # 1. Structural schema requirements
     dist_boundary = manifest.get("distribution_boundary")
     if not isinstance(dist_boundary, dict):
         return ["Manifest is missing required 'distribution_boundary' dictionary."]
+
+    # Enforce minimum required install contract anchors for v1
+    install_boundary_entries = set(dist_boundary.get("install_boundary", []))
+    missing_install_anchors = sorted(REQUIRED_INSTALL_BOUNDARY_V1 - install_boundary_entries)
+    if missing_install_anchors:
+        errors.append(
+            f"Required install contract artifact(s) omitted from install_boundary: {missing_install_anchors}"
+        )
 
     forbidden_surfaces = set(manifest.get("forbidden_runtime_surfaces", []))
     dep_closure = manifest.get("dependency_closure", {})
