@@ -107,15 +107,52 @@ countermodels: - app/agent_review/ (AgentReview v1/v2) is NOT part of this runti
                - "LEGACY / NOT USED" marker != unreachable executor
                - "no live deployment observed" != "not deployed": retirement must not proceed on
                  this matrix's evidence alone
-retirement_gate: #19 must inventory the approvals/task execution path, executor configuration,
-               live callers and deployment state, then prove cutover/desuse before source/runtime
-               removal; nothing here authorizes CT102 changes
+               - "legacy executor path inventoried" != "AIOps Runtime execution inventoried": the
+                 Diagnostic Engine's /v1/aiops/actions/run → execute_action() is a second,
+                 independent executable surface with its own persisted data
+retirement_gate: #19 must inventory the legacy approvals/task execution path, the Diagnostic
+               Engine execution path and its three persisted stores (see
+               diagnostic_engine_execution_path), executor configuration, live callers and
+               deployment state, then prove cutover/desuse before source/runtime
+               removal; nothing here authorizes CT102 changes. The gate covers BOTH executable paths
+               above and below; inventorying only the legacy /v1/approvals path does not satisfy it
+diagnostic_engine_execution_path (independent of the legacy path above — its own approval
+               concept, executor and stores; app/agent_router/ is retired with this row):
+               - routes (all behind require_api_token, app/agent_router/main.py:65):
+                 POST /v1/aiops/actions/approvals, GET /v1/aiops/actions/approvals[/{approval_id}],
+                 POST /v1/aiops/actions/approvals/{approval_id}/approve and /reject,
+                 POST /v1/aiops/actions/run (main.py:508-729)
+                 → resolve_approval() → execute_action(action_id) (main.py:659;
+                 app/agent_router/services/action_runner.py:467) → the fixed _RUNNERS allowlist
+                 (config/actions.yaml). Neighbouring read/plan routes of the same engine:
+                 /v1/aiops/diagnose, /actions/{catalog,plan,dry-run}, /v1/aiops/runs/*,
+                 /v1/aiops/audit/recent
+               - persisted stores (app/core/config.py:79-95):
+                 var/audit/aiops_audit.jsonl (audit_log_path),
+                 var/approvals/aiops_approvals.jsonl (approval_store_path),
+                 var/runs/aiops_runs.jsonl (run_store_path)
+               - source-known callers: the HTTP surface itself and the legacy chat bridge
+                 app/services/aiops_chat_router.py (imports diagnose_aiops, list_approvals,
+                 get_run, list_recent_runs — read/diagnose side); app/services/orchestrator.py
+                 imports get_catalog_readiness. External callers of /actions/run and the
+                 approval routes: UNKNOWN_PENDING_19 (RI_A1 records them as unknown by design)
+               - live state of the three stores (existence, size, rotation/compaction, retention
+                 needs) is UNKNOWN_PENDING_19: docs/RI_A1_ADR_OWNERSHIP_MAP.md's "only the audit
+                 file exists on disk" is a historical observation, not a current one
+               - #19 gate (inventory + backup + restore + rollback) must list these routes, their
+                 live callers and all three stores, and decide retain/archive/discard for the
+                 persisted records before any source retirement; #351 slice C must not remove
+                 app/agent_router/ or its stores until that decision exists
 evidence: #19 (OPEN), #351 (OPEN), app/api/routes.py:87-110,
                app/services/orchestrator.py:execute_approved_task,
                app/services/provider_registry.py:get_executor,
+               app/agent_router/main.py:508-729, app/agent_router/services/action_runner.py:467,
+               app/agent_router/services/{approval_store,run_store,audit_log}.py,
+               app/core/config.py:79-95, app/services/aiops_chat_router.py:16-20,
                docs/PROJECT_STATUS.md:82-83, docs/RI_A1_ADR_OWNERSHIP_MAP.md
 limitations: source-observed reachability only; actual deployment/external callers remain UNKNOWN
-               until #19 live inventory
+               until #19 live inventory. Whether the Diagnostic Engine's allowlisted runners are
+               side-effect-free is documented (README.md, RI_A1) but not re-verified here
 status: FINAL_OWNER_ASSIGNED only
 ```
 
@@ -216,6 +253,23 @@ required_asset_trees (outside app/agent_review/, inside the product boundary):
                while consumers exist; related to #203. Any future extraction/rehome must prove
                preservation of templates, schemas, schema digests, byte identity where contracted,
                and Target Pack/conformance behavior. No physical migration has been executed
+required_install_boundary (offline toolrepo installation contract, outside app/agent_review/,
+               inside the product boundary):
+               - requirements-agent-review.lock (hash-pinned; pydantic closure + PyYAML)
+               - scripts/install-agent-review-toolrepo.sh (hard-fails when the lock is absent:
+                 lines 54-57; installs with --require-hashes --no-deps)
+               - docs/AGENT_REVIEW_V2_INSTALLATION.md (the consumption contract that pinned
+                 target workflows follow; lines 12-20 require installing the lock)
+               - tests/agent_review/test_minimal_toolrepo_lock.py (lock/installer contract tests;
+                 the real-install cases are marked requires_network)
+               Disposition: KEEP as part of AgentReview Assured while pinned targets consume the
+               toolrepo. Extraction with source, templates and schemas intact but without these
+               four artifacts leaves a product that pinned target workflows cannot install. The
+               installer also binds --toolrepo-sha to `git rev-parse HEAD` of its own checkout
+               (lines 47-49), so a rehome into another repository invalidates existing target pins:
+               any extraction must prove the lock/installer/contract/tests are preserved, the
+               clean-install check passes at the new SHA, and a re-pin path exists for targets.
+               No physical migration has been executed
 final_owner: AgentReview
 disposition: KEEP in AgentReview
 migration_dependency: integrate/read-back PR #355
@@ -225,10 +279,14 @@ migration_dependency: integrate/read-back PR #355
 countermodels: - #355 ratified != #355 integrated
                - target wiring != Router-backed semantic review
                - "extract app/agent_review/" != "extract AgentReview v2": the required asset trees
+                 and the offline install boundary (lock, installer, installation contract, tests)
                  live outside the package
+               - "source + templates + schemas preserved" != "installable by pinned targets"
                - v2 does not become default/required check by this reconciliation (#46 §2)
 retirement_gate: n/a — kept
 evidence: #46 §1/§4/§5, PR #349, PR #352, Draft PR #355; internal import graph;
+               docs/AGENT_REVIEW_V2_INSTALLATION.md:12-20, scripts/install-agent-review-toolrepo.sh:47-57,
+               requirements-agent-review.lock, tests/agent_review/test_minimal_toolrepo_lock.py;
                mglpsw/AgentEscala#859 only as unqualified target-side evidence
 limitations: no end-to-end Router-backed v2 review is established by this matrix
 status: FINAL_OWNER_ASSIGNED; target migration/cutover remains unqualified until its own exact-head
