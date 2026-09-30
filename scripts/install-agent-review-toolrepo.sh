@@ -132,7 +132,7 @@ fi
 # an unpinned, unverified download that undermines reproducibility between
 # two installs of the same lock file. The venv's own bundled pip (from
 # Python's ensurepip) already supports --require-hashes.
-"$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
+PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"

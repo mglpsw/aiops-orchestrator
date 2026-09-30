@@ -411,10 +411,10 @@ def test_countermodel_l2_ambient_pythonpath_cannot_shadow_pip(tmp_path: Path) ->
 
 
 def test_install_script_invokes_pip_in_isolated_mode() -> None:
-    """M3: scripts/install-agent-review-toolrepo.sh invokes pip with --isolated to ignore caller env and config."""
+    """M3: scripts/install-agent-review-toolrepo.sh invokes pip with PIP_CONFIG_FILE=/dev/null and --isolated."""
     script_text = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    assert "-m pip --isolated install" in script_text, (
-        "scripts/install-agent-review-toolrepo.sh must invoke pip with --isolated"
+    assert 'PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install' in script_text, (
+        "scripts/install-agent-review-toolrepo.sh must invoke pip with PIP_CONFIG_FILE=/dev/null and --isolated"
     )
 
 
@@ -477,7 +477,7 @@ def test_countermodel_m3_pip_isolation_ignores_pip_target(tmp_path: Path) -> Non
 
 
 def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -> None:
-    """Countermodel M3: pip --isolated ignores user pip configuration file (e.g. ~/.config/pip/pip.conf)."""
+    """Countermodel M3: PIP_CONFIG_FILE=/dev/null and pip --isolated disables all user, global, and env pip configuration."""
     fake_home = tmp_path / "fake_home"
     pip_conf_dir = fake_home / ".config" / "pip"
     pip_conf_dir.mkdir(parents=True)
@@ -490,7 +490,7 @@ def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -
 
     env_with_conf = dict(os.environ, HOME=str(fake_home), XDG_CONFIG_HOME=str(fake_home / ".config"))
 
-    # Flaw proof: unisolated pip reads user configuration file
+    # Flaw proof 1: unisolated pip reads user configuration file
     res_unisolated = subprocess.run(
         [venv_py, "-I", "-m", "pip", "config", "list"],
         env=env_with_conf,
@@ -500,7 +500,7 @@ def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -
     assert res_unisolated.returncode == 0
     assert "target=" in res_unisolated.stdout, "Precondition: unisolated pip must reflect user pip config"
 
-    # Fix proof: isolated pip (--isolated) completely ignores user configuration file
+    # Fix proof 1: isolated pip (--isolated) ignores user configuration file
     res_isolated = subprocess.run(
         [venv_py, "-I", "-m", "pip", "--isolated", "config", "list"],
         env=env_with_conf,
@@ -509,6 +509,32 @@ def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -
     )
     assert res_isolated.returncode == 0
     assert "target=" not in res_isolated.stdout, "Isolated pip must NOT reflect user pip config"
+
+    # Flaw proof 2 (Codex finding): caller-exported PIP_CONFIG_FILE is still loaded by --isolated alone
+    caller_config_file = tmp_path / "caller_pip.conf"
+    evil_caller_target = tmp_path / "evil_caller_target"
+    caller_config_file.write_text(f"[global]\ntarget = {evil_caller_target}\n", encoding="utf-8")
+    env_caller_config = dict(os.environ, PIP_CONFIG_FILE=str(caller_config_file))
+
+    res_caller_unprotected = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--isolated", "config", "list"],
+        env=env_caller_config,
+        capture_output=True,
+        text=True,
+    )
+    assert res_caller_unprotected.returncode == 0
+    assert "target=" in res_caller_unprotected.stdout, "Precondition: --isolated alone still loads env-selected PIP_CONFIG_FILE"
+
+    # Fix proof 2: PIP_CONFIG_FILE=/dev/null suppresses caller-selected and global configuration
+    env_caller_disabled = dict(env_caller_config, PIP_CONFIG_FILE="/dev/null")
+    res_caller_protected = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--isolated", "config", "list"],
+        env=env_caller_disabled,
+        capture_output=True,
+        text=True,
+    )
+    assert res_caller_protected.returncode == 0
+    assert "target=" not in res_caller_protected.stdout, "PIP_CONFIG_FILE=/dev/null must disable env-selected config"
 
 
 def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:

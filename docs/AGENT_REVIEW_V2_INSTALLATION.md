@@ -53,8 +53,8 @@ The script:
    matches CPython 3.11 on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. normalizes the prospective `<venv-dir>` path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
 5. creates a fresh venv at the verified, canonical prospective path using isolated venv execution (`$PYTHON_BIN -I -S -m venv`), completely isolated from ambient `PYTHONPATH`;
-6. installs `requirements-agent-review.lock` using isolated pip execution with pip-level isolation
-   (`$VENV_TARGET/bin/python3 -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"`), preventing ambient `PYTHONPATH` from shadowing pip, and ignoring caller environment variables (such as `PIP_TARGET`, `PIP_PREFIX`) and user pip configuration files (`pip.conf`), ensuring locked packages are installed strictly into the target venv.
+6. installs `requirements-agent-review.lock` using isolated pip execution with pip-level isolation and configuration disabled
+   (`PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"`), preventing ambient `PYTHONPATH` from shadowing pip, and ignoring caller environment variables (such as `PIP_TARGET`, `PIP_PREFIX`), caller-exported `PIP_CONFIG_FILE`, and user/global configuration files (`pip.conf`), ensuring locked packages are installed strictly into the target venv.
 
 `--toolrepo-sha` is optional for local iteration but should always be
 supplied by an automated privileged workflow, so the install step itself

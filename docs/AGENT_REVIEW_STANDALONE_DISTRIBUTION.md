@@ -195,7 +195,7 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **L-03** | Incompatibilidade de plataforma do lockfile antes da criação do venv | O probe isolado valida a plataforma completa (CPython 3.11, Linux, x86_64, glibc >= 2.17) antes de criar o venv, impedindo venvs parciais/quebrados em arquiteturas ou libcs incompatíveis (aarch64, musl, macOS). |
 | **M-01** | Completude da fronteira negativa (32 superfícies canônicas) | `REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1` e manifesto canônico exigem paridade total com todas as 32 superfícies de runtime (incluindo `config/providers.yml`, `config/policies.yml`, `config/routes.yml` e scripts de runtime); omissão ou inserção na fronteira positiva falha closed. |
 | **M-02** | Confinamento de origem por componentes no detector M3 | O detector executável de escape utiliza `Path.is_relative_to`, comprovando a rejeição tanto de escapes para o repo original quanto para diretórios irmãos que compartilham prefixo de string (`/standalone-old`). |
-| **M-03** | Isolamento de configuração e variáveis do pip (`--isolated`) | O instalador invoca `pip --isolated`, ignorando variáveis de ambiente do chamador (`PIP_TARGET`, `PIP_PREFIX`) e configurações de usuário (`pip.conf`), garantindo instalação estrita no venv alvo. |
+| **M-03** | Isolamento de configuração e variáveis do pip (`PIP_CONFIG_FILE=/dev/null` + `--isolated`) | O instalador invoca `PIP_CONFIG_FILE=/dev/null ... -m pip --isolated`, ignorando variáveis de ambiente do chamador (`PIP_TARGET`, `PIP_PREFIX`), `PIP_CONFIG_FILE` exportado e configurações globais/do usuário (`pip.conf`), garantindo instalação estrita no venv alvo. |
 
 ---
 
