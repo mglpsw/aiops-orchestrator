@@ -3206,9 +3206,11 @@ def _module_handle_violations(tree, parent) -> list[str]:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FORBIDDEN_BUILTINS:
             violations.append(f"{where}: namespace/IO builtin {node.func.id}")
     if _N2_SWITCHES["cdll_reference_closure"]:
-        for line, disposition in _cdll_reference_dispositions(tree, parent):
-            if disposition == "violation":
-                violations.append(f"line {line}: ctypes.CDLL reference outside the capability-reference closure")
+        for reference, disposition in _cdll_reference_dispositions(tree, parent):
+            if disposition == "VIOLATION":
+                violations.append(
+                    f"line {reference.lineno}: ctypes.CDLL reference outside the capability-reference closure"
+                )
     return violations
 
 
@@ -3219,8 +3221,9 @@ _N2_SWITCHES = {
     "importfrom_ctypes_forbidden": True,
     "runtime_region_is_body_only": True,
     "canonical_carrier_required": True,
+    "annotation_slot_only": True,
 }
-_CDLL_DISPOSITIONS = ("canonical_runtime_construction", "non_evaluated_annotation", "violation")
+_CDLL_DISPOSITIONS = ("CANONICAL_RUNTIME_CONSTRUCTION", "POSTPONED_ANNOTATION", "VIOLATION")
 
 
 def _wrapper_region(tree, parent):
@@ -3278,17 +3281,28 @@ def _in_annotation(node, parent) -> bool:
     return False
 
 
-def _cdll_reference_dispositions(tree, parent) -> list[tuple[int, str]]:
+def _under_annotated_statement(node, parent) -> bool:
+    """Mutant M4 only: ANY child of an annotated statement counts as annotation
+    (collapses `PostponedAnnotationReference != ExecutableCapabilityReference`)."""
+    current = node
+    while current in parent:
+        current = parent[current]
+        if isinstance(current, ast.AnnAssign):
+            return True
+    return False
+
+
+def _cdll_reference_dispositions(tree, parent) -> list[tuple[ast.AST, str]]:
     """`CapabilityReferenceKnown != CapabilityCallShapeKnown`.
 
     EVERY explicit `ctypes.CDLL` reference (an `Attribute(Name("ctypes"),
     "CDLL")`, called or not) gets exactly one disposition:
-      canonical_runtime_construction  the `func` of `<name> = ctypes.CDLL(...)`
+      CANONICAL_RUNTIME_CONSTRUCTION  the `func` of `<name> = ctypes.CDLL(...)`
                                       (simple Assign, one Name target) inside
                                       the wrapper runtime region;
-      non_evaluated_annotation        inside an annotation slot, AND the module
+      POSTPONED_ANNOTATION            inside an annotation slot, AND the module
                                       has `from __future__ import annotations`;
-      violation                       anything else (decorator, alias, return,
+      VIOLATION                       anything else (decorator, alias, return,
                                       container, walrus, header, other scope)."""
     future_annotations = any(
         isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__"
@@ -3296,7 +3310,7 @@ def _cdll_reference_dispositions(tree, parent) -> list[tuple[int, str]]:
         for stmt in tree.body
     )
     _, _, in_region = _wrapper_region(tree, parent)
-    dispositions: list[tuple[int, str]] = []
+    dispositions: list[tuple[ast.AST, str]] = []
     for node in ast.walk(tree):
         if not _is_cdll_reference(node):
             continue
@@ -3310,12 +3324,14 @@ def _cdll_reference_dispositions(tree, parent) -> list[tuple[int, str]]:
         if not _N2_SWITCHES["canonical_carrier_required"]:
             canonical_carrier = isinstance(call, ast.Call) and call.func is node  # mutant M-CANONICAL-CARRIER
         if canonical_carrier and in_region(node):
-            disposition = "canonical_runtime_construction"
-        elif future_annotations and _in_annotation(node, parent):
-            disposition = "non_evaluated_annotation"
+            disposition = "CANONICAL_RUNTIME_CONSTRUCTION"
+        elif future_annotations and (
+            _in_annotation(node, parent) if _N2_SWITCHES["annotation_slot_only"] else _under_annotated_statement(node, parent)
+        ):
+            disposition = "POSTPONED_ANNOTATION"
         else:
-            disposition = "violation"
-        dispositions.append((node.lineno, disposition))
+            disposition = "VIOLATION"
+        dispositions.append((node, disposition))
     return dispositions
 
 
@@ -4509,6 +4525,8 @@ _CDLL_REFERENCE_ESCAPES = {
     "walrus-module": ("append", "\n\n(_libc := ctypes.CDLL(None))\n"),
     "walrus-in-wrapper-body": ("header", _WRAPPER_HEADER + "\n    (libc := ctypes.CDLL(None))"),
     "module-level-construction": ("append", "\n\n_H = ctypes.CDLL(None)\n"),
+    "call-argument": ("append", "\n\n_foo_v2(ctypes.CDLL)\n"),
+    "class-attribute": ("append", "\n\nclass _X_v2:\n    factory = ctypes.CDLL\n"),
     "nested-scope-in-wrapper": ("header", _WRAPPER_HEADER + "\n    def _inner():\n        libc = ctypes.CDLL(None)"),
 }
 
@@ -4567,8 +4585,9 @@ def test_n2_reference_completeness_invariant_on_the_exact_source() -> None:
     dispositions = _cdll_reference_dispositions(tree, parent)
     assert len(dispositions) == len(references) >= 2
     assert all(d in _CDLL_DISPOSITIONS for _, d in dispositions)
-    assert [d for _, d in dispositions].count("canonical_runtime_construction") == 1
-    assert {d for _, d in dispositions} == {"canonical_runtime_construction", "non_evaluated_annotation"}
+    assert [d for _, d in dispositions].count("CANONICAL_RUNTIME_CONSTRUCTION") == 1
+    assert {d for _, d in dispositions} == {"CANONICAL_RUNTIME_CONSTRUCTION", "POSTPONED_ANNOTATION"}
+    assert _classification_partition(source)["ok"]
     assert _acquisition_census(source) == []
     assert "libc.syscall(" in textwrap.dedent(inspect.getsource(psv._syscall_v2))
 
@@ -4596,12 +4615,17 @@ _N2_PROPERTY_MUTANTS = {
     ],
     # M-CANONICAL-CARRIER: any CDLL call in the region accepted -> walrus survives
     "canonical_carrier_required": [_with_wrapper_header(_WRAPPER_HEADER + "\n    (libc := ctypes.CDLL(None))")],
+    # M4 annotation collapse: any child of an annotated statement counts as
+    # annotation -> the executable VALUE reference beside a postponed
+    # annotation survives
+    "annotation_slot_only": [_psv_plus("\n\n_Y: ctypes.CDLL = ctypes.CDLL(None)\n")],
 }
 _N2_PROPERTY_FACTS = {
     "cdll_reference_closure": "ctypes.CDLL reference outside the capability-reference closure",
     "importfrom_ctypes_forbidden": "from-import of ctypes forbidden",
     "runtime_region_is_body_only": None,  # either region fact (CDLL or .syscall)
     "canonical_carrier_required": "ctypes.CDLL reference outside the capability-reference closure",
+    "annotation_slot_only": "ctypes.CDLL reference outside the capability-reference closure",
 }
 
 
@@ -4625,3 +4649,55 @@ def test_n2_property_mutants_are_killed_by_the_intended_fact(switch: str, monkey
         monkeypatch.setitem(_N2_SWITCHES, switch, True)
         mutant_facts = _region_facts(mutant) if fact is None else [v for v in mutant if fact in v]
         assert mutant_facts == [], (switch, mutant)  # the witness survives only because of the property
+
+
+
+# -- N2 classification totality (maintainer adjudication, reviewer protocol §19) ---------------
+
+
+def _classification_partition(source: str) -> dict[str, object]:
+    """Every explicit `ctypes.CDLL` reference appears in EXACTLY one bucket:
+    |refs| == |CANONICAL| + |POSTPONED| + |VIOLATION|, buckets pairwise
+    disjoint, their union is the reference set (nothing invisible)."""
+    tree = ast.parse(source)
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    references = {id(n) for n in ast.walk(tree) if _is_cdll_reference(n)}
+    buckets: dict[str, set[int]] = {label: set() for label in _CDLL_DISPOSITIONS}
+    classified: list[int] = []
+    for reference, disposition in _cdll_reference_dispositions(tree, parent):
+        buckets[disposition].add(id(reference))
+        classified.append(id(reference))
+    labels = list(buckets)
+    disjoint = all(not (buckets[a] & buckets[b]) for i, a in enumerate(labels) for b in labels[i + 1 :])
+    total = set().union(*buckets.values()) == references
+    once = len(classified) == len(set(classified)) == len(references)
+    sizes = {label: len(ids) for label, ids in buckets.items()}
+    return {"ok": disjoint and total and once and sum(sizes.values()) == len(references), "sizes": sizes, "refs": len(references)}
+
+
+def test_n2_cdll_classification_is_total_and_disjoint_over_the_whole_corpus() -> None:
+    """Totality over the exact source PLUS every historical and new CDLL
+    witness at once: no reference is invisible, none is classified twice."""
+    corpus = Path(_PSV_FILE).read_text()
+    for kind, text in _CDLL_REFERENCE_ESCAPES.values():
+        if kind == "append":
+            corpus += text
+    corpus += "\n\n_Y: ctypes.CDLL = ctypes.CDLL(None)\n"
+    partition = _classification_partition(corpus)
+    assert partition["ok"], partition
+    sizes = partition["sizes"]
+    assert sizes["CANONICAL_RUNTIME_CONSTRUCTION"] == 1
+    assert sizes["POSTPONED_ANNOTATION"] == 2  # _LIBC_V2 and _Y annotations
+    assert sizes["VIOLATION"] == partition["refs"] - 3 >= 9
+
+
+def test_n2_classification_totality_discriminator_is_not_vacuous(monkeypatch) -> None:
+    """If the disposition function silently skipped a reference (e.g. a new
+    carrier it forgot), the partition check must fail."""
+    real = _cdll_reference_dispositions
+
+    def forgetful(tree, parent):
+        return [(ref, d) for ref, d in real(tree, parent) if d != "VIOLATION"][:-1] or []
+
+    monkeypatch.setattr(sys.modules[__name__], "_cdll_reference_dispositions", forgetful)
+    assert _classification_partition(_psv_plus("\n\nF = ctypes.CDLL\n"))["ok"] is False

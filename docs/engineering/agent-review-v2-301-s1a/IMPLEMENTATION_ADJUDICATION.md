@@ -924,3 +924,70 @@ Other outcomes:
 - A new explicit static reference escaping the closure gives `STOP_N2_STATIC_CAPABILITY_REFERENCE_CLOSURE`.
 - A production material finding gives `STOP_NEW_PRODUCTION_FINDING`.
 - NITs, wording and dynamic equivalences outside the claim do not open a round.
+
+---
+
+## 15. Maintainer adjudication of the 58ef4ca STOP, reconciled with the live head (append-only)
+
+```yaml
+adjudication_subject: 58ef4ca0e1bdf1e14a26cc849ed98851924209bf
+live_head_when_received: 4730d949982b18b5c37e0a9e0ab1b7d424756082   # already carried §14 (StaticCapabilityReferenceClosure)
+record_chain: "58ef4ca → Codex clean → independent static counterexample → author reproduction → valid counterexample refutes predicate → CDLL call-shape recurrence → CallSyntaxClosure != CapabilityReferenceClosure → StaticCapabilityReferenceClosure redesign"
+laws:
+  - "CodexClean != PredicateQualifiedWhenValidCounterexampleExists"   # one valid counterexample refutes; no reviewer consensus is needed
+  - "N2Stop != ProductionFailure"
+  - "CallSyntaxClosure != CapabilityReferenceClosure"
+production_changes_this_round: none   # app/ byte-identical to 0672d16
+write_set: [tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+```
+
+### 15.1 Reconciliation with 4730d94
+
+The adjudication was written against 58ef4ca. When it arrived, the live head 4730d94 already implemented the redesign it describes: the reference-based CDLL classification, the `from ctypes import` ban, the reference-based `.syscall` rule, the canonical construction inside `WrapperRuntimeRegion`, the future-import-bound annotation exception, and the M1–M3 mutants.
+
+The 4730d94 disposition `301_S1A_STRUCTURAL_REDESIGN_CANDIDATE` was declared under §14.6. This adjudication's terminal rule is stricter: it requires classification **totality and pairwise disjointness**, and the annotation-collapse mutant **M4**. The 4730d94 disposition is therefore **superseded** and re-decided on the new head.
+
+### 15.2 Delta on the new head
+
+- **Labels, exactly as adjudicated:** `CANONICAL_RUNTIME_CONSTRUCTION`, `POSTPONED_ANNOTATION`, `VIOLATION`. There is no fourth category. `PostponedAnnotationReference != ExecutableCapabilityReference`.
+- **Per-reference dispositions:** they are now keyed by AST node, not by line.
+- **Classification-totality discriminator (`_classification_partition`).** The union of the three buckets equals the set of explicit `ctypes.CDLL` references, and every reference is classified exactly once. The buckets are pairwise disjoint, and `|refs| == |CANONICAL| + |POSTPONED| + |VIOLATION|`. It is checked on the exact source (1 canonical, 1 postponed, 0 violations) and on a corpus made of the exact source plus every appended CDLL witness at once.
+- **Totality anti-vacuity:** a disposition function that silently drops one reference makes the partition check fail.
+- **M4 (annotation collapse):** the switch `annotation_slot_only` turned off treats any child of an annotated statement as annotation. The witness `_Y: ctypes.CDLL = ctypes.CDLL(None)` then survives, because its executable value reference passes as annotation. With the switch on, exactly that reference is a violation.
+- **Witnesses added:** `foo(ctypes.CDLL)` and `class X: factory = ctypes.CDLL`. The 4730d94 closure already refused both, so they are regression witnesses, not new REDs.
+
+The consolidated N2 corpus (§12–§15) keeps every historical witness:
+
+- **`.syscall`:**
+  - module-level;
+  - nested and method `_syscall_v2`;
+  - `self.libc`;
+  - arbitrary receiver;
+  - in the wrapper's decorator, positional default or keyword default.
+- **CDLL:**
+  - module-level construction;
+  - in the wrapper's decorator or defaults;
+  - `@ctypes.CDLL`, and stacked under `@print`;
+  - alias, `return`, container, call argument, class attribute;
+  - walrus at module level and in the body;
+  - in a nested scope or an evaluated annotation.
+- **Imports:** `from ctypes import CDLL`, `… as X`, `c_long`, `ctypes.util`.
+- **Positive controls:**
+  - the canonical `libc = ctypes.CDLL(...)`;
+  - `libc.syscall(...)` in the region;
+  - `_LIBC_V2: ctypes.CDLL | None = None`.
+
+### 15.3 Reviewer protocol and terminal rule
+
+Reviewers answer:
+
+> Is there any explicit static AST reference to `ctypes.CDLL` that does not receive exactly one admitted disposition, or any explicit `.syscall` reference outside the WrapperRuntimeRegion?
+
+They also report the usual material production defect or declared-domain invalidation. The question tests the totality of the classification, not a list of syntaxes.
+
+The terminal rule is the maintainer's (§21 of the adjudication text): `301_S1A_STRUCTURAL_REDESIGN_CANDIDATE` when every condition holds. The other outcomes:
+- An unclassified explicit static reference gives `STOP_N2_REFERENCE_CLOSURE`.
+- A production refutation gives `STOP_NEW_PRODUCTION_FINDING`.
+- Dynamic observations outside the claim do not reopen the round.
+
+The claim remains `StaticCapabilityReferenceClosure`, not `UniversalPythonCapabilityReachability` (§14.5).
