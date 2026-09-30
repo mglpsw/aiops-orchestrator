@@ -101,19 +101,22 @@ _GIT_SHA_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
-    """The real `git rev-parse HEAD` of `toolrepo_root`, or a refusal.
+    """The real `git rev-parse HEAD` of `toolrepo_root`, or attested source identity, or a refusal.
 
-    Adversarial review finding, confirmed and fixed: the previous version
-    silently fell back to an all-zero SHA (`"0" * 40`) whenever `git
-    rev-parse` failed (e.g. `--toolrepo-root` not a real git checkout),
-    and every caller wrote that fabricated value straight into
-    `TargetPackManifestV2.toolrepo_sha`/`TargetInstallReceiptV2.
-    toolrepo_sha` -- a receipt whose entire stated purpose (spec `§4`) is
-    to be "provenance-carrying". Reproduced: `init` against a
-    non-git-checkout `--toolrepo-root` exited 0 and wrote a receipt
-    claiming `toolrepo_sha: "0000...0000"`, a fabricated identity, not a
-    refusal. Never silently fabricate provenance -- refuse instead, by
-    name."""
+    In a git checkout, resolves `git rev-parse HEAD`.
+    In an attestation-backed standalone distribution, resolves `.source-commit`
+    or `.toolrepo-sha`.
+    Never silently fabricate provenance -- refuse instead, by name."""
+
+    for fname in (".source-commit", ".toolrepo-sha"):
+        attestation_file = toolrepo_root / fname
+        if attestation_file.is_file():
+            try:
+                sha = attestation_file.read_text(encoding="utf-8").strip().lower()
+                if _GIT_SHA_HEX_RE.fullmatch(sha) and sha != _ALL_ZERO_SHA_V2:
+                    return sha
+            except Exception:
+                pass
 
     import subprocess
 
@@ -123,7 +126,7 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
         text=True,
         check=False,
     )
-    sha = completed.stdout.strip()
+    sha = completed.stdout.strip().lower()
     if completed.returncode != 0 or not _GIT_SHA_HEX_RE.fullmatch(sha) or sha == _ALL_ZERO_SHA_V2:
         raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
     return sha

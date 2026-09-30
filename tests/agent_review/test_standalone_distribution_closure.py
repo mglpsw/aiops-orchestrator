@@ -427,7 +427,8 @@ def test_positive_control_v2_external_asset_traversal(tmp_path: Path) -> None:
     """B0-C4, B0-C6: v2 target-pack build traverses external templates and schemas in standalone root."""
     standalone = tmp_path / "standalone_v2"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-    head_sha = _init_git_in_standalone(standalone)
+    assert not (standalone / ".git").exists()
+    head_sha = (standalone / ".source-commit").read_text(encoding="utf-8").strip()
     _run_v2_probe(standalone, head_sha)
 
 
@@ -435,7 +436,8 @@ def test_positive_control_v1_v2_coexistence(tmp_path: Path) -> None:
     """B0-C6: v1 and v2 coexist in the exact same standalone materialization without conflict."""
     standalone = tmp_path / "standalone_coexistence"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-    head_sha = _init_git_in_standalone(standalone)
+    assert not (standalone / ".git").exists()
+    head_sha = (standalone / ".source-commit").read_text(encoding="utf-8").strip()
     _run_coexistence_probe(standalone, head_sha)
 
 
@@ -467,11 +469,12 @@ def test_countermodel_m2_omit_target_pack_template_asset(tmp_path: Path) -> None
     """Countermodel M2: Omitting the target pack template asset causes build_target_pack_manifest_v2 to fail."""
     standalone = tmp_path / "standalone_m2"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    assert not (standalone / ".git").exists()
 
     # Deliberately remove templates directory
     import shutil
     shutil.rmtree(standalone / "templates" / "agentreview-v2-target-pack")
-    head_sha = _init_git_in_standalone(standalone)
+    head_sha = (standalone / ".source-commit").read_text(encoding="utf-8").strip()
 
     failing_code = f"""
 from pathlib import Path
@@ -1783,12 +1786,206 @@ def test_countermodel_p10_check_and_materialize_mutually_exclusive_write_zero(tm
     assert not target_dir.exists(), f"Target directory must not be created (preview/dry-run is write-zero): {target_dir}"
 
 
+def test_countermodel_p11_refuse_materialize_from_dirty_boundary(tmp_path: Path) -> None:
+    """P11: Materialization refuses to attest a dirty working tree if uncommitted or untracked changes exist in declared distribution boundary."""
+    fake_repo = tmp_path / "fake_git_repo"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+    _init_git_in_standalone(fake_repo)
+
+    target_dirty = tmp_path / "target_dirty"
+    # Case A: Modify a tracked file inside declared boundary
+    tracked_file = fake_repo / "app" / "agent_review" / "contracts_v2.py"
+    original_text = tracked_file.read_text(encoding="utf-8")
+    try:
+        tracked_file.write_text(original_text + "\n# dirty uncommitted modification\n", encoding="utf-8")
+        with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+            validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dirty)
+        assert "dirty repository" in str(exc_a.value)
+        assert not target_dirty.exists()
+    finally:
+        tracked_file.write_text(original_text, encoding="utf-8")
+
+    # Case B: Untracked file inside declared distribution directory
+    untracked_inside = fake_repo / "app" / "agent_review" / "untracked_probe.py"
+    target_untracked = tmp_path / "target_untracked"
+    try:
+        untracked_inside.write_text("# untracked file\n", encoding="utf-8")
+        with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+            validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_untracked)
+        assert "dirty repository" in str(exc_b.value)
+        assert not target_untracked.exists()
+    finally:
+        if untracked_inside.exists():
+            untracked_inside.unlink()
+
+    # Case C: Untracked file OUTSIDE declared distribution boundary does not block materialization
+    untracked_outside = fake_repo / "scratch_outside" / "ignored.txt"
+    untracked_outside.parent.mkdir(parents=True, exist_ok=True)
+    untracked_outside.write_text("outside\n", encoding="utf-8")
+    target_clean = tmp_path / "target_clean"
+    dest = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_clean)
+    assert dest.exists()
+    assert not (dest / "scratch_outside").exists()
+
+
+def test_countermodel_p12_target_pack_cli_runs_in_materialized_tree_without_git(tmp_path: Path) -> None:
+    """P12: Target-pack CLI commands (init and doctor) run cleanly in a materialized tree without git history."""
+    standalone = tmp_path / "standalone_cli"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+    assert not (standalone / ".git").exists()
+    attested_sha = (standalone / ".source-commit").read_text(encoding="utf-8").strip()
+
+    cli_path = standalone / "scripts" / "agent-review-target-pack-v2.py"
+    target_root = tmp_path / "target_consumer"
+
+    # 1. Preview init without --apply (write-zero)
+    res_preview = subprocess.run(
+        [
+            sys.executable,
+            str(cli_path),
+            "init",
+            "--target-root",
+            str(target_root),
+            "--toolrepo-root",
+            str(standalone),
+            "--target-repo",
+            "owner/repo",
+            "--pack-version",
+            "0.1.0",
+        ],
+        capture_output=True,
+        text=True,
+        env=_clean_env(standalone),
+    )
+    assert res_preview.returncode == 0, f"Preview failed: {res_preview.stderr}"
+    assert not target_root.exists()
+    preview_data = json.loads(res_preview.stdout)
+    assert preview_data["operation"] == "init"
+    plan_hash = preview_data["operation_plan_hash"]
+
+    # 2. Apply init with expected plan hash
+    res_apply = subprocess.run(
+        [
+            sys.executable,
+            str(cli_path),
+            "init",
+            "--target-root",
+            str(target_root),
+            "--toolrepo-root",
+            str(standalone),
+            "--target-repo",
+            "owner/repo",
+            "--pack-version",
+            "0.1.0",
+            "--apply",
+            "--expected-plan-sha256",
+            plan_hash,
+        ],
+        capture_output=True,
+        text=True,
+        env=_clean_env(standalone),
+    )
+    assert res_apply.returncode == 0, f"Apply failed: {res_apply.stderr}"
+    receipt_file = target_root / ".aiops" / "install-receipt.v2.json"
+    assert receipt_file.is_file()
+    receipt_data = json.loads(receipt_file.read_text(encoding="utf-8"))
+    assert receipt_data["toolrepo_sha"] == attested_sha
+
+    # 3. Doctor command in standalone environment without git
+    res_doctor = subprocess.run(
+        [
+            sys.executable,
+            str(cli_path),
+            "doctor",
+            "--target-root",
+            str(target_root),
+            "--toolrepo-root",
+            str(standalone),
+            "--target-repo",
+            "owner/repo",
+            "--pack-version",
+            "0.1.0",
+        ],
+        capture_output=True,
+        text=True,
+        env=_clean_env(standalone),
+    )
+    assert res_doctor.returncode == 0, f"Doctor failed: {res_doctor.stderr}"
+    doctor_data = json.loads(res_doctor.stdout)
+    assert doctor_data["healthy"] is True
+
+
+def test_countermodel_p13_reject_special_files_before_target_creation(tmp_path: Path) -> None:
+    """P13: Special files (FIFO, socket, device) inside declared distribution boundary are rejected before destination creation."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("os.mkfifo not available on this platform")
+
+    fake_source = tmp_path / "fake_source_p13"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    fifo_path = fake_source / "app" / "agent_review" / "test_fifo"
+    try:
+        os.mkfifo(fifo_path)
+    except OSError as exc:
+        pytest.skip(f"Filesystem does not support mkfifo: {exc}")
+
+    try:
+        # Validate manifest catches the special file
+        manifest = validator.load_manifest()
+        errors = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Special file (FIFO, socket, device) not permitted in distribution boundary" in e for e in errors)
+
+        # Materialization raises before creating destination directory
+        target_dest = tmp_path / "target_should_not_exist_p13"
+        with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+            validator.materialize_standalone_distribution(repo_root=fake_source, target_dir=target_dest)
+        assert "Special file (FIFO, socket, device) not permitted in distribution boundary" in str(exc_info.value)
+        assert not target_dest.exists(), f"Target destination must not be created when special file is detected: {target_dest}"
+    finally:
+        if fifo_path.exists():
+            fifo_path.unlink()
+
+
+def test_countermodel_p14_verify_explicit_source_sha_against_source(tmp_path: Path) -> None:
+    """P14: Explicit source_sha is strictly validated against independently resolved identity and cannot fabricate proof."""
+    target_a = tmp_path / "target_sha_a"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_a, source_sha="0" * 40)
+    assert "non-zero lowercase hex" in str(exc_a.value)
+    assert not target_a.exists()
+
+    target_b = tmp_path / "target_sha_b"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_b, source_sha="1" * 40)
+    assert "does not match independently resolved source identity" in str(exc_b.value)
+    assert not target_b.exists()
+
+    fake_source = tmp_path / "fake_source_p14"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    (fake_source / ".source-commit").unlink()
+    (fake_source / ".toolrepo-sha").unlink()
+    target_c = tmp_path / "target_sha_c"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_c:
+        validator.materialize_standalone_distribution(repo_root=fake_source, target_dir=target_c, source_sha="2" * 40)
+    assert "Cannot determine verifiable source identity" in str(exc_c.value)
+    assert not target_c.exists()
+
+    head_proc = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+    real_sha = head_proc.stdout.strip().lower()
+    target_d = tmp_path / "target_sha_d"
+    dest = validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target_d, source_sha=real_sha)
+    assert dest.exists()
+    assert (dest / ".source-commit").read_text(encoding="utf-8").strip() == real_sha
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""
     standalone = tmp_path / "standalone_composed"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
-    head_sha = _init_git_in_standalone(standalone)
+    assert not (standalone / ".git").exists()
+    head_sha = (standalone / ".source-commit").read_text(encoding="utf-8").strip()
 
     venv_dir = tmp_path / "venv"
     install_script = standalone / "scripts" / "install-agent-review-toolrepo.sh"

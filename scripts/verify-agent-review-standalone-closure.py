@@ -486,12 +486,16 @@ def validate_manifest(
                 errors.append(f"Failed to resolve path {rel_path_str}: {exc}")
                 continue
 
-            # If directory, ensure no contained item is a symlink
+            # If directory, ensure no contained item is a symlink or special file
             if full_path.is_dir():
                 for sub in full_path.rglob("*"):
                     if sub.is_symlink():
                         errors.append(
                             f"Symlink found in declared distribution tree '{rel_path_str}': {sub.relative_to(root)}"
+                        )
+                    elif not (sub.is_file() or sub.is_dir()):
+                        errors.append(
+                            f"Special file (FIFO, socket, device) not permitted in distribution boundary '{rel_path_str}': {sub.relative_to(root)}"
                         )
 
     # 3. Gather all Python files in the distribution boundary
@@ -611,48 +615,70 @@ def materialize_standalone_distribution(
             f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
         )
 
-    # Resolve verifiable source identity to preserve in the materialized distribution (P-09)
-    attested_sha: str | None = None
-    if source_sha is not None:
-        cand = source_sha.strip().lower()
-        if not re.fullmatch(r"^[0-9a-f]{40}$", cand):
-            raise StandaloneClosureValidationError(
-                f"Explicit source_sha must be a full 40-character lowercase hex commit SHA, got: {source_sha!r}"
+    # Resolve verifiable source identity to preserve in the materialized distribution (P-09, P-14)
+    resolved_sha: str | None = None
+
+    # 1. Check for existing attestation files in repo_root
+    src_commit_file = repo_root / ".source-commit"
+    toolrepo_sha_file = repo_root / ".toolrepo-sha"
+    if src_commit_file.is_file():
+        cand = src_commit_file.read_text(encoding="utf-8").strip().lower()
+        if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
+            resolved_sha = cand
+    elif toolrepo_sha_file.is_file():
+        cand = toolrepo_sha_file.read_text(encoding="utf-8").strip().lower()
+        if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
+            resolved_sha = cand
+
+    is_git_repo = False
+    if resolved_sha is None:
+        # Query git rev-parse HEAD from repo_root
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
             )
-        attested_sha = cand
+            if proc.returncode == 0:
+                cand = proc.stdout.strip().lower()
+                if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
+                    resolved_sha = cand
+                    is_git_repo = True
+        except Exception:
+            pass
     else:
-        # Check for existing attestation files in repo_root
-        src_commit_file = repo_root / ".source-commit"
-        toolrepo_sha_file = repo_root / ".toolrepo-sha"
-        if src_commit_file.is_file():
-            cand = src_commit_file.read_text(encoding="utf-8").strip().lower()
-            if re.fullmatch(r"^[0-9a-f]{40}$", cand):
-                attested_sha = cand
-        elif toolrepo_sha_file.is_file():
-            cand = toolrepo_sha_file.read_text(encoding="utf-8").strip().lower()
-            if re.fullmatch(r"^[0-9a-f]{40}$", cand):
-                attested_sha = cand
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip() == "true":
+                is_git_repo = True
+        except Exception:
+            pass
 
-        if attested_sha is None:
-            # Query git rev-parse HEAD from repo_root
-            try:
-                proc = subprocess.run(
-                    ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if proc.returncode == 0:
-                    cand = proc.stdout.strip().lower()
-                    if re.fullmatch(r"^[0-9a-f]{40}$", cand):
-                        attested_sha = cand
-            except Exception:
-                pass
-
-    if attested_sha is None:
+    if resolved_sha is None:
         raise StandaloneClosureValidationError(
             f"Cannot determine verifiable source identity from {repo_root}: not a git repository and no source attestation found"
         )
+
+    # Require explicit source_sha to match independently resolved identity (P-14)
+    if source_sha is not None:
+        cand_explicit = source_sha.strip().lower()
+        if not re.fullmatch(r"^[0-9a-f]{40}$", cand_explicit) or cand_explicit == "0" * 40:
+            raise StandaloneClosureValidationError(
+                f"Explicit source_sha must be a full 40-character non-zero lowercase hex commit SHA, got: {source_sha!r}"
+            )
+        if cand_explicit != resolved_sha:
+            raise StandaloneClosureValidationError(
+                f"Explicit source_sha '{cand_explicit}' does not match independently resolved source identity '{resolved_sha}' from {repo_root}"
+            )
+        attested_sha = cand_explicit
+    else:
+        attested_sha = resolved_sha
 
     repo_resolved = repo_root.resolve()
     target_resolved = target_dir.resolve()
@@ -686,6 +712,53 @@ def materialize_standalone_distribution(
         if src_resolved.is_relative_to(target_resolved):
             raise StandaloneClosureValidationError(
                 f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
+            )
+
+    # Refuse to attest a dirty working tree if source is a git repository (P-11)
+    if is_git_repo:
+        try:
+            status_proc = subprocess.run(
+                ["git", "-C", str(repo_root), "status", "--porcelain", "--", *all_declared_items],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if status_proc.returncode != 0:
+                raise StandaloneClosureValidationError(
+                    f"Failed to verify working tree status of {repo_root}: {status_proc.stderr.strip()}"
+                )
+            if status_proc.stdout.strip():
+                raise StandaloneClosureValidationError(
+                    f"Cannot materialize distribution from dirty repository: uncommitted or untracked changes detected in declared distribution boundary:\n{status_proc.stdout.strip()}"
+                )
+        except StandaloneClosureValidationError:
+            raise
+        except Exception as exc:
+            raise StandaloneClosureValidationError(
+                f"Failed to verify working tree status of {repo_root}: {exc}"
+            )
+
+    # Pre-creation scan: verify all declared source items are regular files or directories without symlinks or special files (P-13)
+    for rel_path_str in all_declared_items:
+        rel_path = admit_manifest_relative_path_v1(rel_path_str)
+        src_path = repo_root / rel_path
+        if src_path.is_symlink():
+            raise StandaloneClosureValidationError(
+                f"Refusing to materialize symlink: {rel_path_str}"
+            )
+        if src_path.is_dir():
+            for sub in src_path.rglob("*"):
+                if sub.is_symlink():
+                    raise StandaloneClosureValidationError(
+                        f"Refusing to materialize distribution tree containing symlink: {sub.relative_to(repo_root)}"
+                    )
+                if not (sub.is_file() or sub.is_dir()):
+                    raise StandaloneClosureValidationError(
+                        f"Special file (FIFO, socket, device) not permitted in distribution boundary: {sub.relative_to(repo_root)}"
+                    )
+        elif not src_path.is_file():
+            raise StandaloneClosureValidationError(
+                f"Declared distribution item must be a regular file or directory: {rel_path_str}"
             )
 
     if target_dir.is_symlink() or target_resolved.is_symlink():
@@ -762,6 +835,10 @@ def materialize_standalone_distribution(
                     if sub.is_symlink():
                         raise StandaloneClosureValidationError(
                             f"Refusing to materialize distribution tree containing symlink: {sub.relative_to(repo_root)}"
+                        )
+                    if not (sub.is_file() or sub.is_dir()):
+                        raise StandaloneClosureValidationError(
+                            f"Refusing to materialize distribution tree containing special file: {sub.relative_to(repo_root)}"
                         )
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(
