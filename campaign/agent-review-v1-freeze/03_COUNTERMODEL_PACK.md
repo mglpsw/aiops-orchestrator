@@ -60,6 +60,15 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 - *Histórico superado:* a versão anterior deste item dizia "formas lidas no `develop` vivo; efeito inferido". Mantida aqui só como registro; a qualificação acima não herda dela.
 - **Discriminador exigido:** documento de contrato não vazio e não achatável deve produzir limitação distinta de "não relevante".
 
+
+### CM-CL2-03 — fonte de contrato esperada ausente rotulada como "não relevante"
+- **Entrada:** o perfil efetivo do target espera/configura a fonte de contrato, mas o arquivo está ausente.
+  - **A.** `.aiops/domain-contracts.yaml` ausente.
+  - **B.** `.aiops/review-packs.yaml` ausente.
+- **Caminho atual (`OBSERVED_CODE`):** `repo_profile._load_optional_yaml` retorna `None` sem limitação quando o arquivo não existe (`app/agent_review/repo_profile.py:95-102`); `contracts_context` então achata para vazio e emite `contracts_context_not_relevant:<chunk>` (`payload_cost_model.py:435-436`).
+- **Resultado falso (ambas as variantes):** ausência indistinguível de não aplicabilidade; nenhuma limitação degradante chega ao gate.
+- **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`; quando a ausência impede avaliar obrigação aplicável/requerida, limitação degradante visível no gate (OBL-CL2-03, família RED/GREEN 14).
+- **Origem:** achado pós-Ready do Codex 4150077445 na PR #367, adjudicado válido pelo owner.
 ---
 
 ## CL-3 — Materiality (#343)

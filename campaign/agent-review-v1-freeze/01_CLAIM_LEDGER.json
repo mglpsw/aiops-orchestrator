@@ -17,6 +17,7 @@
   },
   "status_vocabulary": {
     "supported": "mechanism exists on the real consumer path and discriminating evidence exists",
+    "supported_on_master_unreleased": "mechanism is integrated and qualified in the current canonical source branch, but is absent from the published/consumed baseline; this status is NOT evidence of current consumer behavior",
     "supported_weak_form_only": "only the explicitly weakened proposition is supported",
     "partial": "mechanism exists for a strict subset of the declared domain",
     "not_supported": "a known countermodel reaches the consumer with the claimed-false outcome",
@@ -85,7 +86,7 @@
         "diff artifact absent (diff_by_file returns {})",
         "payload-level limitations not restated at plan level"
       ],
-      "live_status": "supported",
+      "live_status": "supported_on_master_unreleased",
       "countermodels": [
         "CM-CL1-01",
         "CM-CL1-02",
@@ -104,6 +105,10 @@
         {
           "at": "d3f5946c (V1-C1, PR #366, 2026-09-30)",
           "status": "supported on master; not released (consumer pinned to v0.22.0)"
+        },
+        {
+          "at": "PR #367 revision (post-Ready Codex finding 4150077451)",
+          "status": "live_status corrected from 'supported' to 'supported_on_master_unreleased': the published consumer (v0.22.0) does not contain the mechanism; 'supported' requires release/repin/canary on the real consumer path under the final freeze rules"
         }
       ]
     },
@@ -117,7 +122,9 @@
         "NONE for structured claims. Existing primitives: payload_cost_model.py:1330-1336 aux_context.semantic_context.must_hold (list[str], no id, first item dropped under budget: chunk_payload_builder.py:504,557-562); schemas.py:92-93 TargetProfile.domain_contracts/review_packs (untyped); schemas.py:170 SemanticChunk.contracts (constant ref list, semantic_chunker.py:424,768-772); chunk_response_contract.py:17-28 finding.contract_id (optional label, never validated)"
       ],
       "consumer": [
-        "NONE: ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state (schemas.py:298-305 and downstream)"
+        "semantic consumer: admitted contract / must-hold context -> chunk payload -> advisory inference (model observation). The model does NOT deterministically satisfy or verify contracts.",
+        "deterministic loss consumer: obligation-degrading limitation on the SemanticChunkPlan (limitation/status) -> chunk_result_parser (chunk result path) -> final_synthesizer (final synthesis) -> quality_gate",
+        "structured per-claim consumer: NONE -- explicit final-v1 non-claim, deferred to #353/#357 (see structured_per_claim_coverage)"
       ],
       "required_evidence": [
         "RED->GREEN families 1-13 of 04 V1-C2 (supported shapes consumed; deterministic applicability; typed limitations; required-context floor; positive control; target and legacy compatibility; no v2 regression)",
@@ -132,11 +139,13 @@
       "live_status": "not_supported",
       "countermodels": [
         "CM-CL2-01",
-        "CM-CL2-02"
+        "CM-CL2-02",
+        "CM-CL2-03"
       ],
       "limitations": [
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
-        "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement."
+        "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement.",
+        "no per-claim consumer exists in v1 (ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state, schemas.py:298-305): explicit final-v1 non-claim deferred to #353/#357"
       ],
       "risk": "Per-claim part resolved by owner decision (deferred). Remaining STOP exposure for the implementation slice: STOP_OWNER_BOUNDARY (ClaimV1 needed), STOP_TARGET_COMPATIBILITY, STOP_CONTRACT_CONFLICT, STOP_SCHEMA_EXPANSION, STOP_V2_COUPLING, STOP_POSITIVE_CONTROL, STOP_SUBJECT_DRIFT (see 04 V1-C2).",
       "slice": "V1-C2",
@@ -157,6 +166,12 @@
       "terminal": {
         "contract_slice": "V1_C2_CONTRACT_INTERFACE_DECIDED",
         "implementation_slice": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
+      },
+      "consumer_history": {
+        "superseded_value": [
+          "NONE: ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state (schemas.py:298-305 and downstream)"
+        ],
+        "reason": "PR #367 revision (post-Ready Codex finding 4150077449): the per-claim absence is a non-claim/limitation, not the consumer of the redefined proposition"
       }
     },
     {

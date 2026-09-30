@@ -105,7 +105,41 @@
           "nature": "contract-context adapter; NOT ClaimV1, NOT OGR; no generic recursive YAML semantics engine",
           "unsupported": "a non-empty document outside the admitted shapes MUST produce a typed unsupported-shape limitation, never contracts_context_not_relevant",
           "not_relevant_rule": "contracts_context_not_relevant only after: supported parse succeeded AND applicability was evaluated AND zero contract is applicable",
-          "open_item": "response_model_rules (top-level string list in blob e0ca5684) is outside the two shapes as described; the implementation task contract decides admission (identity = top-level key) vs typed unsupported-shape report; never silent drop"
+          "open_item_history": {
+            "superseded_value": "response_model_rules (top-level string list in blob e0ca5684) is outside the two shapes as described; the implementation task contract decides admission (identity = top-level key) vs typed unsupported-shape report; never silent drop",
+            "resolved_by": "#221 comments 5920435231 and 5920712897, incorporated here by the PR #367 revision (owner adjudication 2026-09-30 of the post-Ready Codex review 5372851950 on PR #367)"
+          },
+          "top_level_discriminator": {
+            "source": "owner adjudication 2026-09-30 of the post-Ready Codex review 5372851950 on PR #367",
+            "reserved_metadata_keys": [
+              "version",
+              "updated",
+              "system"
+            ],
+            "reserved_rule": "reserved metadata keys are NEVER contract identities",
+            "legacy_flat_form": "a root `rules` field is the admitted legacy flat form only when it satisfies the legacy bounded rule-object representation; a malformed `rules` is never reinterpreted as a named string-list contract",
+            "domain_mapping_form": {
+              "when": "any non-reserved top-level key whose value is a mapping",
+              "contract_id": "the top-level key",
+              "depth": "bounded; no arbitrary recursive mappings",
+              "admitted_children": {
+                "primitive scalar": "preserved as bounded contract metadata when admitted/sanitized",
+                "named list[str]": "advisory named section; section identity = list key",
+                "named list[rule-object]": "rule section, only when every item has a string `rule`; bounded primitive rule fields such as rule, invariant, rationale, field, expected_value are preserved"
+              },
+              "other_children": "unexpected nested structural objects outside the bounded interface -> contracts_context_unsupported_shape"
+            },
+            "top_level_named_string_list": {
+              "when": "any admitted non-reserved top-level list[str] (e.g. response_model_rules)",
+              "contract_id": "the top-level key",
+              "section_id": "rules",
+              "items": "advisory text",
+              "nature": "contract content != ClaimV1 != per-claim coverage != deterministic authority"
+            },
+            "anything_else": "any other non-empty top-level shape -> contracts_context_unsupported_shape; never silently discarded",
+            "real_target_classification_at_blob_e0ca5684": "reserved: version, updated, system; domain mappings: calendar, swaps, coverage_export, audit, notifications, security, auth_admin (children only scalar / list[str] / list[rule-object]); top-level list[str]: response_model_rules; nothing unclassified"
+          },
+          "string_list_sections": "named string-list sections (top-level or nested) are bounded advisory content: contract identity = top-level/containing key, section identity = list key, items = sanitized text; no claim_id, no covered/partial/not_covered/not_applicable, no recursive YAML (#221 comment 5920435231)"
         },
         "packs": {
           "target_shape": "packs is a mapping owned by the target with multiple live consumers; the engine does not require or cause a list conversion",
@@ -118,10 +152,27 @@
             "recommended_review_preset",
             "critical/other only when actually consumed"
           ],
-          "path_semantics": "fnmatch.fnmatchcase(canonical_repo_path, pack_pattern) -- same as the target; not filesystem glob semantics",
+          "path_semantics": "frozen engine operator: case-sensitive fnmatch.fnmatchcase(canonical_repo_relative_path, pattern). This is NOT claimed identical cross-platform to AgentEscala's current fnmatch.fnmatch (which applies os.path.normcase; equal in practice on POSIX/CT104 only); filesystem glob semantics are not substituted",
           "selection": "explicit selected pack by EXACT pack id (when provided) UNION packs whose paths match files in the chunk; then applicable pack.domain_contract values select the corresponding top-level domain contracts",
           "missing_domain": "an applicable pack whose domain_contract is absent/unreadable emits a typed obligation-degrading limitation",
-          "no_fuzzy": "for mapping form, fuzzy substring matching and semantic-group keyword guessing are not the authoritative applicability mechanism when explicit paths/domain_contract exist; legacy fallback may remain for legacy pack documents"
+          "no_fuzzy": "for mapping form, fuzzy substring matching and semantic-group keyword guessing are not the authoritative applicability mechanism when explicit paths/domain_contract exist; legacy fallback may remain for legacy pack documents",
+          "top_level_interface": {
+            "reserved": [
+              "version",
+              "updated",
+              "packs",
+              "contract_bindings"
+            ],
+            "packs": "remains a mapping",
+            "contract_bindings": {
+              "absent": "-> {} (backward compatible)",
+              "present_as_mapping_str_to_list_str": "admitted",
+              "present_but_malformed": "-> contracts_context_unsupported_shape (never silently {})"
+            },
+            "effective_contract_refs": "EffectiveContractRefs(pack_id) = {pack.domain_contract if present} UNION contract_bindings.get(pack_id, []); exact identities deduplicated",
+            "ownership": "concrete bindings are target-owned under AgentEscala#869 (owner-adjudicated examples: auth_admin -> security + auth_admin; backend_schema_contract -> response_model_rules); #367 freezes only the generic interface; no AgentEscala names hardcoded in the engine contract",
+            "source": "#221 comments 5920712897 and 5920913247 (interface parts), incorporated by the PR #367 revision"
+          }
         }
       }
     },
@@ -132,7 +183,8 @@
       "proposition": "Absent, incompatible, not-applicable and omitted-by-budget context have distinct, honest consequences; must_hold/aux context or material contract content removed before review limits the corresponding conclusion and is not lost before parse/synth/gate, while reviews with sufficient context stay useful (not forced to manual).",
       "countermodels": [
         "CM-CL4-02",
-        "CM-CL4-03 (aux_context/must_hold omitted_due_to_budget dropped before the gate)"
+        "CM-CL4-03 (aux_context/must_hold omitted_due_to_budget dropped before the gate)",
+        "CM-CL2-03 (expected contract source absent: A domain-contracts, B review-packs; both falsify the old not_relevant behaviour)"
       ],
       "positive_controls": [
         "sufficient context -> conclusive review unchanged"
@@ -164,11 +216,21 @@
           "must_hold_omitted_due_to_budget": "an applicable must-hold removed",
           "contracts_context_unsupported_shape": "a non-empty contract artifact was not interpretable",
           "selected_contract_domain_missing:<pack>:<domain>": "an applicable pack refers to a missing/unavailable domain contract",
-          "note": "names may be reconciled with existing reason-code conventions; the distinctions are mandatory"
+          "contracts_context_absent:domain_contracts": "the contract source expected/configured by the effective target profile (domain contracts) is absent",
+          "contracts_context_absent:review_packs": "the contract source expected/configured by the effective target profile (review packs) is absent",
+          "note": "names may be reconciled with existing reason-code conventions; the distinctions are mandatory; the absent-context codes are exact (both may be present when both sources are absent)"
         },
         "propagation": "smallest existing path: payload-cost projection -> SemanticChunkPlan limitation/status -> parse -> synthesize -> quality gate; no new manifest consumer unless the plan path is demonstrably inadequate",
         "positive_control": "sufficient hunk material + sufficient applicable context -> useful review remains possible; contract-aware reviews are not all turned into manual_review_required"
-      }
+      },
+      "absent_context": {
+        "source": "owner adjudication 2026-09-30 of the post-Ready Codex review 5372851950 on PR #367",
+        "distinction": "absent != unsupported shape != not applicable != omitted due to budget != reduced",
+        "scope": "means a source expected/configured by the effective target profile is absent; does not claim every target must have these files",
+        "consequence": "if absence prevents evaluating an applicable/required semantic obligation: obligation-degrading limitation -> non-conclusive affected review -> visible at the quality gate",
+        "never": "an absent source is never re-labelled contracts_context_not_relevant"
+      },
+      "not_relevant_rule": "contracts_context_not_relevant:<chunk> only when: required source presence is sufficient to evaluate applicability AND admitted parsing succeeds AND applicability is evaluated AND zero admitted contracts apply"
     },
     {
       "obligation_id": "OBL-CL2-04",
