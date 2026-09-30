@@ -507,25 +507,45 @@ def extract_git_commit_tree_snapshot(
         git_declared_records.append((mode_str, object_sha, path_str))
 
     copied_paths: list[str] = []
-    for mode_str, object_sha, path_str in git_declared_records:
-        proc_cat = subprocess.run(
-            ["git", "-C", str(repo_resolved), "cat-file", "-p", object_sha],
+    if git_declared_records:
+        batch_input = b"".join(f"{obj_sha}\n".encode("ascii") for _, obj_sha, _ in git_declared_records)
+        proc_batch = subprocess.run(
+            ["git", "-C", str(repo_resolved), "cat-file", "--batch"],
+            input=batch_input,
             capture_output=True,
             check=False,
         )
-        if proc_cat.returncode != 0:
+        if proc_batch.returncode != 0:
             raise StandaloneClosureValidationError(
-                f"Failed to read blob {object_sha} for {path_str} from git object database"
+                f"Failed to read blobs from git object database in {repo_root}: {proc_batch.stderr.decode('utf-8', errors='replace')}"
             )
+        data = proc_batch.stdout
+        idx = 0
+        for mode_str, object_sha, path_str in git_declared_records:
+            header_end = data.find(b"\n", idx)
+            if header_end == -1:
+                raise StandaloneClosureValidationError(
+                    f"Unexpected EOF reading git batch header for {path_str} ({object_sha})"
+                )
+            header = data[idx:header_end].decode("ascii")
+            parts = header.split()
+            if len(parts) < 3 or parts[1] != "blob":
+                raise StandaloneClosureValidationError(
+                    f"Git object {object_sha} for {path_str} is missing or not a blob: {header}"
+                )
+            size = int(parts[2])
+            content_start = header_end + 1
+            content = data[content_start:content_start + size]
+            idx = content_start + size + 1
 
-        dest_path = target_dir / path_str
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(proc_cat.stdout)
-        if mode_str == "100755":
-            dest_path.chmod(0o755)
-        else:
-            dest_path.chmod(0o644)
-        copied_paths.append(path_str)
+            dest_path = target_dir / path_str
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(content)
+            if mode_str == "100755":
+                dest_path.chmod(0o755)
+            else:
+                dest_path.chmod(0o644)
+            copied_paths.append(path_str)
 
     return copied_paths
 
