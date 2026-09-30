@@ -12,7 +12,7 @@ drivers) it does not need.
 ```text
 checkout target repo
 checkout aiops-orchestrator at an approved full 40-character lowercase SHA
-create a dedicated venv (never the AIOps runtime venv)
+create a dedicated venv at a fresh, absent path (never reusing an existing venv or the AIOps runtime venv)
 install requirements-agent-review.lock with --require-hashes
 load profile/policy from the target's trusted base/default checkout
 run the v2 CLIs/library entry points offline
@@ -51,8 +51,9 @@ The script:
    rejecting a mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
    is CPython 3.11 via an isolated/no-site probe (`-I -S`), refusing incompatible interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
-4. creates a fresh venv at `<venv-dir>` using the verified CPython 3.11 interpreter;
-5. installs `requirements-agent-review.lock` with
+4. requires `<venv-dir>` target to be absent; refuses existing directory or symlink targets fail-closed (exit 2) to eliminate stale residual `site-packages` survival;
+5. creates a fresh venv at `<venv-dir>` using the verified CPython 3.11 interpreter;
+6. installs `requirements-agent-review.lock` with
    `pip install --require-hashes --no-deps`.
 
 `--toolrepo-sha` is optional for local iteration but should always be

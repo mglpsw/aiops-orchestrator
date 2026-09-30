@@ -236,6 +236,110 @@ def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Pa
     assert "CPython 3.14" in result.stderr
 
 
+def _make_fake_python311(tmp_path: Path) -> Path:
+    fake_python = tmp_path / "fake_python311_runner.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "CPython 3.11"\n'
+        '    exit 0\n'
+        "fi\n"
+        '# Reached venv creation: echo marker and exit 42\n'
+        'echo "GUARD_PASSED_CALLED_WITH: $@" >&2\n'
+        "exit 42\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    return fake_python
+
+
+def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:
+    """J1-A: Existing non-empty target directory is rejected fail-closed without mutating contents."""
+    target_dir = tmp_path / "existing_nonempty_venv"
+    target_dir.mkdir()
+    marker = target_dir / "marker.txt"
+    marker.write_text("DO_NOT_MUTATE", encoding="utf-8")
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8") == "DO_NOT_MUTATE"
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(target_dir) in result.stderr
+
+
+def test_install_script_rejects_existing_empty_directory(tmp_path: Path) -> None:
+    """J1-C: Existing empty target directory is rejected fail-closed (target must be absent)."""
+    target_dir = tmp_path / "existing_empty_venv"
+    target_dir.mkdir()
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(target_dir) in result.stderr
+
+
+def test_install_script_rejects_preexisting_venv_with_stale_dependency_witness(tmp_path: Path) -> None:
+    """J1-B: Preexisting venv with residual packages is rejected before venv creation or reuse."""
+    venv_dir = tmp_path / "preexisting_stale_venv"
+    site_packages = venv_dir / "lib" / "python3.11" / "site-packages"
+    site_packages.mkdir(parents=True)
+    stale_marker = site_packages / "fastapi.py"
+    stale_marker.write_text("# stale residual package witness\n", encoding="utf-8")
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(venv_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert stale_marker.exists(), "stale witness must NOT be deleted or mutated"
+    assert stale_marker.read_text(encoding="utf-8") == "# stale residual package witness\n"
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(venv_dir) in result.stderr
+
+
+def test_install_script_rejects_symlink_target(tmp_path: Path) -> None:
+    """J1: Symlink target (valid or broken) is rejected fail-closed before venv creation."""
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    symlink_target = tmp_path / "symlink_venv"
+    symlink_target.symlink_to(real_dir)
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(symlink_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(symlink_target) in result.stderr
+
+
 @pytest.mark.requires_network
 def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
     venv_dir = tmp_path / "agent-review-venv"
@@ -271,20 +375,35 @@ def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
 
 @pytest.mark.requires_network
 def test_require_hashes_rejects_a_tampered_lock_file(tmp_path: Path) -> None:
-    """Proves --require-hashes is actually enforced, not decorative: a
-    lock file with one digit flipped in a hash must fail installation."""
+    """Proves --require-hashes is actually enforced: a lock file with exactly
+    one nibble changed in a syntactically valid 64-hex SHA-256 digest fails installation
+    specifically due to cryptographic hash mismatch against the downloaded artifact."""
+    import re
 
     tampered = tmp_path / "tampered.lock"
     original = LOCK_FILE.read_text(encoding="utf-8")
+
+    # Target pure-python distribution annotated-types
+    original_digest = "1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
+    assert f"--hash=sha256:{original_digest}" in original, "expected target digest not found in lock"
+
+    # Flip exactly one nibble while preserving full 64-hex lowercase SHA-256 syntax
+    replacement_first = "0" if original_digest[0] != "0" else "1"
+    tampered_digest = replacement_first + original_digest[1:]
+
+    assert len(tampered_digest) == 64, f"Digest length must be 64, got {len(tampered_digest)}"
+    assert re.fullmatch(r"[0-9a-f]{64}", tampered_digest), "Digest must be valid 64 lowercase hex"
+    assert tampered_digest != original_digest, "Digest must differ from original"
+
     tampered_text = original.replace(
-        "--hash=sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53",
-        "--hash=sha256:0000000000000000000000000000000000000000000000000000000000000000"[:71],
+        f"--hash=sha256:{original_digest}",
+        f"--hash=sha256:{tampered_digest}",
         1,
     )
-    assert tampered_text != original, "expected hash string not found in lock file"
+    assert tampered_text != original
     tampered.write_text(tampered_text, encoding="utf-8")
 
-    venv_dir = tmp_path / "venv"
+    venv_dir = tmp_path / "venv_tampered"
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
     pip = venv_dir / "bin" / "pip"
     result = subprocess.run(
@@ -294,3 +413,8 @@ def test_require_hashes_rejects_a_tampered_lock_file(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode != 0
+    # Must prove rejection is due to artifact hash mismatch, not malformed hash syntax
+    assert "THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE" in result.stderr
+    assert "annotated-types" in result.stderr
+    assert "Expected sha256" in result.stderr
+    assert tampered_digest in result.stderr

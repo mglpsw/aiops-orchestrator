@@ -195,13 +195,22 @@ for mod in (mod_c2, mod_s, mod_sc, mod_ac, mod_tp, mod_se, mod_cli, mod_sj, mod_
         f"Escape detected: {mod} origin {origin_path} is outside {standalone_root}"
     )
 
-# Verify negative boundary: importing runtime modules must fail
+# Verify negative boundary: importing runtime modules must fail due to genuine absence
+def missing_is_requested_module_or_parent(requested: str, missing: str | None) -> bool:
+    if not missing:
+        return False
+    return missing == requested or requested.startswith(missing + ".")
+
 for forbidden in ('app.main', 'app.agent_router', 'app.models.database', 'app.services.orchestrator'):
     try:
         __import__(forbidden)
+    except ModuleNotFoundError as exc:
+        require(
+            missing_is_requested_module_or_parent(forbidden, exc.name),
+            f"{forbidden} exists but failed transitively because {exc.name} is missing",
+        )
+    else:
         require(False, f"Forbidden module {forbidden} unexpectedly imported!")
-    except ModuleNotFoundError:
-        pass
 
 print("ALL_CORE_PROBES_PASSED")
 """
@@ -546,6 +555,49 @@ def test_countermodel_h2_forbidden_import_roots_contract(tmp_path: Path) -> None
     assert not any("pydantic" in err for err in errors_allowed), (
         f"Allowed package 'pydantic' was rejected unexpectedly: {errors_allowed}"
     )
+
+
+def test_countermodel_j2_leaked_runtime_module_with_transitive_dependency_failure(tmp_path: Path) -> None:
+    """J2: Runtime module absence probe fails if forbidden module exists but fails transitively on missing dependency."""
+    standalone = tmp_path / "standalone_j2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+
+    # Inject leaked app/main.py with missing transitive dependency into the materialized distribution
+    leaked_main = standalone / "app" / "main.py"
+    leaked_main.write_text("import definitely_missing_runtime_dependency\n", encoding="utf-8")
+
+    probe_script = """
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+def missing_is_requested_module_or_parent(requested: str, missing: str | None) -> bool:
+    if not missing:
+        return False
+    return missing == requested or requested.startswith(missing + ".")
+
+for forbidden in ('app.main', 'app.agent_router', 'app.models.database', 'app.services.orchestrator'):
+    try:
+        __import__(forbidden)
+    except ModuleNotFoundError as exc:
+        require(
+            missing_is_requested_module_or_parent(forbidden, exc.name),
+            f"{forbidden} exists but failed transitively because {exc.name} is missing",
+        )
+    else:
+        require(False, f"Forbidden module {forbidden} unexpectedly imported!")
+
+print("ALL_PASSED")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe_script],
+        cwd=standalone,
+        env=_clean_env(standalone),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "app.main exists but failed transitively because definitely_missing_runtime_dependency is missing" in result.stderr
 
 
 def test_countermodel_m5_missing_install_contract() -> None:

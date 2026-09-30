@@ -74,6 +74,11 @@ if [ "$INTERP_INFO" != "CPython 3.11" ]; then
     exit 2
 fi
 
+if [ -e "$VENV_DIR" ] || [ -L "$VENV_DIR" ]; then
+    echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_DIR" >&2
+    exit 2
+fi
+
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step
 # would fetch whatever pip version happens to be latest at install time,

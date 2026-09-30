@@ -47,7 +47,7 @@ A verificação do B0 não tenta construir um resolvedor estático universal nem
 | Layer E: Executable Isolation Evidence                                  |
 |   - Subprocesso isolado com PYTHONPATH apontando APENAS ao standalone   |
 |   - Origem dos módulos provada dentro do diretório standalone (M3)      |
-|   - Módulos de runtime ausentes (ModuleNotFoundError comprovado)        |
+|   - Módulos de runtime ausentes (ModuleNotFoundError não transitivo)    |
 |   - Smoke de importação e funcionamento dos 9 módulos centrais          |
 |   - Controles positivos executáveis v1, v2 e coexistência (C5, C6, C7)  |
 +------------------------------------+------------------------------------+
@@ -58,7 +58,8 @@ A verificação do B0 não tenta construir um resolvedor estático universal nem
 |   - Autoridade única de instalação: requirements-agent-review.lock      |
 |   - Suíte de testes dedicada: tests/agent_review/test_minimal_toolrepo_lock|
 |   - Sem duplicação de autoridade entre AST estático e Lockfile          |
-|   - Script canônico de instalação para toolrepos consumidores           |
+|   - Script canônico exige alvo venv ausente (elimina resíduos)          |
+|   - Teste de hash adulterado valida integridade criptográfica (64-hex)  |
 +-------------------------------------------------------------------------+
 ```
 
@@ -188,6 +189,9 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **F-02** | Composição Layer E × Layer I | Teste composto (`test_lock_built_venv_executes_materialized_standalone_agentreview`) exercita a árvore materializada com o interpretador criado a partir de `requirements-agent-review.lock` (`requires_network`). O instalador vincula estritamente o contrato canônico a CPython 3.11, recusando interpretadores incompatíveis fail-closed antes da criação do venv. Qualificado no ambiente canônico CPython 3.11 do repositório (GitHub Actions). |
 | **H-01** | Isolamento do probe do interpretador | O probe de versão e implementação em `install-agent-review-toolrepo.sh` executa com flags isoladas/sem site (`-I -S`), provando que hooks de inicialização ambiental (`sitecustomize.py` via `PYTHONPATH`) não alteram a identidade reportada antes da criação do venv. |
 | **H-02** | Contrato de import roots conhecidos | Distingue nomes de distribuição do PyPI (ex.: `pydantic-settings`, `duckduckgo-search`, `python-multipart`) de suas raízes de importação Python (`pydantic_settings`, `duckduckgo_search`, `multipart`), garantindo detecção precisa de dependências proibidas na Layer S sem reivindicar mapeamento universal AST -> PyPI. |
+| **J-01** | Reutilização de venv pré-existente / contaminação residual | `scripts/install-agent-review-toolrepo.sh` exige alvo ausente (`[ -e "$VENV_DIR" ] || [ -L "$VENV_DIR" ]`), recusando fail-closed (código 2) reutilizar diretórios ou symlinks pré-existentes, impedindo a sobrevivência de artefatos obsoletos em `site-packages`. |
+| **J-02** | Falso positivo no probe de ausência por falha transitiva | `missing_is_requested_module_or_parent` valida que a exceção `ModuleNotFoundError` corresponde ao módulo requisitado ou a seu ancestral, comprovando que módulos vazados com falhas transitivas (ex.: `app.main` importando dependência ausente) são rejeitados. |
+| **J-03** | Falso positivo no teste de hash por erro sintático | `test_require_hashes_rejects_a_tampered_lock_file` altera exatamente 1 nibble mantendo 64 caracteres hexadecimais minúsculos (`[0-9a-f]{64}`), comprovando rejeição criptográfica pelo pip (`THESE PACKAGES DO NOT MATCH THE HASHES`) e não rejeição preliminar por sintaxe malformada. |
 
 ---
 
@@ -199,10 +203,10 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 - **B0-M1 (Pre-Creation Disjointness):** O diretório de destino é validado como disjunto das origens antes de qualquer criação ou escrita em disco.
 - **B0-M2 (Clean Destination Confinement):** A materialização ocorre exclusivamente em diretórios ausentes ou vazios, rejeita destinos symlink e confina a escrita a `target_resolved`.
 - **B0-E1 (Subprocess Origin Isolation):** A execução em subprocesso com `PYTHONPATH` isolado comprova que todas as importações resolvem estritamente dentro da raiz materializada.
-- **B0-E2 (Negative Runtime Absence):** A tentativa de importar módulos de runtime a partir da materialização resulta em `ModuleNotFoundError`.
+- **B0-E2 (Negative Runtime Absence):** A tentativa de importar módulos de runtime a partir da materialização resulta em `ModuleNotFoundError` comprovadamente atribuído à ausência do módulo proibido ou de seu pacote ancestral, e não a falha transitiva de dependência em módulo vazado.
 - **B0-E3 (Operational Coexistence):** As capacidades offline v1 e v2 funcionam comprovadamente no ambiente standalone.
-- **B0-I1 (Install Boundary Authority):** A autoridade única das dependências do toolrepo reside em `requirements-agent-review.lock`.
-- **B0-I2 (Minimal Toolrepo Verification):** A suíte de instalação confirma a ausência de pacotes de runtime e a exatidão dos hashes fixados.
+- **B0-I1 (Install Boundary Authority):** A autoridade única das dependências do toolrepo reside em `requirements-agent-review.lock`, instalado em venv estritamente novo/ausente.
+- **B0-I2 (Minimal Toolrepo Verification):** A suíte de instalação confirma a ausência de pacotes de runtime e a rejeição criptográfica de hashes alterados (preservando formato 64-hex).
 
 ---
 
