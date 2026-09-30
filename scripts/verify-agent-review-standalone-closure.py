@@ -150,6 +150,63 @@ REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
     }
 )
 
+KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1: dict[str, frozenset[str]] = {
+    "annotated-types": frozenset({"annotated_types"}),
+    "pydantic": frozenset({"pydantic"}),
+    "pydantic-core": frozenset({"pydantic_core"}),
+    "pyyaml": frozenset({"yaml"}),
+    "typing-extensions": frozenset({"typing_extensions"}),
+    "typing-inspection": frozenset({"typing_inspection"}),
+}
+
+REQUIRED_ALLOWED_THIRD_PARTY_PACKAGES_V1: frozenset[str] = frozenset(
+    KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1.keys()
+)
+
+REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
+    root
+    for roots in KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1.values()
+    for root in roots
+)
+
+STDLIB_TOP_LEVELS_V1: frozenset[str] = frozenset(
+    {
+        "__future__", "abc", "aifc", "argparse", "array", "ast", "asynchat", "asyncio",
+        "asyncore", "base64", "bdb", "binascii", "bisect", "builtins", "bz2",
+        "calendar", "cgi", "cgitb", "chunk", "cmath", "cmd", "code", "codecs",
+        "codeop", "collections", "colorsys", "compileall", "concurrent", "configparser",
+        "contextlib", "contextvars", "copy", "copyreg", "cProfile", "crypt", "csv",
+        "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal", "difflib",
+        "dis", "distutils", "doctest", "email", "encodings", "ensurepip", "enum",
+        "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions",
+        "ftplib", "functools", "gc", "getopt", "getpass", "gettext", "glob", "graphlib",
+        "grp", "gzip", "hashlib", "heapq", "hmac", "html", "http", "idlelib", "imaplib",
+        "imghdr", "imp", "importlib", "inspect", "io", "ipaddress", "itertools", "json",
+        "keyword", "lib2to3", "linecache", "locale", "logging", "lzma", "mailbox",
+        "mailcap", "marshal", "math", "mimetypes", "mmap", "modulefinder", "msilib",
+        "msvcrt", "multiprocessing", "netrc", "nis", "nntplib", "numbers", "operator",
+        "optparse", "os", "ossaudiodev", "pathlib", "pdb", "pickle", "pickletools",
+        "pipes", "pkgutil", "platform", "plistlib", "poplib", "posix", "posixpath",
+        "pprint", "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr", "pydoc",
+        "queue", "quopri", "random", "re", "readline", "reprlib", "resource", "rlcompleter",
+        "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil",
+        "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver",
+        "spwd", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat",
+        "statistics", "string", "stringprep", "struct", "subprocess", "sunau", "symtable",
+        "sys", "sysconfig", "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile",
+        "termios", "test", "textwrap", "threading", "time", "timeit", "tkinter",
+        "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty",
+        "turtle", "turtledemo", "types", "typing", "unicodedata", "unittest", "urllib",
+        "uu", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser", "winreg",
+        "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc", "zipapp", "zipfile",
+        "zipimport", "zlib", "zoneinfo",
+        # Internal modules invoked within sandbox without package prefix
+        "trusted_check_namespace_kernel_v2",
+        "trusted_check_stream_capture_v2",
+        "trusted_check_supervisor_v2",
+    }
+)
+
 
 def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
     """Validate that rel_path_str is a canonical POSIX repository-relative path without escape or traversal."""
@@ -370,7 +427,7 @@ def validate_manifest(
             f"Required negative runtime anchor(s) omitted from 'forbidden_runtime_surfaces': {missing_negative_anchors}"
         )
 
-    # 2b. Negative runtime package contract enforcement (Layer S)
+    # 2b. Runtime package and dependency closure contract enforcement (Layer S)
     if "dependency_closure" not in manifest or not isinstance(manifest.get("dependency_closure"), dict):
         errors.append("Manifest is missing required 'dependency_closure' dictionary.")
         return errors
@@ -391,6 +448,32 @@ def validate_manifest(
         errors.append(
             f"Required negative runtime package anchor(s) omitted from 'forbidden_runtime_packages': {missing_negative_pkg_anchors}"
         )
+
+    # Validate allowed third party packages contract (B1)
+    if "allowed_third_party_packages" not in dep_closure:
+        errors.append("Field 'dependency_closure' is missing required 'allowed_third_party_packages' list.")
+        return errors
+    raw_allowed_pkgs = dep_closure.get("allowed_third_party_packages")
+    if not isinstance(raw_allowed_pkgs, list):
+        errors.append("Field 'allowed_third_party_packages' must be a list.")
+        return errors
+    if not raw_allowed_pkgs:
+        errors.append("Field 'allowed_third_party_packages' cannot be empty.")
+        return errors
+    allowed_packages = {p.lower() for p in raw_allowed_pkgs if isinstance(p, str)}
+    missing_allowed_pkg_anchors = sorted(REQUIRED_ALLOWED_THIRD_PARTY_PACKAGES_V1 - allowed_packages)
+    if missing_allowed_pkg_anchors:
+        errors.append(
+            f"Required allowed third-party package anchor(s) omitted from 'allowed_third_party_packages': {missing_allowed_pkg_anchors}"
+        )
+
+    # Project declared allowed packages to import roots via known contract
+    allowed_third_party_import_roots: set[str] = set(REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1)
+    for pkg in allowed_packages:
+        if pkg in KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1:
+            allowed_third_party_import_roots.update(KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1[pkg])
+        else:
+            allowed_third_party_import_roots.add(pkg.replace("-", "_"))
 
     # Project declared forbidden packages to import roots via known contract
     forbidden_import_roots: set[str] = set(REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1)
@@ -498,15 +581,20 @@ def validate_manifest(
                             f"Special file (FIFO, socket, device) not permitted in distribution boundary '{rel_path_str}': {sub.relative_to(root)}"
                         )
 
-    # 3. Gather all Python files in the distribution boundary
+    # Physical admission must precede content/AST reads (A4). If any physical error
+    # was encountered (missing files, symlinks, FIFOs, special files, escape), fail immediately.
+    if errors:
+        return errors
+
+    # 3. Gather all Python files in the distribution boundary (admitted regular files only)
     distribution_py_files: list[Path] = []
     for rel_path_str in declared_paths:
         full_path = root / rel_path_str
-        if full_path.is_file() and full_path.suffix == ".py":
+        if full_path.is_file() and not full_path.is_symlink() and full_path.suffix == ".py":
             distribution_py_files.append(full_path)
-        elif full_path.is_dir():
-            for py_path in full_path.rglob("*.py"):
-                if "__pycache__" not in py_path.parts:
+        elif full_path.is_dir() and not full_path.is_symlink():
+            for py_path in sorted(full_path.rglob("*.py")):
+                if "__pycache__" not in py_path.parts and py_path.is_file() and not py_path.is_symlink():
                     distribution_py_files.append(py_path)
 
     # 4. AST import audit on all distribution Python files
@@ -517,24 +605,6 @@ def validate_manifest(
         "app.common.strict_json",
         "app.services",
         "app.services.environment_context",
-    }
-
-    # Also allow internal submodules within app.agent_review
-    stdlib_top_levels = {
-        "__future__", "argparse", "array", "ast", "asyncio", "base64", "builtins",
-        "collections", "contextlib", "contextvars", "copy", "ctypes", "dataclasses",
-        "datetime", "enum", "errno", "fcntl", "fnmatch", "functools", "glob",
-        "gzip", "hashlib", "http", "importlib", "inspect", "io", "itertools",
-        "json", "logging", "math", "multiprocessing", "operator", "os", "pathlib",
-        "platform", "pwd", "queue", "re", "resource", "secrets", "select",
-        "shutil", "signal", "socket", "stat", "string", "subprocess", "sys",
-        "tarfile", "tempfile", "threading", "time", "token", "tokenize", "traceback",
-        "types", "typing", "unicodedata", "unittest", "urllib", "uuid", "warnings",
-        "weakref", "zipfile", "zlib",
-        # Internal modules invoked within sandbox without package prefix
-        "trusted_check_namespace_kernel_v2",
-        "trusted_check_stream_capture_v2",
-        "trusted_check_supervisor_v2",
     }
 
     forbidden_script_roots = set(REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1)
@@ -552,16 +622,25 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages: direct imports of forbidden runtime dependencies or scripts fail closed
+        # Check external packages against positive third-party closure (B1)
         for pkg in ext_pkgs:
             pkg_lower = pkg.lower()
-            if pkg_lower in forbidden_import_roots:
+            if pkg_lower in STDLIB_TOP_LEVELS_V1:
+                continue
+            elif pkg_lower in allowed_third_party_import_roots:
+                continue
+            elif pkg_lower in forbidden_import_roots:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
                 )
             elif pkg_lower in forbidden_script_roots:
                 errors.append(
                     f"Forbidden runtime script import root '{pkg}' imported by {py_file.relative_to(root)}"
+                )
+            else:
+                errors.append(
+                    f"Undeclared external package '{pkg}' imported by {py_file.relative_to(root)}: "
+                    f"package is neither stdlib nor in allowed_third_party_packages"
                 )
 
         # Check local app imports
@@ -615,55 +694,80 @@ def materialize_standalone_distribution(
             f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
         )
 
-    # Resolve verifiable source identity to preserve in the materialized distribution (P-09, P-14)
+    # Resolve verifiable source identity to preserve in the materialized distribution (P-09, P-14, A2)
     resolved_sha: str | None = None
-
-    # 1. Check for existing attestation files in repo_root
-    src_commit_file = repo_root / ".source-commit"
-    toolrepo_sha_file = repo_root / ".toolrepo-sha"
-    if src_commit_file.is_file():
-        cand = src_commit_file.read_text(encoding="utf-8").strip().lower()
-        if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
-            resolved_sha = cand
-    elif toolrepo_sha_file.is_file():
-        cand = toolrepo_sha_file.read_text(encoding="utf-8").strip().lower()
-        if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
-            resolved_sha = cand
-
     is_git_repo = False
-    if resolved_sha is None:
-        # Query git rev-parse HEAD from repo_root
-        try:
-            proc = subprocess.run(
+
+    # 1. Detect usable Git identity first (Git HEAD wins whenever Git is available)
+    try:
+        proc_inside = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc_inside.returncode == 0 and proc_inside.stdout.strip() == "true":
+            proc_head = subprocess.run(
                 ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if proc.returncode == 0:
-                cand = proc.stdout.strip().lower()
+            if proc_head.returncode == 0:
+                cand = proc_head.stdout.strip().lower()
                 if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
                     resolved_sha = cand
                     is_git_repo = True
-        except Exception:
-            pass
-    else:
-        try:
-            proc = subprocess.run(
-                ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if proc.returncode == 0 and proc.stdout.strip() == "true":
-                is_git_repo = True
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-    if resolved_sha is None:
-        raise StandaloneClosureValidationError(
-            f"Cannot determine verifiable source identity from {repo_root}: not a git repository and no source attestation found"
-        )
+    src_commit_file = repo_root / ".source-commit"
+    toolrepo_sha_file = repo_root / ".toolrepo-sha"
+
+    commit_file_sha: str | None = None
+    if src_commit_file.is_file():
+        c = src_commit_file.read_text(encoding="utf-8").strip().lower()
+        if not re.fullmatch(r"^[0-9a-f]{40}$", c) or c == "0" * 40:
+            raise StandaloneClosureValidationError(
+                f"Invalid .source-commit format in {repo_root}: must be 40 hex chars non-zero"
+            )
+        commit_file_sha = c
+
+    toolrepo_file_sha: str | None = None
+    if toolrepo_sha_file.is_file():
+        c = toolrepo_sha_file.read_text(encoding="utf-8").strip().lower()
+        if not re.fullmatch(r"^[0-9a-f]{40}$", c) or c == "0" * 40:
+            raise StandaloneClosureValidationError(
+                f"Invalid .toolrepo-sha format in {repo_root}: must be 40 hex chars non-zero"
+            )
+        toolrepo_file_sha = c
+
+    if is_git_repo:
+        # Git HEAD is authoritative. Any present attestation files must match it!
+        if commit_file_sha is not None and commit_file_sha != resolved_sha:
+            raise StandaloneClosureValidationError(
+                f"Attestation file .source-commit ({commit_file_sha}) disagrees with authoritative Git HEAD ({resolved_sha})"
+            )
+        if toolrepo_file_sha is not None and toolrepo_file_sha != resolved_sha:
+            raise StandaloneClosureValidationError(
+                f"Attestation file .toolrepo-sha ({toolrepo_file_sha}) disagrees with authoritative Git HEAD ({resolved_sha})"
+            )
+    else:
+        # Only when Git identity is genuinely unavailable: use standalone attestation files
+        if commit_file_sha is not None and toolrepo_file_sha is not None:
+            if commit_file_sha != toolrepo_file_sha:
+                raise StandaloneClosureValidationError(
+                    f"Conflicting standalone attestations: .source-commit ({commit_file_sha}) != .toolrepo-sha ({toolrepo_file_sha})"
+                )
+            resolved_sha = commit_file_sha
+        elif commit_file_sha is not None:
+            resolved_sha = commit_file_sha
+        elif toolrepo_file_sha is not None:
+            resolved_sha = toolrepo_file_sha
+        else:
+            raise StandaloneClosureValidationError(
+                f"Cannot determine verifiable source identity from {repo_root}: not a git repository and no source attestation found"
+            )
 
     # Require explicit source_sha to match independently resolved identity (P-14)
     if source_sha is not None:
@@ -714,7 +818,7 @@ def materialize_standalone_distribution(
                 f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
             )
 
-    # Refuse to attest a dirty working tree if source is a git repository (P-11)
+    # Refuse to attest a dirty working tree or ignored entries if source is a git repository (P-11, A1)
     if is_git_repo:
         try:
             status_proc = subprocess.run(
@@ -730,6 +834,33 @@ def materialize_standalone_distribution(
             if status_proc.stdout.strip():
                 raise StandaloneClosureValidationError(
                     f"Cannot materialize distribution from dirty repository: uncommitted or untracked changes detected in declared distribution boundary:\n{status_proc.stdout.strip()}"
+                )
+
+            # Check for Git-ignored regular files inside declared boundary (A1)
+            ignored_proc = subprocess.run(
+                ["git", "-C", str(repo_root), "ls-files", "--others", "--ignored", "--exclude-standard", "--", *all_declared_items],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if ignored_proc.returncode != 0:
+                raise StandaloneClosureValidationError(
+                    f"Failed to verify ignored files in working tree of {repo_root}: {ignored_proc.stderr.strip()}"
+                )
+            ignored_entries = [
+                line.strip()
+                for line in ignored_proc.stdout.splitlines()
+                if line.strip() and not (
+                    "/__pycache__/" in line
+                    or line.endswith("/__pycache__")
+                    or line.endswith(".pyc")
+                    or line.endswith(".pyo")
+                )
+            ]
+            if ignored_entries:
+                raise StandaloneClosureValidationError(
+                    f"Cannot materialize distribution from dirty repository: ignored entries detected in declared distribution boundary:\n"
+                    + "\n".join(ignored_entries)
                 )
         except StandaloneClosureValidationError:
             raise

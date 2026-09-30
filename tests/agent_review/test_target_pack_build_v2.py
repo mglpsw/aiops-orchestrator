@@ -8,6 +8,7 @@ import pytest
 from app.agent_review.target_pack_build_v2 import (
     BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2,
     BUILD_TEMPLATE_ROOT_MISSING_REASON_V2,
+    BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2,
     BUILD_TOOLREPO_SHA_INVALID_SHAPE_REASON_V2,
     TargetPackBuildError,
     build_target_pack_manifest_v2,
@@ -172,3 +173,122 @@ def test_an_untracked_schema_file_never_enters_schema_digests(tmp_path: Path) ->
     manifest = build_target_pack_manifest_v2(toolrepo_root=tmp_path, toolrepo_sha=sha, pack_version="0.1.0")
     assert "untracked.schema.json" not in manifest.schema_digests
     assert set(manifest.schema_digests) == {"agent-review.target-pack-manifest.v2.schema.json"}
+
+
+def test_countermodel_p19_recursive_schema_parity_git_vs_standalone(tmp_path: Path) -> None:
+    """P19: Recursive schema tree scan achieves exact digest parity between Git-backed and standalone distributions."""
+    import shutil
+
+    git_toolrepo = tmp_path / "git_toolrepo"
+    git_toolrepo.mkdir()
+    _init_git_repo(git_toolrepo)
+
+    template_dir = git_toolrepo / "templates" / "agentreview-v2-target-pack"
+    template_dir.mkdir(parents=True)
+    (template_dir / "target-profile.v2.yaml").write_text("profile-content\n", encoding="utf-8")
+
+    schema_dir = git_toolrepo / "schemas" / "agent-review" / "v2"
+    nested_schema_dir = schema_dir / "nested" / "sub"
+    nested_schema_dir.mkdir(parents=True)
+
+    (schema_dir / "agent-review.target-pack-manifest.v2.schema.json").write_text(
+        '{"id": "manifest", "type": "object"}\n', encoding="utf-8"
+    )
+    (nested_schema_dir / "child.schema.json").write_text(
+        '{"id": "child", "type": "string"}\n', encoding="utf-8"
+    )
+
+    sha = _commit_all(git_toolrepo)
+
+    # 1. Build manifest from Git repo
+    manifest_git = build_target_pack_manifest_v2(toolrepo_root=git_toolrepo, toolrepo_sha=sha, pack_version="0.1.0")
+
+    # 2. Build manifest from standalone attestation-backed distribution (no .git)
+    standalone_toolrepo = tmp_path / "standalone_toolrepo"
+    shutil.copytree(template_dir, standalone_toolrepo / "templates" / "agentreview-v2-target-pack")
+    shutil.copytree(schema_dir, standalone_toolrepo / "schemas" / "agent-review" / "v2")
+    (standalone_toolrepo / ".source-commit").write_text(f"{sha}\n", encoding="utf-8")
+    (standalone_toolrepo / ".toolrepo-sha").write_text(f"{sha}\n", encoding="utf-8")
+
+    manifest_standalone = build_target_pack_manifest_v2(
+        toolrepo_root=standalone_toolrepo, toolrepo_sha=sha, pack_version="0.1.0"
+    )
+
+    # Exact parity between Git and standalone
+    assert manifest_git.schema_digests == manifest_standalone.schema_digests
+    assert "agent-review.target-pack-manifest.v2.schema.json" in manifest_git.schema_digests
+    assert "nested/sub/child.schema.json" in manifest_git.schema_digests
+    assert len(manifest_git.schema_digests) == 2
+
+    # Parity check on _resolve_toolrepo_sha between Git and standalone
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "agent_review_target_pack_cli_v2",
+        REPO_ROOT / "scripts" / "agent-review-target-pack-v2.py",
+    )
+    cli_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli_mod)
+    _resolve_toolrepo_sha = cli_mod._resolve_toolrepo_sha
+
+    # Git mode resolves git HEAD
+    assert _resolve_toolrepo_sha(git_toolrepo) == sha
+
+    # Untracked or disagreeing attestation in Git repo raises TargetPackBuildError
+    (git_toolrepo / ".source-commit").write_text("1" * 40 + "\n", encoding="utf-8")
+    with pytest.raises(TargetPackBuildError):
+        _resolve_toolrepo_sha(git_toolrepo)
+    (git_toolrepo / ".source-commit").unlink()
+
+    # Standalone mode resolves attestation
+    assert _resolve_toolrepo_sha(standalone_toolrepo) == sha
+
+    # Standalone mode with disagreeing attestations raises TargetPackBuildError
+    (standalone_toolrepo / ".toolrepo-sha").write_text("2" * 40 + "\n", encoding="utf-8")
+    with pytest.raises(TargetPackBuildError):
+        _resolve_toolrepo_sha(standalone_toolrepo)
+
+
+
+def test_countermodel_p20_template_symlink_escaping_toolrepo_is_rejected(tmp_path: Path) -> None:
+    """P20: In a standalone distribution, template symlinks escaping toolrepo_root fail closed without reading outside bytes."""
+    import shutil
+
+    standalone = tmp_path / "standalone_escape"
+    template_dir = standalone / "templates" / "agentreview-v2-target-pack"
+    template_dir.mkdir(parents=True)
+    schema_dir = standalone / "schemas" / "agent-review" / "v2"
+    schema_dir.mkdir(parents=True)
+    (schema_dir / "agent-review.target-pack-manifest.v2.schema.json").write_text("{}\n", encoding="utf-8")
+
+    outside_file = tmp_path / "outside_secret.yaml"
+    outside_file.write_text("evil_content: true\n", encoding="utf-8")
+
+    # Symlink target-profile to outside_file
+    symlink_path = template_dir / "target-profile.v2.yaml"
+    symlink_path.symlink_to(outside_file)
+
+    dummy_sha = "a" * 40
+    (standalone / ".source-commit").write_text(f"{dummy_sha}\n", encoding="utf-8")
+    (standalone / ".toolrepo-sha").write_text(f"{dummy_sha}\n", encoding="utf-8")
+
+    with pytest.raises(TargetPackBuildError) as exc_manifest:
+        build_target_pack_manifest_v2(toolrepo_root=standalone, toolrepo_sha=dummy_sha, pack_version="0.1.0")
+    assert exc_manifest.value.reason_code == BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2
+
+    with pytest.raises(TargetPackBuildError) as exc_seed:
+        load_seed_content_by_path_v2(toolrepo_root=standalone, toolrepo_sha=dummy_sha)
+    assert exc_seed.value.reason_code == BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2
+
+    # Analogous test for schema symlink escaping root
+    symlink_path.unlink()
+    symlink_path.write_text("valid: true\n", encoding="utf-8")
+
+    outside_schema = tmp_path / "outside.schema.json"
+    outside_schema.write_text("{}\n", encoding="utf-8")
+    schema_symlink = schema_dir / "escape.schema.json"
+    schema_symlink.symlink_to(outside_schema)
+
+    # Building manifest must reject or ignore the escaping schema symlink fail closed
+    with pytest.raises(TargetPackBuildError) as exc_schema:
+        build_target_pack_manifest_v2(toolrepo_root=standalone, toolrepo_sha=dummy_sha, pack_version="0.1.0")
+    assert exc_schema.value.reason_code == BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2

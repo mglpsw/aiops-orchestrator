@@ -1979,6 +1979,187 @@ def test_countermodel_p14_verify_explicit_source_sha_against_source(tmp_path: Pa
     assert (dest / ".source-commit").read_text(encoding="utf-8").strip() == real_sha
 
 
+def test_countermodel_p15_refuse_materialize_when_ignored_entries_exist(tmp_path: Path) -> None:
+    """P15: Materialization refuses to attest a git checkout containing ignored entries inside declared boundary (A1)."""
+    fake_repo = tmp_path / "fake_git_repo_p15"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+
+    # Add .gitignore with ignored secret/probe patterns and bytecode
+    (fake_repo / ".gitignore").write_text("*.key\n.env\n*.pem\n__pycache__/\n*.pyc\n*.pyo\n", encoding="utf-8")
+    _init_git_in_standalone(fake_repo)
+
+    # 1. Ignored *.key file inside declared distribution boundary
+    ignored_key = fake_repo / "app" / "agent_review" / "codex_ignored_probe.key"
+    ignored_key.write_text("secret_key_data\n", encoding="utf-8")
+
+    target_dest = tmp_path / "target_should_not_exist_p15"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_key:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
+    assert "ignored entries detected in declared distribution boundary" in str(exc_key.value)
+    assert "codex_ignored_probe.key" in str(exc_key.value)
+    assert not target_dest.exists(), "Preview/dry-run is write-zero: destination must not exist"
+
+    ignored_key.unlink()
+
+    # 2. Ignored .env secret file
+    env_file = fake_repo / "app" / "agent_review" / ".env"
+    env_file.write_text("SECRET=1\n", encoding="utf-8")
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_env:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
+    assert "ignored entries detected in declared distribution boundary" in str(exc_env.value)
+    assert not target_dest.exists()
+
+    env_file.unlink()
+
+    # 3. Python bytecode in __pycache__ or *.pyc is ignored by gitignore but allowed by the filter
+    pycache_dir = fake_repo / "app" / "agent_review" / "__pycache__"
+    pycache_dir.mkdir(parents=True, exist_ok=True)
+    (pycache_dir / "probe.cpython-312.pyc").write_bytes(b"bytecode")
+    clean_dest = tmp_path / "target_clean_bytecode_p15"
+    res = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=clean_dest)
+    assert res.exists()
+    assert not (clean_dest / "app" / "agent_review" / "__pycache__").exists()
+
+
+def test_countermodel_p16_prefer_git_head_over_local_attestation(tmp_path: Path) -> None:
+    """P16: Git HEAD is authoritative whenever Git is available; untracked/stale attestation files cannot fabricate identity (A2)."""
+    fake_repo = tmp_path / "fake_git_repo_p16"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+    git_head_sha = _init_git_in_standalone(fake_repo)
+
+    # 1. Untracked .source-commit with disagreeing fabricated SHA in git repo
+    fabricated_sha = "1" * 40
+    (fake_repo / ".source-commit").write_text(f"{fabricated_sha}\n", encoding="utf-8")
+    target_dest = tmp_path / "target_p16_a"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
+    assert "disagrees with authoritative Git HEAD" in str(exc_a.value)
+    assert not target_dest.exists()
+
+    # 2. Untracked .toolrepo-sha with disagreeing fabricated SHA in git repo
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").write_text(f"{fabricated_sha}\n", encoding="utf-8")
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
+    assert "disagrees with authoritative Git HEAD" in str(exc_b.value)
+    assert not target_dest.exists()
+
+    # 3. Disagreeing committed attestation in git repo raises
+    (fake_repo / ".source-commit").write_text(f"{git_head_sha}\n", encoding="utf-8")
+    (fake_repo / ".toolrepo-sha").write_text(f"{git_head_sha}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=fake_repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "add attestations"], cwd=fake_repo, check=True, capture_output=True)
+    (fake_repo / ".source-commit").write_text(f"{fabricated_sha}\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-a", "-m", "update bad attestation"], cwd=fake_repo, check=True, capture_output=True)
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_c:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
+    assert "disagrees with authoritative Git HEAD" in str(exc_c.value)
+
+    # 4. Standalone mode (non-git): conflicting, malformed, or valid attestations
+    standalone_dir = tmp_path / "standalone_p16"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone_dir)
+    # Conflicting attestations
+    (standalone_dir / ".source-commit").write_text(f"{'a'*40}\n", encoding="utf-8")
+    (standalone_dir / ".toolrepo-sha").write_text(f"{'b'*40}\n", encoding="utf-8")
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_d:
+        validator.materialize_standalone_distribution(repo_root=standalone_dir, target_dir=target_dest)
+    assert "Conflicting standalone attestations" in str(exc_d.value)
+
+    # Malformed attestation
+    (standalone_dir / ".toolrepo-sha").unlink()
+    (standalone_dir / ".source-commit").write_text("invalid_hex\n", encoding="utf-8")
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_e:
+        validator.materialize_standalone_distribution(repo_root=standalone_dir, target_dir=target_dest)
+    assert "Invalid .source-commit format" in str(exc_e.value)
+
+    # Valid attestation succeeds in standalone mode
+    valid_sha = "c" * 40
+    (standalone_dir / ".source-commit").write_text(f"{valid_sha}\n", encoding="utf-8")
+    (standalone_dir / ".toolrepo-sha").write_text(f"{valid_sha}\n", encoding="utf-8")
+    target_valid = tmp_path / "target_p16_valid"
+    res_valid = validator.materialize_standalone_distribution(repo_root=standalone_dir, target_dir=target_valid)
+    assert res_valid.exists()
+    assert (res_valid / ".source-commit").read_text(encoding="utf-8").strip() == valid_sha
+
+
+
+def test_countermodel_p17_fifo_rejected_before_ast_read_bounded_time(tmp_path: Path) -> None:
+    """P17: Special files (FIFO) ending in .py are rejected during physical admission before AST parsing and do not block reads (A4)."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("os.mkfifo not available on this platform")
+
+    fake_source = tmp_path / "fake_source_p17"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    fifo_path = fake_source / "app" / "agent_review" / "codex_fifo_probe.py"
+    try:
+        os.mkfifo(fifo_path)
+    except OSError as exc:
+        pytest.skip(f"Filesystem does not support mkfifo: {exc}")
+
+    try:
+        import time
+        t0 = time.monotonic()
+        manifest = validator.load_manifest()
+        errors = validator.validate_manifest(manifest, repo_root=fake_source)
+        elapsed = time.monotonic() - t0
+        # If open(fifo, 'r') was called, it would block indefinitely. Bound execution to < 2.0s
+        assert elapsed < 2.0, f"validate_manifest took too long ({elapsed:.2f}s), likely blocked on FIFO"
+        assert any("Special file (FIFO, socket, device) not permitted" in e for e in errors)
+    finally:
+        if fifo_path.exists():
+            fifo_path.unlink()
+
+
+def test_countermodel_p18_reject_undeclared_third_party_imports(tmp_path: Path) -> None:
+    """P18: Third-party dependencies are closed against allowed_third_party_packages, rejecting undeclared external imports (B1)."""
+    fake_source = tmp_path / "fake_source_p18"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    manifest = validator.load_manifest()
+
+    # 1. Inject totally undeclared dependency
+    cli_file = fake_source / "app" / "agent_review" / "cli.py"
+    orig_cli = cli_file.read_text(encoding="utf-8")
+    try:
+        cli_file.write_text("import totally_undeclared_dependency\n" + orig_cli, encoding="utf-8")
+        errors = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Undeclared external package 'totally_undeclared_dependency'" in e for e in errors)
+
+        # 2. Control: stdlib imports (struct, json) are admitted
+        cli_file.write_text("import struct\nimport json\n" + orig_cli, encoding="utf-8")
+        errors_stdlib = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert not any("Undeclared external package 'struct'" in e for e in errors_stdlib)
+        assert not any("Undeclared external package 'json'" in e for e in errors_stdlib)
+
+        # 3. Control: allowed third party imports (pydantic, yaml) are admitted
+        cli_file.write_text("import pydantic\nimport yaml\n" + orig_cli, encoding="utf-8")
+        errors_allowed = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert not any("Undeclared external package 'pydantic'" in e for e in errors_allowed)
+        assert not any("Undeclared external package 'yaml'" in e for e in errors_allowed)
+
+        # 4. Control: forbidden runtime package (fastapi) is rejected with forbidden error
+        cli_file.write_text("import fastapi\n" + orig_cli, encoding="utf-8")
+        errors_forbidden = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Forbidden runtime package 'fastapi'" in e for e in errors_forbidden)
+    finally:
+        cli_file.write_text(orig_cli, encoding="utf-8")
+
+    # 5. Manifest schema contract: allowed_third_party_packages must be non-empty and declare required anchors
+    manifest_missing = copy.deepcopy(manifest)
+    del manifest_missing["dependency_closure"]["allowed_third_party_packages"]
+    errs_missing = validator.validate_manifest(manifest_missing, repo_root=fake_source)
+    assert any("missing required 'allowed_third_party_packages'" in e for e in errs_missing)
+
+    manifest_omitted = copy.deepcopy(manifest)
+    manifest_omitted["dependency_closure"]["allowed_third_party_packages"] = ["pydantic"]  # omitted pyyaml
+    errs_omitted = validator.validate_manifest(manifest_omitted, repo_root=fake_source)
+    assert any("Required allowed third-party package anchor(s) omitted" in e for e in errs_omitted)
+
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""
