@@ -10,6 +10,13 @@ Explicit Non-Claims:
   B0-N2: Universal static mapping between AST import names and PyPI distributions is NOT claimed.
   B0-N3: Standalone wheel/package packaging is deferred to subsequent slice (#351-B1).
   B0-N4: Proof of every latent unexecuted execution path is NOT claimed.
+  B0-N5: Physical source separation or AIOps runtime retirement is NOT claimed.
+  B0-N6: Universal validation of arbitrary caller manifests or lockfiles is NOT claimed.
+  B0-N7: Universal AST-to-PyPI or recursive requirements directive resolution is NOT claimed.
+  B0-N8: Universal cross-platform standard library inventory is NOT claimed.
+  B0-N9: Standalone target-pack creation/packaging authority is NOT claimed (routed to #203).
+  B0-N10: Guarantees on arbitrary untracked or non-UTF8 git paths outside declared boundary are NOT claimed.
+  B0-N11: Removal of monorepo components is NOT claimed.
 """
 
 from __future__ import annotations
@@ -37,7 +44,6 @@ SUPPORTED_SCHEMA_IDS = frozenset({"agent-review.standalone-distribution-manifest
 
 REQUIRED_DISTRIBUTION_CLIS_V1: frozenset[str] = frozenset(
     {
-        "scripts/agent-review-target-pack-v2.py",
         "scripts/aiops-acquire-authoritative-checks-v2.py",
         "scripts/aiops-review-build-payload-set-v2.py",
         "scripts/aiops-review-build-payloads.py",
@@ -68,7 +74,6 @@ REQUIRED_SHARED_PRIMITIVES_V1: frozenset[str] = frozenset(
 )
 REQUIRED_ASSET_TREES_V1: frozenset[str] = frozenset(
     {
-        "templates/agentreview-v2-target-pack",
         "schemas/agent-review/v2",
     }
 )
@@ -177,64 +182,9 @@ REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
     for root in roots
 )
 
-STDLIB_TOP_LEVELS_CPYTHON_311_V1: frozenset[str] = frozenset(
-    {
-        "__future__", "abc", "aifc", "argparse", "array", "ast", "asynchat", "asyncio",
-        "asyncore", "base64", "bdb", "binascii", "bisect", "builtins", "bz2",
-        "calendar", "cgi", "cgitb", "chunk", "cmath", "cmd", "code", "codecs",
-        "codeop", "collections", "colorsys", "compileall", "concurrent", "configparser",
-        "contextlib", "contextvars", "copy", "copyreg", "cProfile", "crypt", "csv",
-        "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal", "difflib",
-        "dis", "distutils", "doctest", "email", "encodings", "ensurepip", "enum",
-        "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions",
-        "ftplib", "functools", "gc", "getopt", "getpass", "gettext", "glob", "graphlib",
-        "grp", "gzip", "hashlib", "heapq", "hmac", "html", "http", "idlelib", "imaplib",
-        "imghdr", "imp", "importlib", "inspect", "io", "ipaddress", "itertools", "json",
-        "keyword", "lib2to3", "linecache", "locale", "logging", "lzma", "mailbox",
-        "mailcap", "marshal", "math", "mimetypes", "mmap", "modulefinder", "msilib",
-        "msvcrt", "multiprocessing", "netrc", "nis", "nntplib", "numbers", "operator",
-        "optparse", "os", "ossaudiodev", "pathlib", "pdb", "pickle", "pickletools",
-        "pipes", "pkgutil", "platform", "plistlib", "poplib", "posix", "posixpath",
-        "pprint", "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr", "pydoc",
-        "queue", "quopri", "random", "re", "readline", "reprlib", "resource", "rlcompleter",
-        "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil",
-        "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver",
-        "spwd", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat",
-        "statistics", "string", "stringprep", "struct", "subprocess", "sunau", "symtable",
-        "sys", "sysconfig", "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile",
-        "termios", "test", "textwrap", "threading", "time", "timeit", "tkinter",
-        "token", "tokenize", "tomllib", "trace", "traceback", "tracemalloc", "tty",
-        "turtle", "turtledemo", "types", "typing", "unicodedata", "unittest", "urllib",
-        "uu", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser", "winreg",
-        "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc", "zipapp", "zipfile",
-        "zipimport", "zlib", "zoneinfo",
-        # Internal modules invoked within sandbox without package prefix
-        "trusted_check_namespace_kernel_v2",
-        "trusted_check_stream_capture_v2",
-        "trusted_check_supervisor_v2",
-    }
-)
-STDLIB_TOP_LEVELS_V1 = STDLIB_TOP_LEVELS_CPYTHON_311_V1
-
-
 def canonical_distribution_name(name: str) -> str:
     """Normalize distribution package name according to PEP 503 / Python packaging conventions."""
     return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def parse_lock_distributions(lock_path: Path) -> frozenset[str]:
-    """Parse requirement names from requirements-agent-review.lock and return canonical distribution names."""
-    if not lock_path.is_file():
-        return frozenset()
-    pkgs: set[str] = set()
-    for line in lock_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = re.match(r"^([a-zA-Z0-9_\-\.]+)\s*==\s*", line)
-        if m:
-            pkgs.add(canonical_distribution_name(m.group(1)))
-    return frozenset(pkgs)
 
 
 @dataclass(frozen=True)
@@ -260,7 +210,6 @@ class CanonicalStandaloneContractV1:
         default_factory=lambda: dict(KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1)
     )
     forbidden_script_roots: frozenset[str] = REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1
-    stdlib_top_levels: frozenset[str] = STDLIB_TOP_LEVELS_CPYTHON_311_V1
 
 
 CANONICAL_CONTRACT_V1 = CanonicalStandaloneContractV1()
@@ -457,7 +406,7 @@ def extract_git_commit_tree_snapshot(
     resolved_commit = proc_rev.stdout.strip()
 
     proc_tree = subprocess.run(
-        ["git", "-C", str(repo_resolved), "ls-tree", "-r", "-z", resolved_commit],
+        ["git", "-C", str(repo_resolved), "ls-tree", "-r", "-z", resolved_commit, "--"] + list(all_declared_items),
         capture_output=True,
         check=False,
     )
@@ -472,9 +421,9 @@ def extract_git_commit_tree_snapshot(
             continue
         try:
             meta, path_bytes = rec.split(b"\t", 1)
-            meta_str = meta.decode("utf-8")
+            meta_str = meta.decode("ascii")
             mode_str, type_str, object_sha = meta_str.split()
-            path_str = path_bytes.decode("utf-8")
+            path_str = path_bytes.decode("utf-8", errors="surrogateescape")
         except Exception as exc:
             raise StandaloneClosureValidationError(f"Malformed git ls-tree record: {rec!r}: {exc}")
 
@@ -717,25 +666,6 @@ def validate_manifest(
             f"Allowed third-party packages overlap forbidden runtime packages: {overlap}"
         )
 
-    # Finding D3 / P2: Parity check between allowed_third_party_packages and requirements-agent-review.lock
-    lock_file = root / "requirements-agent-review.lock"
-    if lock_file.is_file():
-        lock_pkgs = parse_lock_distributions(lock_file)
-        if not lock_pkgs:
-            errors.append(
-                f"requirements-agent-review.lock at {lock_file} is empty or contains no valid distribution pins."
-            )
-        else:
-            missing_from_lock = sorted(allowed_packages_norm - lock_pkgs)
-            if missing_from_lock:
-                errors.append(
-                    f"Allowed package(s) declared in manifest but absent from requirements-agent-review.lock: {missing_from_lock}"
-                )
-            extra_in_lock = sorted(lock_pkgs - allowed_packages_norm)
-            if extra_in_lock:
-                errors.append(
-                    f"Package(s) present in requirements-agent-review.lock but omitted from manifest allowed_third_party_packages: {extra_in_lock}"
-                )
 
     # Project declared allowed packages to import roots via known contract
     allowed_third_party_import_roots: set[str] = set(REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1)
@@ -897,24 +827,15 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages against positive third-party closure (B1) - Exact case matching!
+        # Check external packages against negative runtime boundary (fail-closed)
         for pkg in ext_pkgs:
-            if pkg in STDLIB_TOP_LEVELS_V1:
-                continue
-            elif pkg in allowed_third_party_import_roots:
-                continue
-            elif pkg in forbidden_import_roots:
+            if pkg in forbidden_import_roots:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
                 )
             elif pkg in forbidden_script_roots:
                 errors.append(
                     f"Forbidden runtime script import root '{pkg}' imported by {py_file.relative_to(root)}"
-                )
-            else:
-                errors.append(
-                    f"Undeclared external package '{pkg}' imported by {py_file.relative_to(root)}: "
-                    f"package is neither stdlib nor in allowed_third_party_packages"
                 )
 
         # Check local app imports

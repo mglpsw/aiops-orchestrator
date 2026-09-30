@@ -25,7 +25,6 @@
       "app/services/__init__.py"
     ],
     "required_asset_trees": [
-      "templates/agentreview-v2-target-pack",
       "schemas/agent-review/v2"
     ],
     "install_boundary": [
@@ -34,7 +33,6 @@
       "docs/AGENT_REVIEW_V2_INSTALLATION.md"
     ],
     "distribution_clis": [
-      "scripts/agent-review-target-pack-v2.py",
       "scripts/aiops-acquire-authoritative-checks-v2.py",
       "scripts/aiops-review-build-payload-set-v2.py",
       "scripts/aiops-review-build-payloads.py",

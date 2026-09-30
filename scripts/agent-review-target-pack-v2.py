@@ -101,78 +101,32 @@ _GIT_SHA_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
-    """The real `git rev-parse HEAD` of `toolrepo_root`, or attested source identity, or a refusal.
+    """The real `git rev-parse HEAD` of `toolrepo_root`, or a refusal.
 
-    In a git checkout, resolves `git rev-parse HEAD` as the sole authority.
-    In an attestation-backed standalone distribution, resolves `.source-commit`
-    or `.toolrepo-sha`.
-    Never silently fabricate provenance -- refuse instead, by name."""
+    Adversarial review finding, confirmed and fixed: the previous version
+    silently fell back to an all-zero SHA (`"0" * 40`) whenever `git
+    rev-parse` failed (e.g. `--toolrepo-root` not a real git checkout),
+    and every caller wrote that fabricated value straight into
+    `TargetPackManifestV2.toolrepo_sha`/`TargetInstallReceiptV2.
+    toolrepo_sha` -- a receipt whose entire stated purpose (spec `§4`) is
+    to be "provenance-carrying". Reproduced: `init` against a
+    non-git-checkout `--toolrepo-root` exited 0 and wrote a receipt
+    claiming `toolrepo_sha: "0000...0000"`, a fabricated identity, not a
+    refusal. Never silently fabricate provenance -- refuse instead, by
+    name."""
+
     import subprocess
 
-    is_git_repo = False
-    git_head_sha: str | None = None
-    try:
-        proc_top = subprocess.run(
-            ["git", "-C", str(toolrepo_root), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc_top.returncode == 0 and Path(proc_top.stdout.strip()).resolve() == toolrepo_root.resolve():
-            proc_head = subprocess.run(
-                ["git", "-C", str(toolrepo_root), "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            sha = proc_head.stdout.strip().lower()
-            if proc_head.returncode == 0 and _GIT_SHA_HEX_RE.fullmatch(sha) and sha != _ALL_ZERO_SHA_V2:
-                git_head_sha = sha
-                is_git_repo = True
-    except Exception:
-        pass
-
-    src_commit_sha: str | None = None
-    toolrepo_file_sha: str | None = None
-    for fname in (".source-commit", ".toolrepo-sha"):
-        target_path = toolrepo_root / fname
-        if target_path.is_symlink():
-            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        try:
-            capability = validate_external_input_file_v2(target_path, root=toolrepo_root)
-            content = capability.read_text(encoding="utf-8").strip().lower()
-            if _GIT_SHA_HEX_RE.fullmatch(content) and content != _ALL_ZERO_SHA_V2:
-                if fname == ".source-commit":
-                    src_commit_sha = content
-                else:
-                    toolrepo_file_sha = content
-            else:
-                raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        except ExternalPathIngressError as exc:
-            if exc.reason_code != EXTERNAL_PATH_MISSING_REASON_V2:
-                raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        except TargetPackBuildError:
-            raise
-        except Exception:
-            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-
-    if is_git_repo and git_head_sha is not None:
-        if src_commit_sha is not None and src_commit_sha != git_head_sha:
-            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        if toolrepo_file_sha is not None and toolrepo_file_sha != git_head_sha:
-            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        return git_head_sha
-
-    if src_commit_sha is not None and toolrepo_file_sha is not None:
-        if src_commit_sha != toolrepo_file_sha:
-            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
-        return src_commit_sha
-    if src_commit_sha is not None:
-        return src_commit_sha
-    if toolrepo_file_sha is not None:
-        return toolrepo_file_sha
-
-    raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
+    completed = subprocess.run(
+        ["git", "-C", str(toolrepo_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sha = completed.stdout.strip()
+    if completed.returncode != 0 or not _GIT_SHA_HEX_RE.fullmatch(sha) or sha == _ALL_ZERO_SHA_V2:
+        raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
+    return sha
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

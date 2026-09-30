@@ -9,11 +9,11 @@
 
 ## 1. Objetivo e Proposição Central
 
-Esta especificação e seu ferramental associado materializam a menor fatia executável de **#351-B — distribuição independente**, provando formal e deterministicamente a seguinte proposição:
+Esta especificação e seu ferramental associado materializam a menor fatia executável de **#351-B — distribuição independente**, provando formal e deterministicamente a seguinte proposição canônica:
 
-> **AgentReview pode ser materializado, instalado, importado e exercitado em modo offline a partir de uma fronteira explícita de produto, sem depender do código-fonte ou das dependências exclusivas do AIOps Runtime.**
+> **Para a fronteira canônica do AgentReview $K$ em um commit de repositório qualificado exato $C$: $T = \text{Materialize}(C, K)$ pode ser instalado a partir do lock canônico do AgentReview e capacidades representativas v1/v2 podem ser executadas em $T$ sem iniciar o AIOps runtime ou instalar dependências exclusivas de runtime do AIOps.**
 
-Esta fatia **não executa a separação física nem aposenta o AIOps Runtime**. Trata-se de uma **prova de separabilidade** (`SeparabilityProven != PhysicalMigrationExecuted`).
+Esta fatia constitui uma **testemunha canônica de independência** (`CanonicalStandaloneIndependenceWitness`). Ela **não executa a separação física nem aposenta o AIOps Runtime** (`SeparabilityProven != PhysicalMigrationExecuted`).
 
 ---
 
@@ -80,10 +80,10 @@ A fronteira do produto é formalizada e versionada na projeção canônica:
 | Categoria | Superfície no Repositório | Justificativa e Papel |
 |---|---|---|
 | **AGENTREVIEW_CORE** | `app/agent_review/**`<br>`app/__init__.py` | Código-fonte do motor de revisão (linhas v1 e v2). |
-| **AGENTREVIEW_ASSET** | `templates/agentreview-v2-target-pack/**`<br>`schemas/agent-review/v2/**` | Árvores de templates e esquemas JSON consumidas diretamente em tempo de execução/geração pelo `target_pack_build_v2.py`. |
+| **AGENTREVIEW_ASSET** | `schemas/agent-review/v2/**` | Árvore de esquemas JSON exportados e validados pelo AgentReview v2 (`schemas/agent-review/v2`). Templates de target-pack pertencem à fonte Git do toolrepo (#203). |
 | **AGENTREVIEW_INSTALL** | `requirements-agent-review.lock`<br>`scripts/install-agent-review-toolrepo.sh`<br>`docs/AGENT_REVIEW_V2_INSTALLATION.md` | Contrato canônico de instalação offline e independente do toolrepo sem dependências de banco ou runtime. |
 | **SHARED_REQUIRED** | `app/common/strict_json.py` (+ `__init__.py`)<br>`app/services/environment_context.py` (+ `__init__.py`) | Primitivas compartilhadas estritamente necessárias. Importam apenas biblioteca padrão e PyYAML. |
-| **DISTRIBUTION_CLIS** | 16 ferramentas operacionais de linha de comando (`scripts/agent-review-target-pack-v2.py`, `scripts/aiops-acquire-authoritative-checks-v2.py`, `scripts/aiops-review-*.py`, `scripts/export-agent-review-v2-schemas.py`, `scripts/github_agent_review.py`, `scripts/migrate-agent-review-profile-v1-v2.py`, `scripts/verify-agent-review-v2-conformance.py`). Todas ancoradas obrigatoriamente em `REQUIRED_DISTRIBUTION_CLIS_V1`. |
+| **DISTRIBUTION_CLIS** | 15 ferramentas operacionais de linha de comando (`scripts/aiops-acquire-authoritative-checks-v2.py`, `scripts/aiops-review-*.py`, `scripts/export-agent-review-v2-schemas.py`, `scripts/github_agent_review.py`, `scripts/migrate-agent-review-profile-v1-v2.py`, `scripts/verify-agent-review-v2-conformance.py`). Todas ancoradas obrigatoriamente em `REQUIRED_DISTRIBUTION_CLIS_V1`. |
 | **AGENTREVIEW_QUALIFICATION** | `tests/agent_review/**`<br>`tests/evals/**`<br>`evals/agent_review_v2/**`<br>`scripts/run-agent-review-v2-evals.py` | Ferramentas de qualificação, testes e benchmarks. Declaradas fora da distribuição operacional em runtime (`NeededToQualifyProduct != NeededAtRuntimeByProduct`). |
 | **AIOPS_RUNTIME_ONLY (Forbidden)** | `app/main.py`<br>`app/api/**`<br>`app/agent_router/**`<br>`app/models/**`<br>`app/policies/**`<br>`app/adapters/**`<br>`app/services/orchestrator.py`<br>`deploy/**`<br>`config/actions.yaml` | Código exclusivo do orquestrador legado, banco de dados e rotas web. Totalmente ausente da distribuição standalone. |
 
@@ -256,3 +256,9 @@ Em conformidade estrita com o método AOCM/CAEM e as decisões arquiteturais:
 - **B0-N3 (Empacotamento padrão adiado):** A criação de artefatos padronizados de distribuição (`pyproject.toml`, wheels, sdist) está expressamente postergada para a fatia `#351-B1`.
 - **B0-N4 (Sem prova de caminhos latentes não executados):** A garantia de funcionamento em isolamento é fornecida pelos testes focais representativos (Layer E), não por prova estática de cobertura total de fluxos latentes.
 - **B0-N5 (Sem migração física ou desativação de runtime):** A separabilidade está provada; a migração física não foi executada. O AIOps Runtime, seus modelos, rotas e dependências continuam integralmente em operação no repositório.
+- **B0-N6 (Sem validação universal de manifestos ou lockfiles arbitrários):** O validador do B0 não se propõe a ser um motor genérico de auditoria de dependências para qualquer projeto arbitrário; ele certifica especificamente a projeção canônica do AgentReview.
+- **B0-N7 (Sem resolução universal de sintaxe complexa de requirements ou diretivas recursivas):** Não se reivindica um interpretador universal da linguagem de requirements do pip nem resolução recursiva de diretivas `-r`/`--requirement`. A autoridade e validação da instalação residem no contrato estrito do lockfile (`requirements-agent-review.lock`) e no gate de instalação limpa. Requisitos gerais de hardening de parsers de lockfile pertencem à issue #226.
+- **B0-N8 (Sem inventário estático universal de biblioteca padrão):** Não se reivindica inventário estático exaustivo da biblioteca padrão CPython em todas as plataformas. O validador atua de modo fail-closed contra pacotes e raízes de runtime proibidos do AIOps, enquanto o runtime executável comprova a resolução de dependências no interpretador CPython 3.11 suportado.
+- **B0-N9 (Sem autoridade sobre criação de target-pack fora de repositório Git):** O target-pack v2 opera com autoridade direta do repositório Git do toolrepo; o empacotamento standalone avançado de target-packs pertence à issue #203.
+- **B0-N10 (Sem garantias sobre arquivos não-UTF8 fora da fronteira declarada):** O validador e materializador não inspecionam nem assumem propriedades sobre caminhos ou blobs arbitrários não-UTF8 presentes no repositório fora da fronteira canônica declarada. A extração é estritamente delimitada aos caminhos da distribuição.
+- **B0-N11 (Sem remoção de componentes do repositório monorepo):** B0 qualifica uma projeção de independência lógica e contratual sem alterar a integridade nem remover componentes do monorepo.

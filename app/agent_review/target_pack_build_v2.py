@@ -41,11 +41,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.external_path_ingress_v2 import (
-    ExternalPathIngressError,
-    validate_external_input_directory_v2,
-    validate_external_input_file_v2,
-)
 from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
     TargetPackFileOwnershipV2,
@@ -118,59 +113,6 @@ def _require_valid_toolrepo_sha_v2(toolrepo_sha: str) -> None:
         raise TargetPackBuildError(BUILD_TOOLREPO_SHA_INVALID_SHAPE_REASON_V2)
 
 
-def _is_git_tree_accessible_v2(*, toolrepo_root: Path, toolrepo_sha: str) -> bool:
-    try:
-        proc_top = subprocess.run(
-            ["git", "-C", str(toolrepo_root), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc_top.returncode != 0:
-            return False
-        if Path(proc_top.stdout.strip()).resolve() != toolrepo_root.resolve():
-            return False
-
-        proc = subprocess.run(
-            ["git", "-C", str(toolrepo_root), "rev-parse", "--verify", f"{toolrepo_sha}^{{commit}}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return proc.returncode == 0
-    except Exception:
-        return False
-
-
-def _resolve_attested_toolrepo_sha(toolrepo_root: Path) -> str | None:
-    src_commit_sha: str | None = None
-    toolrepo_file_sha: str | None = None
-
-    for fname in (".source-commit", ".toolrepo-sha"):
-        target_path = toolrepo_root / fname
-        if target_path.is_symlink():
-            # Refuse symlinked attestation files fail-closed
-            return None
-        try:
-            capability = validate_external_input_file_v2(target_path, root=toolrepo_root)
-            content = capability.read_text(encoding="utf-8").strip().lower()
-            if _TOOLREPO_SHA_HEX_RE.fullmatch(content) and content != "0" * 40:
-                if fname == ".source-commit":
-                    src_commit_sha = content
-                else:
-                    toolrepo_file_sha = content
-        except ExternalPathIngressError:
-            pass
-        except Exception:
-            pass
-
-    if src_commit_sha is not None and toolrepo_file_sha is not None:
-        if src_commit_sha != toolrepo_file_sha:
-            return None
-        return src_commit_sha
-    return src_commit_sha or toolrepo_file_sha
-
-
 def _git_ls_tree_names_v2(*, toolrepo_root: Path, toolrepo_sha: str, tree_relative_path: str) -> tuple[str, ...]:
     """Every path under `tree_relative_path` as recorded in the Git tree at
     `toolrepo_sha` -- never a filesystem `glob`, which cannot distinguish a
@@ -210,86 +152,33 @@ def build_target_pack_manifest_v2(
 ) -> TargetPackManifestV2:
     _require_valid_toolrepo_sha_v2(toolrepo_sha)
 
-    # Git tree is material authority whenever Git is available and requested SHA is accessible (Section 5)
-    if _is_git_tree_accessible_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha):
-        template_paths = _git_ls_tree_names_v2(
-            toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, tree_relative_path=_TEMPLATE_TREE_PATH_V2
+    template_paths = _git_ls_tree_names_v2(
+        toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, tree_relative_path=_TEMPLATE_TREE_PATH_V2
+    )
+    if not template_paths:
+        raise TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2)
+
+    entries: list[GeneratedFileEntryV2] = []
+    for source in _TEMPLATE_SOURCES_V2:
+        relative_path = f"{_TEMPLATE_TREE_PATH_V2}/{source.template_relative_path}"
+        content = _git_show_bytes_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, relative_path=relative_path)
+        entries.append(
+            GeneratedFileEntryV2(
+                path=source.target_relative_path,
+                ownership=source.ownership,
+                content_sha256=_sha256_hex(content),
+            )
         )
-        if not template_paths:
-            raise TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2)
 
-        entries: list[GeneratedFileEntryV2] = []
-        for source in _TEMPLATE_SOURCES_V2:
-            relative_path = f"{_TEMPLATE_TREE_PATH_V2}/{source.template_relative_path}"
-            content = _git_show_bytes_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, relative_path=relative_path)
-            entries.append(
-                GeneratedFileEntryV2(
-                    path=source.target_relative_path,
-                    ownership=source.ownership,
-                    content_sha256=_sha256_hex(content),
-                )
-            )
-
-        schema_paths = _git_ls_tree_names_v2(
-            toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, tree_relative_path=_SCHEMA_TREE_PATH_V2
+    schema_paths = _git_ls_tree_names_v2(
+        toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, tree_relative_path=_SCHEMA_TREE_PATH_V2
+    )
+    schema_digests = {
+        Path(schema_path).name: _sha256_hex(
+            _git_show_bytes_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, relative_path=schema_path)
         )
-        schema_digests = {
-            Path(schema_path).relative_to(_SCHEMA_TREE_PATH_V2).as_posix(): _sha256_hex(
-                _git_show_bytes_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, relative_path=schema_path)
-            )
-            for schema_path in sorted(p for p in schema_paths if p.endswith(".schema.json"))
-        }
-    else:
-        # Contained standalone filesystem path
-        attested_sha = _resolve_attested_toolrepo_sha(toolrepo_root)
-        if attested_sha is None:
-            # Delegate to git tree listing to preserve conventional build error (e.g. not a git repo)
-            _git_ls_tree_names_v2(
-                toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha, tree_relative_path=_SCHEMA_TREE_PATH_V2
-            )
-            raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
-
-        if toolrepo_sha != attested_sha:
-            raise TargetPackBuildError(BUILD_TOOLREPO_SHA_INVALID_SHAPE_REASON_V2)
-
-        template_root = toolrepo_root / _TEMPLATE_TREE_PATH_V2
-        if not template_root.is_dir():
-            raise TargetPackBuildError(BUILD_TEMPLATE_ROOT_MISSING_REASON_V2)
-
-        entries = []
-        for source in _TEMPLATE_SOURCES_V2:
-            src_file = template_root / source.template_relative_path
-            try:
-                capability = validate_external_input_file_v2(src_file, root=toolrepo_root)
-                content = capability.read_bytes()
-            except ExternalPathIngressError:
-                raise TargetPackBuildError(BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2)
-            entries.append(
-                GeneratedFileEntryV2(
-                    path=source.target_relative_path,
-                    ownership=source.ownership,
-                    content_sha256=_sha256_hex(content),
-                )
-            )
-
-        schema_root = toolrepo_root / _SCHEMA_TREE_PATH_V2
-        try:
-            schema_dir_cap = validate_external_input_directory_v2(schema_root, root=toolrepo_root)
-            schema_files = schema_dir_cap.iter_input_files_recursive()
-        except ExternalPathIngressError:
-            raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
-
-        schema_digests = {}
-        for entry in sorted(schema_files, key=lambda item: item.entry_name):
-            if entry.entry_name.endswith(".schema.json"):
-                rel_key = entry.entry_name
-                try:
-                    schema_digests[rel_key] = _sha256_hex(entry.read_bytes())
-                except ExternalPathIngressError:
-                    raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
-
-        if not schema_digests:
-            raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
+        for schema_path in sorted(p for p in schema_paths if p.endswith(".schema.json"))
+    }
 
     return TargetPackManifestV2(
         schema_id="agent-review.target-pack-manifest.v2",
@@ -311,40 +200,17 @@ def load_seed_content_by_path_v2(*, toolrepo_root: Path, toolrepo_sha: str) -> d
     """The raw bytes for every template, keyed by TARGET install path --
     exactly how `InstallPlanV2.file_actions[].path` and `apply_install_
     plan_v2`'s `seed_content_by_path` parameter are keyed. Read from the
-    immutable Git tree at `toolrepo_sha`, or from the attestation-backed
-    standalone distribution matching `toolrepo_sha`."""
+    immutable Git tree at `toolrepo_sha`, same as `build_target_pack_
+    manifest_v2` -- the seed a caller installs and the digest recorded in
+    the manifest for it must always be read from the identical source, or
+    the two could silently diverge."""
 
     _require_valid_toolrepo_sha_v2(toolrepo_sha)
-
-    if _is_git_tree_accessible_v2(toolrepo_root=toolrepo_root, toolrepo_sha=toolrepo_sha):
-        return {
-            source.target_relative_path: _git_show_bytes_v2(
-                toolrepo_root=toolrepo_root,
-                toolrepo_sha=toolrepo_sha,
-                relative_path=f"{_TEMPLATE_TREE_PATH_V2}/{source.template_relative_path}",
-            )
-            for source in _TEMPLATE_SOURCES_V2
-        }
-
-    attested_sha = _resolve_attested_toolrepo_sha(toolrepo_root)
-    if attested_sha is None:
-        _git_show_bytes_v2(
+    return {
+        source.target_relative_path: _git_show_bytes_v2(
             toolrepo_root=toolrepo_root,
             toolrepo_sha=toolrepo_sha,
-            relative_path=f"{_TEMPLATE_TREE_PATH_V2}/{_TEMPLATE_SOURCES_V2[0].template_relative_path}",
+            relative_path=f"{_TEMPLATE_TREE_PATH_V2}/{source.template_relative_path}",
         )
-        raise TargetPackBuildError(BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2)
-
-    if toolrepo_sha != attested_sha:
-        raise TargetPackBuildError(BUILD_TOOLREPO_SHA_INVALID_SHAPE_REASON_V2)
-
-    template_root = toolrepo_root / _TEMPLATE_TREE_PATH_V2
-    result: dict[str, bytes] = {}
-    for source in _TEMPLATE_SOURCES_V2:
-        src_file = template_root / source.template_relative_path
-        try:
-            capability = validate_external_input_file_v2(src_file, root=toolrepo_root)
-            result[source.target_relative_path] = capability.read_bytes()
-        except ExternalPathIngressError:
-            raise TargetPackBuildError(BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2)
-    return result
+        for source in _TEMPLATE_SOURCES_V2
+    }
