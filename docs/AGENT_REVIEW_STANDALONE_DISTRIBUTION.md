@@ -107,17 +107,14 @@ AgentReviewNeeds(X) != AgentReviewOwnsExclusively(X)
 ## 4. Fronteira Negativa e Política de Symlinks
 
 ### Superfícies Proibidas de Runtime
-O manifesto declara explicitamente a lista `forbidden_runtime_surfaces`, cuja presença e completude são obrigatórias (`REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1`). Nenhuma dessas superfícies pode ser incluída na distribuição nem importada por arquivos da mesma:
+O manifesto declara explicitamente a lista canônica de 32 superfícies `forbidden_runtime_surfaces`, cuja presença e completude exata são obrigatórias (`REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1`). Nenhuma dessas superfícies pode ser incluída na distribuição nem importada por arquivos da mesma:
 
-- `app/main.py`
-- `app/api`
-- `app/agent_router`
-- `app/models`
-- `app/policies`
-- `app/adapters`
-- `app/services/orchestrator.py`
-- `deploy`
-- `config/actions.yaml`
+- **Núcleo e rotas de runtime:** `app/main.py`, `app/api`, `app/agent_router`, `app/models`, `app/policies`, `app/adapters`, `app/utils`
+- **Serviços de runtime:** `app/services/orchestrator.py`, `app/services/provider_registry.py`, `app/services/task_service.py`, `app/services/action_planner.py`, `app/services/action_catalog.py`, `app/services/aiops_chat_router.py`
+- **Subsistemas legados:** `app/caem_consumer`, `app/ri_b0a`, `app/projectops`
+- **Infraestrutura e deploy:** `deploy`
+- **Configurações de runtime:** `config/actions.yaml`, `config/policies.yml`, `config/providers.yml`, `config/routes.yml`
+- **Scripts de runtime e ciclo de vida:** `scripts/aiops-runtime-backup-manifest.py`, `scripts/aiops-runtime-inventory.py`, `scripts/aiops-runtime-postcheck.py`, `scripts/backup.sh`, `scripts/rollback.sh`, `scripts/install.sh`, `scripts/smoke_test.sh`, `scripts/validate_actions_catalog.sh`, `scripts/validate_bluegreen.sh`, `scripts/compare_aiops_runtimes.sh`, `scripts/migrate_savings_to_sqlite.py`
 
 ### Pacotes e Raízes de Importação Proibidos de Runtime
 O closure do AgentReview em modo standalone não requer nem importa pacotes pertencentes exclusivamente ao runtime:
@@ -196,6 +193,9 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **L-01** | Checagem de limpeza com path não-canônico | Caminho não-canônico com prefixo não-criado (`/tmp/new/../existing-target`) é resolvido antes da checagem; destino não-vazio pré-existente é recusado fail-closed e diretórios intermediários não são criados. |
 | **L-02** | Sombra de venv e pip por `PYTHONPATH` ambiental | Criação do venv (`-I -S -m venv`) e execução do pip (`-I -m pip`) operam em modo isolado, provando imunidade contra shadowing por scripts `venv.py` ou pacotes `pip` presentes no `PYTHONPATH`. |
 | **L-03** | Incompatibilidade de plataforma do lockfile antes da criação do venv | O probe isolado valida a plataforma completa (CPython 3.11, Linux, x86_64, glibc >= 2.17) antes de criar o venv, impedindo venvs parciais/quebrados em arquiteturas ou libcs incompatíveis (aarch64, musl, macOS). |
+| **M-01** | Completude da fronteira negativa (32 superfícies canônicas) | `REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1` e manifesto canônico exigem paridade total com todas as 32 superfícies de runtime (incluindo `config/providers.yml`, `config/policies.yml`, `config/routes.yml` e scripts de runtime); omissão ou inserção na fronteira positiva falha closed. |
+| **M-02** | Confinamento de origem por componentes no detector M3 | O detector executável de escape utiliza `Path.is_relative_to`, comprovando a rejeição tanto de escapes para o repo original quanto para diretórios irmãos que compartilham prefixo de string (`/standalone-old`). |
+| **M-03** | Isolamento de configuração e variáveis do pip (`--isolated`) | O instalador invoca `pip --isolated`, ignorando variáveis de ambiente do chamador (`PIP_TARGET`, `PIP_PREFIX`) e configurações de usuário (`pip.conf`), garantindo instalação estrita no venv alvo. |
 
 ---
 

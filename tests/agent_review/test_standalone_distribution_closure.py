@@ -70,6 +70,84 @@ def test_manifest_loads_and_passes_deterministic_validation() -> None:
 
     errors = validator.validate_manifest(manifest, repo_root=REPO_ROOT)
     assert not errors, f"Manifest validation failed with errors: {errors}"
+    assert set(manifest["forbidden_runtime_surfaces"]) == validator.REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1, (
+        f"Parity mismatch between canonical manifest and REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: "
+        f"diff={set(manifest['forbidden_runtime_surfaces']) ^ validator.REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1}"
+    )
+
+
+def test_countermodel_m1_negative_boundary_providers_escape(tmp_path: Path) -> None:
+    """M1: Omitting config/providers.yml from forbidden surfaces and adding it to positive boundary fails closed."""
+    manifest = validator.load_manifest()
+    mutated = copy.deepcopy(manifest)
+    mutated["forbidden_runtime_surfaces"] = [
+        s for s in mutated["forbidden_runtime_surfaces"] if s != "config/providers.yml"
+    ]
+    mutated["distribution_boundary"]["required_asset_trees"].append("config/providers.yml")
+
+    # Layer S static validation must reject the omission of required negative anchor
+    errs = validator.validate_manifest(mutated, repo_root=REPO_ROOT)
+    assert any("config/providers.yml" in err for err in errs), f"Expected validation error naming config/providers.yml, got: {errs}"
+    assert any("Required negative runtime anchor(s) omitted" in err for err in errs)
+
+    # Layer M materialization must refuse to materialize
+    target = tmp_path / "should_not_materialize_providers"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(
+            repo_root=REPO_ROOT,
+            target_dir=target,
+            manifest=mutated,
+        )
+    assert "config/providers.yml" in str(exc_info.value)
+    assert not target.exists(), "Target directory must not be created on validation failure"
+
+
+def test_countermodel_m1_negative_boundary_policies_escape(tmp_path: Path) -> None:
+    """M1: Omitting config/policies.yml from forbidden surfaces and adding it to positive boundary fails closed."""
+    manifest = validator.load_manifest()
+    mutated = copy.deepcopy(manifest)
+    mutated["forbidden_runtime_surfaces"] = [
+        s for s in mutated["forbidden_runtime_surfaces"] if s != "config/policies.yml"
+    ]
+    mutated["distribution_boundary"]["required_asset_trees"].append("config/policies.yml")
+
+    errs = validator.validate_manifest(mutated, repo_root=REPO_ROOT)
+    assert any("config/policies.yml" in err for err in errs)
+    assert any("Required negative runtime anchor(s) omitted" in err for err in errs)
+
+    target = tmp_path / "should_not_materialize_policies"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(
+            repo_root=REPO_ROOT,
+            target_dir=target,
+            manifest=mutated,
+        )
+    assert "config/policies.yml" in str(exc_info.value)
+    assert not target.exists()
+
+
+def test_countermodel_m1_negative_boundary_runtime_script_escape(tmp_path: Path) -> None:
+    """M1: Omitting scripts/backup.sh from forbidden surfaces and adding it to distribution_clis fails closed."""
+    manifest = validator.load_manifest()
+    mutated = copy.deepcopy(manifest)
+    mutated["forbidden_runtime_surfaces"] = [
+        s for s in mutated["forbidden_runtime_surfaces"] if s != "scripts/backup.sh"
+    ]
+    mutated["distribution_boundary"]["distribution_clis"].append("scripts/backup.sh")
+
+    errs = validator.validate_manifest(mutated, repo_root=REPO_ROOT)
+    assert any("scripts/backup.sh" in err for err in errs)
+    assert any("Required negative runtime anchor(s) omitted" in err for err in errs)
+
+    target = tmp_path / "should_not_materialize_backup"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(
+            repo_root=REPO_ROOT,
+            target_dir=target,
+            manifest=mutated,
+        )
+    assert "scripts/backup.sh" in str(exc_info.value)
+    assert not target.exists()
 
 
 def test_ast_import_closure_has_zero_forbidden_runtime_dependencies() -> None:
@@ -421,20 +499,32 @@ except TargetPackBuildError as exc:
 
 
 def test_countermodel_m3_canonical_checkout_escape_detection(tmp_path: Path) -> None:
-    """Countermodel M3: If an import resolves to canonical repo rather than standalone root, detector catches it."""
-    standalone = tmp_path / "standalone_m3"
+    """Countermodel M3: If an import resolves to canonical repo or sibling path rather than standalone root, component-aware detector catches it."""
+    # Place standalone in a directory where a sibling exists with identical prefix
+    base_dir = tmp_path / "base"
+    base_dir.mkdir()
+    standalone = base_dir / "standalone"
+    sibling = base_dir / "standalone-old"
+    sibling.mkdir()
+    sibling_file = sibling / "app" / "agent_review" / "fake_module.py"
+    sibling_file.parent.mkdir(parents=True)
+    sibling_file.write_text("# sibling fake module\n", encoding="utf-8")
+
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
 
-    # Escape detector code: verifies origin of any module against standalone_root
+    # Escape detector code: verifies origin using component-aware Path.is_relative_to against standalone_root
     escape_probe_code = """
 import sys
 from pathlib import Path
-standalone_root = str(Path('.').resolve())
+standalone_root = Path('.').resolve()
 
 def check_origin(mod_name):
     mod = __import__(mod_name, fromlist=['*'])
-    origin = getattr(mod, '__file__', '')
-    if not origin.startswith(standalone_root):
+    origin_str = getattr(mod, '__file__', None)
+    if not origin_str:
+        return "NO_ORIGIN"
+    origin = Path(origin_str).resolve()
+    if not (origin == standalone_root or origin.is_relative_to(standalone_root)):
         raise RuntimeError(f"ESCAPE_DETECTED: {mod_name} resolved to {origin} outside {standalone_root}")
     return "SAFE_ORIGIN"
 
@@ -443,7 +533,6 @@ print("CORE_CHECK:", check_origin("app.agent_review.contracts_v2"))
 
 # Case 2: Attempting to resolve runtime module
 try:
-    # If a runtime module only present in canonical repo is requested:
     __import__("app.api")
     check_origin("app.api")
     print("RUNTIME_FOUND_AND_CHECKED")
@@ -465,22 +554,35 @@ except RuntimeError as exc:
     assert "CORE_CHECK: SAFE_ORIGIN" in res_clean.stdout
     assert "RUNTIME_ABSENT_ISOLATED" in res_clean.stdout
 
-    # 2. Escape detection unit test: if a module resolves to an outside path, it is rejected
+    # 2. Escape detection unit test: verifies canonical repo escape and sibling-prefix escape
     detector_test_code = f"""
 from pathlib import Path
-standalone_root = "{standalone.resolve()}"
-fake_module_origin = "{REPO_ROOT.resolve()}/app/main.py"
+standalone_root = Path("{standalone.resolve()}").resolve()
+fake_repo_origin = Path("{REPO_ROOT.resolve()}/app/main.py").resolve()
+sibling_origin = Path("{sibling_file.resolve()}").resolve()
 
-def verify_module_origin(origin: str, allowed_root: str) -> None:
-    if not origin.startswith(allowed_root):
+# Precondition flaw check: raw startswith falsely treats sibling as inside standalone_root
+assert str(sibling_origin).startswith(str(standalone_root)), "Precondition: sibling path must start with standalone_root string prefix"
+
+def verify_module_origin(origin: Path, allowed_root: Path) -> None:
+    if not (origin == allowed_root or origin.is_relative_to(allowed_root)):
         raise RuntimeError(f"ESCAPE_DETECTED: origin {{origin}} outside {{allowed_root}}")
 
+# Test A: Canonical repo origin outside standalone is caught
 try:
-    verify_module_origin(fake_module_origin, standalone_root)
-    raise AssertionError("Should have caught escape")
+    verify_module_origin(fake_repo_origin, standalone_root)
+    raise AssertionError("Should have caught repo escape")
 except RuntimeError as exc:
     assert "ESCAPE_DETECTED" in str(exc)
-    print("DETECTOR_REJECTED_OUTSIDE_ORIGIN")
+    print("DETECTOR_REJECTED_REPO_ORIGIN")
+
+# Test B (M2): Sibling prefix path (/standalone-old) sharing string prefix is caught by component-aware check
+try:
+    verify_module_origin(sibling_origin, standalone_root)
+    raise AssertionError("Should have caught sibling escape")
+except RuntimeError as exc:
+    assert "ESCAPE_DETECTED" in str(exc)
+    print("DETECTOR_REJECTED_SIBLING_ORIGIN")
 """
     res_detector = subprocess.run(
         [sys.executable, "-c", detector_test_code],
@@ -489,8 +591,9 @@ except RuntimeError as exc:
         capture_output=True,
         text=True,
     )
-    assert res_detector.returncode == 0
-    assert "DETECTOR_REJECTED_OUTSIDE_ORIGIN" in res_detector.stdout
+    assert res_detector.returncode == 0, res_detector.stderr
+    assert "DETECTOR_REJECTED_REPO_ORIGIN" in res_detector.stdout
+    assert "DETECTOR_REJECTED_SIBLING_ORIGIN" in res_detector.stdout
 
 
 def test_countermodel_m4_inject_runtime_only_dependency(tmp_path: Path) -> None:

@@ -410,6 +410,107 @@ def test_countermodel_l2_ambient_pythonpath_cannot_shadow_pip(tmp_path: Path) ->
     assert marker.exists(), "Precondition: unisolated -m pip must execute evil pip"
 
 
+def test_install_script_invokes_pip_in_isolated_mode() -> None:
+    """M3: scripts/install-agent-review-toolrepo.sh invokes pip with --isolated to ignore caller env and config."""
+    script_text = INSTALL_SCRIPT.read_text(encoding="utf-8")
+    assert "-m pip --isolated install" in script_text, (
+        "scripts/install-agent-review-toolrepo.sh must invoke pip with --isolated"
+    )
+
+
+def test_countermodel_m3_pip_isolation_ignores_pip_target(tmp_path: Path) -> None:
+    """Countermodel M3: pip --isolated ignores caller PIP_TARGET and installs strictly into venv site-packages."""
+    import zipfile
+
+    # Build a pure-python dummy wheel with standard metadata and RECORD
+    whl_path = tmp_path / "dummy_pkg-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl_path, "w") as z:
+        z.writestr("dummy_pkg.py", "VALUE = 42\n")
+        z.writestr("dummy_pkg-0.1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: dummy-pkg\nVersion: 0.1.0\n")
+        z.writestr("dummy_pkg-0.1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        z.writestr(
+            "dummy_pkg-0.1.0.dist-info/RECORD",
+            "dummy_pkg.py,,\ndummy_pkg-0.1.0.dist-info/METADATA,,\ndummy_pkg-0.1.0.dist-info/WHEEL,,\ndummy_pkg-0.1.0.dist-info/RECORD,,\n",
+        )
+
+    # Create base venv
+    venv_dir = tmp_path / "venv_target_test"
+    subprocess.run([sys.executable, "-I", "-S", "-m", "venv", str(venv_dir)], check=True)
+    venv_py = str(venv_dir / "bin" / "python3")
+
+    evil_target = tmp_path / "evil_pip_target"
+    evil_target.mkdir()
+    env_with_target = dict(os.environ, PIP_TARGET=str(evil_target))
+
+    # Flaw proof: unisolated pip install honors PIP_TARGET, installing package outside venv
+    res_unisolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "install", "--no-index", "--no-deps", str(whl_path)],
+        env=env_with_target,
+        capture_output=True,
+        text=True,
+    )
+    assert res_unisolated.returncode == 0, res_unisolated.stderr
+    assert (evil_target / "dummy_pkg.py").is_file(), "Precondition: unisolated pip must install to PIP_TARGET"
+    # The venv itself cannot import dummy_pkg because it was redirected outside
+    res_import_fail = subprocess.run([venv_py, "-c", "import dummy_pkg"], capture_output=True, text=True)
+    assert res_import_fail.returncode != 0, "Precondition: venv must fail to import dummy_pkg when redirected to PIP_TARGET"
+
+    # Fix proof: isolated pip install ignores PIP_TARGET and installs strictly into venv site-packages
+    venv_dir_iso = tmp_path / "venv_target_iso"
+    subprocess.run([sys.executable, "-I", "-S", "-m", "venv", str(venv_dir_iso)], check=True)
+    venv_py_iso = str(venv_dir_iso / "bin" / "python3")
+
+    evil_target_iso = tmp_path / "evil_pip_target_iso"
+    evil_target_iso.mkdir()
+    env_with_target_iso = dict(os.environ, PIP_TARGET=str(evil_target_iso))
+
+    res_isolated = subprocess.run(
+        [venv_py_iso, "-I", "-m", "pip", "--isolated", "install", "--no-index", "--no-deps", str(whl_path)],
+        env=env_with_target_iso,
+        capture_output=True,
+        text=True,
+    )
+    assert res_isolated.returncode == 0, res_isolated.stderr
+    assert not (evil_target_iso / "dummy_pkg.py").exists(), "Isolated pip must NOT install to PIP_TARGET"
+    res_import_success = subprocess.run([venv_py_iso, "-c", "import dummy_pkg"], capture_output=True, text=True)
+    assert res_import_success.returncode == 0, "Isolated pip must install directly into venv site-packages"
+
+
+def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -> None:
+    """Countermodel M3: pip --isolated ignores user pip configuration file (e.g. ~/.config/pip/pip.conf)."""
+    fake_home = tmp_path / "fake_home"
+    pip_conf_dir = fake_home / ".config" / "pip"
+    pip_conf_dir.mkdir(parents=True)
+    evil_conf_target = tmp_path / "evil_conf_target"
+    (pip_conf_dir / "pip.conf").write_text(f"[global]\ntarget = {evil_conf_target}\n", encoding="utf-8")
+
+    venv_dir = tmp_path / "venv_conf_test"
+    subprocess.run([sys.executable, "-I", "-S", "-m", "venv", str(venv_dir)], check=True)
+    venv_py = str(venv_dir / "bin" / "python3")
+
+    env_with_conf = dict(os.environ, HOME=str(fake_home), XDG_CONFIG_HOME=str(fake_home / ".config"))
+
+    # Flaw proof: unisolated pip reads user configuration file
+    res_unisolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "config", "list"],
+        env=env_with_conf,
+        capture_output=True,
+        text=True,
+    )
+    assert res_unisolated.returncode == 0
+    assert "target=" in res_unisolated.stdout, "Precondition: unisolated pip must reflect user pip config"
+
+    # Fix proof: isolated pip (--isolated) completely ignores user configuration file
+    res_isolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--isolated", "config", "list"],
+        env=env_with_conf,
+        capture_output=True,
+        text=True,
+    )
+    assert res_isolated.returncode == 0
+    assert "target=" not in res_isolated.stdout, "Isolated pip must NOT reflect user pip config"
+
+
 def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:
     """J1-A: Existing non-empty target directory is rejected fail-closed without mutating contents."""
     target_dir = tmp_path / "existing_nonempty_venv"
