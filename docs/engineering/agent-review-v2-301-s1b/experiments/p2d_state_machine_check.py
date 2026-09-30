@@ -2,6 +2,11 @@
 process state machine of ARCHITECTURE_FREEZE.md §20 (static, documentary). Nonzero exit on
 any failure.
 
+CLAIM BOUNDARY (round 3c, Q1): structural lint + mutation discriminator != completeness
+proof. It checks the enumerated syntactic laws below and that each shipped mutant turns one
+RED; it does NOT exclude every semantically contradictory edge. The §20 machine stays the
+norm; B2 implements the transitions and exercises every terminal path.
+
 It parses the edge block between the markers `S20-EDGES:BEGIN` / `S20-EDGES:END`:
     STATE <NAME> owns_child=<yes|no|child>
     EDGE  <FROM> -> <TO> : <label>[, <label> ...]

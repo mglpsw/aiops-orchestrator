@@ -9,7 +9,7 @@
     "outcome": "completed",
     "primary": null,
     "spawn_control_regained_s": 0.001,
-    "reader_wall_s": 0.036,
+    "reader_wall_s": 0.04,
     "survivors": 0,
     "owner": {},
     "d_state_double": null,
@@ -18,8 +18,20 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 0.015,
-    "child_sig_ign": null
+    "unit_elapsed_s": 0.019,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 1,
+    "reaped_pids": [
+     993461
+    ],
+    "signal_at_s": {
+     "993461": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -31,8 +43,8 @@
    "observed": {
     "outcome": "transport_spawn_failed",
     "primary": "transport_spawn_failed",
-    "spawn_control_regained_s": 0.002,
-    "reader_wall_s": 0.023,
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.027,
     "survivors": 0,
     "owner": {},
     "d_state_double": null,
@@ -41,8 +53,16 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": null,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 0.003,
-    "child_sig_ign": null
+    "unit_elapsed_s": 0.004,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -55,7 +75,7 @@
     "outcome": "transport_spawn_failed",
     "primary": "transport_spawn_failed",
     "spawn_control_regained_s": 0.001,
-    "reader_wall_s": 0.024,
+    "reader_wall_s": 0.028,
     "survivors": 0,
     "owner": {},
     "d_state_double": null,
@@ -65,7 +85,15 @@
     "owner_pidfd_closed": null,
     "unit_envelope_s": 4.0,
     "unit_elapsed_s": 0.003,
-    "child_sig_ign": null
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -77,11 +105,11 @@
    "observed": {
     "outcome": "completed",
     "primary": null,
-    "spawn_control_regained_s": 0.001,
-    "reader_wall_s": 0.034,
+    "spawn_control_regained_s": 0.002,
+    "reader_wall_s": 0.037,
     "survivors": 0,
     "owner": {
-     "pid": 929482,
+     "pid": 993533,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -91,8 +119,20 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 0.015,
-    "child_sig_ign": null
+    "unit_elapsed_s": 0.016,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993533
+    ],
+    "signal_at_s": {
+     "993533": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -104,11 +144,11 @@
    "observed": {
     "outcome": "transport_spawn_failed",
     "primary": "transport_spawn_failed",
-    "spawn_control_regained_s": 0.002,
-    "reader_wall_s": 0.025,
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.026,
     "survivors": 0,
     "owner": {
-     "pid": 929496,
+     "pid": 993559,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -119,7 +159,19 @@
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
     "unit_elapsed_s": 0.004,
-    "child_sig_ign": null
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993559
+    ],
+    "signal_at_s": {
+     "993559": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -131,11 +183,11 @@
    "observed": {
     "outcome": "transport_spawn_failed",
     "primary": "transport_spawn_failed",
-    "spawn_control_regained_s": 0.001,
-    "reader_wall_s": 0.024,
+    "spawn_control_regained_s": 0.002,
+    "reader_wall_s": 0.025,
     "survivors": 0,
     "owner": {
-     "pid": 929499,
+     "pid": 993573,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -145,8 +197,20 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 0.006,
-    "child_sig_ign": null
+    "unit_elapsed_s": 0.005,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993573
+    ],
+    "signal_at_s": {
+     "993573": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -159,7 +223,7 @@
     "outcome": "unit_deadline",
     "primary": "unit_deadline",
     "spawn_control_regained_s": 3.002,
-    "reader_wall_s": 3.027,
+    "reader_wall_s": 3.029,
     "survivors": 0,
     "owner": {},
     "d_state_double": null,
@@ -168,8 +232,20 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 3.007,
-    "child_sig_ign": null
+    "unit_elapsed_s": 3.008,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 1,
+    "reaped_pids": [
+     993587
+    ],
+    "signal_at_s": {
+     "993587": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": "demonstrates A does NOT satisfy B-RES-02 standalone: control regained after the stall, not at the 1.0s deadline"
   },
@@ -182,10 +258,10 @@
     "outcome": "unit_deadline",
     "primary": "unit_deadline",
     "spawn_control_regained_s": 1.001,
-    "reader_wall_s": 1.022,
+    "reader_wall_s": 1.025,
     "survivors": 0,
     "owner": {
-     "pid": 929511,
+     "pid": 993852,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -195,8 +271,20 @@
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
-    "unit_elapsed_s": 1.003,
-    "child_sig_ign": null
+    "unit_elapsed_s": 1.004,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993852
+    ],
+    "signal_at_s": {
+     "993852": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -208,11 +296,11 @@
    "observed": {
     "outcome": "unit_deadline",
     "primary": "unit_deadline",
-    "spawn_control_regained_s": 3.003,
-    "reader_wall_s": 3.028,
+    "spawn_control_regained_s": 3.002,
+    "reader_wall_s": 3.032,
     "survivors": 0,
     "owner": {
-     "pid": 929513,
+     "pid": 993925,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -223,7 +311,19 @@
     "owner_pidfd_closed": true,
     "unit_envelope_s": 4.0,
     "unit_elapsed_s": 3.008,
-    "child_sig_ign": null
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993925
+    ],
+    "signal_at_s": {
+     "993925": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -236,25 +336,39 @@
     "outcome": "unit_teardown_incomplete",
     "primary": "unit_deadline",
     "spawn_control_regained_s": 1.001,
-    "reader_wall_s": 2.522,
+    "reader_wall_s": 2.523,
     "survivors": 0,
     "owner": {
-     "pid": 929547,
+     "pid": 994153,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
     "d_state_double": {
      "until": null,
-     "nohang_hidden": 720,
-     "blocking_waits": 0
+     "nohang_hidden": 523,
+     "blocking_waits": 0,
+     "stuck_pids": [],
+     "stuck_hidden": 0
     },
     "teardown_remaining": 1,
     "teardown_signalled": 1,
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 2.5,
-    "unit_elapsed_s": 2.502,
-    "child_sig_ign": null
+    "unit_elapsed_s": 2.503,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {
+     "994153": 0.001
+    },
+    "remaining": [
+     994153
+    ],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": "test double: pidfd WNOHANG waits report 'still running' for 8s; qualifies the bound logic only, not real D-state or filesystem behaviour"
   },
@@ -267,25 +381,35 @@
     "outcome": "unit_deadline",
     "primary": "unit_deadline",
     "spawn_control_regained_s": 8.0,
-    "reader_wall_s": 8.02,
+    "reader_wall_s": 8.024,
     "survivors": 0,
     "owner": {
-     "pid": 929579,
+     "pid": 994363,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
     "d_state_double": {
      "until": null,
      "nohang_hidden": 0,
-     "blocking_waits": 1
+     "blocking_waits": 1,
+     "stuck_pids": [],
+     "stuck_hidden": 0
     },
     "teardown_remaining": 0,
     "teardown_signalled": 0,
     "pidfds_open_after": 0,
     "owner_pidfd_closed": true,
     "unit_envelope_s": 2.5,
-    "unit_elapsed_s": 8.002,
-    "child_sig_ign": null
+    "unit_elapsed_s": 8.003,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
    },
    "claim_limit": ""
   },
@@ -321,6 +445,220 @@
     "primary": "transport_spawn_failed",
     "survivors": 0,
     "owner": {}
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2-two-children-one-stuck",
+   "proposition": "two direct children, the first reported alive forever: both are signalled at once, the killable one is reaped, the stuck one is a survivor record \u2192 unit_teardown_incomplete",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "signal_at_s": {
+     "994994": 0.001,
+     "995001": 0.001
+    },
+    "reaped_pids": [
+     995001
+    ],
+    "remaining": [
+     994994
+    ],
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2-ablation-serial",
+   "proposition": "ablation (pre-3c serial kill+reap): the killable child is signalled only after the stuck one has consumed the budget, and is never reaped",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "signal_at_s": {
+     "995204": 0.002,
+     "995208": 2.475
+    },
+    "reaped_pids": [],
+    "remaining": [
+     995204,
+     995208
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2b-reparented-grandchild",
+   "proposition": "stuck child + setsid grandchild reparented to the reader: the rescan signals and reaps the grandchild",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "survivors": 0,
+    "reaped_pids": [
+     995364
+    ],
+    "remaining": [
+     995363
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2b-ablation-serial",
+   "proposition": "ablation: the serial wait on the stuck child exhausts the budget; the reparented grandchild is never signalled and survives",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "survivors": 1,
+    "reaped_pids": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-scan",
+   "proposition": "teardown fails at scan: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 5] injected teardown fault at scan",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-scan-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-pidfd_open",
+   "proposition": "teardown fails at pidfd_open: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 24] injected teardown fault at pidfd_open",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-pidfd_open-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-send_signal",
+   "proposition": "teardown fails at send_signal: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "PermissionError: [Errno 1] injected teardown fault at send_signal",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-send_signal-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-candidate_close",
+   "proposition": "teardown fails at candidate_close: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 9] injected teardown fault at candidate_close",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-candidate_close-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-reap",
+   "proposition": "teardown fails at reap: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 22] injected teardown fault at reap",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-reap-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-protocol-pipes-closed",
+   "proposition": "a failed handshake (child setup error) leaves no protocol fifo open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-protocol-pipes-ablation",
+   "proposition": "ablation: without the capability guard the response pipe leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "leaked_fifos": 1
    },
    "claim_limit": ""
   },
@@ -521,7 +859,7 @@
     "outcome": "terminated",
     "controlled_blocked_after_normalization": [],
     "survivors": 0,
-    "seconds_from_signal_to_reader_exit": 0.11
+    "seconds_from_signal_to_reader_exit": 0.112
    },
    "claim_limit": ""
   },
@@ -537,7 +875,7 @@
      2,
      15
     ],
-    "seconds_from_signal_to_reader_exit": 2.911
+    "seconds_from_signal_to_reader_exit": 2.912
    },
    "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
   },
@@ -566,7 +904,7 @@
      2,
      15
     ],
-    "seconds_from_signal_to_reader_exit": 2.916
+    "seconds_from_signal_to_reader_exit": 2.913
    },
    "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
   },
@@ -579,7 +917,7 @@
     "outcome": "terminated",
     "controlled_blocked_after_normalization": [],
     "survivors": 0,
-    "seconds_from_signal_to_reader_exit": 0.112
+    "seconds_from_signal_to_reader_exit": 0.114
    },
    "claim_limit": ""
   },
@@ -595,7 +933,7 @@
      2,
      15
     ],
-    "seconds_from_signal_to_reader_exit": 2.912
+    "seconds_from_signal_to_reader_exit": 2.914
    },
    "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
   },
@@ -802,7 +1140,7 @@
      15
     ],
     "survivors": 0,
-    "seconds_from_signal_to_reader_exit": 0.111
+    "seconds_from_signal_to_reader_exit": 0.112
    },
    "claim_limit": ""
   },
@@ -816,7 +1154,7 @@
     "reader_signals": [
      15
     ],
-    "seconds_from_signal_to_reader_exit": 2.609
+    "seconds_from_signal_to_reader_exit": 2.61
    },
    "claim_limit": ""
   },
@@ -837,7 +1175,7 @@
      "pending_before_restore": [
       15
      ],
-     "pid": 930027,
+     "pid": 998037,
      "pidfd_open": "ok",
      "exited_before_handshake": false
     },
@@ -913,6 +1251,183 @@
    "claim_limit": ""
   },
   {
+   "id": "R3C-M1-baseline",
+   "proposition": "exec target sees SigBlk=0 and SigIgn=0",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1a-blocked-SIGPIPE",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [
+     13
+    ],
+    "usr1_at_entry": null
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1a-blocked-SIGPIPE-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000001000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [
+     25
+    ],
+    "usr1_at_entry": null
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000001000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [],
+    "usr1_at_entry": {
+     "kernel": "SIG_IGN",
+     "python_cache": "SIG_DFL"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000200",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1d-SIGCHLD-ignored",
+   "proposition": "SIGCHLD ignored at reader entry: the exec target sees SIG_DFL",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "sigchld_at_entry": {
+     "handler": "SIG_IGN",
+     "sa_nocldwait": false
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1d-ablation-both-barriers-off",
+   "proposition": "ablation: without B-LIF-11 and without the child construction, SIGCHLD reaches the exec target ignored",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000001011000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M3-fork-failure-keeps-cancellation",
+   "proposition": "a controlled signal pending in the fork critical section survives a fork failure: primary transport_spawn_failed AND termination_request recorded",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "transport_spawn_failed",
+    "termination_request": {
+     "signals": [
+      15
+     ],
+     "wakeup_bytes_drained": 1
+    },
+    "owner": {
+     "pending_before_restore": [
+      15
+     ]
+    },
+    "controlled_blocked_at_teardown": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M3-ablation-drop-termination",
+   "proposition": "ablation: the error path does not inspect the termination state \u2192 the cancellation disappears from the outcome",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "transport_spawn_failed",
+    "termination_request": null
+   },
+   "claim_limit": ""
+  },
+  {
    "id": "R3B-S6-signal-inside-teardown",
    "proposition": "a signal delivered during the teardown scan does not abort teardown",
    "kind": "negative",
@@ -970,7 +1485,7 @@
    "verdict": "PASS",
    "observed": {
     "owner": {
-     "pid": 930177,
+     "pid": 998788,
      "pidfd_open": "ok",
      "exited_before_handshake": true
     },
@@ -996,7 +1511,7 @@
      "sa_nocldwait": false
     },
     "owner": {
-     "pid": 930179,
+     "pid": 998790,
      "pidfd_open": "ok",
      "exited_before_handshake": true
     }
@@ -1014,7 +1529,7 @@
      "sa_nocldwait": false
     },
     "owner": {
-     "pid": 930183,
+     "pid": 998795,
      "pidfd_open": "ESRCH"
     },
     "primary": "transport_spawn_failed"
@@ -1036,7 +1551,7 @@
      "sa_nocldwait": false
     },
     "owner": {
-     "pid": 930185,
+     "pid": 998797,
      "pidfd_open": "ok",
      "exited_before_handshake": true
     }
@@ -1054,7 +1569,7 @@
      "sa_nocldwait": true
     },
     "owner": {
-     "pid": 930187,
+     "pid": 998819,
      "pidfd_open": "ESRCH"
     },
     "primary": "transport_spawn_failed"
@@ -1083,9 +1598,9 @@
     "primary": "transport_spawn_failed",
     "primary_detail": "KeyboardInterrupt:injected BaseException in the child bootstrap",
     "cleanup_marker_pids": [
-     930189
+     998821
     ],
-    "reader_pid": 930189,
+    "reader_pid": 998821,
     "survivors": 0
    },
    "claim_limit": ""
@@ -1097,10 +1612,10 @@
    "verdict": "PASS",
    "observed": {
     "cleanup_marker_pids": [
-     930192,
-     930191
+     998824,
+     998823
     ],
-    "reader_pid": 930191,
+    "reader_pid": 998823,
     "primary": "transport_failed"
    },
    "claim_limit": ""
@@ -1138,6 +1653,94 @@
    "ablation_or_mutant": "R3B-G1-ablation-no-sigign-reset",
    "observed_discriminator": "SigIgn 0 vs 0x1001000 after exec",
    "claim_boundary": "the exec target is grep (a CPython stand-in would re-ignore SIGPIPE/SIGXFSZ at its own start-up and mask the result); only the reader's own SIG_IGN set (CPython defaults) is exercised; a launcher-set SIG_IGN is reset by the same loop but is not injected here",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M2",
+   "proposition": "OneStuckChildCannotStarveSiblingTeardown",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M2-two-children-one-stuck",
+   "ablation_or_mutant": "R3C-M2-ablation-serial",
+   "observed_discriminator": "sibling signalled at ~0s and reaped vs signalled after the budget and left unreaped",
+   "claim_boundary": "the stuck child is a reap-layer fault double (its SIGKILL does complete in the kernel)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M2b",
+   "proposition": "rescan + signal-before-wait reaches reparented descendants despite a stuck child",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M2b-reparented-grandchild",
+   "ablation_or_mutant": "R3C-M2b-ablation-serial",
+   "observed_discriminator": "0 vs >=1 live survivor (the grandchild)",
+   "claim_boundary": "same reap-layer fault double; reparenting relies on the verified subreaper",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-scan",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-scan",
+   "ablation_or_mutant": "R3C-M4-scan-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-pidfd_open",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-pidfd_open",
+   "ablation_or_mutant": "R3C-M4-pidfd_open-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-send_signal",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-send_signal",
+   "ablation_or_mutant": "R3C-M4-send_signal-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-candidate_close",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-candidate_close",
+   "ablation_or_mutant": "R3C-M4-candidate_close-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-reap",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-reap",
+   "ablation_or_mutant": "R3C-M4-reap-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-capabilities",
+   "proposition": "setup-error / protocol fds of a failed handshake are finalized",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-protocol-pipes-closed",
+   "ablation_or_mutant": "R3C-M4-protocol-pipes-ablation",
+   "observed_discriminator": "0 vs >=1 leaked fifo",
+   "claim_boundary": "setup failure injected in the child bootstrap",
    "verdict": "PASS"
   },
   {
@@ -1192,7 +1795,7 @@
    "negative_control": "R3B-S4-child-signal-after-reset",
    "ablation_or_mutant": "R3B-S4-ablation-no-child-reset",
    "observed_discriminator": "no termination vs misattributed 'terminated' with zero reader signals",
-   "claim_boundary": "the pre-exec stall is injected to make the window observable",
+   "claim_boundary": "SUPPORTING/PRELIMINARY (round 3c Q3): delivery and SIG_DFL death are confirmed, but WHICH side of the reset point received the signal is not synchronised; the exact post-reset witness is a B2 obligation",
    "verdict": "PASS"
   },
   {
@@ -1251,6 +1854,61 @@
    "verdict": "PASS"
   },
   {
+   "id": "R3C-M1a-blocked-SIGPIPE",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1a-blocked-SIGPIPE",
+   "ablation_or_mutant": "R3C-M1a-blocked-SIGPIPE-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000000001000', 'sig_ign': '0000000000000000', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1b-blocked-SIGXFSZ",
+   "ablation_or_mutant": "R3C-M1b-blocked-SIGXFSZ-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000001000000', 'sig_ign': '0000000000000000', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1c-native-SIGUSR1-ignored",
+   "ablation_or_mutant": "R3C-M1c-native-SIGUSR1-ignored-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000000000000', 'sig_ign': '0000000000000200', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1d",
+   "proposition": "SIGCHLD inherited ignored never reaches Git",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1d-SIGCHLD-ignored",
+   "ablation_or_mutant": "R3C-M1d-ablation-both-barriers-off",
+   "observed_discriminator": "SigIgn 0 vs bit 17 set",
+   "claim_boundary": "two independent barriers (reader B-LIF-11, child construction)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M3",
+   "proposition": "ForkFailurePreservesCancellationState",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M3-fork-failure-keeps-cancellation",
+   "ablation_or_mutant": "R3C-M3-ablation-drop-termination",
+   "observed_discriminator": "both dimensions vs primary only",
+   "claim_boundary": "fork() failure injected (EAGAIN); the signal is raised against the reader while CONTROLLED is blocked",
+   "verdict": "PASS"
+  },
+  {
    "id": "R3B-S6",
    "proposition": "signal during TEARDOWN (inside the scan phase)",
    "injection_confirmed": true,
@@ -1269,7 +1927,7 @@
    "negative_control": "R3B-S7-double-signal-inside-teardown",
    "ablation_or_mutant": "R3B-S7-ablation-raising-handler",
    "observed_discriminator": "0 vs >0 survivors",
-   "claim_boundary": "two SIGTERMs 1ms apart; 2 handler invocation(s) observed (standard signals may coalesce while pending)",
+   "claim_boundary": "two SIGTERMs 1ms apart; 2 handler invocation(s) observed (standard signals may coalesce while pending). Round 3c Q2: this does NOT establish two independently OBSERVED deliveries (send #1 \u2192 observe \u2192 send #2 \u2192 observe); that is a B2 obligation",
    "verdict": "PASS"
   },
   {
@@ -1305,5 +1963,20 @@
    "claim_boundary": "BaseException injected after the signal reset; the witness is the cleanup marker file",
    "verdict": "PASS"
   }
- ]
+ ],
+ "claims": {
+  "P2d_spike": {
+   "establishes": [
+    "the frozen mechanism B is realisable on the observed host and each round-3/3b/3c mechanism property is discriminated by its ablation or mutant in this disposable spike"
+   ],
+   "does_not_establish": [
+    "qualification of the B1/B2/B3 implementation branches",
+    "two independently observed signal deliveries during teardown (R3B-S7)",
+    "which side of the child reset point received the S4 signal",
+    "post-exec stall under the absolute unit deadline in the implementation",
+    "real D-state behaviour (reap-layer fault doubles only)"
+   ],
+   "future_qualification_owner": "B2 (lifecycle/signals/teardown); B3 (post-exec transport deadline)"
+  }
+ }
 }

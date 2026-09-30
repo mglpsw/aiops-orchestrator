@@ -64,7 +64,7 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
       - envelope da unidade (R3B-H2);
       - pidfd do dono fechado (S-B1, W-POS)
 - `p2d_spawn_handshake_results.json`: resultado do P2d, round 3b: `{rows: 64, contracts: 18}` (iteração 2), todos PASS, com injeção confirmada; estável em 3 execuções
-- `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. Lê as arestas do próprio freeze e prova as leis L1–L10 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M9 têm de tornar alguma lei RED
+- `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. **Claim (round 3c):** lint estrutural + discriminador de mutação, **não** prova de completude; B2 testa todo caminho terminal. Lê as arestas do próprio freeze e prova as leis L1–L10 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M9 têm de tornar alguma lei RED
 - `p2d_state_machine_results.json`: resultado do verificador no freeze deste head: leis GREEN e M1–M9 mortos
 
 ## Reprodução
@@ -99,7 +99,7 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
    - **P2d: 55 linhas e 14 contratos, 0 falhas, em 3 execuções.**
    - **P2 (44/44) e P2c (14/14):** 3 execuções cada.
    - **P2b:** idêntico no tree realinhado.
-   - **Verificador da §20:** GREEN, M1–M9 mortos.
+   - **Verificador da §20:** GREEN, M1–M6 mortos.
    - **Primeira execução da 3b: 4 falhas, todas de expectativa, nenhuma de mecanismo:**
      - CM-W3c: o reset do filho passou a fechar as pontas de wakeup, uma **terceira** barreira independente. As linhas de isolamento agora desligam as outras duas explicitamente (CM-W3a/b/d) e CM-W3c remove as três.
      - CM-R3-04..06, ablações: o passo 1 do bootstrap novo bloqueia todo o CONTROLLED, então a ablação sem o passo 7 deixa `[1,2,15]` bloqueado em vez de `[s]`. O discriminador (pendente, sem wakeup, cerca de 2,9 s) não mudou; a expectativa passou a ser `s ∈ bloqueados`.
@@ -113,3 +113,16 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
    - **P2 (44/44) e P2c (14/14):** 3 execuções cada.
    - **Verificador da §20:** L1–L10 GREEN, M1–M9 mortos.
    - **Defeito de witness corrigido:** a primeira versão de R3B-G1 lia `SigIgn` do substituto CPython (`spike_child.py`). O CPython reignora SIGPIPE/SIGXFSZ na própria inicialização, então positivo e ablação davam o mesmo 0x1001000. O witness passou a exec'ar `grep SigIgn /proc/self/status`, um programa C.
+8. **Round 3c, convergência final** (adjudicação do mantenedor em `b454723`).
+   - **P2d: 91 linhas, 31 contratos e o bloco `claims`, 0 falhas, em 3 execuções.**
+   - **P2 (44/44) e P2c (14/14):** 3 execuções cada, com o `spike_reader.py` da 3c.
+   - Mecanismos novos:
+     - M1: estado de sinais do exec construído (`sigaction` no kernel, máscara vazia exata, leitura de volta), com witness C (`grep -E '^Sig(Blk|Ign|Cgt):'`);
+     - M2: teardown em duas fases;
+     - M3: `termination_request` preservado na falha do `fork`;
+     - M4: guardas externas de pidfd e pipes, com 5 famílias de falha injetada.
+   - **Defeitos de witness corrigidos na primeira execução, nenhum no mecanismo:**
+     - no CPython 3.11, `str(Handlers.SIG_DFL)` é `"0"`, então a confirmação de R3C-M1c passou a comparar com `signal.SIG_DFL`;
+     - com SIGCHLD mantido ignorado (ablação R3C-M1d), o filho é auto-reapeado e o `waitid(WNOWAIT)` diagnóstico dava ECHILD não tratado; agora registra `reaped_without_owner`.
+   - **Claims:** cada experimento declara o que estabelece, o que não estabelece e o dono da qualificação futura (freeze §30.10; `p2d_spawn_handshake_results.json` → `claims`).
+   - **Leituras não normativas:** o verificador da §20 é lint estrutural; R3B-S4/S4b são suporte preliminar; R3B-S7 não prova duas entregas observadas independentemente; o `read_report` do spike não qualifica o deadline global. Todos são obrigações de B2/B3.
