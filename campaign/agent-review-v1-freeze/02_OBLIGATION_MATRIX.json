@@ -216,8 +216,8 @@
     ],
     "v1_v2_isolation": {
       "principle": "isolation is enforced by POSITIVE write scope, not by classifying the tree into v1/v2: a classifier of v2-only files (by name, by import, by path reference) has proven incomplete in review, so it cannot carry the gate",
-      "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
-      "derivation": "AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",
+      "not_shared_on_derivation_subject": "INFORMATIVE: semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
+      "derivation": "INFORMATIVE: AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",
       "shared_modules_direct_v2_importers": {
         "redaction.py": [
           "app/agent_review/contracts_v2.py",
@@ -235,11 +235,11 @@
           "app/agent_review/_router_receipt_v2.py",
           "scripts/aiops-review-quality-gate-v2.py"
         ],
-        "note": "reference for writing the shared_rule justification; completeness is not relied on — v1_path_set and the full-suite regression_gate carry isolation"
+        "note": "INFORMATIVE reference for writing the shared_rule justification (app.agent_review imports only; app/common/strict_json.py is also imported by 11 v2 modules and is outside v1_path_set); completeness is not relied on"
       },
       "transitive_reach": "contracts_v2 imports redaction, and redaction imports schemas; versioning imports schemas and contracts_v2. A change to redaction.py or schemas.py therefore reaches essentially the whole v2 lane transitively (via contracts_v2), and a change to versioning.py reaches the v2 parser/synthesis/readiness/transport/consumer chain and scripts/aiops-review-quality-gate-v2.py. The direct-importer lists above are not the blast radius.",
       "positive_write_scope": {
-        "rule": "NORMATIVE: every v1 slice's task contract declares, before the first patch, an explicit path allowlist that is a subset of v1_path_set (plus new files it creates under tests/agent_review/ or campaign/agent-review-v1-freeze/, named in the contract). `git diff --name-only <base>..<head>` must be a subset of the declared allowlist. Any path outside v1_path_set is not allowlistable by the slice itself: it is STOP_OWNER_BOUNDARY until a recorded owner decision. v1_path_set is enumerated positively; it is not derived by classifying the tree.",
+        "rule": "NORMATIVE: every v1 slice's task contract declares, before the first patch, an explicit path allowlist that is a subset of v1_path_set, plus new files it creates that match tests/agent_review/test_*.py or campaign/agent-review-v1-freeze/** and are named in the contract (conftest.py, __init__.py and anything under a fixtures/ directory are never admissible as new files). `git diff --name-status <base>..<head>` must be a subset of the declared allowlist. Any path outside v1_path_set is not allowlistable by the slice itself: STOP_OWNER_BOUNDARY until a recorded owner decision. v1_path_set is enumerated positively and re-checked on every slice's live base by evidence/v1_scope_check.py (reach check: no v2 file imports, loads by path or names a v1_exclusive entry; a hit reclassifies that entry as shared before any patch; diff check with --diff base..head).",
         "v1_path_set": {
           "v1_exclusive": [
             ".github/workflows/agent-review.yml",
@@ -276,7 +276,6 @@
             "scripts/aiops-review-quality-gate.py",
             "scripts/aiops-review-synthesize.py",
             "scripts/aiops-review-telemetry.py",
-            "scripts/github_agent_review.py",
             "tests/agent_review/test_agent_review_e2e_contract.py",
             "tests/agent_review/test_aiops_review_build_payloads_cli.py",
             "tests/agent_review/test_aiops_review_false_positives_cli.py",
@@ -296,7 +295,6 @@
             "tests/agent_review/test_payload_cost_model.py",
             "tests/agent_review/test_pr_brief.py",
             "tests/agent_review/test_quality_gate.py",
-            "tests/agent_review/test_redaction.py",
             "tests/agent_review/test_repo_profile.py",
             "tests/agent_review/test_semantic_chunker.py",
             "tests/agent_review/test_semantic_chunker_225_red.py",
@@ -306,13 +304,20 @@
             "campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md"
           ],
           "shared_v1_owned": [
+            "CHANGELOG.md",
             "app/agent_review/redaction.py",
             "app/agent_review/schemas.py",
             "app/agent_review/versioning.py",
-            "tests/agent_review/test_versioning.py",
-            "CHANGELOG.md"
+            "scripts/github_agent_review.py",
+            "tests/agent_review/test_redaction.py",
+            "tests/agent_review/test_versioning.py"
           ],
-          "shared_rule": "a slice whose allowlist contains a shared_v1_owned path must state in the PR why v2 behavior is unchanged across the whole transitive reach (STOP_UNEXPECTED_V2_COUPLING otherwise); CHANGELOG.md edits are limited to appending the slice's own entry"
+          "shared_rule": "a slice whose allowlist contains a shared_v1_owned path must state in the PR why v2 behavior is unchanged across the whole transitive reach (STOP_UNEXPECTED_V2_COUPLING otherwise); CHANGELOG.md edits are limited to appending the slice's own entry",
+          "shared_notes": {
+            "scripts/github_agent_review.py": "loaded by path by scripts/aiops-acquire-authoritative-checks-v2.py:244-252 (GitHubClient); that v2 path has no network-free test coverage",
+            "app/agent_review/versioning.py": "its importers are all v2 (_router_receipt_v2, aiops-review-quality-gate-v2, v2 tests) and it imports contracts_v2; kept here only so a v1 slice cannot touch it without the shared_rule",
+            "tests/agent_review/test_redaction.py": "weakening it lowers coverage of the shared redaction.py"
+          }
         },
         "explicitly_outside": "everything else, including app/common/** (e.g. strict_json.py, imported by 11 v2 modules), requirements*.txt, requirements-agent-review.lock, pytest.ini, tests/agent_review/fixtures/** (the agentescala_e2e fixture is also asserted by v2 tests), app/agent_review/AGENTS.md, and every v2 surface"
       },
@@ -339,7 +344,13 @@
           "a name scan for 'v2' over-matches shared/historical docs (docs/engineering, docs/checkpoints, docs/adr, AGENT_REVIEW_V1_V2_COMPATIBILITY.md)"
         ]
       },
-      "regression_gate": "NORMATIVE: the required CI `Validate repository` job runs the entire test suite (scripts/ci_validate.sh section 8, all tests minus integration/runtime/docker/prometheus markers, plus the requires_network section) on the exact HEAD; it is the binding regression gate for every v1 slice, v2 tests included. A local v1-only subset is a convenience for iteration and never evidence of v1/v2 isolation."
+      "regression_gate": "NORMATIVE (procedural): both CI jobs must be green on the exact HEAD: `Validate repository` (ci.yml, runs scripts/test.sh = full suite minus integration/requires_runtime/requires_docker/requires_prometheus/requires_network markers) and `AgentReview release gates` (ci.yml, runs scripts/ci_validate.sh: section 8 same selection, section 9 the requires_network tests, which include v2 content-extraction/redaction E2E, diff acquisition, transport, isolated executor and trusted-check tests). GitHub enforces nothing here: master has required_status_checks=null, required_pull_request_reviews=null and no rulesets (observed 2026-09-30), so this gate is enforced by the campaign's PRE_MERGE_GATE, not by the forge. gate_unavailable on GitHub runners (non-root): v2 tests that skip without root, sudo broker, unprivileged user namespaces, casefold tmpfs, POSIX ACLs, inotify or mknod (test_c3_focal_obligations, test_isolated_executor_v2, test_physical_snapshot_v2, test_target_pack_epoch*_v2, test_trusted_*_v2). A slice that changes a shared_v1_owned path must additionally run the full suite locally and report which of those tests ran or skipped; it may not claim them as passed. A local v1 subset is iteration convenience only.",
+      "reach_check_adjudication_at_derivation_subject": {
+        "result": "0 blocking (no v2 import of any v1_exclusive entry), 4 notes",
+        "tests/agent_review/test_required_check_readiness_arch_v2.py:39": "v2 architecture test globs scripts/*.py and excludes aiops-review-quality-gate.py by name: any v1 script edit is scanned by this v2 test; not a load of v1 behavior; covered by the full-suite regression_gate",
+        "tests/agent_review/test_target_pack_receipt_v2.py:37,86,364": "'.github/workflows/agent-review.yml' is a dict key in receipt fixture data (generated_file_hashes); the file is never read; no coupling",
+        "scripts/github_agent_review.py": "previously a note-class hit (string constant in scripts/aiops-acquire-authoritative-checks-v2.py:244-252, load by path); reclassified to shared_v1_owned"
+      }
     },
     "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
   }
