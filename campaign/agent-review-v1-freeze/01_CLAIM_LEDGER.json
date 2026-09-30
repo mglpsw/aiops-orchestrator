@@ -37,7 +37,7 @@
         "consumer publisher (AgentEscala agent-review-publish.yml) publishes a comment; no branch-protection required check is fed by the v1 gate in this repository"
       ],
       "required_evidence": [
-        "no v1 artifact is a required status check or merge input in the declared topology",
+        "observed absence of any required status check / merge rule consuming a v1 artifact on the consumer default branch (see observed_consumer_configuration)",
         "docs state advisory role"
       ],
       "degraded_by": [
@@ -45,10 +45,18 @@
       ],
       "live_status": "by_design",
       "limitations": [
-        "the consumer's branch-protection configuration is outside this repository and was not re-observed in C0"
+        "observation is dated (PreviousHeadQualified != CurrentHeadQualified); any later required-check or ruleset wiring of the v1 gate on the consumer falsifies CL-0 and must be re-observed at V1-C6 and at the final canary"
       ],
       "countermodels": [],
-      "slice": "V1-C0"
+      "slice": "V1-C0",
+      "observed_consumer_configuration": {
+        "observed_at": "2026-09-30",
+        "repository": "mglpsw/AgentEscala",
+        "default_branch": "develop",
+        "branch_protection": "GET repos/mglpsw/AgentEscala/branches/develop/protection -> 404 'Branch not protected'",
+        "rulesets": "only ruleset 15183959 'rulesrepo', enforcement=disabled, rules=[deletion, non_fast_forward]; no required_status_checks rule",
+        "conclusion": "no required status check exists on the consumer default branch, so no v1 artifact is a merge input as of observed_at"
+      }
     },
     {
       "claim_id": "CL-1",
@@ -231,7 +239,7 @@
       ],
       "consumer": [
         "L-CHUNK: consumer wrapper sends each chunk payload whole to Router /v1/chat/completions (full raw git diff block per file + repo-relative paths)",
-        "L-LEGACY: github_agent_review.py:1415-1589 (_build_sanitized_bundle: PR title/body :1441-1442, raw paths, full patch for small PRs, <=2000-char head file source for some frontend files), :2037-2102 (build_agent_router_payload), :2128-2157 (call_agent_router_review)"
+        "L-LEGACY, per command: `/agent review llm` -> _build_sanitized_bundle (github_agent_review.py:1415-1589, called :2044/:2795): PR title/body (:1441-1442), raw paths, full patch only for PRs with <=3 files and <=30,000 diff chars, <=2,000 chars per file / 6,000 total of head source for some frontend files (_fetch_file_at_ref :1489, :2001), whole bundle truncated to MAX_LLM_BUNDLE_CHARS=32,000 (:29, :1659); `/agent ask` -> _build_ask_bundle (:1687-1721, called :2118): question, title/body, paths + 180-char patch snippets, no file fetch, truncated to MAX_BUNDLE_CHARS=6,000 (:28). Router call :2128-2157."
       ],
       "required_evidence": [
         "an explicit disposition among #315's options A/B/C",
@@ -243,7 +251,8 @@
       "live_status": "supported_weak_form_only",
       "countermodels": [
         "CM-CL6-01",
-        "CM-CL6-02",
+        "CM-CL6-02a",
+        "CM-CL6-02b",
         "CM-CL6-03"
       ],
       "limitations": [

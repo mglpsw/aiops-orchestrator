@@ -175,7 +175,8 @@
       "proposition": "#315 has exactly one recorded disposition among A (stronger v1-compatible closure), B (explicit residual-risk acceptance + documented limitation), C (disable/replace lane).",
       "countermodels": [
         "CM-CL6-01",
-        "CM-CL6-02",
+        "CM-CL6-02a",
+        "CM-CL6-02b",
         "CM-CL6-03"
       ],
       "closure_predicate": "decision contract committed; B or C requires explicit human decision (#221: no waivers granted by the epic) -> STOP_UNRESOLVED_POLICY until recorded",
@@ -212,7 +213,30 @@
       "post-READY Codex gate",
       "PRE_MERGE_GATE"
     ],
-    "v1_v2_isolation": "diff of app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*-v2.py must be empty for every v1 slice; any required v2 edit -> STOP_UNEXPECTED_V2_COUPLING; note app/agent_review/versioning.py is v1-scoped but was edited by v2 commits 5b94632/6d13aa0 and is not caught by the *_v2.py glob — review it explicitly.",
+    "v1_v2_isolation": {
+      "principle": "ownership is decided by the import graph, not by the *_v2 filename suffix",
+      "v2_only_paths": "diff of app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*-v2.py must be empty for every v1 slice",
+      "shared_modules_imported_by_v2": {
+        "redaction.py": [
+          "app/agent_review/contracts_v2.py",
+          "app/agent_review/isolated_executor_v2.py",
+          "app/agent_review/payload_references_v2.py",
+          "app/agent_review/review_content_v2.py",
+          "app/agent_review/review_content_extraction_v2.py"
+        ],
+        "schemas.py": [
+          "app/agent_review/profile_migration_v1_v2.py",
+          "scripts/migrate-agent-review-profile-v1-v2.py"
+        ],
+        "versioning.py": [
+          "app/agent_review/_router_receipt_v2.py",
+          "scripts/aiops-review-quality-gate-v2.py"
+        ]
+      },
+      "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite, including the v2 tests that exercise the importers above (e.g. test_payload_references_v2.py, test_review_transport_v2.py, test_consumer_v2.py, test_profile_migration_v1_v2.py), and (b) state in the PR why the v2 importers' behavior is unchanged; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
+      "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
+      "derivation": "grep of 'from app.agent_review.<module> import' in app/agent_review/*_v2.py, app/agent_review/packaging/*.py, scripts/*-v2.py at ab92e89f"
+    },
     "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
   }
 }

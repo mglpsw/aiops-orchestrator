@@ -64,7 +64,7 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 
 | Id | Claim | Owner | Estado no subject de derivação |
 |---|---|---|---|
-| CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | sustentado por design; ver non-claims |
+| CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | por design + observado em 2026-09-30: `develop` do consumer sem branch protection e único ruleset `disabled` (nenhum required check); observação datada |
 | CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | **não sustentado** (CM-CL1-01, CM-CL1-02) |
 | CL-2 | Claim/must-hold **estruturada e admitida** aplicável recebe estado `covered/partial/not_covered/not_applicable` separado de file coverage. | #221 (comentário #805) — sem issue dedicada | **não sustentado**; primitiva estruturada inexistente (risco `STOP_OWNER_BOUNDARY`); estreitamento da exigência de #805 = `PENDING_HUMAN_DECISION` (§6) |
 | CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-CL3-*) |
@@ -151,7 +151,7 @@ A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):
 `chunk_payload_builder.py`, `payload_cost_model.py` (novo), `pr_brief.py`,
 `quality_gate.py`, `chunk_result_parser.py`, `scripts/aiops-review-build-payloads.py`,
 `scripts/aiops-review-plan-chunks.py`. Além disso `app/agent_review/versioning.py`
-(escopo v1, sem sufixo `_v2`) foi alterado por commits v2 (`5b94632` #270,
+(módulo **compartilhado** v1/v2 — seletor de versão de contrato importado por código v2) foi alterado por commits v2 (`5b94632` #270,
 `6d13aa0` #200-G1C2). O consumer em produção executa `v0.22.0`
 e portanto **não** contém essas correções. Uma release de manutenção será
 necessária antes do repin — ação fora deste grant (`STOP_RELEASE_BOUNDARY`).
