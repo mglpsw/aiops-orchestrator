@@ -107,13 +107,14 @@
       ],
       "closure_predicate": "deterministic tests on payload content for each countermodel and control",
       "target_side": "recording rule sources and state (adopted/proposed/observed/historical) belongs to AgentEscala#869-A",
-      "owner": "#221 V1-C2 (engine) + AgentEscala#869-A (source state)"
+      "owner": "#221 V1-C2 (engine) + AgentEscala#869-A (source state)",
+      "interface_note": "source identity is carried only where a named consumer reads it (OBL-CL2-06); the V1-C2 interface freeze decides which source fields are transported"
     },
     {
       "obligation_id": "OBL-CL2-05",
       "claim": "CL-2",
       "domain": "context.projection_fidelity",
-      "proposition": "The engine normalizer does not silently drop fields of the supported interface (today _flatten_review_packs keeps only id/description/preset and _flatten_contract_rules only id/description/scope/is_global/paths/patterns); allowed losses are declared.",
+      "proposition": "The engine normalizer does not silently drop fields of the supported interface (today _flatten_review_packs keeps only id/description/preset and _flatten_contract_rules only id/description/scope/is_global plus the path fields paths/patterns/file_path/path/files/source_files/related_files (payload_cost_model.py:797-809)); allowed losses are declared.",
       "countermodels": [
         "content loss in projection: a pertinent field present in the target document never reaches the payload"
       ],

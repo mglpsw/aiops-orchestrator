@@ -45,7 +45,7 @@ planner (`payload_cost_model.py:1488,1492`).
 
 **#805:** requisito de registro preservado (claims/must-hold pertinentes do PR/contract pack; contramodelo #805 com resultado material). Orientação contextual útil ≠ per-claim coverage ≠ obrigação satisfeita. Parte incompatível com o freeze → `STOP_OWNER_BOUNDARY`/`PENDING_HUMAN_DECISION`; nenhuma non-claim fabricada encerra a exigência.
 
-*Superado em parte:* a "alternativa mínima" anterior (só honestidade do código `contracts_context_not_relevant`) é substituída, porque #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade. A exposição a `STOP_OWNER_BOUNDARY` da parte **estruturada per-claim de #805** permanece (sem objeto claim estruturado no v1; extensão seria nova arquitetura). Se a slice atingir um STOP, a travessia para ali (regra "não contornar STOP", task contract em PR #365 comment 5914381014).
+*Superado em parte:* a "alternativa mínima" anterior (só honestidade do código `contracts_context_not_relevant`) é substituída, porque #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade. A exposição a `STOP_OWNER_BOUNDARY` da parte **estruturada per-claim de #805** permanece (sem objeto claim estruturado no v1; extensão seria nova arquitetura). Se a slice atingir um STOP, a travessia para ali (regra "não contornar STOP": body de #221, "sem aplicar patches futuros ou contornar STOP", e o task contract da travessia).
 
 **Nome do terminal:** `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` é mantido por ser o nome fixado no task contract; ele designa o fechamento de CL-2 (consumo de contexto + honestidade de limitação) e **não** afirma per-claim coverage de #805.
 
