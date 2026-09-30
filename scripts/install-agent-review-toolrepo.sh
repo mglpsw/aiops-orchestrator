@@ -46,15 +46,70 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         exit 2
     fi
     ACTUAL_SHA=""
-    if [ -f "$ROOT_DIR/.source-commit" ]; then
-        ACTUAL_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
-    elif [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
-        ACTUAL_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
-    elif [ -d "$ROOT_DIR/.git" ] || git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-        ACTUAL_SHA="$(cd "$ROOT_DIR" && git rev-parse HEAD 2>/dev/null || true)"
-    else
-        echo "Blocked: unable to resolve source identity in '$ROOT_DIR' (not a git repository and no source attestation found)." >&2
+    IS_GIT=0
+    if command -v git >/dev/null 2>&1; then
+        GIT_TOPLEVEL="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$GIT_TOPLEVEL" ]; then
+            ROOT_DIR_REAL="$(cd "$ROOT_DIR" && pwd -P)"
+            GIT_TOPLEVEL_REAL="$(cd "$GIT_TOPLEVEL" && pwd -P)"
+            if [ "$ROOT_DIR_REAL" = "$GIT_TOPLEVEL_REAL" ]; then
+                IS_GIT=1
+            fi
+        fi
+    fi
+
+    # Reject symlinked attestation files fail-closed
+    if [ -L "$ROOT_DIR/.source-commit" ]; then
+        echo "Blocked: attestation file in '$ROOT_DIR/.source-commit' cannot be a symlink." >&2
         exit 2
+    fi
+    if [ -L "$ROOT_DIR/.toolrepo-sha" ]; then
+        echo "Blocked: attestation file in '$ROOT_DIR/.toolrepo-sha' cannot be a symlink." >&2
+        exit 2
+    fi
+
+    if [ "$IS_GIT" = "1" ]; then
+        # Git HEAD is authoritative whenever Git identity is available
+        ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+        if [ -f "$ROOT_DIR/.source-commit" ]; then
+            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+            if [ "$SC_SHA" != "$ACTUAL_SHA" ]; then
+                echo "Blocked: .source-commit ($SC_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
+                exit 2
+            fi
+        fi
+        if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
+            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+            if [ "$TS_SHA" != "$ACTUAL_SHA" ]; then
+                echo "Blocked: .toolrepo-sha ($TS_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
+                exit 2
+            fi
+        fi
+    else
+        # Standalone directory: resolve from attestation files
+        SC_SHA=""
+        TS_SHA=""
+        if [ -f "$ROOT_DIR/.source-commit" ]; then
+            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+        fi
+        if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
+            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+        fi
+
+        if [ -n "$SC_SHA" ] && [ -n "$TS_SHA" ]; then
+            if [ "$SC_SHA" != "$TS_SHA" ]; then
+                echo "Blocked: conflicting standalone attestations: .source-commit ($SC_SHA) != .toolrepo-sha ($TS_SHA)." >&2
+                exit 2
+            fi
+            ACTUAL_SHA="$SC_SHA"
+        elif [ -n "$SC_SHA" ]; then
+            ACTUAL_SHA="$SC_SHA"
+        elif [ -n "$TS_SHA" ]; then
+            ACTUAL_SHA="$TS_SHA"
+        else
+            echo "Blocked: unable to resolve source identity in '$ROOT_DIR' (not a git repository and no source attestation found)." >&2
+            exit 2
+        fi
     fi
 
     if ! [[ "$ACTUAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then

@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -429,12 +430,142 @@ def derive_ast_imports_from_file(
     return external_pkgs, app_imports
 
 
+def extract_git_commit_tree_snapshot(
+    repo_root: Path,
+    commit_sha: str,
+    target_dir: Path,
+    all_declared_items: list[str],
+    forbidden_surfaces: set[str],
+) -> list[str]:
+    """Extract strictly the declared standalone items from a Git commit tree blob database into target_dir.
+
+    Scans and validates all records in the commit tree before writing any file.
+    Rejects symlinks (120000), gitlinks (160000), forbidden surfaces, and non-regular modes fail-closed.
+    Returns list of extracted relative path strings.
+    """
+    repo_resolved = repo_root.resolve()
+    proc_rev = subprocess.run(
+        ["git", "-C", str(repo_resolved), "rev-parse", "--verify", commit_sha],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc_rev.returncode != 0:
+        raise StandaloneClosureValidationError(
+            f"Failed to resolve git commit {commit_sha} in {repo_root}: {proc_rev.stderr.strip()}"
+        )
+    resolved_commit = proc_rev.stdout.strip()
+
+    proc_tree = subprocess.run(
+        ["git", "-C", str(repo_resolved), "ls-tree", "-r", "-z", resolved_commit],
+        capture_output=True,
+        check=False,
+    )
+    if proc_tree.returncode != 0:
+        raise StandaloneClosureValidationError(
+            f"Failed to read git commit tree at {resolved_commit} in {repo_root}: {proc_tree.stderr.decode('utf-8', errors='replace')}"
+        )
+    records = proc_tree.stdout.split(b"\0")
+    git_declared_records: list[tuple[str, str, str]] = []
+    for rec in records:
+        if not rec:
+            continue
+        try:
+            meta, path_bytes = rec.split(b"\t", 1)
+            meta_str = meta.decode("utf-8")
+            mode_str, type_str, object_sha = meta_str.split()
+            path_str = path_bytes.decode("utf-8")
+        except Exception as exc:
+            raise StandaloneClosureValidationError(f"Malformed git ls-tree record: {rec!r}: {exc}")
+
+        is_declared = any(
+            paths_overlap(path_str, decl)
+            for decl in all_declared_items
+        )
+        if not is_declared:
+            continue
+
+        for fb in forbidden_surfaces:
+            if paths_overlap(path_str, fb):
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize forbidden surface in git tree: {path_str} overlaps {fb}"
+                )
+
+        if mode_str == "120000":
+            raise StandaloneClosureValidationError(
+                f"Refusing to materialize symlink in git tree: {path_str}"
+            )
+        if mode_str == "160000":
+            raise StandaloneClosureValidationError(
+                f"Refusing to materialize gitlink/submodule in git tree: {path_str}"
+            )
+        if mode_str not in ("100644", "100755"):
+            raise StandaloneClosureValidationError(
+                f"Unsupported file mode in git tree: {mode_str} for {path_str}"
+            )
+
+        git_declared_records.append((mode_str, object_sha, path_str))
+
+    copied_paths: list[str] = []
+    for mode_str, object_sha, path_str in git_declared_records:
+        proc_cat = subprocess.run(
+            ["git", "-C", str(repo_resolved), "cat-file", "-p", object_sha],
+            capture_output=True,
+            check=False,
+        )
+        if proc_cat.returncode != 0:
+            raise StandaloneClosureValidationError(
+                f"Failed to read blob {object_sha} for {path_str} from git object database"
+            )
+
+        dest_path = target_dir / path_str
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(proc_cat.stdout)
+        if mode_str == "100755":
+            dest_path.chmod(0o755)
+        else:
+            dest_path.chmod(0o644)
+        copied_paths.append(path_str)
+
+    return copied_paths
+
+
 def validate_manifest(
     manifest: dict[str, Any],
     repo_root: Path | None = None,
+    git_commit: str | None = None,
 ) -> list[str]:
     """Validate distribution boundary declarations and AST import closure against the repo."""
     root = repo_root or REPO_ROOT
+    if git_commit is not None:
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                dist_boundary = manifest.get("distribution_boundary", {}) if isinstance(manifest, dict) else {}
+                all_declared_items: list[str] = []
+                for s in (
+                    "core_packages",
+                    "package_roots",
+                    "shared_primitives",
+                    "required_asset_trees",
+                    "install_boundary",
+                    "distribution_clis",
+                ):
+                    items = dist_boundary.get(s, [])
+                    if isinstance(items, list):
+                        all_declared_items.extend(items)
+                forbidden_surfaces = set(manifest.get("forbidden_runtime_surfaces", [])) if isinstance(manifest, dict) else set()
+                extract_git_commit_tree_snapshot(
+                    repo_root=root,
+                    commit_sha=git_commit,
+                    target_dir=temp_path,
+                    all_declared_items=all_declared_items,
+                    forbidden_surfaces=forbidden_surfaces,
+                )
+                return validate_manifest(manifest, repo_root=temp_path)
+        except Exception as exc:
+            return [f"Failed to extract and validate git commit tree at {git_commit}: {exc}"]
+
     errors: list[str] = []
 
     if not isinstance(manifest, dict):
@@ -468,6 +599,10 @@ def validate_manifest(
     if not isinstance(dist_boundary, dict):
         return ["Manifest is missing required 'distribution_boundary' dictionary."]
 
+    extra_sections = sorted(set(dist_boundary.keys()) - set(REQUIRED_BOUNDARY_ANCHORS_V1.keys()))
+    if extra_sections:
+        errors.append(f"Undeclared section(s) in distribution_boundary violating canonical contract: {extra_sections}")
+
     for section_name, required_anchors in REQUIRED_BOUNDARY_ANCHORS_V1.items():
         if section_name not in dist_boundary:
             errors.append(f"Required boundary section '{section_name}' is missing from distribution_boundary.")
@@ -479,10 +614,16 @@ def validate_manifest(
         if not entries:
             errors.append(f"Section '{section_name}' in distribution_boundary cannot be empty.")
             continue
-        missing_anchors = sorted(required_anchors - set(entries))
+        entries_set = set(entries)
+        missing_anchors = sorted(required_anchors - entries_set)
         if missing_anchors:
             errors.append(
                 f"Required anchor(s) omitted from '{section_name}': {missing_anchors}"
+            )
+        extra_entries = sorted(entries_set - required_anchors)
+        if extra_entries:
+            errors.append(
+                f"Undeclared entry(ies) in '{section_name}' violating canonical boundary: {extra_entries}"
             )
 
     # 2. Negative boundary contract enforcement (Layer S)
@@ -556,11 +697,15 @@ def validate_manifest(
             f"Allowed third-party packages overlap forbidden runtime packages: {overlap}"
         )
 
-    # Finding D3: Parity check between allowed_third_party_packages and requirements-agent-review.lock
+    # Finding D3 / P2: Parity check between allowed_third_party_packages and requirements-agent-review.lock
     lock_file = root / "requirements-agent-review.lock"
     if lock_file.is_file():
         lock_pkgs = parse_lock_distributions(lock_file)
-        if lock_pkgs:
+        if not lock_pkgs:
+            errors.append(
+                f"requirements-agent-review.lock at {lock_file} is empty or contains no valid distribution pins."
+            )
+        else:
             missing_from_lock = sorted(allowed_packages_norm - lock_pkgs)
             if missing_from_lock:
                 errors.append(
@@ -797,11 +942,6 @@ def materialize_standalone_distribution(
     surface raises StandaloneClosureValidationError.
     """
     manifest_data = load_manifest() if manifest is None else manifest
-    validation_errors = validate_manifest(manifest_data, repo_root=repo_root)
-    if validation_errors:
-        raise StandaloneClosureValidationError(
-            f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
-        )
 
     repo_resolved = repo_root.resolve()
     target_resolved = target_dir.resolve()
@@ -875,6 +1015,13 @@ def materialize_standalone_distribution(
                 f"Attestation file .toolrepo-sha ({toolrepo_file_sha}) disagrees with authoritative Git HEAD ({resolved_sha})"
             )
     else:
+        # Standalone non-git source directory: validate manifest on repo_root before checking attestations
+        validation_errors = validate_manifest(manifest_data, repo_root=repo_root)
+        if validation_errors:
+            raise StandaloneClosureValidationError(
+                f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
+            )
+
         # Only when Git identity is genuinely unavailable: use standalone attestation files
         if commit_file_sha is not None and toolrepo_file_sha is not None:
             if commit_file_sha != toolrepo_file_sha:
@@ -955,78 +1102,69 @@ def materialize_standalone_distribution(
             raise StandaloneClosureValidationError(
                 f"Materialization target directory must be empty or absent, but contains {len(existing_items)} existing item(s): {target_resolved}"
             )
-    else:
-        target_resolved.mkdir(parents=True, exist_ok=True)
 
     copied_manifest_paths: list[str] = []
 
     if is_git_repo:
         # Layer M: Extract strictly from authoritative immutable Git commit tree
-        proc_tree = subprocess.run(
-            ["git", "-C", str(repo_resolved), "ls-tree", "-r", "-z", resolved_sha],
-            capture_output=True,
-            check=False,
-        )
-        if proc_tree.returncode != 0:
-            raise StandaloneClosureValidationError(
-                f"Failed to read git commit tree at {resolved_sha} in {repo_root}: {proc_tree.stderr.decode('utf-8', errors='replace')}"
+        with tempfile.TemporaryDirectory() as temp_snapshot_dir:
+            temp_snapshot = Path(temp_snapshot_dir)
+            extract_git_commit_tree_snapshot(
+                repo_root=repo_resolved,
+                commit_sha=resolved_sha,
+                target_dir=temp_snapshot,
+                all_declared_items=all_declared_items,
+                forbidden_surfaces=forbidden_surfaces,
             )
-        records = proc_tree.stdout.split(b"\0")
-        for rec in records:
-            if not rec:
-                continue
+
+            # Validate the immutable Git commit tree snapshot against the product contract
+            snapshot_errors = validate_manifest(manifest_data, repo_root=temp_snapshot)
+            if snapshot_errors:
+                raise StandaloneClosureValidationError(
+                    f"Cannot materialize invalid distribution from git commit tree:\n"
+                    + "\n".join(snapshot_errors)
+                )
+
+            # Now that complete validation succeeded, create target directory and populate
             try:
-                meta, path_bytes = rec.split(b"\t", 1)
-                meta_str = meta.decode("utf-8")
-                mode_str, type_str, object_sha = meta_str.split()
-                path_str = path_bytes.decode("utf-8")
-            except Exception as exc:
-                raise StandaloneClosureValidationError(f"Malformed git ls-tree record: {rec!r}: {exc}")
+                target_resolved.mkdir(parents=True, exist_ok=True)
+                for item in sorted(temp_snapshot.rglob("*")):
+                    if item.is_file():
+                        rel = item.relative_to(temp_snapshot)
+                        dest = target_resolved / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(item, dest)
+                        copied_manifest_paths.append(rel.as_posix())
 
-            is_declared = any(
-                paths_overlap(path_str, decl)
-                for decl in all_declared_items
-            )
-            if not is_declared:
-                continue
+                # Write verifiable source identity attestation files (P-09)
+                (target_resolved / ".source-commit").write_text(f"{attested_sha}\n", encoding="utf-8")
+                (target_resolved / ".toolrepo-sha").write_text(f"{attested_sha}\n", encoding="utf-8")
 
-            for fb in forbidden_surfaces:
-                if paths_overlap(path_str, fb):
+                # Output closure check: verify every materialized file belongs to the declared boundary or attestation metadata
+                MATERIALIZED_ATTESTATION_FILES = frozenset({".source-commit", ".toolrepo-sha"})
+                for item in target_resolved.rglob("*"):
+                    if item.is_file():
+                        rel_to_target = item.relative_to(target_resolved).as_posix()
+                        if rel_to_target in MATERIALIZED_ATTESTATION_FILES:
+                            continue
+                        is_declared = any(
+                            paths_overlap(rel_to_target, decl)
+                            for decl in copied_manifest_paths
+                        )
+                        if not is_declared:
+                            raise StandaloneClosureValidationError(
+                                f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
+                            )
+
+                # Post-materialization closure verification: ensure the target itself passes validation
+                post_errors = validate_manifest(manifest_data, repo_root=target_resolved)
+                if post_errors:
                     raise StandaloneClosureValidationError(
-                        f"Refusing to materialize forbidden surface in git tree: {path_str} overlaps {fb}"
+                        f"Materialized distribution failed validation:\n" + "\n".join(post_errors)
                     )
-
-            if mode_str == "120000":
-                raise StandaloneClosureValidationError(
-                    f"Refusing to materialize symlink in git tree: {path_str}"
-                )
-            if mode_str == "160000":
-                raise StandaloneClosureValidationError(
-                    f"Refusing to materialize gitlink/submodule in git tree: {path_str}"
-                )
-            if mode_str not in ("100644", "100755"):
-                raise StandaloneClosureValidationError(
-                    f"Unsupported file mode in git tree: {mode_str} for {path_str}"
-                )
-
-            proc_cat = subprocess.run(
-                ["git", "-C", str(repo_resolved), "cat-file", "-p", object_sha],
-                capture_output=True,
-                check=False,
-            )
-            if proc_cat.returncode != 0:
-                raise StandaloneClosureValidationError(
-                    f"Failed to read blob {object_sha} for {path_str} from git object database"
-                )
-
-            dest_path = target_resolved / path_str
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            dest_path.write_bytes(proc_cat.stdout)
-            if mode_str == "100755":
-                dest_path.chmod(0o755)
-            else:
-                dest_path.chmod(0o644)
-            copied_manifest_paths.append(path_str)
+            except Exception:
+                shutil.rmtree(target_resolved, ignore_errors=True)
+                raise
     else:
         # Pre-creation scan: verify all declared source items are regular files or directories without symlinks or special files (P-13)
         for rel_path_str in all_declared_items:
@@ -1051,91 +1189,95 @@ def materialize_standalone_distribution(
                     f"Declared distribution item must be a regular file or directory: {rel_path_str}"
                 )
 
-        for section_name in (
-            "core_packages",
-            "package_roots",
-            "shared_primitives",
-            "required_asset_trees",
-            "install_boundary",
-            "distribution_clis",
-        ):
-            items = dist_boundary.get(section_name, [])
-            for rel_path_str in items:
-                rel_path = admit_manifest_relative_path_v1(rel_path_str)
-                src_path = repo_root / rel_path
-                dest_path = target_resolved / rel_path
+        try:
+            target_resolved.mkdir(parents=True, exist_ok=True)
+            for section_name in (
+                "core_packages",
+                "package_roots",
+                "shared_primitives",
+                "required_asset_trees",
+                "install_boundary",
+                "distribution_clis",
+            ):
+                items = dist_boundary.get(section_name, [])
+                for rel_path_str in items:
+                    rel_path = admit_manifest_relative_path_v1(rel_path_str)
+                    src_path = repo_root / rel_path
+                    dest_path = target_resolved / rel_path
 
-                # Guard against copying forbidden surfaces
-                for forbidden in forbidden_surfaces:
-                    if paths_overlap(rel_path_str, forbidden):
+                    # Guard against copying forbidden surfaces
+                    for forbidden in forbidden_surfaces:
+                        if paths_overlap(rel_path_str, forbidden):
+                            raise StandaloneClosureValidationError(
+                                f"Refusing to materialize forbidden surface: {rel_path_str} overlaps {forbidden}"
+                            )
+
+                    # Check resolved source confinement
+                    resolved_src = src_path.resolve()
+                    if not (resolved_src == repo_resolved or resolved_src.is_relative_to(repo_resolved)):
                         raise StandaloneClosureValidationError(
-                            f"Refusing to materialize forbidden surface: {rel_path_str} overlaps {forbidden}"
+                            f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
                         )
 
-                # Check resolved source confinement
-                resolved_src = src_path.resolve()
-                if not (resolved_src == repo_resolved or resolved_src.is_relative_to(repo_resolved)):
-                    raise StandaloneClosureValidationError(
-                        f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
-                    )
-
-                # Check destination confinement against target_resolved
-                resolved_dest = dest_path.resolve()
-                if not (resolved_dest == target_resolved or resolved_dest.is_relative_to(target_resolved)):
-                    raise StandaloneClosureValidationError(
-                        f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
-                    )
-
-                # Symlinks not permitted in declared distribution members or ancestor paths
-                curr = repo_root
-                for part in rel_path.parts:
-                    curr = curr / part
-                    if curr.is_symlink():
+                    # Check destination confinement against target_resolved
+                    resolved_dest = dest_path.resolve()
+                    if not (resolved_dest == target_resolved or resolved_dest.is_relative_to(target_resolved)):
                         raise StandaloneClosureValidationError(
-                            f"Refusing to materialize distribution member with symlink component: {curr.relative_to(repo_root).as_posix()} in {rel_path_str}"
+                            f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
                         )
 
-                if src_path.is_file():
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_path, dest_path)
-                    copied_manifest_paths.append(rel_path_str)
-                elif src_path.is_dir():
-                    dest_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(
-                        src_path,
-                        dest_path,
-                        dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                    # Symlinks not permitted in declared distribution members or ancestor paths
+                    curr = repo_root
+                    for part in rel_path.parts:
+                        curr = curr / part
+                        if curr.is_symlink():
+                            raise StandaloneClosureValidationError(
+                                f"Refusing to materialize distribution member with symlink component: {curr.relative_to(repo_root).as_posix()} in {rel_path_str}"
+                            )
+
+                    if src_path.is_file():
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_path, dest_path)
+                        copied_manifest_paths.append(rel_path_str)
+                    elif src_path.is_dir():
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copytree(
+                            src_path,
+                            dest_path,
+                            dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                        )
+                        copied_manifest_paths.append(rel_path_str)
+
+            # Write verifiable source identity attestation files (P-09)
+            (target_resolved / ".source-commit").write_text(f"{attested_sha}\n", encoding="utf-8")
+            (target_resolved / ".toolrepo-sha").write_text(f"{attested_sha}\n", encoding="utf-8")
+
+            # Output closure check: verify every materialized file belongs to the declared boundary or attestation metadata
+            MATERIALIZED_ATTESTATION_FILES = frozenset({".source-commit", ".toolrepo-sha"})
+            for item in target_resolved.rglob("*"):
+                if item.is_file():
+                    rel_to_target = item.relative_to(target_resolved).as_posix()
+                    if rel_to_target in MATERIALIZED_ATTESTATION_FILES:
+                        continue
+                    is_declared = any(
+                        paths_overlap(rel_to_target, decl)
+                        for decl in copied_manifest_paths
                     )
-                    copied_manifest_paths.append(rel_path_str)
+                    if not is_declared:
+                        raise StandaloneClosureValidationError(
+                            f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
+                        )
 
-    # Write verifiable source identity attestation files (P-09)
-    (target_resolved / ".source-commit").write_text(f"{attested_sha}\n", encoding="utf-8")
-    (target_resolved / ".toolrepo-sha").write_text(f"{attested_sha}\n", encoding="utf-8")
-
-    # Output closure check: verify every materialized file belongs to the declared boundary or attestation metadata
-    MATERIALIZED_ATTESTATION_FILES = frozenset({".source-commit", ".toolrepo-sha"})
-    for item in target_resolved.rglob("*"):
-        if item.is_file():
-            rel_to_target = item.relative_to(target_resolved).as_posix()
-            if rel_to_target in MATERIALIZED_ATTESTATION_FILES:
-                continue
-            is_declared = any(
-                paths_overlap(rel_to_target, decl)
-                for decl in copied_manifest_paths
-            )
-            if not is_declared:
+            # Post-materialization closure verification: ensure the target itself passes validation
+            post_errors = validate_manifest(manifest_data, repo_root=target_resolved)
+            if post_errors:
                 raise StandaloneClosureValidationError(
-                    f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
+                    f"Materialized distribution failed validation:\n" + "\n".join(post_errors)
                 )
-
-    # Post-materialization closure verification: ensure the target itself passes validation
-    post_errors = validate_manifest(manifest_data, repo_root=target_resolved)
-    if post_errors:
-        shutil.rmtree(target_resolved, ignore_errors=True)
-        raise StandaloneClosureValidationError(
-            f"Materialized distribution failed validation:\n" + "\n".join(post_errors)
-        )
+        except Exception:
+            shutil.rmtree(target_resolved, ignore_errors=True)
+            raise
 
     return target_resolved
 

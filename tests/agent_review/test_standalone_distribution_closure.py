@@ -2299,6 +2299,181 @@ def test_finding_d3_allowed_package_absent_lock_fails_closed(tmp_path: Path) -> 
     assert any("requests" in e for e in errs)
 
 
+def test_finding_r1_installer_resolves_git_head_over_stale_attestation(tmp_path: Path) -> None:
+    """Finding 1 (PRRT_kwDOSM6MSM6nr63D): install-agent-review-toolrepo.sh resolves Git HEAD before attestations."""
+    fake_repo = tmp_path / "installer_git_repo"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+    shutil.copy(REPO_ROOT / "scripts" / "install-agent-review-toolrepo.sh", fake_repo / "scripts" / "install-agent-review-toolrepo.sh")
+    real_head = _init_git_in_standalone(fake_repo)
+
+    install_script = fake_repo / "scripts" / "install-agent-review-toolrepo.sh"
+    fake_venv = tmp_path / "fake_venv_r1"
+    env = os.environ.copy()
+    env["AGENT_REVIEW_PYTHON"] = "nonexistent_python_binary_for_test"
+
+    # Case A: Untracked .source-commit with fabricated pin
+    fabricated_sha = "1" * 40
+    (fake_repo / ".source-commit").write_text(f"{fabricated_sha}\n", encoding="utf-8")
+    try:
+        proc_fab = subprocess.run(
+            ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", fabricated_sha],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert proc_fab.returncode == 2
+        assert f"Blocked: .source-commit ({fabricated_sha}) does not match Git HEAD ({real_head})." in proc_fab.stderr
+    finally:
+        (fake_repo / ".source-commit").unlink()
+
+    # Case B: Symlinked .source-commit in Git checkout
+    sibling_file = fake_repo / "sibling_sha.txt"
+    sibling_file.write_text(f"{real_head}\n", encoding="utf-8")
+    (fake_repo / ".source-commit").symlink_to(sibling_file)
+    try:
+        proc_sym = subprocess.run(
+            ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", real_head],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert proc_sym.returncode == 2
+        assert "cannot be a symlink" in proc_sym.stderr
+    finally:
+        (fake_repo / ".source-commit").unlink()
+        sibling_file.unlink()
+
+
+def test_finding_r2_empty_or_unparseable_lock_fails_closed(tmp_path: Path) -> None:
+    """Finding 2 (PRRT_kwDOSM6MSM6nr63N): Empty or unparseable lockfile fails validation fail-closed."""
+    fake_source = tmp_path / "fake_source_r2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    manifest = validator.load_manifest()
+
+    lock_file = fake_source / "requirements-agent-review.lock"
+    original_lock = lock_file.read_text(encoding="utf-8")
+
+    # Case A: Empty lockfile
+    try:
+        lock_file.write_text("", encoding="utf-8")
+        errs_empty = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("is empty or contains no valid distribution pins" in e for e in errs_empty), (
+            f"Expected empty lockfile error, got: {errs_empty}"
+        )
+
+        # Case B: Comment-only lockfile
+        lock_file.write_text("# This is just a comment\n# Another comment\n", encoding="utf-8")
+        errs_comment = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("is empty or contains no valid distribution pins" in e for e in errs_comment), (
+            f"Expected empty lockfile error on comment-only lock, got: {errs_comment}"
+        )
+    finally:
+        lock_file.write_text(original_lock, encoding="utf-8")
+
+
+def test_finding_r3_exact_positive_boundary_parity(tmp_path: Path) -> None:
+    """Finding 3 (PRRT_kwDOSM6MSM6nr63V): Adding extra items or sections to positive boundary fails closed."""
+    manifest = validator.load_manifest()
+
+    # Case A: Append extra file (e.g. README.md) to install_boundary
+    mutated_extra = copy.deepcopy(manifest)
+    mutated_extra["distribution_boundary"]["install_boundary"].append("README.md")
+    errs_extra = validator.validate_manifest(mutated_extra, repo_root=REPO_ROOT)
+    assert any("Undeclared entry(ies) in 'install_boundary' violating canonical boundary" in e for e in errs_extra), (
+        f"Expected extra entry error, got: {errs_extra}"
+    )
+    assert any("README.md" in e for e in errs_extra)
+
+    # Case B: Add extra section to distribution_boundary
+    mutated_sec = copy.deepcopy(manifest)
+    mutated_sec["distribution_boundary"]["extraneous_section"] = ["some/file.txt"]
+    errs_sec = validator.validate_manifest(mutated_sec, repo_root=REPO_ROOT)
+    assert any("Undeclared section(s) in distribution_boundary violating canonical contract" in e for e in errs_sec), (
+        f"Expected extra section error, got: {errs_sec}"
+    )
+
+
+def test_finding_r4_git_tree_validated_before_target_creation(tmp_path: Path) -> None:
+    """Finding 4 (PRRT_kwDOSM6MSM6nr63b): Git tree errors fail closed BEFORE target directory is created (write-zero)."""
+    fake_repo = tmp_path / "fake_repo_r4"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+    _init_git_in_standalone(fake_repo)
+
+    target_dir = tmp_path / "target_should_not_exist_r4"
+    assert not target_dir.exists()
+
+    # Create a git tree containing mode 120000 symlink for app/agent_review/__init__.py
+    blob_hash = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        input="dummy_target",
+        cwd=fake_repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", "120000", blob_hash, "app/agent_review/__init__.py"],
+        cwd=fake_repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "commit with symlink mode"],
+        cwd=fake_repo,
+        check=True,
+    )
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dir)
+
+    assert "Refusing to materialize symlink in git tree" in str(exc.value)
+    assert not target_dir.exists(), f"Target directory must not be created on validation failure (strict write-zero): {target_dir}"
+
+
+def test_finding_r5_git_sources_validated_from_commit_tree(tmp_path: Path) -> None:
+    """Finding 5 (PRRT_kwDOSM6MSM6nr63j): Git sources are validated strictly from commit tree; working-tree mutations bypassed."""
+    fake_repo = tmp_path / "fake_repo_r5"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+    _init_git_in_standalone(fake_repo)
+
+    target_dir = tmp_path / "target_r5"
+    tracked_file = fake_repo / "app" / "agent_review" / "__init__.py"
+    orig_text = tracked_file.read_text(encoding="utf-8")
+
+    # Case A: Working tree is mutated with assume-unchanged and import fastapi
+    # Because Git HEAD is clean, materialization MUST SUCCEED and output MUST NOT contain fastapi
+    try:
+        subprocess.run(["git", "update-index", "--assume-unchanged", "app/agent_review/__init__.py"], cwd=fake_repo, check=True)
+        tracked_file.write_text("import fastapi\n" + orig_text, encoding="utf-8")
+
+        dest = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dir)
+        assert dest.exists()
+        output_init = (dest / "app" / "agent_review" / "__init__.py").read_text(encoding="utf-8")
+        assert "import fastapi" not in output_init
+        assert output_init == orig_text
+    finally:
+        tracked_file.write_text(orig_text, encoding="utf-8")
+        subprocess.run(["git", "update-index", "--no-assume-unchanged", "app/agent_review/__init__.py"], cwd=fake_repo, check=True)
+
+    # Case B: If import fastapi IS committed into Git HEAD, materialization MUST FAIL CLOSED
+    target_fail = tmp_path / "target_r5_fail"
+    try:
+        tracked_file.write_text("import fastapi\n" + orig_text, encoding="utf-8")
+        subprocess.run(["git", "commit", "-am", "commit forbidden package"], cwd=fake_repo, check=True)
+
+        with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+            validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_fail)
+        assert "fastapi" in str(exc_b.value)
+        assert not target_fail.exists(), "Target directory must not exist when git commit tree validation fails"
+    finally:
+        subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=fake_repo, check=True)
+
 
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
