@@ -109,14 +109,15 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
     Never silently fabricate provenance -- refuse instead, by name."""
 
     for fname in (".source-commit", ".toolrepo-sha"):
-        attestation_file = toolrepo_root / fname
-        if attestation_file.is_file():
-            try:
-                sha = attestation_file.read_text(encoding="utf-8").strip().lower()
-                if _GIT_SHA_HEX_RE.fullmatch(sha) and sha != _ALL_ZERO_SHA_V2:
-                    return sha
-            except Exception:
-                pass
+        try:
+            capability = validate_external_input_file_v2(toolrepo_root / fname, root=toolrepo_root)
+            content = capability.read_bytes().decode("utf-8").strip().lower()
+            if _GIT_SHA_HEX_RE.fullmatch(content) and content != _ALL_ZERO_SHA_V2:
+                return content
+        except ExternalPathIngressError:
+            pass
+        except Exception:
+            pass
 
     import subprocess
 
