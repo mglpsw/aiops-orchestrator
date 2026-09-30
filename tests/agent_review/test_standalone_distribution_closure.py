@@ -1471,6 +1471,73 @@ def test_countermodel_p3_direct_import_of_forbidden_runtime_scripts(tmp_path: Pa
     assert not errs_c, f"Expected clean validation for harmless stdlib import, got: {errs_c}"
 
 
+def test_countermodel_p5_enforce_declared_path_kinds_before_certification(tmp_path: Path) -> None:
+    """P5: Declared path kinds (trees as directories, roots/primitives/CLIs/install artifacts as regular files) are enforced fail-closed."""
+    temp_repo = tmp_path / "repo_p5"
+    temp_repo.mkdir()
+
+    manifest = validator.load_manifest()
+    for cat in ("core_packages", "package_roots", "shared_primitives", "required_asset_trees", "install_boundary", "distribution_clis"):
+        for item in manifest["distribution_boundary"][cat]:
+            src = REPO_ROOT / item
+            dst = temp_repo / item
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                shutil.copy2(src, dst)
+            elif src.is_dir():
+                shutil.copytree(src, dst)
+
+    for fb in manifest["forbidden_runtime_surfaces"]:
+        dst = temp_repo / fb
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            if fb.endswith(".py") or fb.endswith(".sh") or fb.endswith(".yml") or fb.endswith(".yaml"):
+                dst.write_text("# dummy\n", encoding="utf-8")
+            else:
+                dst.mkdir(parents=True, exist_ok=True)
+
+    # Control: unmodified mock repo passes
+    assert not validator.validate_manifest(manifest, repo_root=temp_repo)
+
+    # Case A: Replace core_packages tree (app/agent_review) with a regular file
+    repo_a = tmp_path / "repo_p5_a"
+    shutil.copytree(temp_repo, repo_a)
+    shutil.rmtree(repo_a / "app" / "agent_review")
+    (repo_a / "app" / "agent_review").write_text("# fake file replacing tree\n", encoding="utf-8")
+
+    errs_a = validator.validate_manifest(manifest, repo_root=repo_a)
+    assert any("Declared path in 'core_packages' must be a directory: app/agent_review" in err for err in errs_a), f"Got: {errs_a}"
+    with pytest.raises(validator.StandaloneClosureValidationError):
+        validator.materialize_standalone_distribution(repo_root=repo_a, target_dir=tmp_path / "target_a", manifest=manifest)
+
+    # Case B: Replace required_asset_trees (templates/agentreview-v2-target-pack) with a regular file
+    repo_b = tmp_path / "repo_p5_b"
+    shutil.copytree(temp_repo, repo_b)
+    shutil.rmtree(repo_b / "templates" / "agentreview-v2-target-pack")
+    (repo_b / "templates" / "agentreview-v2-target-pack").write_text("# fake file replacing asset tree\n", encoding="utf-8")
+
+    errs_b = validator.validate_manifest(manifest, repo_root=repo_b)
+    assert any("Declared path in 'required_asset_trees' must be a directory: templates/agentreview-v2-target-pack" in err for err in errs_b), f"Got: {errs_b}"
+
+    # Case C: Replace distribution_clis regular file with a directory
+    repo_c = tmp_path / "repo_p5_c"
+    shutil.copytree(temp_repo, repo_c)
+    (repo_c / "scripts" / "aiops-review-intake.py").unlink()
+    (repo_c / "scripts" / "aiops-review-intake.py").mkdir()
+
+    errs_c = validator.validate_manifest(manifest, repo_root=repo_c)
+    assert any("Declared path in 'distribution_clis' must be a regular file: scripts/aiops-review-intake.py" in err for err in errs_c), f"Got: {errs_c}"
+
+    # Case D: Replace package_roots regular file (app/__init__.py) with a directory
+    repo_d = tmp_path / "repo_p5_d"
+    shutil.copytree(temp_repo, repo_d)
+    (repo_d / "app" / "__init__.py").unlink()
+    (repo_d / "app" / "__init__.py").mkdir()
+
+    errs_d = validator.validate_manifest(manifest, repo_root=repo_d)
+    assert any("Declared path in 'package_roots' must be a regular file: app/__init__.py" in err for err in errs_d), f"Got: {errs_d}"
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""

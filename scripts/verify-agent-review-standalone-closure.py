@@ -413,6 +413,13 @@ def validate_manifest(
                 errors.append(f"Non-canonical or escaping distribution path: {exc}")
                 continue
 
+            # Check if any forbidden runtime surface is declared
+            for forbidden in forbidden_surfaces:
+                if paths_overlap(rel_path_str, forbidden):
+                    errors.append(
+                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path_str} overlaps {forbidden}"
+                    )
+
             declared_paths.append(rel_path_str)
             full_path = root / rel_path
 
@@ -426,6 +433,22 @@ def validate_manifest(
                     f"Symlinks not permitted in distribution boundary: {rel_path_str}"
                 )
                 continue
+
+            # Enforce expected path kinds for each section (trees as directories, others as regular files)
+            if section_name in ("core_packages", "required_asset_trees"):
+                if not full_path.is_dir():
+                    errors.append(
+                        f"Declared path in '{section_name}' must be a directory: {rel_path_str}"
+                    )
+                elif section_name == "core_packages" and not (full_path / "__init__.py").is_file():
+                    errors.append(
+                        f"Core package directory '{rel_path_str}' must contain __init__.py"
+                    )
+            elif section_name in ("package_roots", "shared_primitives", "install_boundary", "distribution_clis"):
+                if not full_path.is_file():
+                    errors.append(
+                        f"Declared path in '{section_name}' must be a regular file: {rel_path_str}"
+                    )
 
             # Resolved-source confinement check (prevent repository root escape)
             try:
@@ -454,13 +477,6 @@ def validate_manifest(
                         errors.append(
                             f"Symlink found in declared distribution tree '{rel_path_str}': {sub.relative_to(root)}"
                         )
-
-            # Check if any forbidden runtime surface is declared
-            for forbidden in forbidden_surfaces:
-                if paths_overlap(rel_path_str, forbidden):
-                    errors.append(
-                        f"Forbidden runtime surface declared in distribution_boundary: {rel_path_str} overlaps {forbidden}"
-                    )
 
     # 3. Gather all Python files in the distribution boundary
     distribution_py_files: list[Path] = []
