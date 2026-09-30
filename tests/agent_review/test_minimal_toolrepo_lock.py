@@ -161,22 +161,30 @@ def test_install_script_rejects_incompatible_interpreter_before_venv_creation(tm
     assert "CPython 3.12" in result.stderr
 
 
-def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp_path: Path) -> None:
-    """G2: Compatible interpreter traverses version guard; fails downstream at venv or completes."""
-    fake_python = tmp_path / "fake_python311.sh"
+def _make_fake_python311(tmp_path: Path) -> Path:
+    fake_python = tmp_path / "fake_python311_runner.sh"
+    host_python = sys.executable
     fake_python.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_python}" "$@"\n'
+        '    fi\n'
         '    echo "CPython 3.11"\n'
         '    exit 0\n'
         "fi\n"
-        "# Reached venv creation: echo marker and exit 42\n"
+        '# Reached venv creation: echo marker and exit 42\n'
         'echo "GUARD_PASSED_CALLED_WITH: $@" >&2\n'
         "exit 42\n",
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
+    return fake_python
 
+
+def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp_path: Path) -> None:
+    """G2: Compatible interpreter traverses version guard; normalizes target and proceeds to venv."""
+    fake_python = _make_fake_python311(tmp_path)
     target_venv = tmp_path / "venv_g2"
     env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
     result = subprocess.run(
@@ -186,10 +194,10 @@ def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp
         check=False,
         env=env,
     )
-    # Exit code 42 proves the script passed the version check and proceeded to "$PYTHON_BIN -m venv"
+    # Exit code 42 proves the script passed the version check and proceeded to "$PYTHON_BIN -m venv <canonical_target>"
     assert result.returncode == 42
     assert "requirements-agent-review.lock is qualified for CPython 3.11" not in result.stderr
-    assert "GUARD_PASSED_CALLED_WITH: -m venv" in result.stderr
+    assert f"GUARD_PASSED_CALLED_WITH: -m venv {str(target_venv.resolve())}" in result.stderr
 
 
 def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Path) -> None:
@@ -234,23 +242,6 @@ def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Pa
     assert not target_venv.exists(), "Venv must not be created when interpreter is incompatible"
     assert "requirements-agent-review.lock is qualified for CPython 3.11" in result.stderr
     assert "CPython 3.14" in result.stderr
-
-
-def _make_fake_python311(tmp_path: Path) -> Path:
-    fake_python = tmp_path / "fake_python311_runner.sh"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    echo "CPython 3.11"\n'
-        '    exit 0\n'
-        "fi\n"
-        '# Reached venv creation: echo marker and exit 42\n'
-        'echo "GUARD_PASSED_CALLED_WITH: $@" >&2\n'
-        "exit 42\n",
-        encoding="utf-8",
-    )
-    fake_python.chmod(0o755)
-    return fake_python
 
 
 def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:
@@ -338,6 +329,71 @@ def test_install_script_rejects_symlink_target(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "AgentReview toolrepo venv target must be absent" in result.stderr
     assert str(symlink_target) in result.stderr
+
+
+def test_countermodel_k1_noncanonical_alias_to_existing_target_is_rejected(tmp_path: Path) -> None:
+    """K1: Non-canonical path with uncreated intermediate prefix (/tmp/new/../existing-venv)
+    is canonicalized before freshness check; existing canonical target is refused and
+    intermediate directory is never created."""
+    existing_venv = tmp_path / "existing-venv"
+    existing_venv.mkdir()
+    stale_marker = existing_venv / "stale-marker.txt"
+    stale_marker.write_text("STALE_DEPENDENCY_WITNESS\n", encoding="utf-8")
+
+    # /tmp/new does NOT exist initially
+    uncreated_intermediate = tmp_path / "new"
+    assert not uncreated_intermediate.exists()
+
+    noncanonical_target = uncreated_intermediate / ".." / "existing-venv"
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(noncanonical_target)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not uncreated_intermediate.exists(), "intermediate directory must NOT be created"
+    assert stale_marker.exists(), "stale marker must NOT be deleted or mutated"
+    assert stale_marker.read_text(encoding="utf-8") == "STALE_DEPENDENCY_WITNESS\n"
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(existing_venv.resolve()) in result.stderr
+    assert str(noncanonical_target) in result.stderr
+
+
+def test_install_script_rejects_empty_target_directory(tmp_path: Path) -> None:
+    """K1-empty: Explicitly empty target directory is rejected fail-closed without mutation."""
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), ""],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "target venv directory cannot be empty" in result.stderr
+
+
+def test_install_script_normalizes_relative_target_before_venv_creation(tmp_path: Path) -> None:
+    """K1-rel: Relative target (e.g. ./rel_venv) is canonicalized to absolute path before venv creation."""
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), "./rel_venv"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 42
+    expected_canonical = str((tmp_path / "rel_venv").resolve())
+    assert f"GUARD_PASSED_CALLED_WITH: -m venv {expected_canonical}" in result.stderr
 
 
 @pytest.mark.requires_network

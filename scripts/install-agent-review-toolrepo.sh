@@ -74,20 +74,42 @@ if [ "$INTERP_INFO" != "CPython 3.11" ]; then
     exit 2
 fi
 
-if [ -e "$VENV_DIR" ] || [ -L "$VENV_DIR" ]; then
-    echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_DIR" >&2
+if [ -z "$VENV_DIR" ]; then
+    echo "Blocked: target venv directory cannot be empty." >&2
     exit 2
 fi
 
-"$PYTHON_BIN" -m venv "$VENV_DIR"
+VENV_TARGET="$("$PYTHON_BIN" -I -S -c '
+import os, sys
+raw = sys.argv[1]
+if not raw or not raw.strip():
+    sys.exit(2)
+print(os.path.abspath(raw))
+' "$VENV_DIR" 2>/dev/null || true)"
+
+if [ -z "$VENV_TARGET" ]; then
+    echo "Blocked: target venv directory '$VENV_DIR' is invalid or cannot be normalized." >&2
+    exit 2
+fi
+
+if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
+    if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
+    else
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
+    fi
+    exit 2
+fi
+
+"$PYTHON_BIN" -m venv "$VENV_TARGET"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step
 # would fetch whatever pip version happens to be latest at install time,
 # an unpinned, unverified download that undermines reproducibility between
 # two installs of the same lock file. The venv's own bundled pip (from
 # Python's ensurepip) already supports --require-hashes.
-"$VENV_DIR/bin/python3" -m pip install --require-hashes --no-deps -r "$LOCK_FILE"
+"$VENV_TARGET/bin/python3" -m pip install --require-hashes --no-deps -r "$LOCK_FILE"
 
-echo "AgentReview toolrepo venv ready at: $VENV_DIR"
+echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
 if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"

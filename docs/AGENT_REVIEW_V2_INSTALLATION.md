@@ -51,8 +51,8 @@ The script:
    rejecting a mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
    is CPython 3.11 via an isolated/no-site probe (`-I -S`), refusing incompatible interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
-4. requires `<venv-dir>` target to be absent; refuses existing directory or symlink targets fail-closed (exit 2) to eliminate stale residual `site-packages` survival;
-5. creates a fresh venv at `<venv-dir>` using the verified CPython 3.11 interpreter;
+4. normalizes the prospective `<venv-dir>` path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
+5. creates a fresh venv at the verified, canonical prospective path using the verified CPython 3.11 interpreter;
 6. installs `requirements-agent-review.lock` with
    `pip install --require-hashes --no-deps`.
 
