@@ -78,7 +78,7 @@
       "claim": "CL-3",
       "domain": "materiality.deterministic_downgrade",
       "proposition": "A finding lacking a checkable negative consequence or whose cited subject is not present in the reviewed material leaves the confirmed-finding partition with a reason code, at all severities, through a channel that does not make the verdict stricter than the confirmed finding it replaces.",
-      "mechanism_site": "app/agent_review/finding_normalizer.py:122-227 (reuse _downgrade_or_reject); aboutness needs reviewed material as new parser input",
+      "mechanism_site": "app/agent_review/finding_normalizer.py:122-227; target channel per open_decision (NOT _downgrade_or_reject's risk channel for P3, which escalates the verdict). The only existing non-escalating channel, rejected_findings, is typed by the RejectedFindingReason Literal (schemas.py:62,341): a new reason code changes a v1 schema literal and falls under the golden-fixture constraint. Aboutness needs reviewed material as new parser input.",
       "countermodels": [
         "CM-CL3-01",
         "CM-CL3-02",
@@ -151,6 +151,21 @@
         "CM-CL5-03"
       ],
       "closure_predicate": "every edge in the declared set killed or documented as equivalent with reasoning",
+      "owner": "#307"
+    },
+    {
+      "obligation_id": "OBL-CL5-04",
+      "claim": "CL-5",
+      "domain": "result_coverage.result_identity_trust",
+      "proposition": "A P0/P1 carried by ChunkResults whose identity does not match the reviewed subject/plan (schema_id, target_repo, chunk_plan_ref) is an untrusted blocker candidate, not a trusted blocking conclusion (#307 mission 2, literal TS1).",
+      "mechanism_site": "app/agent_review/quality_gate.py:384-416 (_blocker_unreliable_reasons) and final_synthesizer.py:502-509; load-time schema check at quality_gate.py:151-158 is not re-applied inside evaluate",
+      "countermodels": [
+        "CM-CL5-03"
+      ],
+      "positive_controls": [
+        "identity-matching ChunkResults with a reviewed-file P1 stays passed/changes_requested"
+      ],
+      "closure_predicate": "CM-CL5-03 RED -> GREEN via the Python API; each identity edge individually mutated turns its focal test RED (no edge covered only by a sibling)",
       "owner": "#307"
     },
     {

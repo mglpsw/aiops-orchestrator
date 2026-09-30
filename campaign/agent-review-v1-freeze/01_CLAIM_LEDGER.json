@@ -116,7 +116,7 @@
       ],
       "limitations": [
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
-        "Task-contract restriction for this traversal (owner-confirmed 2026-09-30): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement."
+        "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement."
       ],
       "risk": "STOP_OWNER_BOUNDARY likely: closing requires a new structured claim object, a response-contract extension (frozen v1 golden fixtures) and target-side authoring; see 04_EXECUTION_ROADMAP.md V1-C2.",
       "slice": "V1-C2",
@@ -202,6 +202,7 @@
       ],
       "required_evidence": [
         "independent reproduction of literal TS1 (CM-CL5-03): ChunkResults schema_id/target_repo mutated after construction via the Python API + valid P1 -> trusted blocker (the #275 trust set is ABSENT on master)",
+        "GREEN for literal TS1: a P1 inside result-identity-mismatched ChunkResults (schema_id/target_repo/plan ref) is an untrusted blocker, not a trusted blocking conclusion (OBL-CL5-04)",
         "additional #307 result-coverage countermodel, not TS1: RED P1 on a file the same chunk reported files_not_reviewed -> gate passed/changes_requested/manual=false (CM-CL5-01, REPRODUCED)",
         "additional #307 result-coverage countermodel, not TS1: all files not_reviewed, noncritical, with and without plan -> gate passed/approved (CM-CL5-02, REPRODUCED through the real parser/synthesizer)",
         "mechanism removed -> focal RED; restored -> focal GREEN",

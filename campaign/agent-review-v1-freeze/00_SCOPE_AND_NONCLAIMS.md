@@ -67,7 +67,7 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 | CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | sustentado por design; ver non-claims |
 | CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | **não sustentado** (CM-CL1-01, CM-CL1-02) |
 | CL-2 | Claim/must-hold **estruturada e admitida** aplicável recebe estado `covered/partial/not_covered/not_applicable` separado de file coverage. | #221 (comentário #805) — sem issue dedicada | **não sustentado**; primitiva estruturada inexistente (risco `STOP_OWNER_BOUNDARY`); estreitamento da exigência de #805 = `PENDING_HUMAN_DECISION` (§6) |
-| CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-C3-*) |
+| CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-CL3-*) |
 | CL-4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só limitações de nível plan (via `plan.status`/`files_not_covered`) e de resultado alcançam o gate; limitações de payload/brief são descartadas antes dele |
 | CL-5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-CL5-01, CM-CL5-02) |
 | CL-6 | Egress: proteção/redaction compatível com o contrato histórico (regex/blocklist). **Não** garantia estrutural. | #315 | sustentado **somente** na forma fraca (L-CHUNK: regex + path absoluto/home; L-LEGACY: regex sem redaction de path); disposição pendente |
@@ -92,7 +92,6 @@ ausência de finding = satisfação de todo contrato
 confiança do LLM = verdade
 redaction regex = sanitização completa
 output_safe_for_llm = propriedade computada   (é constante True: app/agent_review/cli.py:109)
-claim coverage de claims declaradas no corpo do PR (o v1 não transporta título/corpo do PR ao payload da L-CHUNK)
 ```
 
 Regras epistêmicas permanentes desta campanha:
@@ -132,12 +131,18 @@ extração NLP genérica de claims do corpo do PR -> proibida pelo task contract
 devem ser extraídas do PR/contract pack", fixture #805 "=> finding
 material/merge-blocking", e "`contracts_context_not_relevant` deve ser impossível
 quando a claim depende do contract pack selecionado". O task contract desta travessia
-(confirmado pelo owner em 2026-09-30) restringe os **meios**: texto livre do PR não
+(registro: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014;
+confirmado pelo owner em 2026-09-30) restringe os **meios**: texto livre do PR não
 vira autoridade determinística e não há NLP genérico de claims. Essa restrição de
 meios **não** dispõe da exigência de #805. Qualquer parte da exigência que não possa
 ser atendida dentro dos meios permitidos é redução funcional e fica
 `PENDING_HUMAN_DECISION` (#221: "esta epic não concede dispensas"); a slice V1-C2
 decide entre fechamento, `STOP_OWNER_BOUNDARY` ou pedido de decisão.
+
+Estado observado no subject (fato, não disposição): o v1 não produz claim coverage
+e não transporta título/corpo do PR ao payload da L-CHUNK; portanto, hoje, nenhum
+`approve_*` do v1 atesta satisfação de claims declaradas no PR. Se isso vira non-claim
+final ou é fechado é exatamente a decisão pendente acima.
 
 ## 7. Fato de release já estabelecido
 

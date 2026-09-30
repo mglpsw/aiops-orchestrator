@@ -99,6 +99,7 @@ Todos `HISTORICAL` (AgentEscala #802/#804 via #343). Cada um deve virar resposta
 
 ### CM-CL5-03 — TS1 literal
 - `HISTORICAL` + `OBSERVED_CODE`: TS1 é mutante do trust set `_RESULT_IDENTITY_TRUST_LIMITATIONS` da PR #275 (fechada sem merge; branch `fix/agentreview-v1-u2-result-coverage-truth` @ `2b5a2726`). Esse mecanismo está **ausente** em master. Via API Python (modelos pydantic mutáveis), `ChunkResults` com `schema_id`/`target_repo` adulterados após construção + P1 válido → gate `passed/changes_requested` sem warning. Via CLI, `load_chunk_results` rejeita schema divergente (`quality_gate.py:151-158`).
+- **Obrigação de fechamento (missão 2 de #307):** OBL-CL5-04 — P1 em `ChunkResults` com identidade divergente do subject/plan é blocker não confiável.
 - **Reprodução exigida de TS1 (missão 1 de #307):** esta é a forma literal, via API Python. CM-CL5-01/02 são countermodels adicionais de result coverage no escopo de #307, **não** TS1.
 - A asserção vacuosa citada em #307 existe **somente** na branch de #275 (`test_quality_gate.py:1553-1618` naquela head); ela passa por `final_review_mutated` e não pela lógica de cobertura. Não portar.
 
