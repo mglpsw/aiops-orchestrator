@@ -1,0 +1,3455 @@
+[
+ {
+  "id": "A-POS-base",
+  "mechanism": "A",
+  "obligation": "NNP+Rlimit+DescRelative+InheritanceClosed+Teardown",
+  "kind": "positive",
+  "description": "normal unit: report, then clean teardown",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "POS-base",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042131
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042132
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415541
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415541,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7032565]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391382
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415541,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-POS-rebind",
+  "mechanism": "A",
+  "obligation": "DescriptorRelativeSnapshotBinding",
+  "kind": "countermodel",
+  "description": "path renamed + decoy planted after fd open",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "rebind",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042136
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042137
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415543
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415543,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7041259]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391384
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415543,
+   "decoy_ino": 1415544
+  }
+ },
+ {
+  "id": "A-TF5-A",
+  "mechanism": "A",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "exception during child setup",
+  "verdict": "PASS",
+  "outcome": "transport_spawn_failed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-A",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042139
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042140
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415546
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "transport_spawn_failed",
+    "detail": "SubprocessError: Exception occurred in preexec_fn."
+   },
+   "escaped": null,
+   "outcome": "transport_spawn_failed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415546,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-B",
+  "mechanism": "A",
+  "obligation": "OwnerEstablishedBeforeChildExists+NoSpawnToUnownedWindow",
+  "kind": "countermodel",
+  "description": "child exists, parent constructor path fails (no handle)",
+  "verdict": "PASS",
+  "outcome": "injected_parent_failure",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-B",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042142
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042143
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415548
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "injected_parent_failure",
+    "detail": "RuntimeError: injected parent failure after fork (child 391388 exists)"
+   },
+   "escaped": null,
+   "outcome": "injected_parent_failure",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415548,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-C",
+  "mechanism": "A",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "BaseException immediately after spawn, before pidfd",
+  "verdict": "PASS",
+  "outcome": "escaped",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-C",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042145
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042146
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415550
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
+   "outcome": "escaped",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415550,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-D",
+  "mechanism": "A",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "child stalls before the protocol",
+  "verdict": "PASS",
+  "outcome": "unit_deadline",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-D",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042148
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042149
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415552
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "unit_deadline",
+    "detail": "no protocol line before the unit deadline"
+   },
+   "escaped": null,
+   "outcome": "unit_deadline",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415552,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-E",
+  "mechanism": "A",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "pre-exec setup failure (exec ENOENT)",
+  "verdict": "PASS",
+  "outcome": "transport_spawn_failed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-E",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042154
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042155
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415554
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "transport_spawn_failed",
+    "detail": "FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent/s1b-spike-exe'"
+   },
+   "escaped": null,
+   "outcome": "transport_spawn_failed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415554,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-F",
+  "mechanism": "A",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "countermodel",
+  "description": "grandchild calls setsid",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-F",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042157
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042158
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415556
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415556,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7032645]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391416
+   },
+   "teardown": {
+    "signalled": 2,
+    "reaped": 2,
+    "not_child_skipped": 0,
+    "rounds": 3,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415556,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-G",
+  "mechanism": "A",
+  "obligation": "PidIdentityNotBarePid",
+  "kind": "countermodel",
+  "description": "real PID reuse (ns_last_pid) vs stale pidfd",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-G",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042160
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042161
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415558
+     ]
+    }
+   ],
+   "pid_reuse": {
+    "gate": "available",
+    "reused_pid": 2,
+    "via": "stale_pidfd_ESRCH",
+    "unrelated_process_killed": false
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415558,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-H",
+  "mechanism": "A",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "inherited unexpected O_RDWR fd",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-H",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 1415561]}"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415560,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-I",
+  "mechanism": "A",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "expected fd (stdin) with O_RDWR",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-I",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'chr', 'fifo'}/r"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415563,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-J",
+  "mechanism": "A",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "snapshot as O_PATH capability",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-J",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 1415565]}, expected {'dir'}/r"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415565,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-TF5-J2",
+  "mechanism": "A",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "unauthorized extra O_PATH fd",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-J2",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 1415566]}"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415567,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-handle-B",
+  "mechanism": "A",
+  "obligation": "OwnerEstablishedBeforeChildExists",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-handle-B",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042201
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042202
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415569
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391439
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": {
+    "reason": "injected_parent_failure",
+    "detail": "RuntimeError: injected parent failure after fork (child 391439 exists)"
+   },
+   "escaped": null,
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415569,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-handle-C",
+  "mechanism": "A",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-handle-C",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042205
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042206
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415571
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391441
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": null,
+   "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415571,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-handle-F",
+  "mechanism": "A",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-handle-F",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042209
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042210
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415573
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415573,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7033612]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391446
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391456
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415573,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-subreaper-F",
+  "mechanism": "A",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "ablation",
+  "description": "no subreaper",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-subreaper-F",
+   "ablations": [
+    "no_subreaper"
+   ],
+   "subreaper_verified": false,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042239
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042240
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415575
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415575,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7032746]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391461
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415575,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-nnp",
+  "mechanism": "A",
+  "obligation": "NNPBeforeExec",
+  "kind": "ablation",
+  "description": "no NNP",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-nnp",
+   "ablations": [
+    "no_nnp"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 0,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042243
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042244
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415577
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "0",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415577,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7037326]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391464
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415577,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-rlimit",
+  "mechanism": "A",
+  "obligation": "RlimitBeforeExec",
+  "kind": "ablation",
+  "description": "prlimit after spawn",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-rlimit",
+   "ablations": [
+    "rlimit_after_spawn"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042246
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042247
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415579
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "unlimited",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415579,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7033654]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391466
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415579,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-pathcwd",
+  "mechanism": "A",
+  "obligation": "DescriptorRelativeSnapshotBinding",
+  "kind": "ablation",
+  "description": "cwd=<snapshot path>",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "rebind",
+   "ablations": [
+    "path_cwd"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042275
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042276
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415581
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415582,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7032815]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391480
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415581,
+   "decoy_ino": 1415582
+  }
+ },
+ {
+  "id": "A-ABL-barepid",
+  "mechanism": "A",
+  "obligation": "PidIdentityNotBarePid",
+  "kind": "ablation",
+  "description": "kill by bare pid",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "TF5-G",
+   "ablations": [
+    "bare_pid"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042278
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042279
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415584
+     ]
+    }
+   ],
+   "pid_reuse": {
+    "gate": "available",
+    "reused_pid": 2,
+    "via": "bare_pid",
+    "unrelated_process_killed": true
+   },
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415584,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "A-ABL-census-H",
+  "mechanism": "A",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "ablation",
+  "description": "no typed census (A: reader holds O_RDWR; close_fds hides it from the child)",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "A",
+   "scenario": "ABL-census-H",
+   "ablations": [
+    "no_fd_census"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415586,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7044143]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100002",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391498
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415586,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-POS-base",
+  "mechanism": "B",
+  "obligation": "NNP+Rlimit+DescRelative+InheritanceClosed+Teardown",
+  "kind": "positive",
+  "description": "normal unit: report, then clean teardown",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "POS-base",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042310
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042311
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415589
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415589,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7031445]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391500
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415589,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-POS-rebind",
+  "mechanism": "B",
+  "obligation": "DescriptorRelativeSnapshotBinding",
+  "kind": "countermodel",
+  "description": "path renamed + decoy planted after fd open",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "rebind",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042313
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042314
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415591
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415591,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7038423]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391502
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415591,
+   "decoy_ino": 1415592
+  }
+ },
+ {
+  "id": "B-TF5-A",
+  "mechanism": "B",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "exception during child setup",
+  "verdict": "PASS",
+  "outcome": "transport_spawn_failed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-A",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042342
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042343
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415594
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "transport_spawn_failed",
+    "detail": "RuntimeError:injected child setup failure"
+   },
+   "escaped": null,
+   "outcome": "transport_spawn_failed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415594,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-B",
+  "mechanism": "B",
+  "obligation": "OwnerEstablishedBeforeChildExists+NoSpawnToUnownedWindow",
+  "kind": "countermodel",
+  "description": "child exists, parent constructor path fails (no handle)",
+  "verdict": "PASS",
+  "outcome": "injected_parent_failure",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-B",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042345
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042346
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415596
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "injected_parent_failure",
+    "detail": "RuntimeError: injected parent failure after fork (child 391518 exists)"
+   },
+   "escaped": null,
+   "outcome": "injected_parent_failure",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415596,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-C",
+  "mechanism": "B",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "BaseException immediately after spawn, before pidfd",
+  "verdict": "PASS",
+  "outcome": "escaped",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-C",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042348
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042349
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415598
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
+   "outcome": "escaped",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415598,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-D",
+  "mechanism": "B",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "child stalls before the protocol",
+  "verdict": "PASS",
+  "outcome": "unit_deadline",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-D",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042351
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042352
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415600
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "unit_deadline",
+    "detail": "no protocol line before the unit deadline"
+   },
+   "escaped": null,
+   "outcome": "unit_deadline",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415600,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-E",
+  "mechanism": "B",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "countermodel",
+  "description": "pre-exec setup failure (exec ENOENT)",
+  "verdict": "PASS",
+  "outcome": "transport_spawn_failed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-E",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042380
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042381
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415602
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "transport_spawn_failed",
+    "detail": "FileNotFoundError:[Errno 2] No such file or directory: '/nonexistent/s1b-spike-exe'"
+   },
+   "escaped": null,
+   "outcome": "transport_spawn_failed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415602,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-F",
+  "mechanism": "B",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "countermodel",
+  "description": "grandchild calls setsid",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-F",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042383
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042384
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415604
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415604,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7037579]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391550
+   },
+   "teardown": {
+    "signalled": 2,
+    "reaped": 2,
+    "not_child_skipped": 0,
+    "rounds": 3,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415604,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-G",
+  "mechanism": "B",
+  "obligation": "PidIdentityNotBarePid",
+  "kind": "countermodel",
+  "description": "real PID reuse (ns_last_pid) vs stale pidfd",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-G",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042386
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042387
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415606
+     ]
+    }
+   ],
+   "pid_reuse": {
+    "gate": "available",
+    "reused_pid": 2,
+    "via": "stale_pidfd_ESRCH",
+    "unrelated_process_killed": false
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415606,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-H",
+  "mechanism": "B",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "inherited unexpected O_RDWR fd",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-H",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 1415609]}"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415608,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-I",
+  "mechanism": "B",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "expected fd (stdin) with O_RDWR",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-I",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'fifo', 'chr'}/r"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415611,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-J",
+  "mechanism": "B",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "snapshot as O_PATH capability",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-J",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 1415613]}, expected {'dir'}/r"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415613,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-TF5-J2",
+  "mechanism": "B",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "countermodel",
+  "description": "unauthorized extra O_PATH fd",
+  "verdict": "PASS",
+  "outcome": "reader_fd_capability_unexpected",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-J2",
+   "ablations": [],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 1,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": {
+    "reason": "reader_fd_capability_unexpected",
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 1415614]}"
+   },
+   "escaped": null,
+   "outcome": "reader_fd_capability_unexpected",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415615,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-handle-B",
+  "mechanism": "B",
+  "obligation": "OwnerEstablishedBeforeChildExists",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-handle-B",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042401
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042402
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415617
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391574
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": {
+    "reason": "injected_parent_failure",
+    "detail": "RuntimeError: injected parent failure after fork (child 391574 exists)"
+   },
+   "escaped": null,
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415617,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-handle-C",
+  "mechanism": "B",
+  "obligation": "TeardownCoversEveryExit",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-handle-C",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042405
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042406
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415619
+     ]
+    }
+   ],
+   "teardown": {
+    "signalled": 0,
+    "reaped": 0,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391576
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": null,
+   "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415619,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-handle-F",
+  "mechanism": "B",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "ablation",
+  "description": "teardown by spawn handle only",
+  "verdict": "PASS",
+  "outcome": "unit_teardown_incomplete",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-handle-F",
+   "ablations": [
+    "handle_only"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042409
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042410
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415621
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415621,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7044452]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391582
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 0,
+    "remaining": [
+     391591
+    ],
+    "any_child_or_zombie": true
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "unit_teardown_incomplete",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415621,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-subreaper-F",
+  "mechanism": "B",
+  "obligation": "SubreaperEstablishedBeforeSpawn",
+  "kind": "ablation",
+  "description": "no subreaper",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-subreaper-F",
+   "ablations": [
+    "no_subreaper"
+   ],
+   "subreaper_verified": false,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042439
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042440
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415623
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415623,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7039607]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391593
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 1,
+   "orig_ino": 1415623,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-nnp",
+  "mechanism": "B",
+  "obligation": "NNPBeforeExec",
+  "kind": "ablation",
+  "description": "no NNP",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-nnp",
+   "ablations": [
+    "no_nnp"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 0,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042443
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042444
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415625
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "0",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415625,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7045270]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391596
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415625,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-rlimit",
+  "mechanism": "B",
+  "obligation": "RlimitBeforeExec",
+  "kind": "ablation",
+  "description": "prlimit after spawn",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-rlimit",
+   "ablations": [
+    "rlimit_after_spawn"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042446
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042447
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415627
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "unlimited",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415627,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7044472]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391598
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415627,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-pathcwd",
+  "mechanism": "B",
+  "obligation": "DescriptorRelativeSnapshotBinding",
+  "kind": "ablation",
+  "description": "cwd=<snapshot path>",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "rebind",
+   "ablations": [
+    "path_cwd"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042475
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042476
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415629
+     ]
+    }
+   ],
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415630,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7039680]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     }
+    ],
+    "pid": 391631
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415629,
+   "decoy_ino": 1415630
+  }
+ },
+ {
+  "id": "B-ABL-barepid",
+  "mechanism": "B",
+  "obligation": "PidIdentityNotBarePid",
+  "kind": "ablation",
+  "description": "kill by bare pid",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "TF5-G",
+   "ablations": [
+    "bare_pid"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "fd_census": [
+    {
+     "fd": 0,
+     "object_type": "chr",
+     "access": "r",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      6,
+      4
+     ]
+    },
+    {
+     "fd": 1,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042478
+     ]
+    },
+    {
+     "fd": 2,
+     "object_type": "fifo",
+     "access": "w",
+     "o_path": false,
+     "cloexec": false,
+     "kernel_identity": [
+      15,
+      7042479
+     ]
+    },
+    {
+     "fd": 3,
+     "object_type": "dir",
+     "access": "r",
+     "o_path": false,
+     "cloexec": true,
+     "kernel_identity": [
+      2096,
+      1415632
+     ]
+    }
+   ],
+   "pid_reuse": {
+    "gate": "available",
+    "reused_pid": 2,
+    "via": "bare_pid",
+    "unrelated_process_killed": true
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415632,
+   "decoy_ino": null
+  }
+ },
+ {
+  "id": "B-ABL-census-H",
+  "mechanism": "B",
+  "obligation": "DescriptorInheritanceClosed",
+  "kind": "ablation",
+  "description": "no typed census + no child-side close: child inherits the fd",
+  "verdict": "PASS",
+  "outcome": "completed",
+  "result": {
+   "mechanism": "B",
+   "scenario": "ABL-census-H",
+   "ablations": [
+    "B_no_close",
+    "no_fd_census"
+   ],
+   "subreaper_verified": true,
+   "reader_nnp": 1,
+   "child_report": {
+    "nnp": "1",
+    "as_soft": "4294967296",
+    "cwd_dev": 2096,
+    "cwd_ino": 1415634,
+    "fds_post_exec": [
+     {
+      "fd": 0,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 1,
+      "flags_octal": "0o1",
+      "target": "pipe:[7044570]"
+     },
+     {
+      "fd": 2,
+      "flags_octal": "0o100000",
+      "target": "/dev/null"
+     },
+     {
+      "fd": 3,
+      "flags_octal": "0o300000",
+      "target": "/tmp/s1b-p2-0_zmdwru/snapshot"
+     },
+     {
+      "fd": 5,
+      "flags_octal": "0o100002",
+      "target": "/tmp/s1b-p2-0_zmdwru/host-policy"
+     }
+    ],
+    "pid": 391649
+   },
+   "teardown": {
+    "signalled": 1,
+    "reaped": 1,
+    "not_child_skipped": 0,
+    "rounds": 2,
+    "remaining": [],
+    "any_child_or_zombie": false
+   },
+   "primary": null,
+   "escaped": null,
+   "outcome": "completed",
+   "survivors_after_reader_exit": 0,
+   "orig_ino": 1415634,
+   "decoy_ino": null
+  }
+ }
+]
