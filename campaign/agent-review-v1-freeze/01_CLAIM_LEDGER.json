@@ -34,7 +34,7 @@
         "app/agent_review/quality_gate.py:evaluate_review_quality_gate"
       ],
       "consumer": [
-        "consumer publisher (AgentEscala agent-review-publish.yml) publishes a comment; no branch-protection required check is fed by the v1 gate in this repository"
+        "consumer publisher (AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b:.github/workflows/agent-review-publish.yml, blob dc379b1ffbc4b8b2e28ad76ab272981a1e4b8de0) publishes a comment; no branch-protection required check is fed by the v1 gate in this repository"
       ],
       "required_evidence": [
         "observed absence of any required status check / merge rule consuming a v1 artifact on the consumer default branch (see observed_consumer_configuration)",

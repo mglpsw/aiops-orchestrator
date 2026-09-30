@@ -153,6 +153,6 @@ A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):
 `quality_gate.py`, `chunk_result_parser.py`, `scripts/aiops-review-build-payloads.py`,
 `scripts/aiops-review-plan-chunks.py`. Além disso `app/agent_review/versioning.py`
 (módulo **compartilhado** v1/v2 — seletor de versão de contrato importado por código v2) foi alterado pelo commit v2
-`5b94632` (#270) — único commit em `git log 2ce1f457..ab92e89 -- app/agent_review/versioning.py`. O consumer em produção executa `v0.22.0`
+`5b94632` (#270) — único commit em `git log 2ce1f457..ab92e89 -- app/agent_review/versioning.py`. O consumer está configurado para executar `v0.22.0` (`AgentEscala@e9cc03ff:.github/workflows/agent-review.yml:18-19`, blob `7fff440c`; pin configurado, não execução observada)
 e portanto **não** contém essas correções. Uma release de manutenção será
 necessária antes do repin — ação fora deste grant (`STOP_RELEASE_BOUNDARY`).
