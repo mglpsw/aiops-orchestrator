@@ -49,6 +49,7 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 
 ### CM-CL2-02 — contratos do target descartados como "irrelevantes"
 - `_flatten_contract_rules` (`payload_cost_model.py:789-811`) exige `rules:` top-level em lista; `_flatten_review_packs` (`:843-858`) exige `packs:` em lista. O `.aiops/domain-contracts.yaml` da AgentEscala usa regras aninhadas sem `id`; `.aiops/review-packs.yaml` usa `packs:` como mapping.
+- **Identidade imutável da observação:** `mglpsw/AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b` (tip de `develop` em 2026-09-30); `.aiops/domain-contracts.yaml` blob `e0ca56844cceaba1afac325856e305ca1342257e` (chaves top-level: `version, updated, system, calendar, swaps, coverage_export, audit, notifications, security, auth_admin, response_model_rules, …`; sem `rules:`); `.aiops/review-packs.yaml` blob `16ae9a5d1d494f1128f3ed9b50a80d84e5797eec` (`packs:` é mapping: `calendar, operational_slots, admin_scale, swaps, coverage_export`). A slice V1-C2 reproduz por `git show e9cc03ff:<path>`/blob SHA, não pelo `develop` vivo.
 - **Resultado falso:** ambos achatam para `[]`; todo chunk recebe contexto de contrato vazio e a limitação `contracts_context_not_relevant:<chunk>` — rótulo que afirma irrelevância quando a causa é forma não suportada. `OBSERVED_CODE` (formas do target lidas no `develop` vivo; efeito inferido e consistente com o output de #805).
 - **Discriminador exigido:** documento de contrato não vazio e não achatável deve produzir limitação distinta de "não relevante".
 
