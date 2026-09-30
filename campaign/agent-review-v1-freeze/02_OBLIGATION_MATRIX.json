@@ -55,7 +55,7 @@
       "countermodels": [
         "CM-CL2-01"
       ],
-      "closure_predicate": "decided in V1-C2 owner reconciliation; if closure needs a new structured claim object + response contract extension + downstream consumption, STOP_OWNER_BOUNDARY and document the minimum compatible alternative",
+      "closure_predicate": "[historical; superseded by disposition 2026-09-30] decided in V1-C2 owner reconciliation; if closure needs a new structured claim object + response contract extension + downstream consumption, STOP_OWNER_BOUNDARY and document the minimum compatible alternative",
       "owner": "#221 (#805 comment); no dedicated issue",
       "status_2026_09_30": "superseded by disposition (owner decision); #805 retained as OBL-CL2-07 controls A/B",
       "disposition": {
@@ -81,7 +81,7 @@
       "obligation_id": "OBL-CL2-02",
       "claim": "CL-2",
       "domain": "context.consumption",
-      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target); the supported interface is frozen before the patch after the consumer census (AgentEscala#869-A).",
+      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target); the supported interface was decided by the owner on 2026-09-30 (owner_decision_interface); the AgentEscala#869-A census confirms target-side consumers.",
       "countermodels": [
         "CM-CL2-02 (target shapes flatten to [] at AgentEscala@e9cc03ff)",
         "pertinent change whose contract content never reaches the payload"
@@ -100,11 +100,12 @@
             "A. legacy flat form: top-level rules: [...] (kept for other targets/fixtures)",
             "B. target domain-mapping form: top-level domain keys whose value holds bounded rule lists (e.g. calendar.slot_rules[], swaps.rules[])"
           ],
-          "identity": "top-level domain key = contract identity (calendar, swaps, coverage_export, audit, notifications, security, auth_admin); no authoritative claim_id is invented for individual rule strings",
+          "identity": "top-level domain key = contract identity (owner's examples: calendar, swaps, coverage_export, audit, notifications, security, auth_admin); no authoritative claim_id is invented for individual rule strings",
           "projection": "bounded: id=<domain key>, description, sections{<section key>: [rule, invariant, rationale, field, expected_value, ...as present]}; section identity preserved when material; bounded semantic fields present in the source are not silently discarded; exact internal representation derived from current v1 types",
           "nature": "contract-context adapter; NOT ClaimV1, NOT OGR; no generic recursive YAML semantics engine",
           "unsupported": "a non-empty document outside the admitted shapes MUST produce a typed unsupported-shape limitation, never contracts_context_not_relevant",
-          "not_relevant_rule": "contracts_context_not_relevant only after: supported parse succeeded AND applicability was evaluated AND zero contract is applicable"
+          "not_relevant_rule": "contracts_context_not_relevant only after: supported parse succeeded AND applicability was evaluated AND zero contract is applicable",
+          "open_item": "response_model_rules (top-level string list in blob e0ca5684) is outside the two shapes as described; the implementation task contract decides admission (identity = top-level key) vs typed unsupported-shape report; never silent drop"
         },
         "packs": {
           "target_shape": "packs is a mapping owned by the target with multiple live consumers; the engine does not require or cause a list conversion",

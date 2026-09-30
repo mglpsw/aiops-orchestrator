@@ -11,7 +11,7 @@
 
 **Namespaces:** claims do ledger são `CL-0…CL-7`; obrigações `OBL-CLn-xx`;
 countermodels `CM-CLn-xx`; positive controls `PC-CLn`. Os nomes `V1-C0…V1-C6`
-designam **somente slices** da travessia (e seus terminais `V1_Cn_*_READY`). Claim
+designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_CONTRACT_INTERFACE_DECIDED`). Claim
 `CL-n` e slice `V1-Cn` não são a mesma coisa.
 
 Este artefato **não altera comportamento** e **não concede autoridade**. Ele fixa o
@@ -142,7 +142,7 @@ ser atendida dentro dos meios permitidos é redução funcional e fica
 `PENDING_HUMAN_DECISION` (#221: "esta epic não concede dispensas"); a slice V1-C2
 decide entre fechamento, `STOP_OWNER_BOUNDARY` ou pedido de decisão.
 
-Estado observado no subject (fato, não disposição): o v1 não produz claim coverage
+*(Histórico, pré-decisão:)* Estado observado no subject (fato, não disposição): o v1 não produz claim coverage
 e não transporta título/corpo do PR ao payload da L-CHUNK; portanto, hoje, nenhum
 `approve_*` do v1 atesta satisfação de claims declaradas no PR. Se isso vira non-claim
 final ou é fechado é exatamente a decisão pendente acima.
