@@ -2,7 +2,8 @@
 
 Read-only. Two checks, run on a slice's live base/head:
 
-1. reach (ADVISORY): scans every tracked .py/.sh/.yml file OUTSIDE v1_path_set.
+1. reach (ADVISORY): scans every tracked .py/.sh/.yml file outside v1_exclusive
+   (shared_v1_owned files included).
    Blocking = a static import (absolute, relative, or bare `from . import x`) of a
    `v1_exclusive` module. Notes = non-docstring string constants naming a v1_exclusive
    file or its `app.agent_review.<stem>` module path (possible load-by-path, dynamic
@@ -53,14 +54,17 @@ def _docstring_ids(tree: ast.AST) -> set[int]:
 
 
 def check_reach(v1_exclusive: list[str], shared_paths: list[str]) -> list[str]:
-    """Blocking: a v2 file IMPORTS a v1_exclusive module. Note (must be adjudicated in
+    """Blocking: any tracked file outside v1_exclusive (shared_v1_owned included)
+    statically imports a v1_exclusive module. Note (must be adjudicated in
     the PR): a v2 file holds a non-docstring string constant naming a v1_exclusive file
     (possible load-by-path or subprocess), or a v2 YAML/shell file names one."""
     concrete = [entry for entry in v1_exclusive if "*" not in entry]
     modules = {Path(e).stem: e for e in concrete if e.startswith("app/agent_review/") and e.endswith(".py")}
     names = {Path(e).name: e for e in concrete}
     findings: list[str] = []
-    in_scope = set(concrete) | set(shared_paths)
+    # shared_v1_owned files ARE scanned: a shared module importing a v1_exclusive
+    # module would give v2 a static path into it (v2 -> contracts_v2 -> redaction -> ...).
+    in_scope = set(concrete)
     tracked = subprocess.run(["git", "ls-files", "*.py", "*.sh", "*.yml", "*.yaml"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.split()
     for rel in tracked:
         if rel in in_scope or rel.startswith("campaign/"):
