@@ -18,7 +18,9 @@ import argparse
 import ast
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -234,15 +236,16 @@ def derive_ast_imports_from_file(
         if isinstance(node, ast.Import):
             for alias in node.names:
                 name = alias.name
-                if name.startswith("app"):
+                root_pkg = name.split(".")[0]
+                if root_pkg == "app":
                     app_imports.add(name)
-                elif name.startswith("scripts."):
+                elif root_pkg == "scripts":
                     external_pkgs.add("scripts")
                     parts = name.split(".")
                     if len(parts) > 1:
                         external_pkgs.add(parts[1])
                 else:
-                    external_pkgs.add(name.split(".")[0])
+                    external_pkgs.add(root_pkg)
         elif isinstance(node, ast.ImportFrom):
             if node.level > 0:
                 if node.level > len(pkg_parts):
@@ -258,7 +261,8 @@ def derive_ast_imports_from_file(
             else:
                 mod = node.module or ""
 
-            if mod.startswith("app"):
+            mod_root = mod.split(".")[0] if mod else ""
+            if mod_root == "app":
                 app_imports.add(mod)
                 for alias in node.names:
                     if alias.name == "*":
@@ -286,18 +290,15 @@ def derive_ast_imports_from_file(
 
                         if is_submodule:
                             app_imports.add(candidate)
-            elif mod:
-                if mod == "scripts":
-                    external_pkgs.add("scripts")
-                    for alias in node.names:
-                        external_pkgs.add(alias.name)
-                elif mod.startswith("scripts."):
-                    external_pkgs.add("scripts")
-                    parts = mod.split(".")
-                    if len(parts) > 1:
-                        external_pkgs.add(parts[1])
-                else:
-                    external_pkgs.add(mod.split(".")[0])
+            elif mod_root == "scripts":
+                external_pkgs.add("scripts")
+                parts = mod.split(".")
+                if len(parts) > 1:
+                    external_pkgs.add(parts[1])
+                for alias in node.names:
+                    external_pkgs.add(alias.name)
+            elif mod_root:
+                external_pkgs.add(mod_root)
 
     return external_pkgs, app_imports
 
@@ -596,6 +597,7 @@ def materialize_standalone_distribution(
     repo_root: Path,
     target_dir: Path,
     manifest: dict[str, Any] | None = None,
+    source_sha: str | None = None,
 ) -> Path:
     """Materialize strictly the declared standalone AgentReview distribution into target_dir.
 
@@ -607,6 +609,49 @@ def materialize_standalone_distribution(
     if validation_errors:
         raise StandaloneClosureValidationError(
             f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
+        )
+
+    # Resolve verifiable source identity to preserve in the materialized distribution (P-09)
+    attested_sha: str | None = None
+    if source_sha is not None:
+        cand = source_sha.strip().lower()
+        if not re.fullmatch(r"^[0-9a-f]{40}$", cand):
+            raise StandaloneClosureValidationError(
+                f"Explicit source_sha must be a full 40-character lowercase hex commit SHA, got: {source_sha!r}"
+            )
+        attested_sha = cand
+    else:
+        # Check for existing attestation files in repo_root
+        src_commit_file = repo_root / ".source-commit"
+        toolrepo_sha_file = repo_root / ".toolrepo-sha"
+        if src_commit_file.is_file():
+            cand = src_commit_file.read_text(encoding="utf-8").strip().lower()
+            if re.fullmatch(r"^[0-9a-f]{40}$", cand):
+                attested_sha = cand
+        elif toolrepo_sha_file.is_file():
+            cand = toolrepo_sha_file.read_text(encoding="utf-8").strip().lower()
+            if re.fullmatch(r"^[0-9a-f]{40}$", cand):
+                attested_sha = cand
+
+        if attested_sha is None:
+            # Query git rev-parse HEAD from repo_root
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    cand = proc.stdout.strip().lower()
+                    if re.fullmatch(r"^[0-9a-f]{40}$", cand):
+                        attested_sha = cand
+            except Exception:
+                pass
+
+    if attested_sha is None:
+        raise StandaloneClosureValidationError(
+            f"Cannot determine verifiable source identity from {repo_root}: not a git repository and no source attestation found"
         )
 
     repo_resolved = repo_root.resolve()
@@ -727,10 +772,17 @@ def materialize_standalone_distribution(
                 )
                 copied_manifest_paths.append(rel_path_str)
 
-    # Output closure check: verify every materialized file belongs to the declared boundary
+    # Write verifiable source identity attestation files (P-09)
+    (target_resolved / ".source-commit").write_text(f"{attested_sha}\n", encoding="utf-8")
+    (target_resolved / ".toolrepo-sha").write_text(f"{attested_sha}\n", encoding="utf-8")
+
+    # Output closure check: verify every materialized file belongs to the declared boundary or attestation metadata
+    MATERIALIZED_ATTESTATION_FILES = frozenset({".source-commit", ".toolrepo-sha"})
     for item in target_resolved.rglob("*"):
         if item.is_file():
             rel_to_target = item.relative_to(target_resolved).as_posix()
+            if rel_to_target in MATERIALIZED_ATTESTATION_FILES:
+                continue
             is_declared = any(
                 paths_overlap(rel_to_target, decl)
                 for decl in copied_manifest_paths
@@ -764,8 +816,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Target directory to materialize the standalone distribution into",
     )
+    parser.add_argument(
+        "--source-sha",
+        type=str,
+        default=None,
+        help="Optional full 40-character lowercase commit SHA to preserve as verifiable source identity",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.check and args.materialize_to:
+        parser.error(
+            "argument --check: not allowed with argument --materialize-to (validation and dry-run are strictly write-zero)"
+        )
 
     try:
         manifest = load_manifest(args.manifest)
@@ -789,6 +852,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=REPO_ROOT,
                 target_dir=args.materialize_to,
                 manifest=manifest,
+                source_sha=args.source_sha,
             )
             print(f"OK: Materialized standalone distribution to: {dest}")
         except Exception as exc:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1651,6 +1652,135 @@ def test_countermodel_p7_reject_symlinked_ancestors_of_declared_paths(tmp_path: 
     # Control: canonical temp_repo with real directories passes validation
     errs_ctrl = validator.validate_manifest(manifest, repo_root=temp_repo)
     assert not errs_ctrl, f"Canonical repository unexpectedly failed validation: {errs_ctrl}"
+
+
+def test_countermodel_p8_match_app_import_root_exactly(tmp_path: Path) -> None:
+    """P8: External packages whose names begin with 'app' (e.g. appdirs, application) are not misclassified as internal app imports."""
+    dummy_py = tmp_path / "test_app_pkg.py"
+    dummy_py.write_text(
+        "import appdirs\n"
+        "import application.client\n"
+        "from application.sub import item\n"
+        "from appdirs import user_cache_dir\n",
+        encoding="utf-8",
+    )
+
+    external_pkgs, app_imports = validator.derive_ast_imports_from_file(
+        dummy_py,
+        repo_root=tmp_path,
+        forbidden_surfaces=set(),
+    )
+
+    # External packages should contain 'appdirs' and 'application', NOT misclassified as 'app' imports
+    assert "appdirs" in external_pkgs
+    assert "application" in external_pkgs
+    assert not app_imports, f"Legitimate external packages misclassified as internal app imports: {app_imports}"
+
+    # Contrast with genuine internal app imports
+    dummy_internal_py = tmp_path / "test_app_internal.py"
+    dummy_internal_py.write_text(
+        "import app.agent_review\n"
+        "from app.agent_review import contracts_v2\n"
+        "from app import agent_review\n",
+        encoding="utf-8",
+    )
+
+    ext_internal, app_internal = validator.derive_ast_imports_from_file(
+        dummy_internal_py,
+        repo_root=REPO_ROOT,
+        forbidden_surfaces=set(),
+    )
+    assert "app.agent_review" in app_internal
+    assert "app.agent_review.contracts_v2" in app_internal or "app.agent_review" in app_internal
+    assert not ext_internal, f"Genuine internal app imports misclassified as external: {ext_internal}"
+
+
+def test_countermodel_p9_preserve_verifiable_source_identity_in_materialized_distribution(tmp_path: Path) -> None:
+    """P9: Materialized distribution preserves verifiable source identity in .source-commit/.toolrepo-sha, validating install-agent-review-toolrepo.sh without git."""
+    standalone = tmp_path / "standalone_p9"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone)
+
+    # 1. Attestation files must exist and contain a valid 40-hex lowercase commit SHA
+    src_commit_file = standalone / ".source-commit"
+    toolrepo_sha_file = standalone / ".toolrepo-sha"
+    assert src_commit_file.is_file(), ".source-commit must be created in materialized distribution"
+    assert toolrepo_sha_file.is_file(), ".toolrepo-sha must be created in materialized distribution"
+
+    attested_sha = src_commit_file.read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"^[0-9a-f]{40}$", attested_sha), f"Attested SHA must be 40 hex characters: {attested_sha}"
+    assert toolrepo_sha_file.read_text(encoding="utf-8").strip() == attested_sha
+
+    # 2. Materialized distribution must NOT have a .git directory
+    assert not (standalone / ".git").exists(), "Standalone distribution must not contain .git metadata"
+
+    # 3. Running install script with correct --toolrepo-sha succeeds without git
+    install_script = standalone / "scripts" / "install-agent-review-toolrepo.sh"
+    fake_venv = tmp_path / "fake_venv_p9"
+    # Execute with invalid interpreter to stop safely after source identity validation
+    env = os.environ.copy()
+    env["AGENT_REVIEW_PYTHON"] = "nonexistent_python_binary_for_test"
+
+    proc_correct = subprocess.run(
+        ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", attested_sha],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    # Failed at interpreter selection (exit 2, 'selected Python interpreter ... not found'), proving source identity matched!
+    assert proc_correct.returncode == 2
+    assert "selected Python interpreter" in proc_correct.stderr
+    assert "Blocked: --toolrepo-sha" not in proc_correct.stderr
+
+    # 4. Running install script with incorrect --toolrepo-sha fails closed
+    wrong_sha = "0" * 40
+    proc_wrong = subprocess.run(
+        ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", wrong_sha],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc_wrong.returncode == 2
+    assert f"Blocked: --toolrepo-sha ({wrong_sha}) does not match source identity ({attested_sha})." in proc_wrong.stderr
+
+    # 5. Corrupted source identity attestation fails closed
+    src_commit_file.write_text("corrupted_short_sha\n", encoding="utf-8")
+    toolrepo_sha_file.write_text("corrupted_short_sha\n", encoding="utf-8")
+    proc_corrupt = subprocess.run(
+        ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", attested_sha],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc_corrupt.returncode == 2
+    assert "Blocked: resolved source identity 'corrupted_short_sha' is not a valid 40-character commit SHA." in proc_corrupt.stderr
+
+    # 6. Missing source identity in non-git directory fails closed
+    src_commit_file.unlink()
+    toolrepo_sha_file.unlink()
+    proc_missing = subprocess.run(
+        ["bash", str(install_script), str(fake_venv), "--toolrepo-sha", attested_sha],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc_missing.returncode == 2
+    assert "Blocked: unable to resolve source identity" in proc_missing.stderr
+
+
+def test_countermodel_p10_check_and_materialize_mutually_exclusive_write_zero(tmp_path: Path) -> None:
+    """P10: Passing --check with --materialize-to is rejected and remains strictly write-zero."""
+    target_dir = tmp_path / "should_not_be_created_p10"
+    script_path = REPO_ROOT / "scripts" / "verify-agent-review-standalone-closure.py"
+
+    proc = subprocess.run(
+        [sys.executable, str(script_path), "--check", "--materialize-to", str(target_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 2
+    assert "argument --check: not allowed with argument --materialize-to" in proc.stderr
+    assert not target_dir.exists(), f"Target directory must not be created (preview/dry-run is write-zero): {target_dir}"
 
 
 @pytest.mark.requires_network

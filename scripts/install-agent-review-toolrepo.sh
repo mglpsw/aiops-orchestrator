@@ -9,8 +9,9 @@
 # Usage:
 #   bash scripts/install-agent-review-toolrepo.sh <venv-dir> [--toolrepo-sha <40-hex-sha>]
 #
-# When --toolrepo-sha is given, it is verified against `git rev-parse HEAD`
-# of this checkout and MUST be the full lowercase 40-character commit SHA.
+# When --toolrepo-sha is given, it is verified against the verifiable
+# source identity (.source-commit / .toolrepo-sha attestation, or git
+# rev-parse HEAD in git checkouts) and MUST be the full lowercase 40-hex commit SHA.
 # A branch name, tag name, or abbreviated SHA is rejected -- this script
 # never treats a moving ref as a valid consumption pin.
 set -euo pipefail
@@ -44,9 +45,25 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         echo "Blocked: --toolrepo-sha must be a full lowercase 40-character commit SHA, not empty, a branch/tag, or a short SHA." >&2
         exit 2
     fi
-    ACTUAL_SHA="$(cd "$ROOT_DIR" && git rev-parse HEAD)"
+    ACTUAL_SHA=""
+    if [ -f "$ROOT_DIR/.source-commit" ]; then
+        ACTUAL_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+    elif [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
+        ACTUAL_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+    elif [ -d "$ROOT_DIR/.git" ] || git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        ACTUAL_SHA="$(cd "$ROOT_DIR" && git rev-parse HEAD 2>/dev/null || true)"
+    else
+        echo "Blocked: unable to resolve source identity in '$ROOT_DIR' (not a git repository and no source attestation found)." >&2
+        exit 2
+    fi
+
+    if ! [[ "$ACTUAL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "Blocked: resolved source identity '$ACTUAL_SHA' is not a valid 40-character commit SHA." >&2
+        exit 2
+    fi
+
     if [ "$TOOLREPO_SHA" != "$ACTUAL_SHA" ]; then
-        echo "Blocked: --toolrepo-sha ($TOOLREPO_SHA) does not match this checkout's HEAD ($ACTUAL_SHA)." >&2
+        echo "Blocked: --toolrepo-sha ($TOOLREPO_SHA) does not match source identity ($ACTUAL_SHA)." >&2
         exit 2
     fi
 fi

@@ -47,8 +47,9 @@ The script:
 1. requires `--toolrepo-sha`, when given, to match `^[0-9a-f]{40}$` exactly
    -- a short SHA, branch name, or tag is rejected before any installation
    is attempted;
-2. verifies that SHA against `git rev-parse HEAD` of the current checkout,
-   rejecting a mismatch;
+2. verifies that SHA against the verifiable source identity of the checkout
+   (`.source-commit` / `.toolrepo-sha` attestation files in standalone distributions,
+   or `git rev-parse HEAD` in Git checkouts), rejecting any mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
    matches CPython 3.11 64-bit (`struct.calcsize("P") == 8`) on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms, 32-bit runtimes, or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. normalizes the prospective `<venv-dir>` path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
