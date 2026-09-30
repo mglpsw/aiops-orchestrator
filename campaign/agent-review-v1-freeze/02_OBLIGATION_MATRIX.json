@@ -1,0 +1,393 @@
+{
+  "artifact_type": "NON_NORMATIVE_CAMPAIGN_ARTIFACT",
+  "status": "V1_C0_CONTRACT_CANDIDATE",
+  "schema_version": 1,
+  "campaign": "agent-review-v1-freeze",
+  "derivation_subject": "ab92e89f096b391bc50759afa3d0f6050881633a",
+  "pipeline_graph": {
+    "derivation": "aiops-intake.json + redaction-report.json -> semantic-chunk-plan.json -> pr-brief.json + chunk-payload-manifest.json + chunk-payloads/<id>.json -> [consumer: Router] -> chunk-responses/<id>.json -> chunk-results.json -> final-review.{json,md} -> review-quality-gate.json -> review-telemetry.json",
+    "consumption_note": "parse-chunks consumes semantic-chunk-plan.json + chunk-responses/ (optional --intake is used only for the write-path guard); synthesize consumes chunk-results.json (+ optional plan/intake/redaction); quality-gate consumes final-review.json + chunk-results.json (+ optional intake/plan/redaction/checks, --critical-pr). pr-brief.json and chunk-payload-manifest.json are NOT consumed downstream of build-payloads.",
+    "authority": "review-quality-gate.json is the only v1 decision artifact consumed by the publisher; final-review.md is the published text"
+  },
+  "obligations": [
+    {
+      "obligation_id": "OBL-CL1-01",
+      "claim": "CL-1",
+      "domain": "coverage_truth.planner",
+      "proposition": "Every file lacking an observable textual hunk is excluded from files_covered at plan level, for all tiers, with a tier-distinct reason code.",
+      "mechanism_site": "app/agent_review/semantic_chunker.py:208-220 (generalize hunk_unavailable_must_review)",
+      "consumers_that_must_observe": [
+        "chunk_result_parser (plan.status/limitations)",
+        "final_synthesizer (_coverage/_review_status)",
+        "quality_gate (input_degraded / coverage gaps)"
+      ],
+      "countermodels": [
+        "CM-CL1-01",
+        "CM-CL1-02",
+        "CM-CL1-03"
+      ],
+      "positive_controls": [
+        "same PR where the non-must file has a textual hunk remains complete/passed"
+      ],
+      "discriminator": "paired input differing only in presence of the @@ hunk for the non-must file",
+      "closure_predicate": "RED on base, GREEN on head, observed at the gate output; mutation of the generalized predicate back to must_review-only turns the focal test RED",
+      "open_decision": "whether a non-must hunk-less file degrades the plan (status) or only moves to files_not_covered with an informational code — to be fixed in the V1-C1 task contract against #232's own text ('coverage: complete' semantics). Note: the second alternative requires changing _plan_status, because any files_not_covered currently returns degraded (semantic_chunker.py:741-742).",
+      "owner": "#232"
+    },
+    {
+      "obligation_id": "OBL-CL1-02",
+      "claim": "CL-1",
+      "domain": "coverage_truth.fixture_honesty",
+      "proposition": "Tests whose subject is not hunk availability supply synthetic hunks; tests that pin the CM-CL1-01 outcome as expected are reconciled, not preserved by construction.",
+      "mechanism_site": "tests/agent_review/test_semantic_chunker.py:_intake; tests/agent_review/test_aiops_review_plan_chunks_cli.py:_intake; tests/agent_review/test_agent_review_e2e_contract.py (:925-927)",
+      "countermodels": [
+        "anti-countermodel: fixture-without-diff tests"
+      ],
+      "closure_predicate": "no committed test asserts complete/passed for an input containing a hunk-less file without also asserting that file's non-covered state",
+      "owner": "#232"
+    },
+    {
+      "obligation_id": "OBL-CL2-01",
+      "claim": "CL-2",
+      "domain": "claim_coverage.structured_source",
+      "proposition": "Claim coverage requires a structured, target-owned, admitted claim artifact with a stable id. Under this traversal's task contract free-text PR claims are not turned into deterministic authority; the #221/#805 requirement of record is not thereby disposed (PENDING_HUMAN_DECISION for any unmet part).",
+      "mechanism_site": "NONE on subject (must_hold is list[str], no id, dropped first under budget)",
+      "countermodels": [
+        "CM-CL2-01"
+      ],
+      "closure_predicate": "decided in V1-C2 owner reconciliation; if closure needs a new structured claim object + response contract extension + downstream consumption, STOP_OWNER_BOUNDARY and document the minimum compatible alternative",
+      "owner": "#221 (#805 comment); no dedicated issue"
+    },
+    {
+      "obligation_id": "OBL-CL4-02",
+      "claim": "CL-4",
+      "domain": "claim_coverage.contract_context_honesty",
+      "proposition": "A non-empty contracts/review-packs document that v1 cannot flatten yields a limitation distinct from contracts_context_not_relevant.",
+      "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858",
+      "countermodels": [
+        "CM-CL2-02"
+      ],
+      "positive_controls": [
+        "list-shaped rules with a path-matching rule still inject contract context"
+      ],
+      "closure_predicate": "unparseable-shape input produces the distinct code; list-shaped input unchanged; golden payload fixtures unchanged for list-shaped input",
+      "owner": "#221 (#805 comment)"
+    },
+    {
+      "obligation_id": "OBL-CL3-01",
+      "claim": "CL-3",
+      "domain": "materiality.deterministic_downgrade",
+      "proposition": "A finding lacking a checkable negative consequence or whose cited subject is not present in the reviewed material leaves the confirmed-finding partition with a reason code, at all severities, through a channel that does not make the verdict stricter than the confirmed finding it replaces.",
+      "mechanism_site": "app/agent_review/finding_normalizer.py:122-227; target channel per open_decision (NOT _downgrade_or_reject's risk channel for P3, which escalates the verdict). The only existing non-escalating channel, rejected_findings, is typed by the RejectedFindingReason Literal (schemas.py:62,341): a new reason code changes a v1 schema literal and falls under the golden-fixture constraint. Aboutness needs reviewed material as new parser input.",
+      "countermodels": [
+        "CM-CL3-01",
+        "CM-CL3-02",
+        "CM-CL3-03",
+        "CM-CL3-04",
+        "CM-CL3-05",
+        "CM-CL3-06"
+      ],
+      "positive_controls": [
+        "PC-CL3-01: real contract violation with concrete hunk evidence and demonstrated consequence survives at its severity"
+      ],
+      "closure_predicate": "each CM RED->GREEN observed on the confirmed/risk/rejected partition at synthesis and gate; no CM-CL3 case ends with a stricter verdict than before; PC-CL3-01 GREEN before and after; mutation removing each predicate turns its focal test RED",
+      "constraints": [
+        "no v2 materiality architecture",
+        "response-contract change requires positive justification against frozen v1 golden fixtures"
+      ],
+      "owner": "#343",
+      "open_decision": "target channel: NormalizedRisk escalates to approve_with_required_followup; rejected_findings yields approve_with_minor_notes; v1 has no neutral observation channel",
+      "decidability_constraint": "A deterministic predicate can only decide what its input material decides. Hunk text decides aboutness of symbols cited as changed; it does NOT decide absence claims about the rest of the tree (CM-CL3-03: 'setting undocumented' while documented in four other places). For each CM-CL3 case the V1-C3 contract must either supply exact-tree evidence (search of the reviewed checkout at the exact head) or exclude that case from deterministic closure and record it as an advisory-only limitation. Over-rejecting every absence claim to turn CM-CL3-03 green is forbidden by PC-CL3-01."
+    },
+    {
+      "obligation_id": "OBL-CL4-01",
+      "claim": "CL-4",
+      "domain": "limitation_propagation.classification",
+      "proposition": "Every limitation code emitted by v1 is classified informational vs obligation-degrading, and every obligation-degrading code reaches the gate through a consumed artifact.",
+      "mechanism_site": "plan-level restatement (semantic_chunker) or explicit gate input; manifest/brief are not consumed today",
+      "countermodels": [
+        "CM-CL4-01",
+        "CM-CL4-02",
+        "CM-CL4-03"
+      ],
+      "closure_predicate": "classification table committed; one test per degrading class at gate level",
+      "owner": "distributed (#232 for hunk, #221/#805 for contracts, #307 for result coverage)"
+    },
+    {
+      "obligation_id": "OBL-CL5-01",
+      "claim": "CL-5",
+      "domain": "result_coverage.blocker_binding",
+      "proposition": "A P0/P1 whose file the same result declared not reviewed (or not in any reviewed bucket) is an untrusted blocker candidate, not a trusted blocking conclusion.",
+      "mechanism_site": "app/agent_review/quality_gate.py:384-416 (_blocker_unreliable_reasons); mirrored in final_synthesizer.py:502-509",
+      "countermodels": [
+        "CM-CL5-01"
+      ],
+      "positive_controls": [
+        "P1 on a reviewed file stays passed/changes_requested"
+      ],
+      "closure_predicate": "REPRODUCED RED -> GREEN; mechanism removed -> focal RED; restored -> GREEN; positive control unchanged",
+      "owner": "#307"
+    },
+    {
+      "obligation_id": "OBL-CL5-02",
+      "claim": "CL-5",
+      "domain": "result_coverage.no_vacuous_approval",
+      "proposition": "A result in which the reviewed-file set does not cover the plan's expected files cannot produce a conclusive approving gate outcome, independent of critical_pr.",
+      "mechanism_site": "final_synthesizer.py:338-421 and/or quality_gate.py:235-282",
+      "countermodels": [
+        "CM-CL5-02"
+      ],
+      "positive_controls": [
+        "all files reviewed, no findings -> passed/approved unchanged"
+      ],
+      "closure_predicate": "the no-plan/all-not-reviewed assertion discriminates the coverage mechanism itself (not a side channel such as final_review mutation); committed golden, not an incidental base-vs-head comparison",
+      "owner": "#307"
+    },
+    {
+      "obligation_id": "OBL-CL5-03",
+      "claim": "CL-5",
+      "domain": "result_coverage.bounded_mutation",
+      "proposition": "Remaining trust edges are exercised by a bounded mutation campaign as #307 prescribes.",
+      "countermodels": [
+        "CM-CL5-03"
+      ],
+      "closure_predicate": "every edge in the declared set killed or documented as equivalent with reasoning",
+      "owner": "#307"
+    },
+    {
+      "obligation_id": "OBL-CL5-04",
+      "claim": "CL-5",
+      "domain": "result_coverage.result_identity_trust",
+      "proposition": "A P0/P1 carried by ChunkResults whose EXISTING identity metadata mismatches the reviewed plan/subject (schema_id/schema_version, target_repo, the fields present in chunk_plan_ref) is an untrusted blocker candidate, not a trusted blocking conclusion (#307 mission 2, literal TS1).",
+      "mechanism_site": "app/agent_review/quality_gate.py:384-416 (_blocker_unreliable_reasons) and final_synthesizer.py:502-509; load-time schema check at quality_gate.py:151-158 is not re-applied inside evaluate",
+      "countermodels": [
+        "CM-CL5-03"
+      ],
+      "positive_controls": [
+        "identity-matching ChunkResults with a reviewed-file P1 stays passed/changes_requested"
+      ],
+      "closure_predicate": "CM-CL5-03 RED -> GREEN via the Python API; each identity edge individually mutated turns its focal test RED (no edge covered only by a sibling)",
+      "owner": "#307",
+      "non_claim": "Exact plan/subject binding and replay resistance are NOT claimed: chunk_plan_ref holds only schema/source/status/timestamp/chunk count, and neither SemanticChunkPlan nor ChunkResults carries the reviewed commit SHA, so a stale result from another head with matching shallow metadata is not detectable. Adding plan digests or subject provenance would be new trust architecture, which #221 reserves to v2/#357; this is recorded as a v1 non-claim (00 §4: strong execution provenance)."
+    },
+    {
+      "obligation_id": "OBL-CL6-01",
+      "claim": "CL-6",
+      "domain": "egress.disposition",
+      "proposition": "#315 has exactly one recorded disposition among A (stronger v1-compatible closure), B (explicit residual-risk acceptance + documented limitation), C (disable/replace lane).",
+      "countermodels": [
+        "CM-CL6-01",
+        "CM-CL6-02a",
+        "CM-CL6-02b",
+        "CM-CL6-03"
+      ],
+      "closure_predicate": "decision contract committed; B or C requires explicit human decision (#221: no waivers granted by the epic) -> STOP_UNRESOLVED_POLICY until recorded",
+      "owner": "#315"
+    },
+    {
+      "obligation_id": "OBL-CL6-02",
+      "claim": "CL-6",
+      "domain": "egress.claim_honesty",
+      "proposition": "No repository document states v1 egress/redaction protection stronger than implemented (regex/blocklist secret redaction; path redaction only in L-CHUNK), including absolute 'never sends X' guarantees, not only 'strict/structural' wording.",
+      "mechanism_site": "documentation (see closure_predicate); V1-C0 corrected only campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md §6",
+      "closure_predicate": "Enumerated adjudication, recorded in the V1-C5 PR, of every egress/redaction/sanitization statement in the v1 doc set (at least docs/GITHUB_AGENT.md, docs/AGENT_REVIEW_ENGINE.md, docs/AGENT_REVIEW_E2E_PIPELINE.md, docs/AGENT_REVIEW_PR_BRIEF_AND_PAYLOADS.md, docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md, docs/AGENT_REVIEW_QUALITY_GATE.md, campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md): each statement is quoted and marked accurate / corrected / out of scope. A keyword grep (e.g. sanitiz|redact|never|nunca|secret|raw|strict|structural) is triage only; an empty or partial grep result is not evidence that no overclaim remains.",
+      "owner": "#315",
+      "known_overclaims_at_derivation_subject": [
+        "docs/GITHUB_AGENT.md:75-76 ('O payload enviado ao router é sanitizado e truncado'; 'O review nunca envia env, logs completos, secrets ou arquivos inteiros grandes') -- absolute no-secret guarantee not supported by regex redaction",
+        "docs/AGENT_REVIEW_ENGINE.md:60-62 ('Artifact content is sanitized before it enters the intake object') -- unqualified",
+        "docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md:293-294 ('Chunk payload request envelopes are temporary sanitized artifacts') -- unqualified",
+        "not exhaustive; corrected in V1-C5, not in V1-C0 (C0 corrected only 09)"
+      ]
+    },
+    {
+      "obligation_id": "OBL-CL7-01",
+      "claim": "CL-7",
+      "domain": "publication.fidelity",
+      "proposition": "Engine output published by the consumer equals the CT104 result, no semantic recomputation at publish time.",
+      "closure_predicate": "final canary after repin binds repo/PR/base/head/toolrepo/run/coverage/bundle digest (outside this traversal's grant)",
+      "owner": "consumer AgentEscala; #221 step D"
+    }
+  ],
+  "slice_gates": {
+    "all_slices": [
+      "exact subject recorded",
+      "declared write allowlist ⊆ v1_path_set in the task contract; diff paths ⊆ allowlist (v1_v2_isolation.positive_write_scope)",
+      "test collection preserved base→head under the CI marker selection (v1_v2_isolation.collection_preservation)",
+      "RED witness before patch (behavioral slices)",
+      "focused GREEN",
+      "full-suite regression via both CI jobs, with tested_commit/tested_tree recorded and related to reviewed_head per v1_v2_isolation.ci_evidence_identity (content claims only; fail_closed applies); enforced procedurally by PRE_MERGE_GATE; local v1 subset is iteration convenience only",
+      "mutation/anti-vacuity for critical mechanisms",
+      "git diff --check",
+      "both CI jobs green, with CI evidence identity recorded (v1_v2_isolation.ci_evidence_identity)",
+      "independent review",
+      "post-READY Codex gate",
+      "PRE_MERGE_GATE"
+    ],
+    "v1_v2_isolation": {
+      "not_shared_on_derivation_subject": "INFORMATIVE: semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
+      "derivation": "INFORMATIVE: at ab92e89f an AST scan of `app.agent_review` imports (absolute, `from app.agent_review import X`, relative) over app/**, scripts/** and evals/** found direct v2 importers of {redaction, schemas, versioning}. This is NOT claimed complete: it does not see path loads (scripts/github_agent_review.py is loaded by path by a v2 script, see shared_notes) or modules outside app.agent_review (app/common/strict_json.py is imported by 11 v2 modules). Isolation does not rely on it.",
+      "shared_modules_direct_v2_importers": {
+        "redaction.py": [
+          "app/agent_review/contracts_v2.py",
+          "app/agent_review/isolated_executor_v2.py",
+          "app/agent_review/payload_references_v2.py",
+          "app/agent_review/review_content_v2.py",
+          "app/agent_review/review_content_extraction_v2.py",
+          "scripts/verify-agent-review-v2-conformance.py"
+        ],
+        "schemas.py": [
+          "app/agent_review/profile_migration_v1_v2.py",
+          "scripts/migrate-agent-review-profile-v1-v2.py"
+        ],
+        "versioning.py": [
+          "app/agent_review/_router_receipt_v2.py",
+          "scripts/aiops-review-quality-gate-v2.py"
+        ],
+        "note": "INFORMATIVE reference for writing the shared_rule justification (app.agent_review imports only; app/common/strict_json.py is also imported by 11 v2 modules and is outside v1_path_set); completeness is not relied on"
+      },
+      "transitive_reach": "contracts_v2 imports redaction, and redaction imports schemas; versioning imports schemas and contracts_v2. A change to redaction.py or schemas.py therefore reaches essentially the whole v2 lane transitively (via contracts_v2), and a change to versioning.py reaches the v2 parser/synthesis/readiness/transport/consumer chain and scripts/aiops-review-quality-gate-v2.py. The direct-importer lists above are not the blast radius.",
+      "positive_write_scope": {
+        "rule": "NORMATIVE: every v1 slice's task contract declares, before the first patch, an explicit path allowlist that is a subset of v1_path_set AS READ FROM THE BASE REVISION (`git show <base>:campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json`), plus new files it creates that are direct children tests/agent_review/test_*.py or under campaign/agent-review-v1-freeze/ and are named in the contract (conftest.py, __init__.py, anything under a fixtures/ directory and nested test_* directories are never admissible). Any path outside v1_path_set is STOP_OWNER_BOUNDARY until a recorded owner decision.",
+        "v1_path_set": {
+          "v1_exclusive": [
+            ".github/workflows/agent-review.yml",
+            "app/agent_review/artifact_loader.py",
+            "app/agent_review/chunk_artifact_ids.py",
+            "app/agent_review/chunk_payload_builder.py",
+            "app/agent_review/chunk_response_contract.py",
+            "app/agent_review/chunk_result_parser.py",
+            "app/agent_review/cli.py",
+            "app/agent_review/contract_suggestions.py",
+            "app/agent_review/evidence_index.py",
+            "app/agent_review/false_positive_signatures.py",
+            "app/agent_review/final_synthesizer.py",
+            "app/agent_review/finding_normalizer.py",
+            "app/agent_review/payload_cost_model.py",
+            "app/agent_review/pr_brief.py",
+            "app/agent_review/quality_gate.py",
+            "app/agent_review/repo_profile.py",
+            "app/agent_review/semantic_chunker.py",
+            "app/agent_review/telemetry.py",
+            "docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md",
+            "docs/AGENT_REVIEW_E2E_PIPELINE.md",
+            "docs/AGENT_REVIEW_ENGINE.md",
+            "docs/AGENT_REVIEW_FALSE_POSITIVES.md",
+            "docs/AGENT_REVIEW_PR_BRIEF_AND_PAYLOADS.md",
+            "docs/AGENT_REVIEW_QUALITY_GATE.md",
+            "docs/AGENT_REVIEW_TELEMETRY.md",
+            "docs/GITHUB_AGENT.md",
+            "scripts/aiops-review-build-payloads.py",
+            "scripts/aiops-review-false-positives.py",
+            "scripts/aiops-review-intake.py",
+            "scripts/aiops-review-parse-chunks.py",
+            "scripts/aiops-review-plan-chunks.py",
+            "scripts/aiops-review-quality-gate.py",
+            "scripts/aiops-review-synthesize.py",
+            "scripts/aiops-review-telemetry.py",
+            "tests/agent_review/test_agent_review_e2e_contract.py",
+            "tests/agent_review/test_aiops_review_build_payloads_cli.py",
+            "tests/agent_review/test_aiops_review_false_positives_cli.py",
+            "tests/agent_review/test_aiops_review_intake_cli.py",
+            "tests/agent_review/test_aiops_review_parse_chunks_cli.py",
+            "tests/agent_review/test_aiops_review_plan_chunks_cli.py",
+            "tests/agent_review/test_aiops_review_quality_gate_cli.py",
+            "tests/agent_review/test_aiops_review_synthesize_cli.py",
+            "tests/agent_review/test_aiops_review_telemetry_cli.py",
+            "tests/agent_review/test_artifact_loader.py",
+            "tests/agent_review/test_chunk_payload_builder.py",
+            "tests/agent_review/test_chunk_result_parser.py",
+            "tests/agent_review/test_contract_suggestions.py",
+            "tests/agent_review/test_docs_agentescala_contract.py",
+            "tests/agent_review/test_false_positive_signatures.py",
+            "tests/agent_review/test_final_synthesizer.py",
+            "tests/agent_review/test_payload_cost_model.py",
+            "tests/agent_review/test_pr_brief.py",
+            "tests/agent_review/test_quality_gate.py",
+            "tests/agent_review/test_repo_profile.py",
+            "tests/agent_review/test_semantic_chunker.py",
+            "tests/agent_review/test_semantic_chunker_225_red.py",
+            "tests/agent_review/test_telemetry.py",
+            "tests/test_github_agent_review.py",
+            "campaign/agent-review-v1-freeze/**",
+            "campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md"
+          ],
+          "shared_v1_owned": [
+            "CHANGELOG.md",
+            "app/agent_review/redaction.py",
+            "app/agent_review/schemas.py",
+            "app/agent_review/versioning.py",
+            "scripts/github_agent_review.py",
+            "tests/agent_review/test_redaction.py",
+            "tests/agent_review/test_versioning.py"
+          ],
+          "shared_rule": "a slice whose allowlist contains a shared_v1_owned path must state in the PR why v2 behavior is unchanged across the whole transitive reach (STOP_UNEXPECTED_V2_COUPLING otherwise); CHANGELOG.md edits are limited to appending the slice's own entry",
+          "shared_notes": {
+            "scripts/github_agent_review.py": "loaded by path by scripts/aiops-acquire-authoritative-checks-v2.py:244-252 (GitHubClient); that v2 path has no network-free test coverage",
+            "app/agent_review/versioning.py": "its importers are all v2 (_router_receipt_v2, aiops-review-quality-gate-v2, v2 tests) and it imports contracts_v2; kept here only so a v1 slice cannot touch it without the shared_rule",
+            "tests/agent_review/test_redaction.py": "weakening it lowers coverage of the shared redaction.py"
+          }
+        },
+        "explicitly_outside": "everything else, including app/common/** (e.g. strict_json.py, imported by 11 v2 modules), requirements*.txt, requirements-agent-review.lock, pytest.ini, tests/agent_review/fixtures/** (the agentescala_e2e fixture is also asserted by v2 tests), app/agent_review/AGENTS.md, and every v2 surface",
+        "procedural_checks": {
+          "C1_scope": "`git diff --name-status <base>..<head>` is pasted in the PR and every path is shown to be in the declared allowlist (deterministic; no bespoke checker)",
+          "C2_policy_immutability": "`git diff --quiet <base> <head> -- campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json` exits 0 in a behavioral slice (the isolation policy changes only in a dedicated contract slice under an owner decision)",
+          "C3_no_new_v2_dependency": {
+            "obligation": "a v1 slice does not introduce a dependency of v1 code on v2 code, v2 data/schemas/templates or v2 evals",
+            "evidence": "explicit adjudication in the slice PR of every added or changed import, file read, path literal and subprocess target in the diff of allowlisted non-campaign paths (independent review re-checks it); the adjudication lists each such line and its target",
+            "triage_only": "`git diff <base>..<head> -- <allowlisted non-campaign paths> | grep -E '^\\+' | grep -Ei 'v2'` is an INFORMATIVE triage aid that points the adjudication at likely lines; it is not exhaustive and an empty result is not evidence of absence",
+            "pass_rule": "PASS only when the adjudication covers every changed import/read/path/subprocess line; an inconclusive or incomplete adjudication is not PASS",
+            "owner_requirement_check": "no owner requirement for complete MECHANICAL detection was found (#221 body and comments; traversal task contract, which lists STOP_UNEXPECTED_V2_COUPLING as a stop condition, not a detector). If the owner requires mechanical completeness, that is PENDING_HUMAN_DECISION; this contract does not accept the weaker guarantee on the owner's behalf.",
+            "superseded": "round-6/7 wording ('deliberately over-inclusive ... all caught', 'never introduces') is superseded: it promised completeness from a growing regex"
+          },
+          "C4_shared_paths": "any allowlisted shared_v1_owned path carries the v2-unchanged justification (shared_rule)"
+        }
+      },
+      "v2_surface_reference": {
+        "status": "INFORMATIVE ONLY — used to review allowlists, never as the gate",
+        "known_at_derivation_subject": [
+          "app/agent_review/*_v2.py",
+          "schemas/agent-review/v2/**",
+          "scripts/*v2* (incl. export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py)",
+          "evals/agent_review_v2/**",
+          "tests/agent_review/*v2*",
+          "tests/agent_review/fixtures/v2/**",
+          "tests/agent_review/fixtures/router_receipt_v2/**",
+          "tests/evals/*v2*",
+          "templates/agentreview-v2-target-pack/**",
+          "import-graph-only v2 code: scripts/generate-target-pack-runtime-authority-view.py, tests/agent_review/test_c3_focal_obligations.py, tests/agent_review/test_c3_workspace_ownership.py, tests/agent_review/test_target_profile_yaml_corpus_metadata.py",
+          "v2 benchmark tooling (reads/imports evals.agent_review_v2): scripts/{compare-review-observations,generate-benchmark-report,generate-benchmark-corpus-manifest,generate-benchmark-identity-final,generate-benchmark-premanifest,materialize-benchmark-case,validate-benchmark-corpus-safety}.py and tests/evals/test_{benchmark_identity_final,benchmark_report,corpus_safety,reviewable_corpus}.py",
+          "non-code v2 surfaces: docs/AGENT_REVIEW_V2_*.md, reports/agent-review-v2-*, campaign/agent-review-v2-replan/",
+          "tests/agent_review/target_profile_yaml_corpus.py (helper imported only by v2 profile-loader tests)"
+        ],
+        "known_gaps_of_mechanical_derivation": [
+          "files that reach evals/agent_review_v2 by path string, not import (e.g. scripts/generate-benchmark-*.py, scripts/materialize-benchmark-case.py, several tests/evals/test_*.py)",
+          "v2-only ownership is decided by who reaches a file (reverse reachability), not by what it imports",
+          "a name scan for 'v2' over-matches shared/historical docs (docs/engineering, docs/checkpoints, docs/adr, AGENT_REVIEW_V1_V2_COMPATIBILITY.md)"
+        ]
+      },
+      "regression_gate": "NORMATIVE (procedural): both CI jobs must be green for the PR, with the tested commit/tree recorded and related to the reviewed head per ci_evidence_identity: `Validate repository` (ci.yml, runs scripts/test.sh = full suite minus integration/requires_runtime/requires_docker/requires_prometheus/requires_network markers) and `AgentReview release gates` (ci.yml, runs scripts/ci_validate.sh: section 8 same selection, section 9 the requires_network tests, which include v2 content-extraction/redaction E2E, diff acquisition, transport, isolated executor and trusted-check tests). GitHub enforces nothing here: master has required_status_checks=null, required_pull_request_reviews=null and no rulesets (observed 2026-09-30), so this gate is enforced by the campaign's PRE_MERGE_GATE, not by the forge. gate_unavailable on GitHub runners (non-root): v2 tests that skip without root, sudo broker, unprivileged user namespaces, casefold tmpfs, POSIX ACLs, inotify or mknod (test_c3_focal_obligations, test_isolated_executor_v2, test_physical_snapshot_v2, test_target_pack_epoch*_v2, test_trusted_*_v2). A slice that changes a shared_v1_owned path must additionally run the full suite locally and report which of those tests ran or skipped; it may not claim them as passed. A local v1 subset is iteration convenience only.",
+      "collection_preservation": "NORMATIVE (procedural): the slice PR records `pytest --collect-only -q` node IDs under the CI marker selection on base and head; any node ID present on base and absent on head is STOP unless the task contract names it. Changed or added test files must not define `pytest_plugins` or `pytest_*` hook functions. This closes test-selection tampering (e.g. a test module registering itself as a plugin to deselect v2 tests), which the file-level scope check cannot see.",
+      "residual_limitation": "v1/v2 isolation is NOT statically proven. It is carried by positive write scope (C1), policy immutability (C2), no new v2 dependency (C3), shared-path justification (C4), collection preservation, the full-suite regression_gate (behavioral, bounded by existing v2 test coverage and runner gate_unavailable tests) and independent review of each slice diff. A change to a v1_exclusive module that alters v2 behavior through an existing undetected path and no v2 test would not be caught.",
+      "principle": "isolation rests on positive write scope and behavioral full-suite evidence; no v1/v2 classifier of the tree carries the gate (every classifier attempted in review proved incomplete)",
+      "executable_checker_removed": "An executable scope checker (evidence/v1_scope_check.py) was prototyped in this slice and removed after five consecutive post-READY Codex rounds each found a new P2 in it (scope self-expansion, module-form references, fnmatch '/' crossing, self-modification of its own guard, false-blocking of admissible tests, missed v1->v2 imports). A bespoke static checker became its own unbounded verification surface inside a contract-only slice. The obligations it tried to enforce are kept in procedural_checks: C1 and C2 as deterministic git commands, C3 as explicit PR adjudication (grep is triage only), C4 as a written justification; static detection of v1->v2 reach through existing code is not claimed (see residual_limitation).",
+      "ci_evidence_identity": {
+        "record_per_run": [
+          "base_sha",
+          "reviewed_head_sha",
+          "tested_commit_sha (the commit actually checked out, read from the job log)",
+          "tested_tree_sha",
+          "merge parents of tested_commit_sha",
+          "run_id",
+          "job_id per job",
+          "event/ref context (pull_request refs/pull/<n>/merge)"
+        ],
+        "fact": "both ci.yml jobs use actions/checkout@v4 without `ref` under pull_request, so they test the synthetic merge commit refs/pull/<n>/merge, not reviewed_head_sha; ci.yml is not changed by this campaign",
+        "what_tree_equality_supports": "if tested_tree_sha == reviewed_head tree and the merge parents are (base_sha, reviewed_head_sha), the CI evidence supports claims about the CONTENT of reviewed_head (tests over the tree). It does NOT establish commit identity or equivalence of the whole execution",
+        "commit_sensitive_obligations": "any obligation whose outcome depends on the exact commit (git metadata, SHA-bound provenance, history) is not covered by this evidence and needs its own proof",
+        "procedure": "PRE_MERGE_GATE records the fields above from the job logs and the fetched pull/<n>/merge ref and applies fail_closed",
+        "fail_closed": "NORMATIVE: at PRE_MERGE_GATE, tested_tree_sha != reviewed_head tree, OR merge parents of tested_commit_sha != (base_sha, reviewed_head_sha), OR any field missing/inconsistent => the CI evidence does not relate to the reviewed head => STOP_PRE_MERGE_GATE_FAILED. (Restores the round-6 fail-closed rule that edacd39f dropped without record.)"
+      }
+    },
+    "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
+  }
+}

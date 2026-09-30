@@ -86,5 +86,5 @@ review-telemetry.json (Observação pós-gate)
 ## 6. O que o v1 Deixa como Legado Permanente
 
 - O conceito de **Quality Gate Determinístico Fail-Closed**: a separação estrita entre a inferência do LLM (advisory) e a regra de transição consumível pelo orquestrador.
-- A sanitização estrita de dados antes do egresso para o Router.
+- Redaction regex/blocklist antes do egresso para o Router — **não** sanitização estrita nem garantia estrutural. Lane de chunks: regex de segredos + redaction de paths absolutos/home; hunks de diff e paths relativos do repositório seguem crus. Lane legada (`scripts/github_agent_review.py`): regex de segredos apenas, sem redaction de path; `/agent review llm` envia também título/corpo do PR, patch completo de PRs pequenas e trechos de source do head (bundle ≤32 000 chars); `/agent ask` envia paths e trechos de patch de 180 chars (≤6 000 chars). Disposição pendente em #315; ver `campaign/agent-review-v1-freeze/`.
 - A disciplina de consumo por commit SHA imutável de 40 caracteres.
