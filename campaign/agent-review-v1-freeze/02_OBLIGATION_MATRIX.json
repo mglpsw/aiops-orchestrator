@@ -215,7 +215,7 @@
     ],
     "v1_v2_isolation": {
       "principle": "ownership is decided by the import graph, not by the *_v2 filename suffix",
-      "v2_only_paths": "diff of app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*-v2.py must be empty for every v1 slice",
+      "v2_only_paths": "diff of every v2-only surface must be empty for every v1 slice: app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*v2* (includes *-v2.py plus export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py), evals/agent_review_v2/**, tests/agent_review/*v2*; the set is re-derived on each slice's live base (suffix/name scan plus the import graph), not taken from this list",
       "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite (not the non-v2 subset), and (b) state in the PR why v2 behavior is unchanged across the whole transitive reach, not only the direct importers; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
       "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
       "derivation": "AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",

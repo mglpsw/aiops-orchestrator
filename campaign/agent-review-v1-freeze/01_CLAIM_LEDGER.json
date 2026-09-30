@@ -174,7 +174,7 @@
       "proposition": "A limitation that prevents evaluating a required obligation makes that obligation not covered and degrades the reported coverage/confidence visible at the gate.",
       "owner": "#221 (#805 comment) with #232/#307 for coverage-bearing instances",
       "producer": [
-        "plan-level: semantic_chunker.py (file_context_missing, file_context_fallback_used, must_review_hunk_unavailable, payload_oversize, budget_exhausted)",
+        "plan-level (exact codes, app/agent_review/semantic_chunker.py): file_context_missing (:144,:607), file_context_fallback_used (:605), must_review_hunk_unavailable:<path> (:219), must_review_payload_oversize:<path> / payload_oversize:<path> (:375, tier-split), max_blocks_exceeded (:405), chunk_plan_budget_exhausted:<group> (:407), path_identity_{invalid,empty,absolute,traversal}:<path> (reasons raised at payload_cost_model.py:77-87), path_identity_collision",
         "payload-level: chunk_payload_builder.py:154,180,503-508,538-539; payload_cost_model.py:436,517,537,688,1211-1222"
       ],
       "consumer": [

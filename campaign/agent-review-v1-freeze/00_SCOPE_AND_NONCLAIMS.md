@@ -151,7 +151,7 @@ A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):
 `chunk_payload_builder.py`, `payload_cost_model.py` (novo), `pr_brief.py`,
 `quality_gate.py`, `chunk_result_parser.py`, `scripts/aiops-review-build-payloads.py`,
 `scripts/aiops-review-plan-chunks.py`. Além disso `app/agent_review/versioning.py`
-(módulo **compartilhado** v1/v2 — seletor de versão de contrato importado por código v2) foi alterado por commits v2 (`5b94632` #270,
-`6d13aa0` #200-G1C2). O consumer em produção executa `v0.22.0`
+(módulo **compartilhado** v1/v2 — seletor de versão de contrato importado por código v2) foi alterado pelo commit v2
+`5b94632` (#270) — único commit em `git log 2ce1f457..ab92e89 -- app/agent_review/versioning.py`. O consumer em produção executa `v0.22.0`
 e portanto **não** contém essas correções. Uma release de manutenção será
 necessária antes do repin — ação fora deste grant (`STOP_RELEASE_BOUNDARY`).
