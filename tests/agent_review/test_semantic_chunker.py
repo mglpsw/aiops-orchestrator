@@ -4,6 +4,7 @@ import socket
 
 import pytest
 
+from app.agent_review.redaction import RedactionState, redact_text
 from app.agent_review.semantic_chunker import (
     IntakeValidationError,
     build_semantic_chunk_plan,
@@ -11,6 +12,21 @@ from app.agent_review.semantic_chunker import (
     extract_files_from_intake,
     validate_intake_contract,
 )
+
+
+def _synthetic_hunk(path: str) -> str:
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n context\n+    changed = True"
+
+
+def _synthetic_diff(files: list[object]) -> str:
+    # #232: a changed file with no observable textual hunk is never counted as
+    # covered, for any tier. These tests are about grouping/budget/status, not
+    # hunk availability, so every declared file gets a minimal real hunk --
+    # "we did not test hunks" must not read as "hunks never matter". The diff
+    # is redacted the way the intake CLI stores it, so a secret-bearing path
+    # keys to the same `[REDACTED]` form the planner canonicalizes it to.
+    paths = [str(item.get("path")) if isinstance(item, dict) else str(item) for item in files]
+    return redact_text("\n".join(_synthetic_hunk(path) for path in paths), RedactionState())
 
 
 def _intake(files: list[object] | None = None, *, status: str = "complete") -> dict[str, object]:
@@ -21,6 +37,7 @@ def _intake(files: list[object] | None = None, *, status: str = "complete") -> d
             "kind": "json",
             "content": {"files": files if files is not None else []},
         },
+        "full-diff.diff": {"path": "full-diff.diff", "content": _synthetic_diff(files or [])},
         "checks.json": {
             "name": "checks.json",
             "path": "checks.json",
@@ -452,6 +469,7 @@ def _intake_for_fallback_discovery(discovered_files: list[dict]) -> dict:
                 "kind": "json",
                 "content": {"status": "ok", "files": discovered_files},
             },
+            "full-diff.diff": {"path": "full-diff.diff", "content": _synthetic_diff(discovered_files)},
         },
         "artifact_status": [
             {

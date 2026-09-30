@@ -454,10 +454,35 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     # added here, to this test's private copy of the fixture in tmp_path --
     # never to the shared fixture file itself, which test_diff_acquisition_v2
     # asserts contains exactly one file diff (v2 stays byte-untouched).
+    #
+    # #232 extends the same fail-closed rule to every tier: the should_review /
+    # may_summarize files below had no hunk in the shared fixture either, and
+    # were counted "covered" with nothing routed for them. This happy-path
+    # contract test now gives them real hunks too (again only in the private
+    # copy); the hunk-less path is covered, through to the gate, by
+    # test_semantic_chunker_232_coverage_truth.py.
     full_diff_path = agent_dir / "full.diff"
     full_diff_path.write_text(
         "\n".join(
             [
+                *(
+                    line
+                    for extra_path in (
+                        "frontend/src/pages/calendar_page.jsx",
+                        "tests/test_shift_service.py",
+                        ".github/workflows/agent-review.yml",
+                    )
+                    for line in (
+                        f"diff --git a/{extra_path} b/{extra_path}",
+                        "index 5555555..6666666 100644",
+                        f"--- a/{extra_path}",
+                        f"+++ b/{extra_path}",
+                        "@@ -1,2 +1,2 @@",
+                        " # context",
+                        "-# previous",
+                        "+# updated",
+                    )
+                ),
                 "diff --git a/backend/api/shifts.py b/backend/api/shifts.py",
                 "index 3333333..4444444 100644",
                 "--- a/backend/api/shifts.py",

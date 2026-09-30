@@ -57,7 +57,23 @@ def _intake() -> dict[str, object]:
                         {"path": f"backend/services/token={FIXTURE_SECRET}.py"},
                     ]
                 },
-            }
+            },
+            # #232: every declared file carries a minimal real hunk -- a file
+            # with no observable textual hunk is never counted as covered.
+            # The diff is modelled as the intake CLI stores it: artifact
+            # redaction rewrites the secret-bearing header to the same
+            # `token=[REDACTED]` form the planner canonicalizes the path to.
+            "full-diff.diff": {
+                "path": "full-diff.diff",
+                "content": "\n".join(
+                    f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n context\n+    changed = True"
+                    for path in (
+                        "backend/api/notification_admin.py",
+                        "frontend/src/pages/admin_notifications_page.jsx",
+                        "backend/services/token=[REDACTED]",
+                    )
+                ),
+            },
         },
         "artifact_status": [
             {
