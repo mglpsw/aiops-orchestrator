@@ -86,5 +86,5 @@ review-telemetry.json (Observação pós-gate)
 ## 6. O que o v1 Deixa como Legado Permanente
 
 - O conceito de **Quality Gate Determinístico Fail-Closed**: a separação estrita entre a inferência do LLM (advisory) e a regra de transição consumível pelo orquestrador.
-- A sanitização estrita de dados antes do egresso para o Router.
+- Redaction regex/blocklist de segredos e de paths absolutos/home antes do egresso para o Router. **Não** é sanitização estrita nem garantia estrutural: hunks de diff e paths relativos do repositório seguem crus para o transporte de inferência (disposição pendente em #315; ver `campaign/agent-review-v1-freeze/`).
 - A disciplina de consumo por commit SHA imutável de 40 caracteres.
