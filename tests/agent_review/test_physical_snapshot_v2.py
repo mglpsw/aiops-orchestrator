@@ -4086,9 +4086,9 @@ def test_commit_interruption_then_one_cleanup_interruption_carries_the_outcome(t
 def test_mutation_outcome_carried_only_when_returned_is_killed(tmp_path: Path, monkeypatch) -> None:
     """Mutant (the ad1d696 handler): attach only a RETURNED outcome."""
     source = textwrap.dedent(inspect.getsource(psv.publish_physical_snapshot_v2))
-    old = "            known = outcome if outcome is not None else carried\n"
+    old = '            known = final if final is not None else getattr(escaping, "physical_snapshot_outcome", None)\n'
     assert old in source
-    mutant = _compile_mutant(source.replace(old, "            known = outcome\n", 1))
+    mutant = _compile_mutant(source.replace(old, "            known = final\n", 1))
     monkeypatch.setattr(psv, "publish_physical_snapshot_v2", mutant)
     assert _two_interruptions(tmp_path, monkeypatch)["carried"] == "NoneType"
 
@@ -4701,3 +4701,196 @@ def test_n2_classification_totality_discriminator_is_not_vacuous(monkeypatch) ->
 
     monkeypatch.setattr(sys.modules[__name__], "_cdll_reference_dispositions", forgetful)
     assert _classification_partition(_psv_plus("\n\nF = ctypes.CDLL\n"))["ok"] is False
+
+
+# ================================================================================
+# Bounded production correction after the e8ca263 read-back (Codex 4139084924,
+# 4139084932; IMPLEMENTATION_ADJUDICATION §16)
+#
+#   DescriptorCloseFailure takes precedence over PrimaryRefusalReason
+#   InitialCleanupObservation != FinalSettlementTruth
+# ================================================================================
+
+
+class _FaultyOs:
+    """`os` proxy: `close` may release-then-fail once when armed; `rmdir` of the
+    snapshot directory may fail (once or always). Frames here are test code."""
+
+    def __init__(self, real, *, snapshot_id: str, rmdir_failures: int = 0) -> None:
+        self._real = real
+        self.snapshot_id = snapshot_id
+        self.rmdir_failures = rmdir_failures
+        self.close_armed = False
+        self.close_failed = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+    def close(self, fd: int) -> None:
+        self._real.close(fd)
+        if self.close_armed:
+            self.close_armed = False
+            self.close_failed += 1
+            raise OSError(errno.EIO, "injected: released, and the close reported failure")
+
+    def rmdir(self, path, *args, **kwargs):
+        if path == self.snapshot_id and self.rmdir_failures:
+            self.rmdir_failures -= 1
+            raise OSError(errno.EBUSY, "injected staging cleanup failure")
+        return self._real.rmdir(path, *args, **kwargs)
+
+
+_CLEANUP_ID = "c" * 32
+
+
+def _refused_publication(tmp_path: Path, monkeypatch, *, close_failure: bool, rmdir_failures: int,
+                         interrupt_first_settle: bool = False, publish=None):
+    """A physical-budget refusal AFTER roots were duplicated and staging was
+    written; optionally one source close fails during the refusal cleanup,
+    and/or the snapshot-directory removal fails `rmdir_failures` times."""
+    src, repo = _sweep_fixture(tmp_path / "fixture")
+    pub = tmp_path / "pub"
+    root = _publication_root(pub)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(src)])
+    faulty = _FaultyOs(os, snapshot_id=_CLEANUP_ID, rmdir_failures=rmdir_failures)
+    real_close = psv._SourceSessionV2.close
+
+    def arming_close(self):
+        if close_failure and self._roots_released == 0 and self._roots:
+            faulty.close_armed = True  # the next source close (refusal cleanup) releases, then fails
+        return real_close(self)
+
+    real_settle = psv._PublicationRunV2.settle
+    settle_calls = {"n": 0}
+
+    def interrupting_settle(self):
+        settle_calls["n"] += 1
+        if interrupt_first_settle and settle_calls["n"] == 1:
+            raise KeyboardInterrupt("interruption at the start of settlement")
+        return real_settle(self)
+
+    before = _fd_census()
+    monkeypatch.setattr(psv, "os", faulty)
+    monkeypatch.setattr(psv._SourceSessionV2, "close", arming_close)
+    monkeypatch.setattr(psv._PublicationRunV2, "settle", interrupting_settle)
+    escaped = None
+    try:
+        try:
+            outcome = (publish or psv.publish_physical_snapshot_v2)(
+                source_authority=capability,
+                source_locator=SourceRepositoryLocatorV2.absolute(str(repo)),
+                object_format=SHA1,
+                physical_budget=_budget(max_files_copied=2),
+                publication_root=root,
+                _snapshot_id=_CLEANUP_ID,
+            )
+        except KeyboardInterrupt as exc:
+            escaped = exc
+            outcome = getattr(exc, "physical_snapshot_outcome", None)
+    finally:
+        monkeypatch.setattr(psv, "os", os)
+        leaked = sorted(_fd_census() - before)
+        capability.close()
+        root.close()
+    return {
+        "type": type(outcome).__name__,
+        "reason": getattr(outcome, "reason_code", None),
+        "axis": getattr(outcome, "exceeded_axis", None),
+        "residue": getattr(outcome, "staging_residue", None),
+        "staged": os.path.lexists(pub / "staging" / _CLEANUP_ID),
+        "committed": os.path.lexists(pub / "committed" / _CLEANUP_ID),
+        "close_failures_injected": faulty.close_failed,
+        "leaked": leaked,
+        "escaped": type(escaped).__name__ if escaped is not None else None,
+    }
+
+
+def test_fp1_source_close_failure_during_refusal_cleanup_takes_precedence(tmp_path: Path, monkeypatch) -> None:
+    """F-P1 (4139084924): budget refusal, then one source close releases and
+    reports failure -> descriptor_close_failed, no axis; every descriptor is
+    still released (census) and staging is removed."""
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=True, rmdir_failures=0)
+    assert facts == {
+        "type": "NotPublishedV2", "reason": psv.PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2, "axis": None,
+        "residue": False, "staged": False, "committed": False, "close_failures_injected": 1, "leaked": [],
+        "escaped": None,
+    }
+
+
+def test_fp1_positive_control_clean_source_cleanup_preserves_the_primary_refusal(tmp_path: Path, monkeypatch) -> None:
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=False, rmdir_failures=0)
+    assert (facts["reason"], facts["axis"], facts["residue"], facts["staged"], facts["leaked"]) == (
+        psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "files_copied", False, False, [],
+    )
+
+
+def test_fp2_transient_first_abort_then_successful_settlement_reports_no_residue(tmp_path: Path, monkeypatch) -> None:
+    """F-P2 (4139084932): the first abort fails transiently (residue=True);
+    the mandatory settlement removes the tree -> the RETURNED outcome says
+    staging_residue=False, and nothing remains."""
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=False, rmdir_failures=1)
+    assert (facts["type"], facts["reason"], facts["residue"], facts["staged"], facts["leaked"]) == (
+        "NotPublishedV2", psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, False, False, [],
+    )
+
+
+def test_fp2_persistent_control_residue_that_remains_is_reported(tmp_path: Path, monkeypatch) -> None:
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=False, rmdir_failures=10)
+    assert (facts["residue"], facts["staged"]) == (True, True)
+
+
+def test_fp2_exception_carried_outcome_reflects_the_final_settlement(tmp_path: Path, monkeypatch) -> None:
+    """F-P2, exceptional path: settlement is interrupted once, resumed, and
+    removes the tree; the NotPublishedV2 attached to the escaping exception
+    carries the FINAL residue (False), like the returned one would."""
+    facts = _refused_publication(
+        tmp_path, monkeypatch, close_failure=False, rmdir_failures=1, interrupt_first_settle=True,
+    )
+    assert (facts["escaped"], facts["type"], facts["residue"], facts["staged"], facts["leaked"]) == (
+        "KeyboardInterrupt", "NotPublishedV2", False, False, [],
+    )
+
+
+# -- anti-vacuity of the bounded correction ----------------------------------------------------
+
+
+def test_mutation_mp1_suppressed_source_close_failure_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """M-P1: restore `session.close_quietly()` in the refusal cleanup. F-P1's
+    proposition fails: the primary refusal wrongly wins over the close failure."""
+    source = textwrap.dedent(inspect.getsource(psv._publish_run_v2))
+    old = """        try:
+            # Strict source cleanup: every descriptor is released, and a close
+            # failure is REPORTED -- it takes precedence over the primary
+            # refusal (Codex 4139084924; lifecycle visibility, C11).
+            session.close()
+        except _RefusalV2 as close_failure:
+            reason_code, exceeded_axis = close_failure.reason_code, None
+"""
+    assert source.count(old) == 1
+    monkeypatch.setattr(psv, "_publish_run_v2", _compile_mutant(source.replace(old, "        session.close_quietly()\n", 1)))
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=True, rmdir_failures=0)
+    assert facts["close_failures_injected"] == 1
+    assert (facts["reason"], facts["axis"]) == (psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "files_copied")
+
+
+def test_mutation_mp2_provisional_residue_kept_after_settlement_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """M-P2: keep the provisional `staging_residue`. F-P2's proposition fails:
+    residue=True is reported although the tree is gone."""
+    monkeypatch.setattr(psv, "_settled_outcome_v2", lambda outcome, run: outcome)
+    facts = _refused_publication(tmp_path, monkeypatch, close_failure=False, rmdir_failures=1)
+    assert (facts["residue"], facts["staged"]) == (True, False)
+
+
+def test_mutation_mp3_returned_refreshed_but_carried_outcome_stale_is_killed(tmp_path: Path, monkeypatch) -> None:
+    """Optional mutant: the interruption handler attaches the provisional
+    outcome instead of the settled one. The exceptional-path witness kills it."""
+    source = textwrap.dedent(inspect.getsource(psv.publish_physical_snapshot_v2))
+    old = '            known = final if final is not None else getattr(escaping, "physical_snapshot_outcome", None)\n'
+    assert source.count(old) == 1
+    mutant = _compile_mutant(
+        source.replace(old, '            known = outcome if outcome is not None else getattr(escaping, "physical_snapshot_outcome", None)\n', 1)
+    )
+    facts = _refused_publication(
+        tmp_path, monkeypatch, close_failure=False, rmdir_failures=1, interrupt_first_settle=True, publish=mutant,
+    )
+    assert (facts["escaped"], facts["residue"], facts["staged"]) == ("KeyboardInterrupt", True, False)

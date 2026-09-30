@@ -991,3 +991,98 @@ The terminal rule is the maintainer's (§21 of the adjudication text): `301_S1A_
 - Dynamic observations outside the claim do not reopen the round.
 
 The claim remains `StaticCapabilityReferenceClosure`, not `UniversalPythonCapabilityReachability` (§14.5).
+
+---
+
+## 16. e8ca263 read-back: two unadjudicated production P2; bounded correction (append-only)
+
+```yaml
+superseded_disposition: "301_S1A_STRUCTURAL_REDESIGN_CANDIDATE at e8ca263d905afa02a783eb566c141e5d3f931405"
+why: >
+  the terminal ledgers of 4730d94 and e8ca263 said production findings = 0, but the
+  maintainer's read-back found two production P2 that Codex had published inline
+  against 58ef4ca (review triggered when the draft was marked ready, 2026-09-29T22:45Z)
+  and that were never collected or adjudicated. app/ stayed byte-identical, so both
+  remained applicable at every later head.
+rule: "ReviewerFindingExists + AppByteIdentical -> finding remains applicable until adjudicated"
+process_lesson: >
+  a terminal ledger must enumerate EVERY review surface on the exact subject and its
+  byte-identical predecessors (inline comments of all reviews, including automatically
+  triggered ones), not only the reviews the author requested.
+findings:
+  "4139084924":
+    title: Surface source-close failures during refusal cleanup
+    classification: ESTABLISHED_PRODUCTION_FINDING
+    primary_claim: C11            # lifecycle cleanup failure visibility
+    secondary: truthful refusal semantics
+  "4139084932":
+    title: Refresh the residue flag after final cleanup
+    classification: ESTABLISHED_PRODUCTION_FINDING
+    primary_claim: C10            # final outcome truth
+    secondary: pre_commit_cleanup_projection
+disposition_during_round: 301_S1A_REDESIGN_REVISION_REQUIRED
+scope: "BoundedProductionCorrection != StructuralRedesignOfPhysicalSnapshot"
+write_set: [app/agent_review/physical_snapshot_v2.py, tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+unchanged: [trusted_object_authority_v2.py, wire schemas, N1, N2 StaticCapabilityReferenceClosure, N3, capability sealing, physical budget, layout grammar, NOREPLACE, durability sequence]
+```
+
+### 16.1 Cleanup-failure precedence (4139084924)
+
+```text
+DescriptorCloseFailure takes precedence over PrimaryRefusalReason
+```
+
+On the pre-commit refusal path, source cleanup is now **strict**: `session.close()` instead of `close_quietly()`. It still releases every descriptor, because close drains everything before it reports.
+
+- If a source descriptor close fails, the returned `NotPublishedV2` carries `physical_snapshot_descriptor_close_failed` with `exceeded_axis = null`.
+- If source cleanup is clean, the primary refusal is preserved exactly.
+
+`NotPublishedV2` is **not** widened to carry several reason codes in this slice.
+
+### 16.2 Final settlement truth (4139084932)
+
+```text
+InitialCleanupObservation != FinalSettlementTruth
+NotPublishedV2.staging_residue = residue observed AFTER the final mandatory pre-return settlement
+```
+
+Settlement records its own observation: `_PublicationRunV2.final_residue` is the result of the pre-commit `abort()` that settlement itself performs. It is `None` when the commit point was attempted, because then nothing is removed and the field is not applicable.
+
+No extra cleanup pass is added, and no pathname is re-probed. The immutable outcome is never mutated. If the final observation differs, a new `NotPublishedV2` is built with the same `reason_code` and `exceeded_axis` (`_settled_outcome_v2`). Nothing beyond `NotPublishedV2` is generalised.
+
+The same refresh applies to the outcome carried by an escaping exception (`_settle_attached_v2`), inside the same protected settlement block, so that `returned outcome truth == exception-carried outcome truth`. The N3 boundary (`MULTIPLE_ASYNC_INTERRUPTION_DURING_CLEANUP`) is unchanged and still reproducible.
+
+### 16.3 Witnesses and anti-vacuity
+
+RED is the e8ca263 production (the witnesses were written before the change and use only the public API). GREEN is the successor.
+
+| Witness | e8ca263 | successor |
+|---|---|---|
+| F-P1: budget refusal and a source close that releases then fails | `budget_exceeded` / `files_copied` (**RED**) | `descriptor_close_failed` / `null`; census clean; staging removed |
+| F-P1 positive control: clean source cleanup | `budget_exceeded` / `files_copied` | same |
+| F-P2: first abort fails transiently, settlement removes the tree | `staging_residue=True` with nothing staged (**RED**) | `False`, nothing staged |
+| F-P2 persistent control: settlement cannot remove the tree | `True` | `True`, staged |
+| F-P2 exceptional path: settlement interrupted once, resumed | attached `True` with nothing staged (**RED**) | attached `False` |
+
+| Mutant | Killed by |
+|---|---|
+| M-P1: `session.close_quietly()` restored | F-P1: the primary refusal wins |
+| M-P2: the provisional residue is kept | F-P2: stale `True` |
+| M-P3: the returned outcome is refreshed, the carried one is not | the exceptional witness: attached `True` |
+
+The earlier mutant "attach only a returned outcome" (§9, F-D) is kept and re-anchored to the new handler line. The MemoryError and KeyboardInterrupt sweeps (9 shapes), the static census and every N1/N2/N3 witness are unchanged and GREEN.
+
+### 16.4 Requalification and terminal rule
+
+The previous exact-head qualification is historical. The new exact head is requalified with the reviewer question:
+
+> Does the exact head contain a material production defect, with special attention to lifecycle-failure visibility and whether every public/attached NotPublishedV2 reflects the final settlement state rather than an intermediate cleanup observation?
+
+**`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`** when all of these hold:
+- 0 production material findings and 0 domain invalidations;
+- a descriptor-close failure is not suppressed, and the primary refusal is preserved when cleanup is clean;
+- the final residue is `False` when cleanup finishes and `True` when residue remains, and the exception-carried outcome matches the final state;
+- N1 is closed, N2 passes (syscall and CDLL closure, classification totality), and N3 is calibrated;
+- CI is green, and the independent review and Codex each report 0 material findings.
+
+**Every** inline finding of **every** review on the exact head (and on its byte-identical production predecessors) is enumerated before the disposition. Only after that may a separate human grant authorize Ready or merge.

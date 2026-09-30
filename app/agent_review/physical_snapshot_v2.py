@@ -1862,7 +1862,10 @@ class _PublicationRunV2:
     writer. `settle()` runs on every exit path and releases whatever is still
     owned -- nothing is released by building a new owner."""
 
-    __slots__ = ("tracker", "snapshot_id", "staging", "committed", "session", "writer", "receipt", "committed_identity", "attempted")
+    __slots__ = (
+        "tracker", "snapshot_id", "staging", "committed", "session", "writer", "receipt", "committed_identity",
+        "attempted", "final_residue",
+    )
 
     def __init__(self, tracker: PhysicalWorkTrackerV2, snapshot_id: str, committed_identity: KernelObjectIdentityV2) -> None:
         self.tracker = tracker
@@ -1874,12 +1877,16 @@ class _PublicationRunV2:
         self.receipt: PublishedSnapshotReceiptV2 | None = None
         self.committed_identity = committed_identity
         self.attempted = False
+        # FinalSettlementTruth: the staging residue observed by the pre-commit
+        # abort that settlement ITSELF performs (None: not applicable, i.e. the
+        # commit point was attempted and nothing is removed, or not yet run).
+        self.final_residue: bool | None = None
 
     def _settle_writer(self) -> None:
         if self.attempted:
             self.writer.release_descriptors()
         else:
-            self.writer.abort()
+            self.final_residue = self.writer.abort()
 
     def settle(self) -> None:
         """Pre-commit leftovers are aborted (removed); once the commit point
@@ -1899,6 +1906,30 @@ class _PublicationRunV2:
                     _retry_once_v2(self.staging.close_quietly)
                 finally:
                     _retry_once_v2(self.committed.close_quietly)
+
+
+def _settled_outcome_v2(outcome: PublicationOutcomeV2 | None, run: _PublicationRunV2) -> PublicationOutcomeV2 | None:
+    """`InitialCleanupObservation != FinalSettlementTruth`: a pre-commit
+    `NotPublishedV2` reports the residue observed by the final settlement,
+    not by an earlier abort attempt. The outcome is immutable, so a differing
+    one is rebuilt with the same reason and axis; nothing else is touched."""
+    if (
+        type(outcome) is not NotPublishedV2
+        or run.attempted
+        or run.final_residue is None
+        or outcome.staging_residue == run.final_residue
+    ):
+        return outcome
+    return NotPublishedV2(
+        reason_code=outcome.reason_code, exceeded_axis=outcome.exceeded_axis, staging_residue=run.final_residue
+    )
+
+
+def _settle_attached_v2(exc: BaseException | None, run: _PublicationRunV2) -> None:
+    """The outcome carried by an escaping exception gets the same final truth."""
+    attached = getattr(exc, "physical_snapshot_outcome", None)
+    if attached is not None:
+        exc.physical_snapshot_outcome = _settled_outcome_v2(attached, run)  # type: ignore[union-attr]
 
 
 def _retry_once_v2(step: Callable[[], object]) -> None:
@@ -2095,9 +2126,16 @@ def _publish_run_v2(
         writer.finalize_subdirectories()
         writer.fsync_stage_root()
     except _RefusalV2 as refusal:
-        session.close_quietly()
+        reason_code, exceeded_axis = refusal.reason_code, refusal.exceeded_axis
+        try:
+            # Strict source cleanup: every descriptor is released, and a close
+            # failure is REPORTED -- it takes precedence over the primary
+            # refusal (Codex 4139084924; lifecycle visibility, C11).
+            session.close()
+        except _RefusalV2 as close_failure:
+            reason_code, exceeded_axis = close_failure.reason_code, None
         residue = writer.abort()
-        return NotPublishedV2(reason_code=refusal.reason_code, exceeded_axis=refusal.exceeded_axis, staging_residue=residue)
+        return NotPublishedV2(reason_code=reason_code, exceeded_axis=exceeded_axis, staging_residue=residue)
     return _commit_v2(run)
 
 
@@ -2139,24 +2177,32 @@ def publish_physical_snapshot_v2(
         raise PhysicalSnapshotErrorV2(PHYSICAL_SNAPSHOT_FORGED_CAPABILITY_REASON_V2)
     run = _PublicationRunV2(tracker, snapshot_id, committed_identity)
     outcome: PublicationOutcomeV2 | None = None
-    carried: PublicationOutcomeV2 | None = None
+    final: PublicationOutcomeV2 | None = None
+    escaping: BaseException | None = None
     try:
         outcome = _publish_run_v2(run, source_authority, source_locator, object_format, root)
     except BaseException as primary:
         # An interruption after the commit point already carries its outcome
-        # (`_commit_v2`); remember it in case cleanup is interrupted too.
-        carried = getattr(primary, "physical_snapshot_outcome", None)
+        # (`_commit_v2`); keep the exception so its outcome can be settled too.
+        escaping = primary
         raise
     finally:
         try:
             run.settle()
+            # FinalSettlementTruth (Codex 4139084932): the returned and the
+            # exception-carried outcome both reflect the settlement just done.
+            final = _settled_outcome_v2(outcome, run)
+            _settle_attached_v2(escaping, run)
         except BaseException as interruption:
             # Settling is resumable: finish it, then report. An outcome that
             # already exists -- returned, or carried by the interruption being
-            # propagated -- is never lost behind a cleanup failure (C10).
+            # propagated -- is never lost behind a cleanup failure, within the
+            # qualified fault model (C10; §10.4, §16).
             run.settle()
-            known = outcome if outcome is not None else carried
+            final = _settled_outcome_v2(outcome, run)
+            _settle_attached_v2(escaping, run)
+            known = final if final is not None else getattr(escaping, "physical_snapshot_outcome", None)
             if known is not None:
                 interruption.physical_snapshot_outcome = known  # type: ignore[attr-defined]
             raise
-    return outcome
+    return final
