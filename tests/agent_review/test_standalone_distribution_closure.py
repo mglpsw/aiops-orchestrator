@@ -1538,6 +1538,121 @@ def test_countermodel_p5_enforce_declared_path_kinds_before_certification(tmp_pa
     assert any("Declared path in 'package_roots' must be a regular file: app/__init__.py" in err for err in errs_d), f"Got: {errs_d}"
 
 
+def test_countermodel_p6_forbidden_dependencies_compared_only_at_import_root(tmp_path: Path) -> None:
+    """P6: Forbidden dependencies are compared only at the import root; namespaced submodules do not falsely trigger."""
+    temp_repo = tmp_path / "repo_p6"
+    temp_repo.mkdir()
+
+    manifest = validator.load_manifest()
+    for cat in ("core_packages", "package_roots", "shared_primitives", "required_asset_trees", "install_boundary", "distribution_clis"):
+        for item in manifest["distribution_boundary"][cat]:
+            src = REPO_ROOT / item
+            dst = temp_repo / item
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                shutil.copy2(src, dst)
+            elif src.is_dir():
+                shutil.copytree(src, dst)
+
+    for fb in manifest["forbidden_runtime_surfaces"]:
+        dst = temp_repo / fb
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            if fb.endswith(".py") or fb.endswith(".sh") or fb.endswith(".yml") or fb.endswith(".yaml"):
+                dst.write_text("# dummy\n", encoding="utf-8")
+            else:
+                dst.mkdir(parents=True, exist_ok=True)
+
+    cli_path = temp_repo / "scripts" / "aiops-review-intake.py"
+    original_code = cli_path.read_text(encoding="utf-8")
+
+    # Case A: Namespaced modules containing forbidden words as submodules pass validation
+    # (e.g. import company.fastapi.client, from vendor.httpx import adapter)
+    namespaced_imports = (
+        "import company.fastapi.client\n"
+        "from vendor.httpx import adapter\n"
+    )
+    cli_path.write_text(namespaced_imports + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not any("fastapi" in err or "httpx" in err for err in errs_a), (
+        f"Namespaced imports unexpectedly triggered forbidden dependency: {errs_a}"
+    )
+
+    # Case B: Direct import of forbidden runtime dependency fails closed
+    cli_path.write_text("import fastapi\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime package 'fastapi'" in err for err in errs_b), (
+        f"Direct import of fastapi should fail closed, got: {errs_b}"
+    )
+
+    # Case C: Import of forbidden runtime script via scripts namespace fails closed
+    cli_path.write_text("from scripts.migrate_savings_to_sqlite import main\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime script import root 'migrate_savings_to_sqlite'" in err for err in errs_c), (
+        f"Import via scripts namespace should fail closed, got: {errs_c}"
+    )
+
+
+def test_countermodel_p7_reject_symlinked_ancestors_of_declared_paths(tmp_path: Path) -> None:
+    """P7: Paths reached through symlinked ancestors are rejected fail-closed in static validation and materialization."""
+    temp_repo = tmp_path / "repo_p7"
+    temp_repo.mkdir()
+
+    manifest = validator.load_manifest()
+    for cat in ("core_packages", "package_roots", "shared_primitives", "required_asset_trees", "install_boundary", "distribution_clis"):
+        for item in manifest["distribution_boundary"][cat]:
+            src = REPO_ROOT / item
+            dst = temp_repo / item
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                shutil.copy2(src, dst)
+            elif src.is_dir():
+                shutil.copytree(src, dst)
+
+    for fb in manifest["forbidden_runtime_surfaces"]:
+        dst = temp_repo / fb
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            if fb.endswith(".py") or fb.endswith(".sh") or fb.endswith(".yml") or fb.endswith(".yaml"):
+                dst.write_text("# dummy\n", encoding="utf-8")
+            else:
+                dst.mkdir(parents=True, exist_ok=True)
+
+    # Case A: templates directory is a symlink pointing to an undeclared directory
+    repo_a = tmp_path / "repo_p7_a"
+    shutil.copytree(temp_repo, repo_a)
+    real_templates = tmp_path / "undeclared_templates"
+    shutil.move(str(repo_a / "templates"), str(real_templates))
+    (repo_a / "templates").symlink_to(real_templates)
+
+    errs_a = validator.validate_manifest(manifest, repo_root=repo_a)
+    assert any("Symlinks not permitted in distribution boundary or ancestor path: templates" in err for err in errs_a), (
+        f"Ancestor symlink on templates should fail validation, got: {errs_a}"
+    )
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=repo_a, target_dir=tmp_path / "target_p7_a", manifest=manifest)
+    assert "templates" in str(exc_a.value)
+
+    # Case B: scripts directory is a symlink pointing to an undeclared directory
+    repo_b = tmp_path / "repo_p7_b"
+    shutil.copytree(temp_repo, repo_b)
+    real_scripts = tmp_path / "undeclared_scripts"
+    shutil.move(str(repo_b / "scripts"), str(real_scripts))
+    (repo_b / "scripts").symlink_to(real_scripts)
+
+    errs_b = validator.validate_manifest(manifest, repo_root=repo_b)
+    assert any("Symlinks not permitted in distribution boundary or ancestor path: scripts" in err for err in errs_b), (
+        f"Ancestor symlink on scripts should fail validation, got: {errs_b}"
+    )
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
+        validator.materialize_standalone_distribution(repo_root=repo_b, target_dir=tmp_path / "target_p7_b", manifest=manifest)
+    assert "scripts" in str(exc_b.value)
+
+    # Control: canonical temp_repo with real directories passes validation
+    errs_ctrl = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not errs_ctrl, f"Canonical repository unexpectedly failed validation: {errs_ctrl}"
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""

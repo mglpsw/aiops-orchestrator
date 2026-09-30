@@ -236,10 +236,13 @@ def derive_ast_imports_from_file(
                 name = alias.name
                 if name.startswith("app"):
                     app_imports.add(name)
+                elif name.startswith("scripts."):
+                    external_pkgs.add("scripts")
+                    parts = name.split(".")
+                    if len(parts) > 1:
+                        external_pkgs.add(parts[1])
                 else:
                     external_pkgs.add(name.split(".")[0])
-                    for part in name.split("."):
-                        external_pkgs.add(part)
         elif isinstance(node, ast.ImportFrom):
             if node.level > 0:
                 if node.level > len(pkg_parts):
@@ -284,12 +287,17 @@ def derive_ast_imports_from_file(
                         if is_submodule:
                             app_imports.add(candidate)
             elif mod:
-                external_pkgs.add(mod.split(".")[0])
-                for part in mod.split("."):
-                    external_pkgs.add(part)
                 if mod == "scripts":
+                    external_pkgs.add("scripts")
                     for alias in node.names:
                         external_pkgs.add(alias.name)
+                elif mod.startswith("scripts."):
+                    external_pkgs.add("scripts")
+                    parts = mod.split(".")
+                    if len(parts) > 1:
+                        external_pkgs.add(parts[1])
+                else:
+                    external_pkgs.add(mod.split(".")[0])
 
     return external_pkgs, app_imports
 
@@ -427,11 +435,18 @@ def validate_manifest(
                 errors.append(f"Declared distribution path does not exist: {rel_path_str}")
                 continue
 
-            # Symlinks not permitted in distribution boundary (Layer S/M fail-closed policy)
-            if full_path.is_symlink():
-                errors.append(
-                    f"Symlinks not permitted in distribution boundary: {rel_path_str}"
-                )
+            # Symlinks not permitted in distribution boundary or its ancestor path (Layer S/M fail-closed policy)
+            has_symlink_component = False
+            curr = root
+            for part in rel_path.parts:
+                curr = curr / part
+                if curr.is_symlink():
+                    errors.append(
+                        f"Symlinks not permitted in distribution boundary or ancestor path: {curr.relative_to(root).as_posix()} in {rel_path_str}"
+                    )
+                    has_symlink_component = True
+                    break
+            if has_symlink_component:
                 continue
 
             # Enforce expected path kinds for each section (trees as directories, others as regular files)
@@ -684,11 +699,14 @@ def materialize_standalone_distribution(
                     f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
                 )
 
-            # Symlinks not permitted in declared distribution members (fail-closed policy)
-            if src_path.is_symlink():
-                raise StandaloneClosureValidationError(
-                    f"Refusing to materialize symlink member in distribution: {rel_path_str}"
-                )
+            # Symlinks not permitted in declared distribution members or ancestor paths (fail-closed policy)
+            curr = repo_root
+            for part in rel_path.parts:
+                curr = curr / part
+                if curr.is_symlink():
+                    raise StandaloneClosureValidationError(
+                        f"Refusing to materialize distribution member with symlink component: {curr.relative_to(repo_root).as_posix()} in {rel_path_str}"
+                    )
 
             if src_path.is_file():
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
