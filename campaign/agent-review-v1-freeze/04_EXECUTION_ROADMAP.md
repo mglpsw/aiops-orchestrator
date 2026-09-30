@@ -5,6 +5,8 @@
 Este roteiro **não concede autoridade**. Cada slice nasce do `master` resultante do
 merge da predecessora, revalida o estado vivo e rederiva obrigações se houver drift.
 Uma slice estrutural ativa por vez. Qualificação nunca é empilhada entre PRs.
+Cada task contract declara, antes do primeiro patch, a allowlist de paths que a slice pode
+modificar; `git diff --name-only` fora dela é parada (`02` → `slice_gates.v1_v2_isolation`).
 
 ## Sequência
 

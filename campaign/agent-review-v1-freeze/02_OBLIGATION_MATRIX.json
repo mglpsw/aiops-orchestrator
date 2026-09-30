@@ -203,6 +203,7 @@
   "slice_gates": {
     "all_slices": [
       "exact subject recorded",
+      "declared write allowlist in the task contract; diff paths ⊆ allowlist (v1_v2_isolation.positive_write_scope)",
       "RED witness before patch (behavioral slices)",
       "focused GREEN",
       "broader v1 regression (tests/agent_review non-v2 + CLI tests)",
@@ -214,24 +215,7 @@
       "PRE_MERGE_GATE"
     ],
     "v1_v2_isolation": {
-      "principle": "ownership is decided by the import graph, not by the *_v2 filename suffix",
-      "v2_only_paths": {
-        "rule": "NORMATIVE: every v1 slice re-derives the v2-only set on its live base by (a) name scan for v2 in any path segment and (b) the import graph (any file importing only *_v2 modules or evals.agent_review_v2); diff of that set must be empty. The list below is the set KNOWN at the derivation subject and is illustrative, not exhaustive.",
-        "known_at_derivation_subject": [
-          "app/agent_review/*_v2.py",
-          "schemas/agent-review/v2/**",
-          "scripts/*v2* (incl. export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py)",
-          "evals/agent_review_v2/**",
-          "tests/agent_review/*v2*",
-          "tests/agent_review/fixtures/v2/**",
-          "tests/agent_review/fixtures/router_receipt_v2/**",
-          "tests/evals/*v2*",
-          "templates/agentreview-v2-target-pack/**",
-          "import-graph-only v2 code: scripts/generate-target-pack-runtime-authority-view.py, tests/agent_review/test_c3_focal_obligations.py, tests/agent_review/test_c3_workspace_ownership.py, tests/agent_review/test_target_profile_yaml_corpus_metadata.py",
-          "v2 benchmark tooling (reads/imports evals.agent_review_v2): scripts/{compare-review-observations,generate-benchmark-report,generate-benchmark-corpus-manifest,generate-benchmark-identity-final,generate-benchmark-premanifest,materialize-benchmark-case,validate-benchmark-corpus-safety}.py and tests/evals/test_{benchmark_identity_final,benchmark_report,corpus_safety,reviewable_corpus}.py",
-          "non-code v2 surfaces: docs/AGENT_REVIEW_V2_*.md, reports/agent-review-v2-*, campaign/agent-review-v2-replan/"
-        ]
-      },
+      "principle": "isolation is enforced by POSITIVE write scope, not by classifying the tree into v1/v2: a classifier of v2-only files (by name, by import, by path reference) has proven incomplete in review, so it cannot carry the gate",
       "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite (not the non-v2 subset), and (b) state in the PR why v2 behavior is unchanged across the whole transitive reach, not only the direct importers; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
       "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
       "derivation": "AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",
@@ -253,7 +237,34 @@
           "scripts/aiops-review-quality-gate-v2.py"
         ]
       },
-      "transitive_reach": "contracts_v2 imports redaction, and redaction imports schemas; versioning imports schemas and contracts_v2. A change to redaction.py or schemas.py therefore reaches essentially the whole v2 lane transitively (via contracts_v2), and a change to versioning.py reaches the v2 parser/synthesis/readiness/transport/consumer chain and scripts/aiops-review-quality-gate-v2.py. The direct-importer lists above are not the blast radius."
+      "transitive_reach": "contracts_v2 imports redaction, and redaction imports schemas; versioning imports schemas and contracts_v2. A change to redaction.py or schemas.py therefore reaches essentially the whole v2 lane transitively (via contracts_v2), and a change to versioning.py reaches the v2 parser/synthesis/readiness/transport/consumer chain and scripts/aiops-review-quality-gate-v2.py. The direct-importer lists above are not the blast radius.",
+      "positive_write_scope": {
+        "rule": "NORMATIVE: every v1 slice's task contract declares an explicit allowlist of repository paths it may modify, before the first patch. `git diff --name-only <base>..<head>` must be a subset of that allowlist; any path outside it is STOP_SUBJECT_DRIFT (scope) regardless of how it is classified. Expanding the allowlist mid-slice requires recording the reason in the PR before the edit.",
+        "shared_modules": "an allowlisted path that is a shared module (shared_modules_direct_v2_importers) additionally triggers shared_module_rule"
+      },
+      "v2_surface_reference": {
+        "status": "INFORMATIVE ONLY — used to review allowlists, never as the gate",
+        "known_at_derivation_subject": [
+          "app/agent_review/*_v2.py",
+          "schemas/agent-review/v2/**",
+          "scripts/*v2* (incl. export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py)",
+          "evals/agent_review_v2/**",
+          "tests/agent_review/*v2*",
+          "tests/agent_review/fixtures/v2/**",
+          "tests/agent_review/fixtures/router_receipt_v2/**",
+          "tests/evals/*v2*",
+          "templates/agentreview-v2-target-pack/**",
+          "import-graph-only v2 code: scripts/generate-target-pack-runtime-authority-view.py, tests/agent_review/test_c3_focal_obligations.py, tests/agent_review/test_c3_workspace_ownership.py, tests/agent_review/test_target_profile_yaml_corpus_metadata.py",
+          "v2 benchmark tooling (reads/imports evals.agent_review_v2): scripts/{compare-review-observations,generate-benchmark-report,generate-benchmark-corpus-manifest,generate-benchmark-identity-final,generate-benchmark-premanifest,materialize-benchmark-case,validate-benchmark-corpus-safety}.py and tests/evals/test_{benchmark_identity_final,benchmark_report,corpus_safety,reviewable_corpus}.py",
+          "non-code v2 surfaces: docs/AGENT_REVIEW_V2_*.md, reports/agent-review-v2-*, campaign/agent-review-v2-replan/",
+          "tests/agent_review/target_profile_yaml_corpus.py (helper imported only by v2 profile-loader tests)"
+        ],
+        "known_gaps_of_mechanical_derivation": [
+          "files that reach evals/agent_review_v2 by path string, not import (e.g. scripts/generate-benchmark-*.py, scripts/materialize-benchmark-case.py, several tests/evals/test_*.py)",
+          "v2-only ownership is decided by who reaches a file (reverse reachability), not by what it imports",
+          "a name scan for 'v2' over-matches shared/historical docs (docs/engineering, docs/checkpoints, docs/adr, AGENT_REVIEW_V1_V2_COMPATIBILITY.md)"
+        ]
+      }
     },
     "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
   }
