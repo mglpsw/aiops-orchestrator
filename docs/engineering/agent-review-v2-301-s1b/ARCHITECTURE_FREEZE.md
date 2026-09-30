@@ -1,7 +1,7 @@
 # #301-S1-B: Architecture Freeze, "safe reader context"
 
 ```yaml
-status: ARCHITECTURE_FREEZE_DRAFT      # docs-only; correction round 1 aplicada (review independente de b4a572a); aguarda nova revisão
+status: ARCHITECTURE_FREEZE_DRAFT      # docs-only; correction rounds 1 e 2 aplicadas (adjudicação do mantenedor 5915365542); aguarda revisão independente
 ArchitectureFreezeReady: false         # passa a true só por adjudicação do mantenedor sobre o exact head revisado
 ImplementationGrant: false             # ArchitectureFreezeReady != ImplementationGrant
 implementation: NOT_STARTED            # B1, B2, B3 não iniciadas
@@ -29,6 +29,8 @@ forge_records:
   "#301 pacote de adjudicação P1": 5905757667
   "#301 adjudicação do mantenedor D-B": 5905959720
   "#350 aceitação de responsabilidade U3": 5905962787
+  "#301 adjudicação do mantenedor, rodada 2 (D-B-CAP-TCB, D-B-LIFE-PIDNS, D-B-SAFE-DIR-VALUE)": 5915365542
+  "#350 refinamento U3 por D-B-LIFE-PIDNS": 5915369380
   "#46 reconciliada (2026-09-30)": "S1-A INTEGRATED; S1-B próxima, só planejamento; C4 incompleto; G5 não atingido"
 state:
   S1_A: INTEGRATED
@@ -88,7 +90,7 @@ authority_by_domain:
 | **S1-B** | mecanismos de verificação (este freeze) |
 | **S1-C** | semântica de closure: walk, contabilidade por ocorrência, path bytes, nós, paridade C3, re-hash da closure, seal e revalidação de `S_G` |
 | **S1-D** | harness de qualificação dois-UIDs, harness de composição, `S1_COMPLETE_AS_COMPONENT`, handoff tipado para E |
-| **#350 (U3)** | composição operacional do launcher; estabelecimento do `AuthorizedReaderExecutionContext`; transição uid/gid; proveniência da expectativa userns/mntns; proveniência do handoff de fd; proveniência do toolchain Git selecionado pelo host |
+| **#350 (U3)** | composição operacional do launcher; estabelecimento do `AuthorizedReaderExecutionContext`; transição uid/gid; proveniência da expectativa userns/mntns; proveniência do handoff de fd; proveniência do toolchain Git selecionado pelo host; **por D-B-LIFE-PIDNS (5915369380):** criação do PID namespace privado, reader como seu init, mount namespace privado, procfs montado para esse PID namespace, proveniência da expectativa `pidns_identity` |
 | **#319** | proveniência de `ExpectedCommit` |
 | **#320** | valores de produção de deadline e envelope; memória agregada/cgroup; NPROC geral; NFS/FUSE; política numérica do R4-3 |
 | **#331** | proveniência da autorização de storage (C2_B) |
@@ -146,6 +148,11 @@ PythonException != SIGTERMDefaultAction != SIGKILL != ParentProcessDeath != Host
 ProcessGroupKill != WholeUnitTeardown
 DominantOutcome != OnlyRecordedFailure
 ArchitectureMechanismSpecified != ImplementationBranchQualified
+ObservedPidNamespace != AuthorizedPidNamespace
+PidNamespaceIdentity != ProcfsViewBinding
+PDEATHSIG(parent) != GrandchildLifetimeClosure
+DeathOfPIDNamespaceInit → kernel terminates namespace members
+MaintainerAdjudication != ImplementationGrant
 ```
 
 ## 4. Applicability
@@ -156,7 +163,7 @@ Given   AuthorizedReaderExecutionContext established by #350 (U3)
         ∧ CompletePublicationV2.snapshot : PublishedSnapshotV2 (S1-A)
         ∧ reader process dedicated (single-thread, no other children) and created by #350
         ∧ reader is init (PID 1) of a private PID namespace established by #350, with that namespace's procfs
-          (external-termination closure, §14; PENDING maintainer adjudication D-B-LIFE-PIDNS)
+          and a private mount namespace (external-termination closure, §14; D-B-LIFE-PIDNS ADOPTED, 5915365542)
         ∧ domain(§24)
 S1-B ⊢  descriptor-bound, privilege-non-escalating, contained Git transport whose delivered
         objects are content-address-authenticated, with lifecycle owned from spawn,
@@ -165,7 +172,11 @@ S1-B ⊢  descriptor-bound, privilege-non-escalating, contained Git transport wh
 
 - **Domínio V1:** Linux com pidfd completo (`pidfd_open`, `pidfd_send_signal`, `waitid(P_PIDFD)`), x86_64/aarch64 (herdado da S1-A), CPython 3.11, filesystem no domínio da S1-A, Git ≥ piso por recurso (§24).
 - **userns: `initial_user_namespace_only`**, com disposição `AUTHORIZED_CONTRACTION` (D-B-USERNS). Não é lei universal de segurança; ampliar exige scope reopen, desenho explícito e nova qualificação.
-- **PID namespace privado** (§14, D-B-LIFE-PIDNS, **pendente de adjudicação**): o reader é o init de um PID namespace criado pelo launcher (#350) **no userns inicial** (o launcher é privilegiado; o reader não). A S1-B verifica; ausente → recusa tipada `reader_pid_namespace_required`.
+- **PID namespace privado + mount namespace privado + procfs desse PID namespace** (D-B-LIFE-PIDNS, **ADOPT**, [5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)):
+  - O #350 estabelece os três **antes da queda final de privilégios** do reader, no userns inicial; o launcher é privilegiado, o reader não.
+  - A S1-B **não** cria nem monta nada disso; ela só **verifica** (B-RC-06).
+  - Ausente ou divergente → recusa tipada `reader_pid_namespace_required`.
+  - É uma extensão explícita do `AuthorizedReaderExecutionContext` **V1**, não uma lei universal sobre reader contexts futuros.
 - **Fora do domínio → recusa tipada**, nunca operação degradada. Exemplos: kernel sem pidfd, userns não inicial, Git abaixo do piso.
 
 ## 5. Obligation domains
@@ -175,7 +186,7 @@ Exatamente 11 domínios. A matriz completa está em §16.
 | Domínio | IDs | Propriedade central | Classe | Dono |
 |---|---|---|---|---|
 | HANDOFF | B-HO-01..04 | a capability da S1-A cruza a fronteira sem perda nem rebinding | MIXED | S1-B + API aditiva na S1-A |
-| READER_CONTEXT | B-RC-01..05 | observação == expectativa explícita; procfs competente; userns inicial | LIVE | S1-B verifica; #350 estabelece |
+| READER_CONTEXT | B-RC-01..06 | observação == expectativa explícita (inclui `pidns_identity`); procfs competente e ligado ao pidns do reader; userns inicial | LIVE | S1-B verifica; #350 estabelece |
 | IMMUTABILITY | B-IMM-01..04 | `¬PrincipalCanMutate(reader, snapshot)` por inode | LIVE | S1-B |
 | CAPABILITY_CLOSURE | B-CAP-01..05 | reader e Git recebem só fds de allowlist **tipada**; lado do reader observado; herança no filho dentro do domínio TCB declarado (A) ou provada no filho (fallback B) | LIVE | S1-B verifica; #350 fecha na origem |
 | PRIVILEGE | B-PRV-01..04 | caps = 0; `PR_SET_NO_NEW_PRIVS` antes do exec (`S1_CTX_01`) | LIVE | S1-B |
@@ -213,24 +224,43 @@ exact-type + genuine + open admission
 
 ## 7. Reader context
 
-- **B-RC-01.** `ReaderContextExpectationV2` é **explícita e fornecida pelo host** (#350). Não existe `from_current_process()` nem default derivado de `/proc`, porque isso seria tautologia.
+- **B-RC-01.** `ReaderContextExpectationV2` é **explícita e fornecida pelo host** (#350). Não existe `from_current_process()` nem default derivado de `/proc`, porque isso seria tautologia. **Proposição congelada** (os nomes não são API congelada enquanto não houver tipo de implementação):
+
+  ```yaml
+  ReaderContextExpectationV2:
+    principal: {ruid, euid, suid, fsuid, rgid, egid, sgid, fsgid}
+    supplementary_groups: [...]
+    userns_identity: <kernel ns identity>      # V1: initial user namespace (D-B-USERNS)
+    mntns_identity: <kernel ns identity>       # private mount namespace established by #350
+    pidns_identity: <kernel ns identity>       # private PID namespace established by #350 (D-B-LIFE-PIDNS)
+    capability_expectation: {CapEff: 0, CapPrm: 0, CapInh: 0, CapAmb: 0}
+    no_new_privs: expected state
+    snapshot_expectation: derived from PublishedSnapshotBindingV2 (B-HO-04)
+  ```
+
 - **B-RC-02. Procfs competente.** O truth-maker:
   - abrir um descriptor de procfs;
   - verificar `fstatfs(fd).f_type == PROC_SUPER_MAGIC`;
   - fazer as observações relativas a essa vista admitida.
 
-  - verificar que a vista pertence ao PID namespace do reader: `readlink(<procfs>/self) == str(getpid())` (e `== "1"` sob a pré-condição de §4).
+  - verificar que a vista pertence ao PID namespace do reader: `readlink(<procfs>/self) == str(getpid())`; no domínio V1, `getpid() == 1` e a vista do procfs observa o reader como PID 1 (**ProcfsViewBinding**, B-RC-06).
 
   Onde houver syscall mais competente que parsing textual, ela vence: `getresuid`, `getresgid`, `getgroups`, `prctl(PR_GET_NO_NEW_PRIVS)`, `capget`. Não conseguir observar ou observar ambiguidade (por exemplo chave duplicada) → recusa.
 - **B-RC-03. Comparação completa, antes de qualquer spawn:**
   - ruid, euid, suid e fsuid;
   - rgid, egid, sgid e fsgid;
   - grupos suplementares;
-  - identidade do userns e do mntns;
+  - identidade do userns, do mntns **e do pidns** (cada uma com a respectiva expectativa, nunca uma pela outra: `mntns identity != pidns identity`);
   - conjuntos de capabilities;
   - `NoNewPrivs`.
 - **B-RC-04. userns V1:** `initial_user_namespace_only`. O inode de `ns/user` é igual à constante do kernel para o userns inicial e à expectativa. O mntns é comparado à expectativa, porque não há constante de kernel equivalente.
 - **B-RC-05.** `ObservedContextMatchesExpectation != ExpectationIsAuthorized`. A proveniência da expectativa é da #350.
+- **B-RC-06. Identidade do PID namespace e vínculo do procfs** (D-B-LIFE-PIDNS). São **dois controles distintos** (`PidNamespaceIdentity != ProcfsViewBinding`):
+  - **(a) Identidade:** abrir `ns/pid` do próprio reader pela vista de procfs admitida → `fstat`/`statx` → identidade de namespace do kernel (dev, ino do nsfs), comparada com `pidns_identity` **fornecida pelo host**. A expectativa **nunca** é derivada do reader (`ObservedPidNamespace != AuthorizedPidNamespace`).
+  - **(b) Vínculo do procfs:** `f_type == PROC_SUPER_MAGIC` e a vista observa o reader como PID 1 (`readlink(<procfs>/self) == "1"`), com `getpid() == 1`.
+  - **`getpid() == 1` não substitui (a).** Um init de *outro* pidns também vê PID 1, e só a comparação com a identidade fornecida distingue qual namespace é.
+  - O mntns continua comparado à `mntns_identity` fornecida pelo host (B-RC-03).
+  - Qualquer divergência → `reader_pid_namespace_required`.
 
 ## 8. Immutability + inherited FD capability closure
 
@@ -257,6 +287,10 @@ exact-type + genuine + open admission
   - O fechamento **no filho** entre fork e exec (`dup2` 0–2 → `preexec_fn` → `close_fds` → exec) **não é observado pela S1-B no mecanismo A**. Ele é **delegado** à implementação de subprocess do CPython qualificador, como **premissa TCB explícita** (§10).
   - Motivo: o único hook no filho (`preexec_fn`) roda **antes** de `close_fds`. P2c REV01: em `preexec` o filho vê os fds `[0..10]`; após o exec, `[0,1,2]`.
   - **Claim:** `ReaderFdCensus + CPythonSubprocessInheritancePremise → InheritedFdClosureWithinDeclaredTCBDomain`. **Não** é `DirectPreExecFdProof`.
+  - **D-B-CAP-TCB (AUTHORIZED_CONTRACTION, [5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)).** A contração é **só epistêmica**:
+    - **proposição funcional inalterada:** `GitGetsOnlyAdmittedFDs`;
+    - **proposição de garantia contraída:** sai `S1BDirectlyProvesPostForkPreExecFDClosure` e entra `CPythonSubprocessInheritancePremise`, dentro do TCB declarado (CPython 3.11).
+    - Não se muda para o mecanismo B só para recuperar a claim mais forte.
   - `/proc/<git-pid>/fd` pós-exec é **só corroboração** (`PostExecFdObservation != InheritanceProof`).
   - **Mecanismo B continua fallback** se a prova direta dentro do filho for exigida: um census no filho na última fronteira pré-exec, com recusa pelo canal de erro, já exercitado no P2. A seleção de A não é revertida por esta correção.
   - **Achado P2:** `subprocess.DEVNULL` abre `/dev/null` com **O_RDWR**. Um papel somente leitura exige um fd `O_RDONLY` explícito.
@@ -299,14 +333,13 @@ exact-type + genuine + open admission
 -c safe.directory=*
 ```
 
-- **D-B-SAFE-DIR** (reavaliado na correction round 1, S1B-REV-06):
+- **D-B-SAFE-DIR / D-B-SAFE-DIR-VALUE** (adjudicação do mantenedor, [5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)):
 
   ```yaml
   D-B-SAFE-DIR:
-    maintainer_interpretation:
-      explicit_minimal_command_scope: "-c scoped invocation"
-      admitted_value: "*"
-      ambient_configuration: forbidden
+    maintainer_adjudication:              # D-B-SAFE-DIR-VALUE: ADOPT
+      invocation_scope: {form: "-c safe.directory=*", scope: single_authorized_Git_invocation}
+      ambient_configuration: {allowed: false}
     reason: >-
       Git's safe.directory ownership heuristic is not the authority for the S1-B reader/snapshot
       trust boundary. S1-B independently establishes what it guards: snapshot kernel identity (B-HO-03a),
@@ -314,8 +347,8 @@ exact-type + genuine + open admission
       (B-EXE-01), hooksPath=/dev/null, fsmonitor=false, env allowlist.
   ```
 
-  - **Fato observado (P2c REV06, Git 2.43.0, dono estrangeiro simulado com `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`):** a heurística recusa na **descoberta** de repositório (`dubious ownership`), mas a invocação da S1-B com `GIT_DIR=.` explícito **não** é submetida a ela: `cat-file` responde mesmo sem `safe.directory`.
-  - O comportamento com `GIT_DIR` explícito **não é documentado** e pode variar por versão. O `-c safe.directory=*` por comando mantém a invocação estável entre versões **sem** que a S1-B dependa da heurística.
+  - **Evidência de suporte, não autoridade da decisão.** Fato observado no P2c REV06 (Git 2.43.0, dono estrangeiro simulado com `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`): a heurística recusa na **descoberta** de repositório (`dubious ownership`), mas a invocação da S1-B com `GIT_DIR=.` explícito **não** é submetida a ela: `cat-file` responde mesmo sem `safe.directory`.
+  - O comportamento com `GIT_DIR` explícito **não é documentado**, pode variar por versão e **não é contrato universal**. O `-c safe.directory=*` por comando mantém a invocação estável entre versões **sem** que a S1-B dependa da heurística.
   - A alternativa de valor por path foi descartada porque não acrescenta nada à fronteira da S1-B, não porque "path seria ruim".
 - **Lazy fetch é estruturalmente irrelevante** (D-B-GIT-FLOOR, caminho preferido), porque:
   - a config do snapshot é autorada pelo produtor S1-A: P2b observou `[core] repositoryformatversion/bare` e, em sha256, `[extensions] objectformat`, **sem** remote, promisor ou partialclone;
@@ -437,13 +470,38 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
 
 | Domínio | Eventos | Mecanismo | Evidência P2c |
 |---|---|---|---|
-| `controlled_exit_domain` | exceções Python, inclusive `BaseException`; SIGTERM, SIGINT e SIGHUP | teardown do reader (§14, itens 1–9) + **handlers de sinal** que só registram e acordam o loop (`signal.set_wakeup_fd`), **nunca levantam**; o loop único (B-RES-04) transita para `TEARDOWN`; o teardown não é interrompível por handler | T1: SIGTERM sem handler deixa **2 sobreviventes** (reproduzido). T2: com handler, 0 sobreviventes |
-| `external_termination_domain` | SIGKILL, OOM-kill ou crash do reader (a morte do reader não é interceptável) | **reader é init de um PID namespace privado** estabelecido por #350: na morte do init, o **kernel** mata todos os processos do namespace, inclusive netos com `setsid`. A S1-B **verifica** a pré-condição e recusa sem ela | T3: SIGKILL com handler → 2 sobreviventes. T4: `PR_SET_PDEATHSIG` no filho → o neto com `setsid` sobrevive (PDEATHSIG **rejeitado**, `ProcessGroupKill != WholeUnitTeardown`). **T5: reader init de pidns + SIGKILL → 0 sobreviventes.** T6: init sem handler ignora SIGTERM do ancestral. T7: init com handler → teardown controlado |
+| `controlled_exit_domain` | exceções Python, inclusive `BaseException`; SIGTERM, SIGINT e SIGHUP | teardown do reader (§14, itens 1–9) + **handlers de sinal** que só registram e acordam o loop (`signal.set_wakeup_fd`), **nunca levantam**; o loop único (B-RES-04) transita para `TEARDOWN`; o teardown não é interrompível por handler | T1: SIGTERM sem handler deixa **2 sobreviventes** (reproduzido). T2: com handler, 0 sobreviventes. **Leia a nota de evidência abaixo** |
+| `external_termination_domain` | SIGKILL, OOM-kill ou crash do reader (a morte do reader não é interceptável) | **reader é init de um PID namespace privado** estabelecido por #350: na morte do init, o **kernel** mata todos os processos do namespace, inclusive netos com `setsid`. A S1-B **verifica** a pré-condição e recusa sem ela | T3: SIGKILL com handler → 2 sobreviventes. T4: `PR_SET_PDEATHSIG` no filho → o neto com `setsid` sobrevive (PDEATHSIG **rejeitado**, `ProcessGroupKill != WholeUnitTeardown`). **T5: reader init de pidns + SIGKILL → 0 sobreviventes.** T6: init sem handler ignora SIGTERM do ancestral. T7: init com handler → teardown controlado (ver a nota de evidência) |
 | `unrecoverable_nonclaim` | crash do host ou do kernel; SIGSTOP do reader | — (com o host, todos os processos desaparecem; parar o reader é DoS, da #320) | — |
 
-- **Pendência:** o PID namespace privado **estende** o `AuthorizedReaderExecutionContext` (CONTRACT L118: principal, userns, mntns, privilégio, snapshot) com um campo novo. Isso cai dentro da dona já adjudicada (#350: `launcher_operational_composition`, `reader_context_establishment`), mas exige **adjudicação explícita: D-B-LIFE-PIDNS**.
-  - Se o mantenedor **rejeitar** sem mecanismo equivalente (por exemplo `cgroup.kill` de um cgroup delegado, também via #350), o domínio de término externo fica aberto e o resultado é **`STOP_SPAWN_LIFECYCLE_UNCLOSED`**, e não uma limitação.
-- **Escopo do witness:** T5–T7 rodaram num userns sem privilégio (este ambiente), fora do domínio V1. A semântica do kernel (morte do init do pidns) independe do userns. O witness no domínio exato (launcher privilegiado, pidns no userns inicial) exige root → qualificação de B2/S1-D, `gate_unavailable` aqui.
+- **D-B-LIFE-PIDNS: ADOPT** ([5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)). O PID namespace privado, o mount namespace privado e o procfs desse pidns estendem explicitamente o `AuthorizedReaderExecutionContext` V1.
+  - **Estabelecido pelo #350** (refinamento de U3 em [5915369380](https://github.com/mglpsw/aiops-orchestrator/issues/350#issuecomment-5915369380)).
+  - **Verificado pela S1-B** (B-RC-06).
+  - Ausente → `reader_pid_namespace_required`.
+  - **Qualificação no domínio exato: exigida antes da qualificação de B2**; indisponível agora, e indisponível não é PASS.
+- **Nota de evidência sobre B-LIF-09** (correction round 2): o `p2c_term_reader.py` usou um handler que **levanta** `TerminationRequested`, **não** o mecanismo congelado (handler que não levanta + `set_wakeup_fd` + transição do loop para `TEARDOWN`). Portanto:
+
+  ```yaml
+  P2c_T1_T2_T6_T7:
+    establishes:
+      - default SIGTERM behavior is insufficient (T1)
+      - SIGTERM is interceptable (T2, T7)
+      - controlled cleanup can eliminate survivors (T2, T7)
+      - a pidns init ignores SIGTERM from an ancestor without a handler (T6)
+    does_not_establish:
+      - final non-raising wakeup-fd implementation
+      - double-signal safety
+      - B-LIF-09 implementation qualification
+  B2_must_demonstrate:
+    - non-raising signal handler
+    - set_wakeup_fd
+    - wakeup of a blocked select
+    - signal during teardown
+    - repeated/double signal
+    - zero survivors
+  ```
+- `SIGSTOP` do reader é disponibilidade/DoS (#320), não saída. Crash do host ou do kernel continua não-claim.
+- **Escopo do witness:** T5–T7 rodaram num userns sem privilégio (este ambiente), fora do domínio V1, e **sem** comparação de `pidns_identity` (B-RC-06). A semântica do kernel (morte do init do pidns) independe do userns. O witness no domínio exato (launcher privilegiado, pidns no userns inicial) exige root → qualificação de B2/S1-D, `gate_unavailable` aqui.
 
 
 **Mecanismo selecionado no P2: A, `Popen` controlado**, dentro de um reader dedicado. Estas partes são obrigatórias, cada uma com o discriminador P2 que a sustenta:
@@ -523,6 +581,7 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | B-RC-01 | expectativa explícita, sem default | CONTRACT L137 / S1-B tipo; #350 valores | reader | construtor só com keywords | tipo selado | expectativa válida | expectativa auto-derivada | census: sem `/proc` no construtor | B1 | — | STATIC |
 | B-RC-02 | procfs competente | #301 plano / S1-B | reader | `fstatfs` == `PROC_SUPER_MAGIC` | fd de procfs | procfs real | procfs falso (mount) | mutante sem `fstatfs` | B2 | — | LIVE |
 | B-RC-03 | ids, grupos, caps, ns e NNP == expectativa | CONTRACT L121–133 / S1-B | reader | syscalls + procfs admitido | comparação antes do spawn | expectativa igual | ids r/e/s/fs inconsistentes, grupo extra, CapAmb ≠ 0 | mutante só euid | B2 (root para ids inconsistentes) | prova consistência, não proveniência | LIVE |
+| B-RC-06 | pidns == `pidns_identity` fornecida; procfs ligado ao pidns do reader | D-B-LIFE-PIDNS / S1-B verifica; #350 estabelece | reader | (a) `ns/pid` → `fstat`/`statx` vs expectativa; (b) `f_type` + `/proc/self` == 1 | comparação antes do spawn | contexto de #350 igual à expectativa | pidns não privado; init de **outro** pidns (PID 1 mas identidade divergente); procfs do host; expectativa derivada do próprio reader | mutante só `getpid()==1`; mutante sem comparação de identidade | B2 no domínio exato (root) | proveniência da expectativa é do #350 | LIVE |
 | B-RC-04 | userns inicial + expectativa; mntns == expectativa | D-B-USERNS / S1-B | reader | inode de `ns/user` vs constante do kernel | comparação | host sem userns | TF2 (`unshare -rU`) | mutante só uid numérico | B2 (`gate_unavailable` sem userns) | contração V1 | LIVE |
 | B-RC-05 | observação ≠ autorização | CONTRACT L137 / #350 | — | — | claim budget | — | apresentar observação como autoridade | review | freeze | — | STATIC |
 | B-IMM-01..04 | reader sem autoridade de mutação por inode; só reg/dir; TF1 | CONTRACT L155, L388 (`¬PrincipalCanMutate`) / S1-B | reader | walk por fd + `fstat`/xattr | admissão | **snapshot de outro principal** | mesmo dono, 0666, group-writable, ACL, dir gravável, FIFO, symlink, alias de mount TF1 | mutante `access(path)` | B2 (**exige positivo cross-principal**) | ACL: over-rejection | LIVE |
@@ -544,8 +603,8 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | B-LIF-02 | subreaper verificado antes do spawn | CONTRACT L838 / S1-B | unidade | `PR_GET_CHILD_SUBREAPER` | `prctl` | neto reapeado | TF5-F (setsid) | **P2: ablação `no_subreaper` → sobrevivente** | P2 PASS; B2 | — | LIVE |
 | B-LIF-03 | identidade via pidfd, nunca PID nu | plano S1 / S1-B | unidade | pidfd + prova de filiação | teardown | — | TF5-G (reuso real) | **P2: ablação `bare_pid` → mata processo não relacionado** | P2 PASS; B2 | exige pidfd no domínio | LIVE |
 | B-LIF-04..06 | teardown em toda saída; zero sobreviventes; setsid no domínio | CONTRACT L838–846 / S1-B | unidade | varredura por ppid + ECHILD | `finally` | limpo | TF5-A, TF5-C, TF5-D, TF5-E, TF5-F | ablação `handle_only` em TF5-C e TF5-F | P2 PASS; B2 | estado D declarado | LIVE |
-| B-LIF-08 | término externo do reader não deixa sobrevivente | S1B-REV-02 / S1-B verifica; #350 estabelece (D-B-LIFE-PIDNS pendente) | unidade | kernel: morte do init do pidns | reader = init de pidns privado | T5: 0 sobreviventes | SIGKILL/crash do reader | T3, T4 (sem pidns / PDEATHSIG) → sobreviventes | P2c; B2 no domínio exato (root) | host crash não afirmado | LIVE |
-| B-LIF-09 | sinal de término controlado → teardown | S1B-REV-02 / S1-B | reader | handler que só registra + wakeup fd | loop único | T2 e T7: 0 sobreviventes | SIGTERM sem handler | T1 → 2 sobreviventes | P2c (handler que levanta); B2 (wakeup fd, sinal duplo) | handler que levanta é **não conforme** (§23) | LIVE |
+| B-LIF-08 | término externo do reader não deixa sobrevivente | S1B-REV-02 / S1-B verifica; #350 estabelece (D-B-LIFE-PIDNS ADOPT) | unidade | kernel: morte do init do pidns | reader = init de pidns privado | T5: 0 sobreviventes | SIGKILL/crash do reader | T3, T4 (sem pidns / PDEATHSIG) → sobreviventes | P2c; B2 no domínio exato (root) | host crash não afirmado | LIVE |
+| B-LIF-09 | sinal de término controlado → teardown | S1B-REV-02 / S1-B | reader | handler que **não levanta** + `set_wakeup_fd` + transição do loop | loop único | **B2** (T2 e T7 só mostram que a limpeza controlada é possível, com handler que levanta) | SIGTERM sem handler; sinal durante o teardown; sinal duplo | T1 → 2 sobreviventes (ausência de handler); o discriminador do mecanismo final é de B2 | P2c (**não qualifica o mecanismo final**); B2: handler sem raise, wakeup fd, select bloqueado acordado, sinal no teardown, sinal duplo, zero sobreviventes | handler que levanta é **não conforme** (§23) | LIVE |
 | B-LIF-07 | fds lineares (lei #354) | #354 / S1-B | reader | dono pré-existente, `close_once` | latch padrão S1-A | census de fds limpo | reuso numérico, re-close | mutantes do padrão S1-A (M-L3) | B1, B2, B3 | pipes internos do `Popen` declarados | MIXED |
 | B-OUT-01..03 | type-state; reason codes fechados; precedência só em `dominant_reason`; as 3 dimensões preservadas; sem ativar S_G | CONTRACT §7.1 / S1-B | saída | `FailureOutcome` (§15) | tabela de 7 combinações | — | sucesso com sobrevivente; substituição de causa; dimensão colapsada (S1B-REV-04) | mutante que colapsa dimensões | B1, B2, B3 | — | MIXED |
 | B-QUA-01..04 | harness sai ≠ 0 em falha; `gate_unavailable ≠ PASS`; census estático e dinâmico | adendo 5861631976 / S1-B | qualificação | exit code do harness; census | harness | — | verde com falha | caso deliberadamente falho | **P2: harness exercitado RED (execuções 1–2)** | Python dinâmico não universal | STATIC |
@@ -563,7 +622,9 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | Confinamento | `PATH` envenenado, `LD_PRELOAD`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, replace refs, config/hook, expressão de revisão, rebind de path | rebind: **P2 PASS**; resto B3 |
 | Transporte | 9 headers S0, `+5`, `1_0`, `007`, tab, CRLF, NUL, partido, longo, `missing`, `ambiguous`, prefetch, body antes da admissão, autenticar A e entregar B, byte final errado | `missing` e gramática: P2b; resto B3 |
 | Recursos | gotejamento lento, filho travado, SIGSTOP, flood de stderr, backpressure de stdin, memory hog, deadline, R4-3 com causa errada, stderr sensível | TF5-D e rlimit: **P2**; resto B3 |
-| Término externo (S1B-REV-02) | SIGTERM sem handler, SIGKILL do reader, PDEATHSIG com neto `setsid`, init de pidns com e sem handler, sinal duplo durante o teardown | **P2c T1–T7**; sinal duplo: B2 |
+| Término externo (S1B-REV-02) | SIGTERM sem handler, SIGKILL do reader, PDEATHSIG com neto `setsid`, init de pidns com e sem handler | **P2c T1–T7** (mecanismo de handler do P2c ≠ mecanismo congelado) |
+| Sinal controlado (B-LIF-09) | handler que levanta, sinal durante o teardown, sinal duplo, select bloqueado não acordado | **B2** |
+| Identidade de pidns (B-RC-06) | pidns não privado, init de outro pidns, procfs do host, expectativa auto-derivada | **B2** (domínio exato exige root) |
 | Informação de falha (S1B-REV-04) | as 7 combinações de primária, close e teardown | tabela §15; B1–B3 |
 | Lifecycle | TF5-A (exceção no setup do filho), TF5-B (filho existe e o construtor falha), TF5-C (`BaseException` pós-spawn), TF5-D (travado antes do protocolo), TF5-E (falha pré-exec), TF5-F (setsid), TF5-G (reuso real de PID), falha de close, estado D, erro primário com sobrevivente | **TF5-A..J: P2 PASS em A e B**; estado D: `gate_unavailable` |
 
@@ -621,7 +682,7 @@ Todo mutante precisa morrer **pelo discriminador pretendido** (`Killed(M) BY Int
 - mutante com causa inferida (B-RES-06);
 - mutantes de precedência e mutante que colapsa dimensões de `FailureOutcome` (B-OUT);
 - mutante com handler de sinal que levanta, mais sinal duplo durante o teardown (B-LIF-09);
-- mutante sem a verificação da pré-condição de pidns (B-LIF-08);
+- mutante sem a verificação da pré-condição de pidns (B-LIF-08); mutante que aceita `getpid()==1` sem comparar `pidns_identity` (B-RC-06);
 - witness do ramo "não é filho" da prova de filiação (S1B-REV-07; **obrigatório para qualificar B2**).
 
 **O harness sai ≠ 0 em falha** (exercitado: execuções 1 e 2 do P2 falharam e foram diagnosticadas; ver `experiments/README.md`).
@@ -660,7 +721,7 @@ A lei da #354 vale para todo fd novo: o novo dono é adquirido antes de o anteri
 
 | Processo | Criado por | Dono | Identidade | Fim |
 |---|---|---|---|---|
-| reader dedicado | #350 (U3) | #350 | — | fora do escopo da S1-B |
+| reader dedicado | #350 (U3), como **init (PID 1) de um PID namespace privado** com mount namespace privado e procfs desse pidns | #350 | `pidns_identity` fornecida pelo host, verificada pela S1-B (B-RC-06) | morte do reader → o kernel encerra o namespace inteiro (B-LIF-08) |
 | filho Git | reader (`Popen`) | reader (atribuição do kernel), desde antes de existir | pidfd + prova de filiação | teardown (§14) |
 | netos, inclusive `setsid` | Git ou helper | reader (subreaper) | pidfd + prova de filiação | teardown |
 
@@ -764,7 +825,7 @@ may_claim:   # após a qualificação de cada slice, nunca por este freeze
   - strict_git_object_transport_framing
   - zero_body_prefetch_before_admission
   - per_object_resource_enforcement_mechanism
-  - lifecycle_ownership_from_spawn                    # controlled_exit_domain + external_termination_domain (pidns precondition, D-B-LIFE-PIDNS)
+  - lifecycle_ownership_from_spawn                    # controlled_exit_domain + external_termination_domain (pidns precondition, D-B-LIFE-PIDNS ADOPT); B-LIF-09 qualified only in B2
   - zero_survivors_or_typed_refusal
   - failure_information_preserved_across_precedence   # FailureOutcome, 3 dimensions
   - content_address_authentication_of_delivered_object_bytes
@@ -803,12 +864,14 @@ Adjudicadas pelo mantenedor em #301 [5905959720](https://github.com/mglpsw/aiops
 | D-B-SPAWN-MECHANISM | DEFER_TO_CAUSAL_SPIKE → **P2: A selecionado** | §14 |
 | D-B-USERNS | AUTHORIZED_CONTRACTION | `initial_user_namespace_only` (V1); não é lei universal |
 | D-B-GIT-FLOOR | ADOPT | lazy fetch estruturalmente irrelevante (P2b); piso por recurso usado (§24) |
-| D-B-SAFE-DIR | ADOPT | `maintainer_interpretation`: escopo de comando `-c`, valor admitido `*`; a heurística de ownership do Git **não** é autoridade da fronteira da S1-B (§10; P2c REV06) |
+| D-B-SAFE-DIR | ADOPT | escopo de comando mínimo (5905959720) |
+| **D-B-SAFE-DIR-VALUE** | **ADOPT** ([5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)) | `-c safe.directory=*` numa única invocação autorizada do Git; configuração ambiente proibida; a heurística de ownership do Git **não** é autoridade da fronteira da S1-B; o comportamento do Git 2.43 com `GIT_DIR` explícito é só evidência de suporte |
+| **D-B-CAP-TCB** | **AUTHORIZED_CONTRACTION** ([5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)) | proposição funcional inalterada (Git herda só os fds admitidos); garantia contraída de prova direta pré-exec para census do reader + premissa TCB do subprocess do CPython 3.11; A selecionado, B fallback; `may_not_claim: direct_pre_exec_fd_proof_under_mechanism_A` |
 | D-B-R43 | ADOPT | Policy B; `ReportedCauseRequiresObservedTruthMaker`; números da #320 |
 | D-B-PRECEDENCE | ADOPT | `unit_teardown_incomplete > reader_descriptor_close_failed > primary_failure`; diagnóstico primário preservado |
 | D-B-CENSUS | ADOPT | helper S1-B dedicado; census S1-A intocado |
 | D-B-CI | ADOPT | #363 independente; bloqueia só a qualificação pesada de B2 e B3 |
-| **D-B-LIFE-PIDNS** | **PENDENTE (correction round 1)** | reader = init de um PID namespace privado estabelecido por #350 no userns inicial, verificado pela S1-B (§4, §14). Se rejeitado sem mecanismo equivalente → `STOP_SPAWN_LIFECYCLE_UNCLOSED` |
+| **D-B-LIFE-PIDNS** | **ADOPT** ([5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542)) | `decision: reader_is_pid1_of_private_pid_namespace`; `userns: initial`; `mountns: private`; `procfs: bound_to_reader_pidns`; `established_by: "#350"`; `verified_by: S1B`; `exact_domain_positive: required_before_B2_qualification` |
 
 **Nota:** a leitura de D-B-SAFE-DIR (escopo = uma invocação `-c`, valor `*`) foi reavaliada na correction round 1 (S1B-REV-06). O truth-maker são as propriedades próprias da S1-B (§10), e não a heurística do Git.
 
@@ -830,7 +893,10 @@ P2_DISPOSITION:
       A_retained: true
       A_fd_inheritance: "reader side observed; child-side closure delegated to CPython (TCB premise), not directly proved"
       B: "fallback if a direct in-child pre-exec proof becomes required"
-      lifecycle: "external termination closed by pidns-init precondition (P2c T5); pending D-B-LIFE-PIDNS"
+      lifecycle: "external termination closed by pidns-init precondition (P2c T5); D-B-LIFE-PIDNS ADOPT (5915365542)"
+    correction_round_2:
+      D-B-CAP-TCB: "AUTHORIZED_CONTRACTION: functional unchanged, assurance contracted to the CPython TCB premise"
+      B-LIF-09_evidence: "P2c used a raising handler; it does not qualify the frozen non-raising wakeup-fd mechanism (B2)"
 ```
 
 **Matriz P2** (mecanismo × obrigação × positivo, contramodelo e discriminador × resultado; A e B idênticos):
@@ -878,7 +944,7 @@ Busca que sustenta as negativas (escopo `app/` e `scripts/` em `ab92e89`):
 |---|---|---|---|---|---|---|
 | Aceitos explicitamente | Linux com pidfd completo; x86_64/aarch64; CPython 3.11; userns inicial; sha1 e sha256 (piso); objetos commit, tree, blob e tag; loose e pack | §4, §24 | P2, P2b | — | D-B-USERNS, D-B-GIT-FLOOR | B2, B3 |
 | Não suportados, e onde está escrito | userns não inicial, rootless, kernel sem pidfd, Git abaixo do piso, estado D (declarado), NFS/FUSE (#320): §4, §13, §14 e §24 deste freeze | idem | — | — | adjudicação | — |
-| Decisão implícita restante | nenhuma identificada. O valor de `safe.directory` está explicitado (§10) e marcado para a revisão (§29) | — | — | — | — | revisão independente |
+| Decisão implícita restante | nenhuma identificada. O valor de `safe.directory` foi adjudicado pelo mantenedor (D-B-SAFE-DIR-VALUE, 5915365542) | — | — | — | — | revisão independente |
 
 **§4 Positive / negative corpus**
 
@@ -929,7 +995,8 @@ P3_DISPOSITION:
     canonical_git_object_preimage: {form: "<type> SP <decimal-size> NUL <body>", authority: real_git, qualification: parity_with_real_git}
   own_pack_reader: false
   declared_gaps_for_B2: [waitid_ECHILD_non_child_candidate_witness (mandatory for B2 qualification), double_signal_during_teardown, pidns_witness_in_exact_V1_domain (root)]
-  pending_decisions: [D-B-LIFE-PIDNS]
+  pending_decisions: []          # D-B-LIFE-PIDNS, D-B-CAP-TCB and D-B-SAFE-DIR-VALUE adjudicated (5915365542)
+  declared_gaps_for_B2_added_round_2: [B-LIF-09 final mechanism witnesses, B-RC-06 pidns identity in the exact domain]
 ```
 
 ### 30.3 Convergence boundaries (para o loop de revisão)
@@ -956,14 +1023,14 @@ A API aditiva de B-HO-02 **não** é `STOP_S1B_REQUIRES_S1A_SEMANTIC_CHANGE`: el
 ### 30.5 Final disposition
 
 ```yaml
-disposition: S1B_FREEZE_CORRECTIONS_APPLIED_AWAITING_REVIEW
+disposition: S1B_FREEZE_ADJUDICATION_ROUND_READY_FOR_INDEPENDENT_REVIEW
 reviewed_head: b4a572a97465472d94165977edb05f720faf44eb     # independent review → S1B_FREEZE_CORRECTION_REQUIRED
-correction_round: 1
-independent_review_of_corrected_head: NOT_PERFORMED
-pending_decisions: [D-B-LIFE-PIDNS]
+correction_rounds: [1 (3dc2965), 2 (adjudication round)]
+independent_review_of_current_head: NOT_PERFORMED
+pending_decisions: []
 ArchitectureFreezeReady: false
 ImplementationGrant: false
-next_authorization: "revisão independente do exact head corrigido + adjudicação de D-B-LIFE-PIDNS"
+next_authorization: "revisão independente do novo exact head"
 ```
 
 ### 30.6 Correction round 1 (review independente de `b4a572a`)
@@ -973,11 +1040,11 @@ Cada finding foi **reproduzido** antes de ser corrigido (`ReviewerObservation !=
 | Finding | Validação | Correção | Disposição |
 |---|---|---|---|
 | S1B-REV-01 Popen/fd closure | VALID (P2c REV01: `preexec` vê `[0..10]`, exec vê `[0,1,2]`) | B-CAP-01/04/05, TCB, claim budget, P2: premissa delegada, não prova direta; B como fallback | FIXED |
-| S1B-REV-02 término assíncrono | VALID (T1: SIGTERM → 2 sobreviventes; T3 SIGKILL; T4 PDEATHSIG insuficiente) | domínios de término; handlers que só registram + wakeup fd; pidns-init (T5 = 0 sobreviventes); B-LIF-08/09; D-B-LIFE-PIDNS pendente | FIXED (condicionado a D-B-LIFE-PIDNS; rejeição → STOP) |
+| S1B-REV-02 término assíncrono | VALID (T1: SIGTERM → 2 sobreviventes; T3 SIGKILL; T4 PDEATHSIG insuficiente) | domínios de término; handlers que só registram + wakeup fd; pidns-init (T5 = 0 sobreviventes); B-LIF-08/09; **D-B-LIFE-PIDNS ADOPT na rodada 2** | FIXED |
 | S1B-REV-03 peek | VALID (ENOTSOCK; readline e read(4096) consomem o body) | `MSG_PEEK` removido; leitor exato por byte; buffers proibidos; discriminador `FIONREAD` | FIXED |
 | S1B-REV-04 informação de falha | VALID ("primária preservada" perdia o close sob teardown) | `FailureOutcome` com 3 dimensões + matriz de 7 combinações | FIXED |
 | S1B-REV-05 cópias da preimage | PARTIAL (a contagem "2 → 3" misturava construtor e verificador) | regra B3 MUST/MUST_NOT; helpers registrados como não adequados como estão; recontagem | ACCEPTED_LIMITATION (+ contagem corrigida) |
-| S1B-REV-06 safe.directory | VALID como limitação (a justificativa anterior era fraca) | `maintainer_interpretation`; truth-maker próprio da S1-B; fato P2c REV06 | ACCEPTED_LIMITATION |
+| S1B-REV-06 safe.directory | VALID como limitação (a justificativa anterior era fraca) | adjudicação do mantenedor (D-B-SAFE-DIR-VALUE, rodada 2); truth-maker próprio da S1-B; fato P2c REV06 como suporte | ACCEPTED_LIMITATION |
 | S1B-REV-07 não-filho | VALID (`not_child_skipped == 0` em todas as execuções) | `ArchitectureMechanismSpecified != ImplementationBranchQualified`; witness obrigatório para B2 | ACCEPTED_LIMITATION |
 | S1B-REV-08 lazy fetch | INVALID como defeito (config sem remote/promisor/partialclone + `protocol.allow=never` + `missing` local) | nenhuma; a claim segue delimitada ao caminho de aquisição de objetos modelado, sem afirmar "nenhuma interação externa possível" | FALSE_POSITIVE |
 
@@ -985,3 +1052,18 @@ Cada finding foi **reproduzido** antes de ser corrigido (`ReviewerObservation !=
 - Handlers que **levantam** criariam janelas de exceção assíncrona (família N3 da S1-A). Por isso o freeze exige handlers que só registram, com wakeup fd. É a mesma família, não uma classe nova.
 - A pré-condição de pidns muda: a vista do procfs (B-RC-02 verifica `/proc/self`), a ideia de "dedicado" (o init também reapeia órfãos, o que é compatível) e a semântica de SIGTERM vindo do ancestral (ignorado sem handler, T6).
 - Nenhuma classe nova de falha material foi identificada. **`STOP_NEW_FAILURE_CLASS` não disparado.**
+
+### 30.7 Correction round 2 (adjudicação do mantenedor [5915365542](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5915365542))
+
+| Correção | Conteúdo |
+|---|---|
+| D-B-CAP-TCB | REV-01 registrado como `AUTHORIZED_CONTRACTION`: proposição funcional inalterada (`GitGetsOnlyAdmittedFDs`); garantia contraída para a premissa TCB do subprocess do CPython 3.11 (§8, §29) |
+| D-B-LIFE-PIDNS | ADOPT: `pidns_identity` entra na expectativa (B-RC-01); identidade de pidns e vínculo do procfs verificados como controles distintos (B-RC-06); pidns, mntns e procfs privados estabelecidos pelo #350 antes da queda de privilégios (§4, §22); refinamento de U3 na #350 (5915369380) |
+| D-B-SAFE-DIR-VALUE | ADOPT: "adjudicação", não "interpretação"; o comportamento do Git 2.43 é só evidência de suporte (§10, §29) |
+| Evidência de B-LIF-09 | P2c T1/T2/T6/T7 recalibrados: estabelecem insuficiência do default, interceptabilidade e possibilidade de limpeza; **não** qualificam o mecanismo final (handler sem raise + wakeup fd), cuja demonstração fica em B2 (§14, §16, §17) |
+
+**Novelty lane (sobre o delta da rodada 2):**
+- **Nova autoridade?** Não. `pidns_identity` é fornecida pelo #350, que já é dono de `reader_context_establishment` e agora o refinou explicitamente. A S1-B só observa e compara.
+- **Circularidade?** Não. A cadeia é `#350 estabelece → expectativa explícita → observação e comparação pela S1-B`. B-RC-01 proíbe derivar a expectativa do reader, e B-RC-06 separa a identidade (fornecida vs. observada) do vínculo do procfs.
+- **Conflito de dono?** Não. Os itens de pidns, mntns e procfs pertencem ao #350 (5915369380), e a S1-B fica só com a verificação.
+- **`STOP_NEW_FAILURE_CLASS`: não disparado.**

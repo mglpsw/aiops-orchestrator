@@ -25,7 +25,7 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
 | `p2_spawn_spike_results.json` | resultado da execução 5 (44/44 PASS) |
 | `p2b_git_facts_results.json` | resultado do P2b (PASS em sha1 e sha256) |
 | `p2c_corrections.py` | P2c, correction round 1: discriminadores de S1B-REV-01 (visão de fds em `preexec` vs. pós-exec), REV-02 (SIGTERM/SIGKILL, handler, PDEATHSIG, reader como init de pidns privado), REV-03 (`MSG_PEEK` em pipe; consumo real via `FIONREAD`) e REV-06 (`safe.directory` com dono estrangeiro simulado) |
-| `p2c_term_reader.py` | reader de término do P2c; reutiliza `spike_reader.py` sem alterá-lo |
+| `p2c_term_reader.py` | reader de término do P2c; reutiliza `spike_reader.py` sem alterá-lo. **O handler aqui LEVANTA `TerminationRequested`, o que não é o mecanismo congelado de B-LIF-09** (handler sem raise + `set_wakeup_fd`); o mecanismo final é qualificado em B2 (freeze §14) |
 | `p2c_corrections_results.json` | resultado do P2c (13/13 PASS; estável em 3 execuções) |
 
 ## Reprodução
