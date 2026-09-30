@@ -209,10 +209,10 @@
       "test collection preserved base→head under the CI marker selection (v1_v2_isolation.collection_preservation)",
       "RED witness before patch (behavioral slices)",
       "focused GREEN",
-      "full-suite regression on the exact HEAD via both CI jobs, enforced procedurally by PRE_MERGE_GATE (v1_v2_isolation.regression_gate); local v1 subset is iteration convenience only",
+      "full-suite regression via both CI jobs, with tested_commit/tested_tree recorded and bound to reviewed_head per v1_v2_isolation.ci_evidence_identity; enforced procedurally by PRE_MERGE_GATE; local v1 subset is iteration convenience only",
       "mutation/anti-vacuity for critical mechanisms",
       "git diff --check",
-      "full required CI on exact HEAD",
+      "both CI jobs green, with CI evidence identity recorded (v1_v2_isolation.ci_evidence_identity)",
       "independent review",
       "post-READY Codex gate",
       "PRE_MERGE_GATE"
@@ -325,7 +325,14 @@
         "procedural_checks": {
           "C1_scope": "`git diff --name-status <base>..<head>` is pasted in the PR and every path is shown to be in the declared allowlist (deterministic; no bespoke checker)",
           "C2_policy_immutability": "`git diff --quiet <base> <head> -- campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json` exits 0 in a behavioral slice (the isolation policy changes only in a dedicated contract slice under an owner decision)",
-          "C3_no_new_v2_dependency": "`git diff <base>..<head> -- <allowlisted non-campaign paths> | grep -E '^\\+' | grep -Ei '_v2\\b|agent_review_v2|agent-review/v2|agentreview-v2|/v2/|target_profile_yaml_corpus|evals/agent_review_v2'` is empty or every hit is adjudicated in the PR. Deliberately over-inclusive: it matches *_v2 identifiers (absolute, relative, package-form, multiline imports) and path/module spellings of v2 surfaces without a _v2 identifier (schemas/agent-review/v2, templates/agentreview-v2-target-pack, tests/agent_review/target_profile_yaml_corpus, fixtures/v2). Before each slice, re-read v2_surface_reference for surfaces with other spellings and add them to the pattern in the PR. A v1 slice never introduces a dependency on v2 code, data or evals.",
+          "C3_no_new_v2_dependency": {
+            "obligation": "a v1 slice does not introduce a dependency of v1 code on v2 code, v2 data/schemas/templates or v2 evals",
+            "evidence": "explicit adjudication in the slice PR of every added or changed import, file read, path literal and subprocess target in the diff of allowlisted non-campaign paths (independent review re-checks it); the adjudication lists each such line and its target",
+            "triage_only": "`git diff <base>..<head> -- <allowlisted non-campaign paths> | grep -E '^\\+' | grep -Ei 'v2'` is an INFORMATIVE triage aid that points the adjudication at likely lines; it is not exhaustive and an empty result is not evidence of absence",
+            "pass_rule": "PASS only when the adjudication covers every changed import/read/path/subprocess line; an inconclusive or incomplete adjudication is not PASS",
+            "owner_requirement_check": "no owner requirement for complete MECHANICAL detection was found (#221 body and comments; traversal task contract, which lists STOP_UNEXPECTED_V2_COUPLING as a stop condition, not a detector). If the owner requires mechanical completeness, that is PENDING_HUMAN_DECISION; this contract does not accept the weaker guarantee on the owner's behalf.",
+            "superseded": "round-6/7 wording ('deliberately over-inclusive ... all caught', 'never introduces') is superseded: it promised completeness from a growing regex"
+          },
           "C4_shared_paths": "any allowlisted shared_v1_owned path carries the v2-unchanged justification (shared_rule)"
         }
       },
@@ -352,11 +359,27 @@
           "a name scan for 'v2' over-matches shared/historical docs (docs/engineering, docs/checkpoints, docs/adr, AGENT_REVIEW_V1_V2_COMPATIBILITY.md)"
         ]
       },
-      "regression_gate": "NORMATIVE (procedural): both CI jobs must be green on the exact HEAD: `Validate repository` (ci.yml, runs scripts/test.sh = full suite minus integration/requires_runtime/requires_docker/requires_prometheus/requires_network markers) and `AgentReview release gates` (ci.yml, runs scripts/ci_validate.sh: section 8 same selection, section 9 the requires_network tests, which include v2 content-extraction/redaction E2E, diff acquisition, transport, isolated executor and trusted-check tests). GitHub enforces nothing here: master has required_status_checks=null, required_pull_request_reviews=null and no rulesets (observed 2026-09-30), so this gate is enforced by the campaign's PRE_MERGE_GATE, not by the forge. gate_unavailable on GitHub runners (non-root): v2 tests that skip without root, sudo broker, unprivileged user namespaces, casefold tmpfs, POSIX ACLs, inotify or mknod (test_c3_focal_obligations, test_isolated_executor_v2, test_physical_snapshot_v2, test_target_pack_epoch*_v2, test_trusted_*_v2). A slice that changes a shared_v1_owned path must additionally run the full suite locally and report which of those tests ran or skipped; it may not claim them as passed. A local v1 subset is iteration convenience only. CI IDENTITY: both jobs check out the pull_request default ref, i.e. the synthetic merge commit refs/pull/<n>/merge, not the head SHA. CI evidence binds to the exact HEAD only if that merge commit's tree equals the head tree; PRE_MERGE_GATE fetches `pull/<n>/merge` and compares `<merge>^{tree}` with `<head>^{tree}` (unequal = evidence does not bind; STOP_PRE_MERGE_GATE_FAILED). V1-C0 at 69a8d4b0: merge parents ab92e89f + 69a8d4b0, merge tree == head tree == ff7d703a.",
+      "regression_gate": "NORMATIVE (procedural): both CI jobs must be green for the PR, with the tested commit/tree recorded and related to the reviewed head per ci_evidence_identity: `Validate repository` (ci.yml, runs scripts/test.sh = full suite minus integration/requires_runtime/requires_docker/requires_prometheus/requires_network markers) and `AgentReview release gates` (ci.yml, runs scripts/ci_validate.sh: section 8 same selection, section 9 the requires_network tests, which include v2 content-extraction/redaction E2E, diff acquisition, transport, isolated executor and trusted-check tests). GitHub enforces nothing here: master has required_status_checks=null, required_pull_request_reviews=null and no rulesets (observed 2026-09-30), so this gate is enforced by the campaign's PRE_MERGE_GATE, not by the forge. gate_unavailable on GitHub runners (non-root): v2 tests that skip without root, sudo broker, unprivileged user namespaces, casefold tmpfs, POSIX ACLs, inotify or mknod (test_c3_focal_obligations, test_isolated_executor_v2, test_physical_snapshot_v2, test_target_pack_epoch*_v2, test_trusted_*_v2). A slice that changes a shared_v1_owned path must additionally run the full suite locally and report which of those tests ran or skipped; it may not claim them as passed. A local v1 subset is iteration convenience only.",
       "collection_preservation": "NORMATIVE (procedural): the slice PR records `pytest --collect-only -q` node IDs under the CI marker selection on base and head; any node ID present on base and absent on head is STOP unless the task contract names it. Changed or added test files must not define `pytest_plugins` or `pytest_*` hook functions. This closes test-selection tampering (e.g. a test module registering itself as a plugin to deselect v2 tests), which the file-level scope check cannot see.",
       "residual_limitation": "v1/v2 isolation is NOT statically proven. It is carried by positive write scope (C1), policy immutability (C2), no new v2 dependency (C3), shared-path justification (C4), collection preservation, the full-suite regression_gate (behavioral, bounded by existing v2 test coverage and runner gate_unavailable tests) and independent review of each slice diff. A change to a v1_exclusive module that alters v2 behavior through an existing undetected path and no v2 test would not be caught.",
       "principle": "isolation rests on positive write scope and behavioral full-suite evidence; no v1/v2 classifier of the tree carries the gate (every classifier attempted in review proved incomplete)",
-      "executable_checker_removed": "An executable scope checker (evidence/v1_scope_check.py) was prototyped in this slice and removed after five consecutive post-READY Codex rounds each found a new P2 in it (scope self-expansion, module-form references, fnmatch '/' crossing, self-modification of its own guard, false-blocking of admissible tests, missed v1->v2 imports). A bespoke static checker became its own unbounded verification surface inside a contract-only slice. The obligations it tried to enforce are kept as the deterministic git commands in procedural_checks; static detection of v1->v2 reach through existing code is not claimed (see residual_limitation)."
+      "executable_checker_removed": "An executable scope checker (evidence/v1_scope_check.py) was prototyped in this slice and removed after five consecutive post-READY Codex rounds each found a new P2 in it (scope self-expansion, module-form references, fnmatch '/' crossing, self-modification of its own guard, false-blocking of admissible tests, missed v1->v2 imports). A bespoke static checker became its own unbounded verification surface inside a contract-only slice. The obligations it tried to enforce are kept as the deterministic git commands in procedural_checks; static detection of v1->v2 reach through existing code is not claimed (see residual_limitation).",
+      "ci_evidence_identity": {
+        "record_per_run": [
+          "base_sha",
+          "reviewed_head_sha",
+          "tested_commit_sha (the commit actually checked out, read from the job log)",
+          "tested_tree_sha",
+          "merge parents of tested_commit_sha",
+          "run_id",
+          "job_id per job",
+          "event/ref context (pull_request refs/pull/<n>/merge)"
+        ],
+        "fact": "both ci.yml jobs use actions/checkout@v4 without `ref` under pull_request, so they test the synthetic merge commit refs/pull/<n>/merge, not reviewed_head_sha; ci.yml is not changed by this campaign",
+        "what_tree_equality_supports": "if tested_tree_sha == reviewed_head tree and the merge parents are (base_sha, reviewed_head_sha), the CI evidence supports claims about the CONTENT of reviewed_head (tests over the tree). It does NOT establish commit identity or equivalence of the whole execution",
+        "commit_sensitive_obligations": "any obligation whose outcome depends on the exact commit (git metadata, SHA-bound provenance, history) is not covered by this evidence and needs its own proof",
+        "procedure": "PRE_MERGE_GATE records the fields above from the job logs and the fetched pull/<n>/merge ref; missing or inconsistent fields = STOP_PRE_MERGE_GATE_FAILED"
+      }
     },
     "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
   }

@@ -240,7 +240,7 @@
         "scripts/github_agent_review.py:43-54,438-450 (L-LEGACY inline regex)"
       ],
       "consumer": [
-        "L-CHUNK: consumer wrapper sends each chunk payload whole to Router /v1/chat/completions (full raw git diff block per file + repo-relative paths)",
+        "L-CHUNK: consumer wrapper sends each chunk payload whole to Router /v1/chat/completions (full raw git diff block per file + repo-relative paths); observed at AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b: .github/workflows/agent-review.yml (blob 7fff440c400e7294b4c333a4f45d5757957082b4, envelope :592-620), scripts/run-aiops-router-chunk-attempts.py (blob 35d8befa2860ef1b93182bfacfefec7b8ad96020), scripts/call-agent-router.sh (blob 5df7ea1a0e4267a66f097be234ed8362970b9dd8)",
         "L-LEGACY, per command: `/agent review llm` -> _build_sanitized_bundle (github_agent_review.py:1415-1589, called :2044/:2795): PR title/body (:1441-1442), raw paths, full patch only for PRs with <=3 files and <=30,000 diff chars, <=2,000 chars per file / 6,000 total of head source for some frontend files (_fetch_file_at_ref :1489, :2001), whole bundle truncated to MAX_LLM_BUNDLE_CHARS=32,000 (:29, :1659); `/agent ask` -> _build_ask_bundle (:1687-1721, called :2118): question, title/body, paths + 180-char patch snippets, no file fetch, truncated to MAX_BUNDLE_CHARS=6,000 (:28). Router call :2128-2157."
       ],
       "required_evidence": [
@@ -271,7 +271,7 @@
         "app/agent_review/final_synthesizer.py:167-255 (render_final_review_markdown) and :606-617 (_sanitize_review/_sanitize_markdown)"
       ],
       "consumer": [
-        "AgentEscala scripts/consume-aiops-quality-gate.py (publication_digest) and agent-review-publish.yml / scripts/aiops/publication_comment.mjs (digest recheck, no recomputation)"
+        "observed at AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b: scripts/consume-aiops-quality-gate.py (blob 94528fab46d0b0f7faccce52eaa185dcaf0b2e68; publication_digest), .github/workflows/agent-review-publish.yml (blob dc379b1ffbc4b8b2e28ad76ab272981a1e4b8de0) and scripts/aiops/publication_comment.mjs (blob 68dfd71a4a2669a67dc7900fe8bb7e568b348038) (digest recheck, no recomputation)"
       ],
       "required_evidence": [
         "dated historical evidence: AgentEscala #803 canary, producer run 34813119876, publisher run 34813217373, source_digest == published_digest ff0ce3b6…909c",

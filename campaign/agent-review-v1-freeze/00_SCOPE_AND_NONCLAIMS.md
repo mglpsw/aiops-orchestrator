@@ -50,7 +50,7 @@ Qualquer **aceitação de risco** ou **redução funcional** exige decisão huma
 
 | Lane | Entrada | Estado observado | Papel |
 |---|---|---|---|
-| **L-CHUNK** (engine v1) | `scripts/aiops-review-{intake,plan-chunks,build-payloads,parse-chunks,synthesize,quality-gate,telemetry,false-positives}.py` + `app/agent_review/` (não-`_v2`) | ativa em produção no consumer AgentEscala (CT104), pin `v0.22.0` | lane principal; objeto primário deste contrato |
+| **L-CHUNK** (engine v1) | `scripts/aiops-review-{intake,plan-chunks,build-payloads,parse-chunks,synthesize,quality-gate,telemetry,false-positives}.py` + `app/agent_review/` (não-`_v2`) | ativa em produção no consumer AgentEscala (CT104), pin `v0.22.0` (`AgentEscala@e9cc03ff:.github/workflows/agent-review.yml:18-19`, blob `7fff440c`) | lane principal; objeto primário deste contrato |
 | **L-LEGACY** | `scripts/github_agent_review.py` via `.github/workflows/agent-review.yml` (`issue_comment`, `/agent review llm`, `/agent ask`) | armada neste repo (vars/secret presentes); última execução observada 2026-05-04 | lane legada; relevante para egress (#315) |
 
 A inferência da L-CHUNK **não** ocorre neste repositório: os CLIs são offline; o
