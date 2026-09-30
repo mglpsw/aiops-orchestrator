@@ -1,8 +1,8 @@
 # #301-S1-B: Architecture Freeze, "safe reader context"
 
 ```yaml
-status: ARCHITECTURE_FREEZE_DRAFT      # docs-only; correction rounds 1 e 2 aplicadas (adjudicação do mantenedor 5915365542); aguarda revisão independente
-ArchitectureFreezeReady: false         # passa a true só por adjudicação do mantenedor sobre o exact head revisado
+status: ARCHITECTURE_FREEZE_READY      # docs-only; ratificado pelo mantenedor em #301 5917390110 (revisão independente limpa de b92a102)
+ArchitectureFreezeReady: true          # adjudicação do mantenedor, #301 5917390110
 ImplementationGrant: false             # ArchitectureFreezeReady != ImplementationGrant
 implementation: NOT_STARTED            # B1, B2, B3 não iniciadas
 owner_issue: "#301"                    # Refs #301; esta PR não fecha nenhuma issue
@@ -31,10 +31,11 @@ forge_records:
   "#350 aceitação de responsabilidade U3": 5905962787
   "#301 adjudicação do mantenedor, rodada 2 (D-B-CAP-TCB, D-B-LIFE-PIDNS, D-B-SAFE-DIR-VALUE)": 5915365542
   "#350 refinamento U3 por D-B-LIFE-PIDNS": 5915369380
+  "#301 ratificação ArchitectureFreezeReady": 5917390110
   "#46 reconciliada (2026-09-30)": "S1-A INTEGRATED; S1-B próxima, só planejamento; C4 incompleto; G5 não atingido"
 state:
   S1_A: INTEGRATED
-  S1_B: {architecture: FREEZE_DRAFT, implementation: NOT_STARTED}
+  S1_B: {architecture: FREEZE_READY, implementation: NOT_STARTED}
   S1_C: NOT_STARTED
   S1_D: NOT_STARTED
   S_D: NOT_STARTED
@@ -588,7 +589,7 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | B-CAP-01..05 | fds do reader tipados e observados; herança no filho **dentro do domínio TCB declarado** | adjudicação D-B / S1-B | reader (direto); Git (delegado) | census tipado do reader + `CLOEXEC`; **premissa delegada** `_posixsubprocess` `close_fds` | census pré- e pós-spawn | só a allowlist chega (corroboração pós-exec) | TF5-H, TF5-I, TF5-J, TF5-J2 | ablação `no_fd_census`; P2c REV01 (preexec vê `[0..10]`) | **P2 PASS**; P2c; B2 | **não** é prova direta pré-exec em A; fallback B | LIVE |
 | B-PRV-01..04 | caps = 0; NNP antes do exec | CONTRACT L1220–1227 / S1-B | reader e Git | `prctl` + read-back; status do filho | reader dedicado | filho com `NoNewPrivs: 1` | setuid, setgid, file caps, X1, EPERM em kill | **P2: ablação `no_nnp` → 0** | P2 (NNP); B2 (X1 com root) | NNP não bloqueia LSM, userns nem IPC | LIVE |
 | B-EXE-01 | acesso ancorado no snapshot admitido | freeze S1-A §19 / S1-B | Git | `fchdir(fd)` + cwd do filho == inode | cwd herdado | cwd == snapshot | rebind de path + decoy | **P2: ablação `path_cwd` → decoy** | P2 PASS; B3 | Git não toca outro arquivo: não afirmado | MIXED |
-| B-EXE-02..03 | env e args autorados; `safe.directory` por comando; lazy fetch irrelevante | D-B-SAFE-DIR, D-B-GIT-FLOOR / S1-B | Git | dict de env + argv + config do produtor | spawn | `cat-file` funciona | `LD_PRELOAD`, `GIT_ALTERNATE_*`, replace ref, config/hook | mutantes que removem flags; mutante que herda env | P2b; B3 | proveniência do binário é da #350 | MIXED |
+| B-EXE-02..03, B-EXE-05 | env e args autorados; `safe.directory` por comando; lazy fetch irrelevante | D-B-SAFE-DIR, D-B-GIT-FLOOR / S1-B | Git | dict de env + argv + config do produtor | spawn | `cat-file` funciona | `LD_PRELOAD`, `GIT_ALTERNATE_*`, replace ref, config/hook | mutantes que removem flags; mutante que herda env | P2b; B3 | proveniência do binário é da #350 | MIXED |
 | B-EXE-04 | request só com OID completo lowercase | #301 / S1-B | Git | regex de bytes | validação antes do write | OID válido | `HEAD:x`, `C^{tree}`, maiúscula, curto | mutante leniente | B3 | — | STATIC |
 | B-TRN-01 | header estrito em bytes | CONTRACT L591 / S1-B | transporte | parser de bytes | máquina de estados | **P2b: 26 headers reais** | 9 do S0 + `+5`, `1_0`, `007`, tab, CRLF, NUL, partido, longo, tipo ou OID divergente, `missing`, `ambiguous` | mutante `int()`/`strip` | P2b; B3 | — | MIXED |
 | B-TRN-02 | zero prefetch | Codex 4117693716 / S1-B | transporte | `FIONREAD` == `size+1` na admissão | `os.read(fd,1)` até LF, com teto | body inteiro no pipe | fill de 64 KiB do S0; `BufferedReader.readline`; `read(4096)`; `MSG_PEEK` em pipe | **P2c REV03**: readline e read(4096) → 0/11; bytewise → 11/11; peek → ENOTSOCK | P2c; B3 | — | LIVE |
@@ -1023,14 +1024,14 @@ A API aditiva de B-HO-02 **não** é `STOP_S1B_REQUIRES_S1A_SEMANTIC_CHANGE`: el
 ### 30.5 Final disposition
 
 ```yaml
-disposition: S1B_FREEZE_ADJUDICATION_ROUND_READY_FOR_INDEPENDENT_REVIEW
+disposition: S1B_ARCHITECTURE_FREEZE_READY      # #301 5917390110
 reviewed_head: b4a572a97465472d94165977edb05f720faf44eb     # independent review → S1B_FREEZE_CORRECTION_REQUIRED
 correction_rounds: [1 (3dc2965), 2 (adjudication round)]
-independent_review_of_current_head: NOT_PERFORMED
+independent_review_of_b92a102: {material_findings: 0, authority_conflicts: 0, owner_conflicts: 0, obligation_domains: 11/11_CONFORMANT, S1B-REV-NIT-01: ACCEPTED_NON_BLOCKING_EDITORIAL}
 pending_decisions: []
-ArchitectureFreezeReady: false
+ArchitectureFreezeReady: true
 ImplementationGrant: false
-next_authorization: "revisão independente do novo exact head"
+next_authorization: "grant humano separado para implementação (B1 → B2 → B3); Ready/merge da PR também exigem grant"
 ```
 
 ### 30.6 Correction round 1 (review independente de `b4a572a`)
