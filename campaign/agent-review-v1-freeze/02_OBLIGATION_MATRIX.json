@@ -139,7 +139,11 @@
             "anything_else": "any other non-empty top-level shape -> contracts_context_unsupported_shape; never silently discarded",
             "real_target_classification_at_blob_e0ca5684": "reserved: version, updated, system; domain mappings: calendar, swaps, coverage_export, audit, notifications, security, auth_admin (children only scalar / list[str] / list[rule-object]); top-level list[str]: response_model_rules; nothing unclassified"
           },
-          "string_list_sections": "named string-list sections (top-level or nested) are bounded advisory content: contract identity = top-level/containing key, section identity = list key, items = sanitized text; no claim_id, no covered/partial/not_covered/not_applicable, no recursive YAML (#221 comment 5920435231)"
+          "string_list_sections": "named string-list sections (top-level or nested) are bounded advisory content: contract identity = top-level/containing key, section identity = list key, items = sanitized text; no claim_id, no covered/partial/not_covered/not_applicable, no recursive YAML (#221 comment 5920435231)",
+          "admitted_shapes_note": "EXTENDED by top_level_discriminator (PR #367 post-Ready revision): the admitted shapes are those of the discriminator, which adds the top-level named list[str] contract",
+          "unsupported_note": "read together with top_level_discriminator: 'outside the admitted shapes' means outside the discriminator's admitted shapes",
+          "identity_note": "the listed domain keys are the owner's examples; top-level named list[str] contracts (e.g. response_model_rules) also carry contract identity per top_level_discriminator",
+          "not_relevant_rule_note": "STRENGTHENED by OBL-CL2-03.not_relevant_rule (adds: required source presence sufficient to evaluate applicability)"
         },
         "packs": {
           "target_shape": "packs is a mapping owned by the target with multiple live consumers; the engine does not require or cause a list conversion",
@@ -154,7 +158,7 @@
           ],
           "path_semantics": "frozen engine operator: case-sensitive fnmatch.fnmatchcase(canonical_repo_relative_path, pattern). This is NOT claimed identical cross-platform to AgentEscala's current fnmatch.fnmatch (which applies os.path.normcase; equal in practice on POSIX/CT104 only); filesystem glob semantics are not substituted",
           "selection": "explicit selected pack by EXACT pack id (when provided) UNION packs whose paths match files in the chunk; then applicable pack.domain_contract values select the corresponding top-level domain contracts",
-          "missing_domain": "an applicable pack whose domain_contract is absent/unreadable emits a typed obligation-degrading limitation",
+          "missing_domain": "If an explicitly applicable/selected pack NAMES a domain_contract that is absent or unreadable, emit a typed obligation-degrading limitation (owner decision 2, exact wording); likewise an explicit contract_bindings entry that resolves to no admitted contract identity -> selected_contract_domain_missing:<pack>:<contract> or an equivalent frozen code (#221 comment 5920712897). A pack that simply has no domain_contract field contributes nothing through it (EffectiveContractRefs: 'if present') and is not by itself a limitation.",
           "no_fuzzy": "for mapping form, fuzzy substring matching and semantic-group keyword guessing are not the authoritative applicability mechanism when explicit paths/domain_contract exist; legacy fallback may remain for legacy pack documents",
           "top_level_interface": {
             "reserved": [
@@ -172,7 +176,8 @@
             "effective_contract_refs": "EffectiveContractRefs(pack_id) = {pack.domain_contract if present} UNION contract_bindings.get(pack_id, []); exact identities deduplicated",
             "ownership": "concrete bindings are target-owned under AgentEscala#869 (owner-adjudicated examples: auth_admin -> security + auth_admin; backend_schema_contract -> response_model_rules); #367 freezes only the generic interface; no AgentEscala names hardcoded in the engine contract",
             "source": "#221 comments 5920712897 and 5920913247 (interface parts), incorporated by the PR #367 revision"
-          }
+          },
+          "path_semantics_history": "earlier wording 'fnmatch.fnmatchcase ... -- same as the target' superseded by #221 comment 5920913247: the target uses fnmatch.fnmatch; identity holds only on POSIX"
         }
       }
     },

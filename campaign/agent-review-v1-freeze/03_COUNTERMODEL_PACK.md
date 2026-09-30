@@ -51,7 +51,7 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 
 ### CM-CL2-02 — contratos do target descartados como "irrelevantes"
 - `_flatten_contract_rules` (`payload_cost_model.py:789-811`) exige `rules:` top-level em lista; `_flatten_review_packs` (`:843-858`) exige `packs:` em lista. O `.aiops/domain-contracts.yaml` da AgentEscala usa regras aninhadas sem `id`; `.aiops/review-packs.yaml` usa `packs:` como mapping.
-- **Identidade imutável da observação:** `mglpsw/AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b`, tip de `develop` de 2026-09-30T04:19:39Z até 18:44:59Z (quando `develop` avançou para `1d773507`); essa janela cobre todas as leituras desta campanha, que portanto são recuperáveis nesse commit. Os mesmos dois blobs estão presentes no head de #805 (`b85717420749…`), isto é, o run de #805 viu estes documentos. `.aiops/domain-contracts.yaml` blob `e0ca56844cceaba1afac325856e305ca1342257e` (chaves top-level: `version, updated, system, calendar, swaps, coverage_export, audit, notifications, security, auth_admin, response_model_rules, …`; sem `rules:`); `.aiops/review-packs.yaml` blob `16ae9a5d1d494f1128f3ed9b50a80d84e5797eec` (`packs:` é mapping: `calendar, operational_slots, admin_scale, swaps, coverage_export`). A slice V1-C2 reproduz por `git show e9cc03ff:<path>`/blob SHA, não pelo `develop` vivo.
+- **Identidade imutável da observação:** `mglpsw/AgentEscala@e9cc03ff76a383b34f2871e59542f1789ce9012b`, tip de `develop` de 2026-09-30T04:19:39Z até 18:44:59Z (quando `develop` avançou para `1d773507`); essa janela cobre todas as leituras desta campanha, que portanto são recuperáveis nesse commit. Os mesmos dois blobs estão presentes no head de #805 (`b85717420749…`), isto é, o run de #805 viu estes documentos. `.aiops/domain-contracts.yaml` blob `e0ca56844cceaba1afac325856e305ca1342257e` (chaves top-level, exatamente 11: `version, updated, system, calendar, swaps, coverage_export, audit, notifications, security, auth_admin, response_model_rules`; sem `rules:`); `.aiops/review-packs.yaml` blob `16ae9a5d1d494f1128f3ed9b50a80d84e5797eec` (`packs:` é mapping: `calendar, operational_slots, admin_scale, swaps, coverage_export`). A slice V1-C2 reproduz por `git show e9cc03ff:<path>`/blob SHA, não pelo `develop` vivo.
 - **Resultado falso:** ambos achatam para `[]`; todo chunk recebe contexto de contrato vazio e a limitação `contracts_context_not_relevant:<chunk>` — rótulo que afirma irrelevância quando a causa é forma não suportada.
 - **Evidência (dividida por passo):**
   - achatamento para `[]`: `REPRODUCED` em 2026-09-30 por `evidence/cm_cl2_02_repro.py`, que verifica a identidade git-blob de cada entrada antes de chamar `_flatten_contract_rules`/`_flatten_review_packs` reais. Saída: `domain-contracts blob=e0ca5684… top_level_rules=NoneType flattened=0` e `review-packs blob=16ae9a5d… packs_type=dict flattened=0`. Entradas obtidas por `gh api repos/mglpsw/AgentEscala/git/blobs/<sha>`;
@@ -60,15 +60,15 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 - *Histórico superado:* a versão anterior deste item dizia "formas lidas no `develop` vivo; efeito inferido". Mantida aqui só como registro; a qualificação acima não herda dela.
 - **Discriminador exigido:** documento de contrato não vazio e não achatável deve produzir limitação distinta de "não relevante".
 
-
 ### CM-CL2-03 — fonte de contrato esperada ausente rotulada como "não relevante"
 - **Entrada:** o perfil efetivo do target espera/configura a fonte de contrato, mas o arquivo está ausente.
   - **A.** `.aiops/domain-contracts.yaml` ausente.
   - **B.** `.aiops/review-packs.yaml` ausente.
-- **Caminho atual (`OBSERVED_CODE`):** `repo_profile._load_optional_yaml` retorna `None` sem limitação quando o arquivo não existe (`app/agent_review/repo_profile.py:95-102`); `contracts_context` então achata para vazio e emite `contracts_context_not_relevant:<chunk>` (`payload_cost_model.py:435-436`).
+- **Caminho atual (`OBSERVED_CODE`):** `repo_profile._load_optional_yaml` retorna `None` sem limitação quando o arquivo não existe (`app/agent_review/repo_profile.py:95-102`); `contracts_context` então achata essa fonte para vazio; quando a outra fonte também não produz item aplicável, emite `contracts_context_not_relevant:<chunk>` (`payload_cost_model.py:435-436`); quando a outra fonte produz item, a ausência fica silenciosa. Os fixtures RED neutralizam a outra fonte. Evidência: `OBSERVED_CODE` (exige RED antes do patch).
 - **Resultado falso (ambas as variantes):** ausência indistinguível de não aplicabilidade; nenhuma limitação degradante chega ao gate.
 - **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`; quando a ausência impede avaliar obrigação aplicável/requerida, limitação degradante visível no gate (OBL-CL2-03, família RED/GREEN 14).
 - **Origem:** achado pós-Ready do Codex 4150077445 na PR #367, adjudicado válido pelo owner.
+
 ---
 
 ## CL-3 — Materiality (#343)

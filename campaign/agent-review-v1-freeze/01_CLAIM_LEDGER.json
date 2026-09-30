@@ -108,7 +108,7 @@
         },
         {
           "at": "PR #367 revision (post-Ready Codex finding 4150077451)",
-          "status": "live_status corrected from 'supported' to 'supported_on_master_unreleased': the published consumer (v0.22.0) does not contain the mechanism; 'supported' requires release/repin/canary on the real consumer path under the final freeze rules"
+          "status": "live_status corrected from 'supported' to 'supported_on_master_unreleased': the published consumer (v0.22.0) does not contain the mechanism; 'supported' requires the mechanism on the real consumer path (status vocabulary)"
         }
       ]
     },
@@ -123,18 +123,19 @@
       ],
       "consumer": [
         "semantic consumer: admitted contract / must-hold context -> chunk payload -> advisory inference (model observation). The model does NOT deterministically satisfy or verify contracts.",
-        "deterministic loss consumer: obligation-degrading limitation on the SemanticChunkPlan (limitation/status) -> chunk_result_parser (chunk result path) -> final_synthesizer (final synthesis) -> quality_gate",
+        "deterministic loss consumer: obligation-degrading limitation on the SemanticChunkPlan (limitation/status) -> chunk_result_parser (chunk result path) -> final_synthesizer (final synthesis) -> quality_gate [TARGET path for V1-C2: payload-level limitations are not consumed by parse/synth/gate today (see OBL-CL2-03 mechanism_site, CL-4); CL-2 live_status remains not_supported]",
         "structured per-claim consumer: NONE -- explicit final-v1 non-claim, deferred to #353/#357 (see structured_per_claim_coverage)"
       ],
       "required_evidence": [
-        "RED->GREEN families 1-13 of 04 V1-C2 (supported shapes consumed; deterministic applicability; typed limitations; required-context floor; positive control; target and legacy compatibility; no v2 regression)",
+        "RED->GREEN families 1-15 of 04 V1-C2 (incl. 14 absent context / CM-CL2-03 and 15 top-level shape discriminator; supported shapes consumed; deterministic applicability; typed limitations; required-context floor; positive control; target and legacy compatibility; no v2 regression)",
         "payload CONTENT observed at the most focal intermediate state available, not only the final verdict",
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
         "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07"
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
-        "contracts shape not parseable by v1 flatteners"
+        "contracts shape not parseable by v1 flatteners",
+        "a contract source expected/configured by the effective target profile is absent (contracts_context_absent:*)"
       ],
       "live_status": "not_supported",
       "countermodels": [
