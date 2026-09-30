@@ -13,7 +13,7 @@
       "tag": "v0.22.0",
       "commit": "2ce1f45768b8779cb48ef8a302d4ed796349f0e5"
     },
-    "note": "CHECKPOINT_SHA != LIVE_BASELINE; every line reference below is relative to derivation_subject.commit and must be revalidated before consumption."
+    "note": "CHECKPOINT_SHA != LIVE_BASELINE; every line reference below is relative to derivation_subject.commit and must be revalidated before consumption. Per-claim live_status may be updated by later slices; see each claim's status_history (e.g. CL-1 at d3f5946c)."
   },
   "status_vocabulary": {
     "supported": "mechanism exists on the real consumer path and discriminating evidence exists",
@@ -92,7 +92,8 @@
         "CM-CL1-03"
       ],
       "limitations": [
-        "the LLM's own files_reviewed self-report is accepted verbatim by the parser (chunk_result_parser.py:256-279)"
+        "the LLM's own files_reviewed self-report is accepted verbatim by the parser (chunk_result_parser.py:256-279)",
+        "five pre-existing diff-keying defects (deleted file with '-- ' lines; added '++ ' lines; KEY= redaction swallowing the next block; quoted non-ASCII/space paths; non-UTF-8 byte making full-diff unreadable) now fail closed as not covered instead of false coverage; routed from PR #366 under #221 (material admission fidelity), not fixed"
       ],
       "slice": "V1-C1",
       "status_history": [
@@ -112,16 +113,19 @@
       "proposition": "When pertinent target context (product contracts, AOCM guidance) applies to the subject, its CONTENT reaches the effective chunk payload through generic engine loading/selection; absent, incompatible, not-applicable and omitted-by-budget context are distinguished, and material context removed before review limits the corresponding conclusion through parse/synth/gate. Per-claim coverage in {covered, partial, not_covered, not_applicable} for structured claims (#805) remains the requirement of record, not closed by context consumption.",
       "owner": "#221 V1-C2 (engine generic) + AgentEscala#869 (target sources/projection/config/conformance); #221 body 2026-09-30T20:46Z",
       "producer": [
+        "context loading/selection: app/agent_review/repo_profile.py:72-77; app/agent_review/payload_cost_model.py:388-443 (contracts_context), :789-811 (_flatten_contract_rules), :843-858 (_flatten_review_packs), :1330-1336 (semantic_context.must_hold); app/agent_review/chunk_payload_builder.py:503-508 (shrink ladder; aux_context dropped first)",
         "NONE for structured claims. Existing primitives: payload_cost_model.py:1330-1336 aux_context.semantic_context.must_hold (list[str], no id, first item dropped under budget: chunk_payload_builder.py:504,557-562); schemas.py:92-93 TargetProfile.domain_contracts/review_packs (untyped); schemas.py:170 SemanticChunk.contracts (constant ref list, semantic_chunker.py:424,768-772); chunk_response_contract.py:17-28 finding.contract_id (optional label, never validated)"
       ],
       "consumer": [
         "NONE: ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state (schemas.py:298-305 and downstream)"
       ],
       "required_evidence": [
-        "a structured claim object with stable id admitted from a target-owned artifact",
-        "a response slot for per-claim state bound to that id",
-        "parser/synthesizer/gate consumption so that not_covered/partial of an applicable claim cannot co-exist with a conclusive approving verdict",
-        "fixture preserving AgentEscala #805: composed_24h_same_assignee + only single_shift targets + applicable pair-fidelity must-hold -> material/merge-blocking outcome (owner requirement of record: #221 comment 2026-09-16)"
+        "payload CONTENT observed for pertinent target contract/AOCM context under the frozen supported interface (not file presence, YAML validity or contract_id)",
+        "absent / incompatible / not-applicable / omitted-by-budget each with a distinct, honest consequence observed at the gate",
+        "positive control: sufficient context -> conclusive useful review unchanged (no blanket manual)",
+        "projection fidelity: fields of the supported interface are not silently dropped; allowed losses declared",
+        "PR text cannot substitute or waive policy (countermodel)",
+        "#805 (requirement of record): fixture composed_24h_same_assignee + only single_shift targets + applicable pair-fidelity must-hold -> material/merge-blocking outcome, or an explicit owner decision for any part incompatible with the freeze"
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -136,7 +140,7 @@
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
         "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement."
       ],
-      "risk": "STOP_OWNER_BOUNDARY likely: closing requires a new structured claim object, a response-contract extension (frozen v1 golden fixtures) and target-side authoring; see 04_EXECUTION_ROADMAP.md V1-C2.",
+      "risk": "STOP_OWNER_BOUNDARY exposure applies ONLY to the structured per-claim part of #805 (no structured claim object in v1; adding one would be new architecture). The context-consumption part (OBL-CL2-02..06) is ordinary v1 engine work paired with AgentEscala#869; its format is decided after the #869-A consumer census.",
       "slice": "V1-C2",
       "owner_requirement_of_record": "#221 comment 2026-09-16: declared claims/relevant must-holds extracted from PR/contract pack; #805 fixture => material/merge-blocking; contracts_context_not_relevant impossible when the claim depends on the selected contract pack; material limitations degrade confidence/coverage",
       "narrowing_status": "PENDING_HUMAN_DECISION for any part of the requirement of record not achievable within the traversal's permitted means (#221: the epic grants no waivers)",

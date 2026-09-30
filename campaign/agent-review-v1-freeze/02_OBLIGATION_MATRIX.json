@@ -63,7 +63,7 @@
       "obligation_id": "OBL-CL2-02",
       "claim": "CL-2",
       "domain": "context.consumption",
-      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no target-name hardcode, no new compiler in the target); the supported interface is frozen before the patch after the consumer census (AgentEscala#869-A).",
+      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target); the supported interface is frozen before the patch after the consumer census (AgentEscala#869-A).",
       "countermodels": [
         "CM-CL2-02 (target shapes flatten to [] at AgentEscala@e9cc03ff)",
         "pertinent change whose contract content never reaches the payload"
@@ -73,7 +73,8 @@
         "non-pertinent change with no spurious obligation"
       ],
       "closure_predicate": "deterministic tests observe the payload CONTENT (not file presence, YAML validity or contract_id) for the frozen interface; the pair toolrepo SHA + target config/pack revision is qualified by #869-C",
-      "owner": "#221 V1-C2 + AgentEscala#869"
+      "owner": "#221 V1-C2 + AgentEscala#869",
+      "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858 (contracts_context and flatteners); app/agent_review/repo_profile.py:72-77"
     },
     {
       "obligation_id": "OBL-CL2-03",
@@ -88,6 +89,47 @@
         "sufficient context -> conclusive review unchanged"
       ],
       "closure_predicate": "one test per class at gate level; a positive control proves no blanket downgrade",
+      "owner": "#221 V1-C2",
+      "mechanism_site": "app/agent_review/chunk_payload_builder.py:503-508,557-562 (shrink ladder / aux omission); payload-level limitations currently not consumed by parse/synth/gate",
+      "relation": "refines OBL-CL4-01 for the context domain; CM-CL4-02/03 are shared"
+    },
+    {
+      "obligation_id": "OBL-CL2-04",
+      "claim": "CL-2",
+      "domain": "context.source_layering",
+      "proposition": "The engine keeps AOCM method, product contract and slice intent/claims as distinct layers in what it transports; it carries source identity (path/revision/section/state) where the target provides it; PR text never substitutes, overrides or waives policy.",
+      "countermodels": [
+        "stale or mixed source presented as current contract",
+        "PR text attempting to replace or waive a policy"
+      ],
+      "positive_controls": [
+        "current adopted contract transported with its source identity"
+      ],
+      "closure_predicate": "deterministic tests on payload content for each countermodel and control",
+      "target_side": "recording rule sources and state (adopted/proposed/observed/historical) belongs to AgentEscala#869-A",
+      "owner": "#221 V1-C2 (engine) + AgentEscala#869-A (source state)"
+    },
+    {
+      "obligation_id": "OBL-CL2-05",
+      "claim": "CL-2",
+      "domain": "context.projection_fidelity",
+      "proposition": "The engine normalizer does not silently drop fields of the supported interface (today _flatten_review_packs keeps only id/description/preset and _flatten_contract_rules only id/description/scope/is_global/paths/patterns); allowed losses are declared.",
+      "countermodels": [
+        "content loss in projection: a pertinent field present in the target document never reaches the payload"
+      ],
+      "positive_controls": [
+        "every declared field of the supported interface appears in the payload for a pertinent change"
+      ],
+      "mechanism_site": "app/agent_review/payload_cost_model.py:789-858",
+      "closure_predicate": "field-level payload assertions against a fixture of the frozen interface",
+      "owner": "#221 V1-C2"
+    },
+    {
+      "obligation_id": "OBL-CL2-06",
+      "claim": "CL-2",
+      "domain": "context.interface_discipline",
+      "proposition": "The minimal supported interface is frozen before the patch; schema/CLI extensions carry compatibility, fixtures and justification; no field is added that no consumer reads.",
+      "closure_predicate": "interface recorded in the V1-C2 task contract before the first patch; each new field has a named consumer and a test",
       "owner": "#221 V1-C2"
     },
     {
@@ -103,7 +145,11 @@
         "list-shaped rules with a path-matching rule still inject contract context"
       ],
       "closure_predicate": "unparseable-shape input produces the distinct code; list-shaped input unchanged; golden payload fixtures unchanged for list-shaped input",
-      "owner": "#221 (#805 comment)"
+      "owner": "#221 (#805 comment)",
+      "superseded_in_part_by": {
+        "source": "#221 body 2026-09-30T20:46Z",
+        "primary_obligation": "OBL-CL2-02"
+      }
     },
     {
       "obligation_id": "OBL-CL3-01",

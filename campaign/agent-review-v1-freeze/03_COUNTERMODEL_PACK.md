@@ -39,7 +39,7 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 
 ---
 
-## CL-2 — Semantic claim coverage (#221 / #805)
+## CL-2 — Consumo de contexto e honestidade de limitação; exigência per-claim #805 (#221 / AgentEscala#869)
 
 ### CM-CL2-01 — AgentEscala #805 (testemunha histórica)
 - **Subject histórico:** `mglpsw/AgentEscala#805`, base `d9f78e58…`, head `b85717420749b8ad04d71b75b84299c5894f01c9`, run v1 `35152357843`, veredito `approve_with_required_followup`. `HISTORICAL` (comentário de #221, 2026-09-16).

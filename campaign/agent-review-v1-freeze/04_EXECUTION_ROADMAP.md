@@ -45,7 +45,9 @@ planner (`payload_cost_model.py:1488,1492`).
 
 **#805:** requisito de registro preservado (claims/must-hold pertinentes do PR/contract pack; contramodelo #805 com resultado material). Orientação contextual útil ≠ per-claim coverage ≠ obrigação satisfeita. Parte incompatível com o freeze → `STOP_OWNER_BOUNDARY`/`PENDING_HUMAN_DECISION`; nenhuma non-claim fabricada encerra a exigência.
 
-*Superado:* a previsão anterior desta seção ("`STOP_OWNER_BOUNDARY` provável" com alternativa mínima de honestidade do código `contracts_context_not_relevant`) é substituída: #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade.
+*Superado em parte:* a "alternativa mínima" anterior (só honestidade do código `contracts_context_not_relevant`) é substituída, porque #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade. A exposição a `STOP_OWNER_BOUNDARY` da parte **estruturada per-claim de #805** permanece (sem objeto claim estruturado no v1; extensão seria nova arquitetura). Se a slice atingir um STOP, a travessia para ali (regra "não contornar STOP", task contract em PR #365 comment 5914381014).
+
+**Nome do terminal:** `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` é mantido por ser o nome fixado no task contract; ele designa o fechamento de CL-2 (consumo de contexto + honestidade de limitação) e **não** afirma per-claim coverage de #805.
 
 ### V1-C3 (#343)
 Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O
@@ -76,7 +78,7 @@ alcança transitivamente quase toda a lane v2 via `contracts_v2`: qualquer mudan
 regra de módulo compartilhado de `02` (`slice_gates.v1_v2_isolation`).
 
 ### V1-C6
-Corpus consolidado: coverage truth, claim coverage (ou non-claim), limitation
+Corpus consolidado: coverage truth, consumo de contexto (CL-2) e a exigência #805 conforme decisão do owner (não encerrável por non-claim fabricada), limitation
 propagation, materiality, TS1/non-vacuity, egress disposition, publication fidelity
 (evidência histórica + limitação), contraexemplos AgentEscala e positive controls.
 Reconstrução `Claim → mechanism → consumer → countermodel → discriminator →
@@ -88,6 +90,8 @@ remaining limitation` para cada entrada de `01_CLAIM_LEDGER.json`.
 - AgentEscala#871 (HTTP 429 sem retry / sem `Retry-After`) é bugfix target-side limitado; entra na C6 consolidada; falha persistente continua virando revisão manual.
 - Non-features do v1: `json_schema` no provider, reparo/retry semântico de saída malformada, nova estratégia de modelo/preset, nova arquitetura de agrupamento semântico, receipts/trust architecture v2, OGR/impact-context.
 - PR grande/evidência pesada: `chunk_budget_exceeded`/plano parcial não é blocker automático quando falha fechado para revisão manual. Exigência é **veracidade**, não escalabilidade.
+
+**Gate terminal de freeze registrado no checkpoint de #221:** #232/#343/#307/#315 com disposições terminais e evidência exact-subject; par de contexto da C2 qualificado; AgentEscala#871 corrigida (mesmo endpoint/preset/payload) ou aceita explicitamente com evidência operacional; release final imutável e reproduzível; AgentEscala consome exatamente esse par engine+config em canário controlado; 429/504/schema-inválido/budget-excedido permanecem fail-closed sem fabricar cobertura/readiness; rollback/suporte/limitações documentados.
 
 ## Fronteira após o source candidate
 
