@@ -10,11 +10,13 @@ AB-1  NPTLReservedSignal != ApplicationSignalCapability.
       typed refusal. Countermodels AB1-CM1..CM4 put 32/33 into an ignored/blocked state
       through raw syscalls. Mutant: a libc-only check (application-addressable set only)
       reports success.
-AB-2  FinalOutcomeIsDerivedAfterTeardown. Work completes, teardown begins, a controlled
-      signal is observed during teardown: the final outcome is NOT COMPLETED and
-      termination_request is retained; with an incomplete teardown the dominant reason is
-      unit_teardown_incomplete and nothing is lost. Mutant: outcome captured before teardown.
-      This is a focal model of the derivation order, not the P2d reader.
+AB-2  FinalOutcomeIsDerivedAfterTeardown, linearized at the FINALIZATION_BARRIER (boundary
+      adjudication #301 5921263805): after teardown, block CONTROLLED (the barrier), drain the
+      wakeup channel, consume flags, then derive. A signal delivered before the barrier belongs
+      to the unit (NOT COMPLETED, termination_request retained; with an incomplete teardown the
+      dominant reason is unit_teardown_incomplete); one that becomes pending only after the
+      barrier is outside it. Mutant: derive before blocking/draining. This is a focal model of
+      the finalization order (real pipe + set_wakeup_fd + sigmask), not the P2d reader.
 
 Usage: p2e_amendment_witness.py <out.json>     (x86_64 Linux syscall numbers)
 """
@@ -135,44 +137,86 @@ def derive(primary, close_failure, teardown_failure, termination):
             "termination_request": {"signals": termination} if termination else None}
 
 
-def unit(capture_before_teardown, teardown_incomplete):
+CONTROLLED = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+
+
+def finalize_unit(mode, teardown_incomplete=False):
+    """Boundary adjudication (#301 5921263805): FINALIZATION_BARRIER.
+    Work has completed normally and teardown has finished its observations. Modes:
+      barrier  - a controlled signal is DELIVERED before the barrier (handler + wakeup byte);
+                 then block CONTROLLED (= FINALIZATION_BARRIER), drain wakeup, consume flags, derive
+      mutant   - derive the outcome BEFORE blocking/draining; the same signal is then delivered
+                 (still before the barrier) and is lost: the frozen outcome says COMPLETED
+      late     - block CONTROLLED first; the signal becomes pending only AFTER the barrier and is
+                 outside the unit (COMPLETED; the signal stays pending, never drained)"""
     seen = []
-    prev = signal.signal(signal.SIGTERM, lambda s, f: seen.append(int(s)))   # non-raising
+    r, w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    prev = {sg: signal.signal(sg, lambda s, f: seen.append(int(s))) for sg in CONTROLLED}   # non-raising
+    signal.set_wakeup_fd(w, warn_on_full_buffer=False)
+    teardown_failure = {"remaining": ["stuck"]} if teardown_incomplete else None
+    premature = None
     try:
-        primary = None                                    # work reached normal completion
-        early = list(seen)                                # what a pre-teardown capture would see
-        os.kill(os.getpid(), signal.SIGTERM)              # a controlled signal DURING teardown
-        teardown_failure = {"remaining": ["stuck"]} if teardown_incomplete else None
-        term = early if capture_before_teardown else list(seen)
-        return {"signals_seen": list(seen), "result": derive(primary, None, teardown_failure, term)}
+        if mode == "mutant":
+            premature = derive(None, None, teardown_failure, list(seen))       # frozen too early
+        if mode in ("barrier", "mutant"):
+            os.kill(os.getpid(), signal.SIGTERM)                               # delivered before the barrier
+        signal.pthread_sigmask(signal.SIG_BLOCK, CONTROLLED)                   # FINALIZATION_BARRIER
+        if mode == "late":
+            os.kill(os.getpid(), signal.SIGTERM)                               # pending only after the barrier
+        drained = b""
+        while True:                                                            # drain signal_wakeup_read
+            try:
+                b = os.read(r, 64)
+            except BlockingIOError:
+                break
+            if not b:
+                break
+            drained += b
+        term = sorted(set(seen) | set(drained))                               # flags + wakeup bytes
+        pending = sorted(int(x) for x in signal.sigpending())
+        result = premature if mode == "mutant" else derive(None, None, teardown_failure, term)
+        return {"mode": mode, "signals_seen": list(seen), "wakeup_bytes": list(drained),
+                "pending_after_barrier": pending, "result": result}
     finally:
-        signal.signal(signal.SIGTERM, prev)
+        signal.set_wakeup_fd(-1)
+        if 15 in (int(x) for x in signal.sigpending()):
+            signal.sigtimedwait({signal.SIGTERM}, 0)                           # discard the late signal
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, CONTROLLED)                 # witness cleanup only
+        for sg, h in prev.items():
+            signal.signal(sg, h)
+        os.close(r)
+        os.close(w)
 
 
 def ab2():
-    o = unit(False, False)
-    row("AB2-POS-signal-in-teardown", "normal completion + signal during teardown → NOT COMPLETED; primary "
-        "unit_terminated_by_signal; termination_request retained", "negative", o,
-        o["signals_seen"] == [15] and o["result"]["outcome"] == "FailureOutcome"
+    o = finalize_unit("barrier")
+    row("AB2-BARRIER-delivered-before", "normal completion + teardown complete + signal delivered before the "
+        "FINALIZATION_BARRIER → barrier, drain → NOT COMPLETED; termination_request retained", "positive", o,
+        o["wakeup_bytes"] == [15] and o["result"]["outcome"] == "FailureOutcome"
         and o["result"]["primary_failure"] == "unit_terminated_by_signal"
         and o["result"]["termination_request"] == {"signals": [15]})
-    m = unit(True, False)
-    row("AB2-MUT-capture-before-teardown", "mutant: outcome captured before teardown loses the signal and "
-        "returns COMPLETED", "mutant", m, m["signals_seen"] == [15] and m["result"] == {"outcome": "COMPLETED"})
-    o = unit(False, True)
-    row("AB2-POS-signal-plus-incomplete-teardown", "normal completion + signal + incomplete teardown → dominant "
-        "unit_teardown_incomplete; primary and termination_request retained", "negative", o,
+    o = finalize_unit("barrier", teardown_incomplete=True)
+    row("AB2-BARRIER-delivered-before-incomplete-teardown", "same + incomplete teardown → dominant "
+        "unit_teardown_incomplete; primary and termination_request retained", "positive", o,
         o["result"]["dominant_reason"] == "unit_teardown_incomplete"
         and o["result"]["primary_failure"] == "unit_terminated_by_signal"
-        and o["result"]["termination_request"] == {"signals": [15]} and o["result"]["teardown_failure"])
+        and o["result"]["termination_request"] == {"signals": [15]} and bool(o["result"]["teardown_failure"]))
+    m = finalize_unit("mutant")
+    row("AB2-MUT-derive-before-barrier", "mutant: the outcome derived before blocking/draining returns COMPLETED "
+        "although a controlled signal was delivered before the barrier", "mutant", m,
+        m["result"] == {"outcome": "COMPLETED"} and (15 in m["signals_seen"] or 15 in m["wakeup_bytes"]))
+    o = finalize_unit("late")
+    row("AB2-LATE-after-barrier", "a signal that becomes pending only after CONTROLLED is blocked is outside the "
+        "unit: COMPLETED, nothing drained, the signal stays pending", "negative", o,
+        o["result"] == {"outcome": "COMPLETED"} and o["wakeup_bytes"] == [] and 15 in o["pending_after_barrier"])
 
 
 def main():
     ab1()
     ab2()
     json.dump({"rows": RESULTS, "claims": {
-        "establishes": ["reserved 32/33 unexpected state is kernel-visible and refusable before exec (AB-1)",
-                        "outcome derived after teardown retains a teardown-time termination request (AB-2)"],
+        "establishes": ["reserved 32/33 ignored/blocked state is kernel-visible and refusable before exec (AB-1 compatibility check; NOT tamper detection, NOT handler authorship)",
+                        "a signal delivered before the FINALIZATION_BARRIER is captured by block+drain; one pending only after it is outside the unit (AB-2)"],
         "does_not_establish": ["the production child bootstrap or outcome derivation (B2)"],
         "future_qualification_owner": "B2"}}, open(sys.argv[1], "w"), indent=1)
     print(f"rows={len(RESULTS)} failures={len(FAILS)} {FAILS}")

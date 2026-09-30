@@ -169,13 +169,18 @@
    "claim_limit": ""
   },
   {
-   "id": "AB2-POS-signal-in-teardown",
-   "proposition": "normal completion + signal during teardown \u2192 NOT COMPLETED; primary unit_terminated_by_signal; termination_request retained",
-   "kind": "negative",
+   "id": "AB2-BARRIER-delivered-before",
+   "proposition": "normal completion + teardown complete + signal delivered before the FINALIZATION_BARRIER \u2192 barrier, drain \u2192 NOT COMPLETED; termination_request retained",
+   "kind": "positive",
    "observed": {
+    "mode": "barrier",
     "signals_seen": [
      15
     ],
+    "wakeup_bytes": [
+     15
+    ],
+    "pending_after_barrier": [],
     "result": {
      "outcome": "FailureOutcome",
      "dominant_reason": "unit_terminated_by_signal",
@@ -193,28 +198,18 @@
    "claim_limit": ""
   },
   {
-   "id": "AB2-MUT-capture-before-teardown",
-   "proposition": "mutant: outcome captured before teardown loses the signal and returns COMPLETED",
-   "kind": "mutant",
+   "id": "AB2-BARRIER-delivered-before-incomplete-teardown",
+   "proposition": "same + incomplete teardown \u2192 dominant unit_teardown_incomplete; primary and termination_request retained",
+   "kind": "positive",
    "observed": {
+    "mode": "barrier",
     "signals_seen": [
      15
     ],
-    "result": {
-     "outcome": "COMPLETED"
-    }
-   },
-   "verdict": "PASS",
-   "claim_limit": ""
-  },
-  {
-   "id": "AB2-POS-signal-plus-incomplete-teardown",
-   "proposition": "normal completion + signal + incomplete teardown \u2192 dominant unit_teardown_incomplete; primary and termination_request retained",
-   "kind": "negative",
-   "observed": {
-    "signals_seen": [
+    "wakeup_bytes": [
      15
     ],
+    "pending_after_barrier": [],
     "result": {
      "outcome": "FailureOutcome",
      "dominant_reason": "unit_teardown_incomplete",
@@ -234,12 +229,50 @@
    },
    "verdict": "PASS",
    "claim_limit": ""
+  },
+  {
+   "id": "AB2-MUT-derive-before-barrier",
+   "proposition": "mutant: the outcome derived before blocking/draining returns COMPLETED although a controlled signal was delivered before the barrier",
+   "kind": "mutant",
+   "observed": {
+    "mode": "mutant",
+    "signals_seen": [
+     15
+    ],
+    "wakeup_bytes": [
+     15
+    ],
+    "pending_after_barrier": [],
+    "result": {
+     "outcome": "COMPLETED"
+    }
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB2-LATE-after-barrier",
+   "proposition": "a signal that becomes pending only after CONTROLLED is blocked is outside the unit: COMPLETED, nothing drained, the signal stays pending",
+   "kind": "negative",
+   "observed": {
+    "mode": "late",
+    "signals_seen": [],
+    "wakeup_bytes": [],
+    "pending_after_barrier": [
+     15
+    ],
+    "result": {
+     "outcome": "COMPLETED"
+    }
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
   }
  ],
  "claims": {
   "establishes": [
-   "reserved 32/33 unexpected state is kernel-visible and refusable before exec (AB-1)",
-   "outcome derived after teardown retains a teardown-time termination request (AB-2)"
+   "reserved 32/33 ignored/blocked state is kernel-visible and refusable before exec (AB-1 compatibility check; NOT tamper detection, NOT handler authorship)",
+   "a signal delivered before the FINALIZATION_BARRIER is captured by block+drain; one pending only after it is outside the unit (AB-2)"
   ],
   "does_not_establish": [
    "the production child bootstrap or outcome derivation (B2)"

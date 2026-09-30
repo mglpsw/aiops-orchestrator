@@ -1,7 +1,7 @@
 # #301-S1-B: Architecture Freeze, "safe reader context"
 
 ```yaml
-status: ARCHITECTURE_FREEZE_CORRECTION_REQUIRED   # FINAL_BOUNDED_FREEZE_AMENDMENT (#301 5921013078; STOP_STRUCTURAL_REDESIGN de 0053d77 adjudicado: redesign não exigido); 3b NOT_CONVERGED; a ratificação 5917390110 é HISTORICAL_SUPERSEDED
+status: ARCHITECTURE_FREEZE_CORRECTION_REQUIRED   # FINAL_BOUNDARY_ADJUDICATION (#301 5921263805) sobre a emenda final (#301 5921013078; STOP_STRUCTURAL_REDESIGN de 0053d77 adjudicado: redesign não exigido); 3b NOT_CONVERGED; a ratificação 5917390110 é HISTORICAL_SUPERSEDED
 ArchitectureFreezeReady: false         # nova adjudicação humana exigida após a revisão independente do successor
 ImplementationGrant: false             # ArchitectureFreezeReady != ImplementationGrant
 implementation: NOT_STARTED            # B1, B2, B3 não iniciadas
@@ -40,10 +40,11 @@ forge_records:
   "#301 correction round 3 (review post-Ready 5370887198)": 5918385379
   "#301 correction round 3b grant (R3 NOT_CONVERGED; N3 → S1-B)": 5919204387
   "#301 final freeze amendment grant (AB-1, AB-2; redesign não exigido)": 5921013078
+  "#301 final boundary adjudication (TCB NPTL; FINALIZATION_BARRIER)": 5921263805
   "#46 reconciliada (2026-09-30)": "S1-A INTEGRATED; S1-B próxima, só planejamento; C4 incompleto; G5 não atingido"
 state:
   S1_A: INTEGRATED
-  S1_B: {architecture: FINAL_BOUNDED_FREEZE_AMENDMENT, implementation: NOT_STARTED}
+  S1_B: {architecture: FINAL_BOUNDARY_ADJUDICATION, implementation: NOT_STARTED}
   S1_C: NOT_STARTED
   S1_D: NOT_STARTED
   S_D: NOT_STARTED
@@ -160,7 +161,7 @@ SpawnReturned != SpawnOwned   (o dono existe antes de esperar o handshake do exe
 HandlersInstalledBeforeUnblock
 PendingSignalAtEntry → delivered only after handler/wakeup machinery exists
 ReaderSignalMachinery != ChildBootstrapSignalMachinery
-NoChildCanRunInheritedReaderHandlerBeforeReset
+NoChildCanRunInheritedApplicationControlledReaderHandlerBeforeReset   (estreitado na adjudicação de fronteira; handlers internos da NPTL excluídos)
 InitialSignalDisposition != AuthorizedReapingState
 ForkChildFailure != ReaderControlFlow   (bootstrap do filho: execve OU os._exit, sem terceira saída)
 UnitEnvelope = WorkDeadline + TeardownReserve (ambos fixados antes do fork); SpawnHandshakeDeadline <= WorkDeadline; NoUnboundedBlockingOperation dentro do UnitEnvelope
@@ -177,6 +178,9 @@ OwnerCapabilitiesClosedOnEveryTeardownPath
 LibcAddressableSignals != AllKernelSignalNumbers                    (emenda final, AB-1)
 NPTLReservedSignal != ApplicationSignalCapability
 CannotSafelyCanonicalizeReservedSignal → VerifyCompatibleStateOrRefuse
+SameProcessNativeTCBCompromise != ProtectedAdversary                (adjudicação de fronteira)
+DeliveredBeforeFinalizationBarrier → belongs_to_current_unit
+ArrivesAfterFinalizationBarrier → outside_current_unit
 FinalOutcomeIsDerivedAfterTeardown                                  (emenda final, AB-2)
 QualificationGap != ArchitectureBlocker   (dado: mecanismo especificado, dono e autoridade existentes, sem contradição normativa, obrigação explícita)
 ExperimentalEvidence != ImplementationQualification
@@ -429,6 +433,21 @@ S1B_TCB_FLOOR:
   not_proved_by_S1B:
     - proveniência desses componentes (dona: #350)
     - resistência a comprometimento do host
+    - "detecção ou sobrevivência a adulteração arbitrária, no mesmo processo e por syscall crua, das disposições dos sinais reservados à glibc/NPTL (SameProcessNativeTCBCompromise != ProtectedAdversary)"
+    - autoria do handler instalado no kernel para os sinais reservados
+S1B_V1_TCB:                            # adjudicação de fronteira, #301 5921263805
+  kernel: Linux
+  libc_threads: glibc/NPTL
+  interpreter: CPython_3_11
+  child_bootstrap: S1B_explicit_fork_exec_bootstrap
+NPTL_RESERVED_SIGNALS:                 # 32, 33 no runtime glibc/NPTL qualificador (ocultos das APIs da aplicação)
+  semantic_role: libc_internal
+  application_controlled: false
+  S1B_canonicalized: false
+  S1B_handler_authorship_verified: false
+  trusted_as_part_of_TCB: true
+  SigCgt_required_clear: false         # a glibc 2.39 instala handler no 33 quando o processo cria qualquer thread (observado)
+  raw_rt_sigaction_rewrite: forbidden
   GitNotTrustedAsObjectTruth: true     # todo objeto entregue é re-hashado (§12)
 ```
 
@@ -622,9 +641,9 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
   - **Seção crítica do fork:** CONTROLLED é bloqueado antes do `fork`.
     - **Pai:** obtém o pidfd, restaura a máscara normalizada e entra no HANDSHAKE.
     - **Filho: o estado de sinais do exec é CONSTRUÍDO, não herdado** (round 3c, M1; `ChildExecSignalStateIsConstructedNotInherited`, `ReaderSignalState != ChildExecSignalState`):
-      1. bloqueia **todos** os sinais durante a construção;
+      1. bloqueia **todos os sinais controlados pela aplicação** (o conjunto endereçável pela libc) durante a construção;
       2. `set_wakeup_fd(-1)`;
-      3. para todo sinal capturável **exposto à aplicação pela libc/runtime qualificador** (o conjunto endereçável pela libc; no domínio glibc/NPTL, todos exceto SIGKILL, SIGSTOP e os reservados 32 e 33), a disposição **no kernel** vira `SIG_DFL` via `sigaction`. O cache do Python (`signal.getsignal`) nunca é o truth-maker (`PythonSignalCache != KernelSignalDisposition`);
+      3. para todo sinal capturável **controlado pela aplicação** no domínio de runtime declarado (**exposto à aplicação pela libc/runtime qualificador** (o conjunto endereçável pela libc; no domínio glibc/NPTL, todos exceto SIGKILL, SIGSTOP e os reservados 32 e 33)), a disposição canônica do filho, `SIG_DFL`, **no kernel** vira `SIG_DFL` via `sigaction`. O cache do Python (`signal.getsignal`) nunca é o truth-maker (`PythonSignalCache != KernelSignalDisposition`);
       4. fecha as cópias das pontas de wakeup, **depois** de desregistrar;
       5. máscara de exec vazia para o conjunto endereçável. Não é a máscara herdada do reader (`InheritedSignalMask != AuthorizedExecSignalMask`);
       6. verifica, lendo do kernel, que toda disposição do conjunto endereçável é `SIG_DFL` e que a máscara está vazia. Divergência → relato no canal de erro e `os._exit`;
@@ -632,10 +651,15 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
         - A S1-B **não** tenta sobrescrever essas disposições por syscall crua só para satisfazer a antiga afirmação universal.
         - Antes do exec, os bits `SigIgn` e `SigBlk` desses sinais, visíveis no kernel (`/proc/self/status`), têm de estar **limpos**. Se algum reservado estiver ignorado ou bloqueado → **FAIL CLOSED** com recusa tipada de setup/contexto (nome indicativo `reader_child_signal_state_unusable`; o nome final é detalhe de B2).
         - Lei: `CannotSafelyCanonicalizeReservedSignal → VerifyCompatibleStateOrRefuse`.
+        - **Fronteira de TCB** (adjudicação, [5921263805](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5921263805)):
+          - os sinais reservados são `libc_internal` e parte confiável do TCB (`S1B_V1_TCB`, §10);
+          - a S1-B **não** exige `SigCgt(32/33) == 0`, **não** reescreve essas disposições por `rt_sigaction` cru e **não** verifica a autoria do handler;
+          - a checagem de `SigIgn`/`SigBlk` acima é uma pré-condição de compatibilidade fail-closed, **não** detecção de adulteração;
+          - adulteração nativa no mesmo processo é comprometimento do TCB declarado (`SameProcessNativeTCBCompromise != ProtectedAdversary`, §28 `may_not_claim`).
       8. só então `dup2`, `setrlimit`, census de fds e `execve`.
     - **Estados distintos:**
       - **reader:** TERM/INT/HUP com handlers que não levantam, pipe de wakeup dedicado e desbloqueio só depois de handlers e wakeup instalados; SIGCHLD `SIG_DFL` sem `SA_NOCLDWAIT`;
-      - **filho:** sem registro de wakeup do reader, sem handlers do reader, disposições do conjunto endereçável canônicas, máscara de exec canônica (vazia), sinais reservados verificados compatíveis ou recusa.
+      - **filho:** sem registro de wakeup do reader, sem handlers do reader, disposições controladas pela aplicação canônicas (`SIG_IGN` → `SIG_DFL`), máscara de exec canônica (vazia para o conjunto da aplicação), sinais reservados da NPTL deixados ao TCB (checagem de compatibilidade `SigIgn`/`SigBlk` ou recusa).
     - Não depende de o `execve` resetar os handlers: a falha existe justamente **antes** do exec.
     - **Histórico (iteração 2 da 3b, superado pela M1):** o reset de `SIG_IGN` baseado em `signal.getsignal` e a restauração da máscara herdada. A revisão e o Codex mostraram que o cache do Python não vê um `SIG_IGN` nativo e que a máscara herdada leva sinais bloqueados ao Git.
     - **Falha do `fork()`** (Codex 4149311510; round 3c, M3, `ForkFailurePreservesCancellationState`): o `fork` fica sob uma guarda. Se ele falhar, não há filho, e acontece nesta ordem:
@@ -647,7 +671,7 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
       6. deriva o `FailureOutcome` depois do teardown.
       O pedido de término nunca some porque a falha foi levantada logo depois do handler.
     - **Sinal na seção crítica:** um sinal controlado que chega enquanto CONTROLLED está bloqueado no pai fica pendente, é entregue na restauração da máscara e é observado pelo HANDSHAKE (R3B-S8).
-    - Resultado: `NoChildCanRunInheritedReaderHandlerBeforeReset`.
+    - Resultado: `NoChildCanRunInheritedApplicationControlledReaderHandlerBeforeReset`. Handlers internos confiáveis da NPTL estão explicitamente fora desta proposição.
   - **Bootstrap do filho é terminal:** `execve` com sucesso **ou** relato limitado no canal de erro seguido de `os._exit`. Nunca `raise`, `return`, desenrolar Python, o `finally` do pai ou o código de teardown do reader.
   - **P2d:**
     - R3B-S4 (SIGTERM ao filho depois do reset; **suporte preliminar**, round 3c Q3: o spike não sincroniza com o ponto de reset, então não prova qual lado do reset recebeu o sinal; o witness exato é obrigação de B2): o filho morre por SIGTERM (`CLD_KILLED`/15, observado por `waitid(WNOWAIT)` antes do teardown — é a confirmação da injeção, review F2); o reader não registra nenhum sinal e não reporta término. Ablação sem reset: o handler herdado escreve `0f` no pipe do reader, e o reader reporta `terminated` sem ter recebido sinal (causa misatribuída).
@@ -710,15 +734,29 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
 
   `termination_request` (round 3c, M3) é uma dimensão **ortogonal**: registrada sempre que um sinal controlado foi observado (handler ou byte de wakeup), em qualquer caminho, inclusive falha do `fork`, erros de handshake e **observações durante o TEARDOWN**. Ela não entra na precedência de `dominant_reason`, e nenhuma outra dimensão a apaga ou é apagada por ela.
 
-  **`FinalOutcomeIsDerivedAfterTeardown`** (emenda final, AB-2). O outcome é derivado **depois** das observações finais do teardown.
+  **`FinalOutcomeIsDerivedAfterTeardown`** (emenda final, AB-2), linearizado pela **`FINALIZATION_BARRIER`** (adjudicação de fronteira, [5921263805](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5921263805)):
+
+  - **Definição:** depois que o teardown terminou as suas observações, o reader bloqueia CONTROLLED `{SIGTERM, SIGINT, SIGHUP}` de forma atômica. O retorno bem-sucedido dessa transição de máscara é o **ponto de linearização** dos pedidos de término que pertencem à unidade.
+  - **Sequência congelada:**
+
+    ```text
+    TEARDOWN → block CONTROLLED → FINALIZATION_BARRIER → drain signal_wakeup_read
+      → consume termination flags already recorded/delivered → derive final immutable outcome → handoff/publish outcome
+    ```
+
+    Nenhum objeto de outcome é congelado antes de a sequência barreira + drenagem terminar.
+  - **Posse dos sinais em torno da barreira:**
+    - `DeliveredBeforeFinalizationBarrier → belongs_to_current_unit`: um sinal entregue imediatamente antes da barreira, cujo byte ou flag ainda não foi processado, é capturado pela drenagem pós-barreira;
+    - `ArrivesAfterFinalizationBarrier → outside_current_unit`: um sinal que só fica pendente depois do bloqueio de CONTROLLED está fora da unidade concluída.
+  - **CONTROLLED permanece bloqueado depois da barreira** até o handoff do outcome. Este freeze **não** define reuso do reader, e reuso **não** é assumido: na V1, a S1-B trata a unidade como terminal para o reader, e CONTROLLED fica bloqueado desde a barreira até a saída do reader. Qualquer reuso futuro exige uma fronteira de ciclo de vida própria, definida depois da transferência do resultado. Isto restringe só o comportamento da S1-B e não cria obrigação para o launcher da #350.
 
   ```text
-  COMPLETED  iff  work completed
-                  AND teardown completed
-                  AND no primary failure
-                  AND no descriptor-close failure
-                  AND no teardown failure
-                  AND no controlled termination request was observed before OUTCOME
+  COMPLETED  iff  normal work completed
+                  AND teardown is complete
+                  AND no primary failure exists
+                  AND no descriptor-close failure exists
+                  AND no teardown failure exists
+                  AND no controlled termination request was delivered before FINALIZATION_BARRIER
   ```
 
   - **Sinal durante o teardown depois de trabalho concluído:** `NORMAL_WORK_COMPLETION → termination signal observed → NOT COMPLETED`. O resultado é `FailureOutcome` com `primary_failure.reason = unit_terminated_by_signal`, `termination_request.signals = [...]`, e os registros de close e de teardown (presentes ou nulos). Não existe `COMPLETED_WITH_SIGNAL`.
@@ -728,7 +766,12 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
     - **(I2)** `dominant_reason` segue a precedência;
     - **(I3)** `termination_request` nunca é apagada nem apaga;
     - **(I4)** `COMPLETED` segue a definição acima.
-  - **P2e AB-2:** conclusão normal + sinal no teardown → `FailureOutcome` (`unit_terminated_by_signal`, `termination_request [15]`); com teardown incompleto → `dominant_reason unit_teardown_incomplete`, primária e término preservados. O mutante que captura o outcome antes do teardown devolve `COMPLETED`. Isto é um modelo focal da ordem de derivação; a qualificação do reader de produção é de B2. O reader do P2d (spike) ainda captura o término antes do teardown e **não** é evidência desta regra.
+  - **P2e AB-2** (barreira; pipe real + `set_wakeup_fd` + `pthread_sigmask`):
+    - sinal entregue antes da barreira → bloqueio + drenagem → `FailureOutcome` (`unit_terminated_by_signal`, `termination_request [15]`); com teardown incompleto → `dominant_reason unit_teardown_incomplete`, primária e término preservados;
+    - o mutante que deriva antes do bloqueio e da drenagem devolve `COMPLETED`;
+    - um sinal pendente só depois da barreira fica fora da unidade (`COMPLETED`, nada drenado, o sinal continua pendente).
+
+    Isto é um modelo focal da ordem de finalização; a qualificação do reader de produção é de B2. O reader do P2d (spike) ainda captura o término antes do teardown e **não** é evidência desta regra.
 
   | Ilustração da precedência (não é enumeração completa) | dominant_reason | primary | close | teardown |
   |---|---|---|---|---|
@@ -958,7 +1001,7 @@ EDGE PRIMARY_RECORDED -> TEARDOWN : always
 EDGE TERMINATION_REQUESTED -> TEARDOWN : always
 EDGE UNIT_TIMEOUT -> TEARDOWN : sigkill_via_pidfd_no_blocking_wait
 EDGE TEARDOWN -> TEARDOWN : controlled_signal_recorded_not_interrupting
-EDGE TEARDOWN -> OUTCOME : zero_survivors_or_unit_teardown_incomplete
+EDGE TEARDOWN -> OUTCOME : finalization_barrier_then_drain_then_derive
 EDGE CHILD_BOOTSTRAP -> CHILD_EXECVE : exec_success
 EDGE CHILD_BOOTSTRAP -> CHILD_EXIT : bounded_setup_report_then_os_exit
 ```
@@ -975,7 +1018,7 @@ EDGE CHILD_BOOTSTRAP -> CHILD_EXIT : bounded_setup_report_then_os_exit
 | `RUNNING` | protocolo (request → header → admissão → body → hash)×N |
 | `UNIT_TIMEOUT` | SIGKILL via pidfd; a posse passa ao `TEARDOWN`, sem espera bloqueante |
 | `TEARDOWN` | pode observar `termination_request` (sinal controlado registrado sem interromper). Duas fases por rodada: (1) varredura por ppid → pidfd → prova de filiação → SIGKILL em **todo** filho atribuído; (2) reap com `WNOHANG` de todos. Repete (netos reparentados) até vazio ou até o fim do envelope; fecha o pidfd do dono uma vez num `finally` externo |
-| `OUTCOME` | derivado **depois** das observações finais do teardown: `COMPLETED` ou `FailureOutcome{dominant_reason, primary_failure, descriptor_close_failure, teardown_failure, termination_request}`, conforme a §15 (`FinalOutcomeIsDerivedAfterTeardown`); a topologia não muda |
+| `OUTCOME` | alcançado **só depois da `FINALIZATION_BARRIER` e da drenagem**: a aresta `TEARDOWN → OUTCOME` é a sub-fronteira explícita (bloqueia CONTROLLED → barreira → drena o wakeup → consome as flags → deriva), sem estado novo e sem mudar a topologia. Derivado: `COMPLETED` ou `FailureOutcome{dominant_reason, primary_failure, descriptor_close_failure, teardown_failure, termination_request}`, conforme a §15 (`FinalOutcomeIsDerivedAfterTeardown`); a topologia não muda |
 | `CHILD_*` | só o processo filho: o bootstrap é terminal (B-LIF-12) |
 
 A morte não controlada do reader (SIGKILL, crash) está fora desta máquina: o kernel mata o PID namespace inteiro (pré-condição #350; D-B-LIFE-PIDNS; B-LIF-08).
@@ -1030,8 +1073,8 @@ A lei da #354 vale para todo fd novo: o novo dono é adquirido antes de o anteri
 - `signal.getsignal` (cache do Python) como truth-maker de disposição; máscara de exec derivada da máscara herdada (M1);
 - esperar/reapear um candidato antes de sinalizar todos os atribuídos (M2);
 - close do pidfd do dono (ou de capability temporária) fora de um `finally` externo (M4);
-- caminho de erro que descarta o estado de término observado (M3); outcome derivado antes das observações finais do teardown (AB-2);
-- sobrescrever disposições dos sinais reservados à NPTL por syscall crua, ou declarar canonicalizado um estado não verificado (AB-1);
+- caminho de erro que descarta o estado de término observado (M3); outcome derivado antes das observações finais do teardown (AB-2); outcome congelado antes da `FINALIZATION_BARRIER` e da drenagem; CONTROLLED desbloqueado depois da barreira e antes do handoff (ou, no reader V1, antes da saída);
+- sobrescrever disposições dos sinais reservados à NPTL por syscall crua, exigir `SigCgt(32/33) == 0`, ou declarar canonicalizado um estado não verificado (AB-1, fronteira de TCB);
 - `set_wakeup_fd` num fd que não seja a ponta dedicada `signal_wakeup_write`; fechar essa ponta sem `set_wakeup_fd(-1)` antes;
 - stderr bruto em estado público ou de resultado;
 - import de símbolo privado de `bounded_git_v2`;
@@ -1119,6 +1162,7 @@ may_claim:   # após a qualificação de cada slice, nunca por este freeze
   - child_reaping_signal_state_normalized                           # B-LIF-11
   - child_exec_signal_state_constructed_and_kernel_verified          # B-LIF-12, M1: conjunto endereçável pela libc; reservados NPTL verificados ou recusa (AB-1)
   - final_outcome_derived_after_teardown                              # §15, AB-2
+  - final_outcome_linearized_at_finalization_barrier                  # §15, adjudicação de fronteira
   - child_bootstrap_terminal_exit                                    # B-LIF-12
   - teardown_fairness_signal_all_before_wait                         # M2
   - cancellation_preserved_across_fork_failure                       # M3
@@ -1158,6 +1202,9 @@ may_not_claim:
   - post_exec_stall_under_absolute_unit_deadline       # Q4: B2/B3
   - implementation_qualified                           # ArchitectureMechanismSpecified != ImplementationQualified
   - canonicalization_of_nptl_reserved_signals          # AB-1: only verified-compatible-or-refuse
+  - reserved_signal_handler_authorship                 # TCB boundary: libc_internal, trusted
+  - detection_of_same_process_raw_syscall_tampering_of_nptl_reserved_signals   # SameProcessNativeTCBCompromise != ProtectedAdversary
+  - reader_reuse_semantics                             # not defined in V1; not assumed
   - experiments_qualify_B2                             # P2/P2b/P2c/P2d/P2e are design evidence only
   - survival_of_host_or_kernel_crash
   - production_ready
@@ -1357,7 +1404,7 @@ A API aditiva de B-HO-02 **não** é `STOP_S1B_REQUIRES_S1A_SEMANTIC_CHANGE`: el
 ### 30.5 Final disposition
 
 ```yaml
-disposition: S1B_FINAL_BOUNDED_FREEZE_AMENDMENT   # #301 5921013078; a disposição terminal é registrada no forge após a revisão do exact head, não neste arquivo
+disposition: S1B_FINAL_BOUNDARY_ADJUDICATION     # #301 5921263805 (sobre a emenda 5921013078); a disposição terminal é registrada no forge após a revisão do exact head, não neste arquivo
 reviewed_head: b4a572a97465472d94165977edb05f720faf44eb     # independent review → S1B_FREEZE_CORRECTION_REQUIRED
 correction_rounds: [1 (3dc2965), 2 (adjudication round)]
 independent_review_of_b92a102: {material_findings: 0, authority_conflicts: 0, owner_conflicts: 0, obligation_domains: 11/11_CONFORMANT, S1B-REV-NIT-01: ACCEPTED_NON_BLOCKING_EDITORIAL}
@@ -1609,3 +1656,36 @@ B2_MANDATORY_QUALIFICATION_GAPS_ADDENDUM:
 **Regra terminal:** um único ciclo de revisão.
 - `architecture_blockers: 0`, lacunas explícitas e atribuídas, sem conflito de autoridade ou dono, sem contradição normativa, CI GREEN e Codex sem blocker → `S1B_ARCHITECTURE_FREEZE_READY_FOR_MAINTAINER_ADJUDICATION`;
 - `architecture_blockers > 0` → `S1B_ARCHITECTURE_REDESIGN_REQUIRED`.
+
+### 30.12 Final boundary adjudication ([5921263805](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5921263805); predecessor `40f8060`)
+
+Prior: `S1B_ARCHITECTURE_REDESIGN_REQUIRED` (Codex 5372868625). Adjudicação: `procedural_stop_valid: true`, `structural_redesign_required: false`. Isto é uma adjudicação de fronteira, não uma nova campanha de correção.
+
+| Codex | Disposição | Fronteira congelada |
+|---|---|---|
+| 4150092312 | `TCB_BOUNDARY_UNDER_SPECIFIED` | `S1B_V1_TCB` (Linux, glibc/NPTL, CPython 3.11, bootstrap fork/exec da S1-B) e `NPTL_RESERVED_SIGNALS` (`libc_internal`, confiável, sem canonicalização, sem verificação de autoria, sem exigir `SigCgt` limpo). A afirmação universal foi estreitada para "todo sinal capturável **controlado pela aplicação** no domínio de runtime declarado". `NoChildCanRunInheritedApplicationControlledReaderHandlerBeforeReset`. Não-claim: adulteração nativa no mesmo processo é comprometimento do TCB |
+| 4150092315 | `OUTCOME_LINEARIZATION_UNDER_SPECIFIED` | `FINALIZATION_BARRIER`: bloqueio atômico de CONTROLLED depois do teardown; sequência barreira → drenagem → flags → derivação → handoff; `DeliveredBeforeFinalizationBarrier → belongs_to_current_unit`, `ArrivesAfterFinalizationBarrier → outside_current_unit`; CONTROLLED bloqueado até o handoff (V1: até a saída do reader; reuso não assumido); `COMPLETED` redefinido pela barreira; §20 esclarecida pela sub-fronteira na aresta `TEARDOWN → OUTCOME`, sem mudar a topologia |
+
+**Witness focal:** P2e AB-2 (barreira), 13/13 em 3 execuções:
+- entregue antes da barreira → `FailureOutcome`;
+- com teardown incompleto → `unit_teardown_incomplete`;
+- mutante que deriva antes da barreira → `COMPLETED`;
+- sinal só depois da barreira → fora da unidade.
+
+Para a fronteira de TCB não há tentativa de provar autoria. O runtime qualificador observado é glibc 2.39/NPTL.
+
+`new_owner: none`, `new_authority: none`; a #350 não foi alterada.
+
+```yaml
+B2_MANDATORY_QUALIFICATION_GAPS_ADDENDUM_2:   # somado às listas da §30.10 e da §30.11, que continuam valendo
+  finalization_barrier_runtime_race_witness:
+    - production reader: signal delivered immediately before the barrier is captured by the post-barrier drain; one pending only after the barrier is outside the unit; CONTROLLED stays blocked until handoff/exit
+  declared_libc_NPTL_runtime_domain_check:
+    - confirm the qualifying libc/NPTL domain
+    - confirm the application signal-state propositions (canonical dispositions, empty application mask)
+    - do not claim reserved-signal handler authorship
+```
+
+**Regra terminal:**
+- `architecture_blockers`, `authority_conflicts`, `owner_conflicts` e `normative_contradictions` = 0; fronteira de TCB coerente; `FINALIZATION_BARRIER` coerente com a corrida de outcome definida; lacunas explícitas e atribuídas; CI GREEN; Codex sem blocker → `S1B_ARCHITECTURE_FREEZE_READY_FOR_MAINTAINER_ADJUDICATION`;
+- um blocker que falsifique genuinamente o mecanismo B ou estas duas fronteiras → `S1B_ARCHITECTURE_REDESIGN_REQUIRED`.

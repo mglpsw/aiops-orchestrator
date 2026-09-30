@@ -66,7 +66,7 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
 - `p2d_spawn_handshake_results.json`: resultado do P2d, round 3b: `{rows: 64, contracts: 18}` (iteração 2), todos PASS, com injeção confirmada; estável em 3 execuções
 - `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. **Claim (round 3c):** lint estrutural + discriminador de mutação, **não** prova de completude; B2 testa todo caminho terminal. Lê as arestas do próprio freeze e prova as leis L1–L10 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M9 têm de tornar alguma lei RED
 - `p2e_amendment_witness.py`: emenda final (#301 5921013078). Witness focal de AB-1: estados reservados NPTL 32/33 ignorados ou bloqueados (AB1-CM1..CM4, criados por syscall crua) são detectados nos bits do kernel e recusados antes do exec; o mutante que só verifica o conjunto da libc aceita. Witness focal de AB-2: sinal no teardown depois de conclusão normal → `FailureOutcome` com `termination_request`; o mutante que captura o outcome antes do teardown devolve `COMPLETED`. É um modelo da ordem de derivação, não o reader do P2d
-- `p2e_amendment_witness_results.json`: 12/12 PASS, estável em 3 execuções
+- `p2e_amendment_witness_results.json`: 13/13 PASS, estável em 3 execuções (adjudicação de fronteira: o AB-2 passou a modelar a `FINALIZATION_BARRIER`, com pipe real, `set_wakeup_fd` e `pthread_sigmask`: sinal antes da barreira vs mutante que deriva antes vs sinal depois da barreira). A checagem de 32/33 no AB-1 é de compatibilidade, **não** detecção de adulteração nem de autoria (fronteira de TCB NPTL)
 - `p2d_state_machine_results.json`: resultado do verificador no freeze deste head: leis GREEN e M1–M9 mortos
 
 ## Status dos experimentos
@@ -138,3 +138,6 @@ python3.11 -I -S p2e_amendment_witness.py out-p2e.json
 9. **Emenda final** (#301 5921013078; redesign não exigido).
    - Um único witness focal novo: P2e, 12/12 PASS em 3 execuções.
    - P2, P2c e P2d **não** foram reexecutados nem alterados, porque o código deles não mudou desde `0053d77`. A branch foi realinhada a `2941b55` (#351, ortogonal).
+10. **Adjudicação de fronteira** (#301 5921263805).
+    - O witness AB-2 do P2e passou a modelar a `FINALIZATION_BARRIER`: 13/13 em 3 execuções.
+    - Nenhum outro experimento foi alterado.
