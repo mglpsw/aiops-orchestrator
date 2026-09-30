@@ -1,4 +1,4 @@
-"""V1-C0 evidence: in-memory reproduction of CM-C5-01/CM-C5-02 through the real v1
+"""V1-C0 evidence: in-memory reproduction of CM-CL5-01/CM-CL5-02 through the real v1
 parse -> synthesize -> gate path. Read-only: writes only to a TemporaryDirectory.
 
 Usage (from repo root, with the project venv):
@@ -21,19 +21,20 @@ P1 = {"severity": "P1", "title": "Swap removes coverage guard", "file_path": FIL
       "evidence": "The changed hunk deletes the coverage guard before swap approval.", "source_artifact": "artifact:full-diff",
       "contract_id": None, "impact": "Uncovered shifts can be approved.", "confidence": "high", "dedupe_key": "k1"}
 
-def run(name, findings, coverage_notes, critical=False):
+def run(name, findings, coverage_notes, critical=False, downstream_plan=plan):
     with tempfile.TemporaryDirectory() as d:
         Path(d, f"{chunk.chunk_id}.json").write_text(json.dumps({"schema_version": 1, "chunk_id": chunk.chunk_id,
             "semantic_group": chunk.semantic_group, "confirmed_findings": findings, "risks": [], "limitations": [],
             "coverage_notes": coverage_notes}))
         res = parse_chunk_results(plan, responses_dir=d)
-    fr = synthesize_final_review(res, chunk_plan=plan)
+    fr = synthesize_final_review(res, chunk_plan=downstream_plan)
     doc = validate_final_review_document(json.loads(fr.model_dump_json()))
-    g = evaluate_review_quality_gate(doc, res, chunk_plan=plan, critical_pr=critical)
+    g = evaluate_review_quality_gate(doc, res, chunk_plan=downstream_plan, critical_pr=critical)
     print(f"{name}: parse={res.status} synth={fr.status}/{fr.verdict} gate={g.status}/{g.normalized_verdict}/manual={g.manual_review_required} lim={g.limitations}")
 
-run("CM-C5-02 all_not_reviewed noncritical", [], {"files_not_reviewed": FILES})
-run("CM-C5-02 all_not_reviewed critical", [], {"files_not_reviewed": FILES}, critical=True)
-run("CM-C5-01 P1 on not_reviewed file", [P1], {"files_reviewed": [FILES[1]], "files_not_reviewed": [FILES[0]]})
-run("PC-C5 P1 on reviewed file (positive control)", [P1], {"files_reviewed": FILES})
-run("PC-C5 clean all reviewed", [], {"files_reviewed": FILES})
+run("CM-CL5-02 all_not_reviewed noncritical", [], {"files_not_reviewed": FILES})
+run("CM-CL5-02 all_not_reviewed noncritical no-plan (synth+gate without plan)", [], {"files_not_reviewed": FILES}, downstream_plan=None)
+run("CM-CL5-02 all_not_reviewed critical", [], {"files_not_reviewed": FILES}, critical=True)
+run("CM-CL5-01 P1 on not_reviewed file", [P1], {"files_reviewed": [FILES[1]], "files_not_reviewed": [FILES[0]]})
+run("PC-CL5 P1 on reviewed file (positive control)", [P1], {"files_reviewed": FILES})
+run("PC-CL5 clean all reviewed", [], {"files_reviewed": FILES})

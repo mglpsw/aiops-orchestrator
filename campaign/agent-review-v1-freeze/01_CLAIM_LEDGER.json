@@ -9,7 +9,10 @@
     "commit": "ab92e89f096b391bc50759afa3d0f6050881633a",
     "tree": "a811df6344ab5ba450b3a1b5fd12cd45d0477552",
     "observed_at": "2026-09-30",
-    "published_baseline": {"tag": "v0.22.0", "commit": "2ce1f45768b8779cb48ef8a302d4ed796349f0e5"},
+    "published_baseline": {
+      "tag": "v0.22.0",
+      "commit": "2ce1f45768b8779cb48ef8a302d4ed796349f0e5"
+    },
     "note": "CHECKPOINT_SHA != LIVE_BASELINE; every line reference below is relative to derivation_subject.commit and must be revalidated before consumption."
   },
   "status_vocabulary": {
@@ -18,25 +21,37 @@
     "partial": "mechanism exists for a strict subset of the declared domain",
     "not_supported": "a known countermodel reaches the consumer with the claimed-false outcome",
     "not_established": "no mechanism or no evidence either way",
-    "by_design": "follows from absence of any authority-granting consumer"
+    "by_design": "follows from absence of any authority-granting consumer",
+    "supported_historical": "supported only by dated historical evidence; PreviousHeadQualified != CurrentHeadQualified"
   },
   "claims": [
     {
-      "claim_id": "V1-C0",
+      "claim_id": "CL-0",
       "title": "Advisory identity",
       "proposition": "AgentReview v1 is an advisory review engine; its outputs grant no merge authority.",
       "owner": "#221",
-      "producer": ["app/agent_review/quality_gate.py:evaluate_review_quality_gate"],
-      "consumer": ["consumer publisher (AgentEscala agent-review-publish.yml) publishes a comment; no branch-protection required check is fed by the v1 gate in this repository"],
-      "required_evidence": ["no v1 artifact is a required status check or merge input in the declared topology", "docs state advisory role"],
-      "degraded_by": ["any consumer wiring the v1 gate as a required merge check"],
+      "producer": [
+        "app/agent_review/quality_gate.py:evaluate_review_quality_gate"
+      ],
+      "consumer": [
+        "consumer publisher (AgentEscala agent-review-publish.yml) publishes a comment; no branch-protection required check is fed by the v1 gate in this repository"
+      ],
+      "required_evidence": [
+        "no v1 artifact is a required status check or merge input in the declared topology",
+        "docs state advisory role"
+      ],
+      "degraded_by": [
+        "any consumer wiring the v1 gate as a required merge check"
+      ],
       "live_status": "by_design",
-      "limitations": ["the consumer's branch-protection configuration is outside this repository and was not re-observed in C0"],
+      "limitations": [
+        "the consumer's branch-protection configuration is outside this repository and was not re-observed in C0"
+      ],
       "countermodels": [],
       "slice": "V1-C0"
     },
     {
-      "claim_id": "V1-C1",
+      "claim_id": "CL-1",
       "title": "Coverage truth",
       "proposition": "A file is reported as covered only when the material needed to review it (an observable textual hunk) was admitted into a chunk payload; PathPresent != MaterialReviewed.",
       "owner": "#232",
@@ -58,41 +73,60 @@
         "propagation proof through plan -> parse -> synthesize -> gate, not only SemanticChunkPlan",
         "positive control: textual-hunk file in same PR remains covered"
       ],
-      "degraded_by": ["diff artifact absent (diff_by_file returns {})", "payload-level limitations not restated at plan level"],
+      "degraded_by": [
+        "diff artifact absent (diff_by_file returns {})",
+        "payload-level limitations not restated at plan level"
+      ],
       "live_status": "not_supported",
-      "countermodels": ["CM-C1-01", "CM-C1-02", "CM-C1-03"],
-      "limitations": ["the LLM's own files_reviewed self-report is accepted verbatim by the parser (chunk_result_parser.py:256-279)"],
+      "countermodels": [
+        "CM-CL1-01",
+        "CM-CL1-02",
+        "CM-CL1-03"
+      ],
+      "limitations": [
+        "the LLM's own files_reviewed self-report is accepted verbatim by the parser (chunk_result_parser.py:256-279)"
+      ],
       "slice": "V1-C1"
     },
     {
-      "claim_id": "V1-C2",
+      "claim_id": "CL-2",
       "title": "Semantic claim coverage",
       "proposition": "When a structured, admitted claim/must-hold is applicable to the subject, the review reports its coverage in {covered, partial, not_covered, not_applicable}, semantically separate from file coverage.",
       "owner": "#221 (comment 2026-09-16, AgentEscala #805); no dedicated issue",
       "producer": [
         "NONE for structured claims. Existing primitives: payload_cost_model.py:1330-1336 aux_context.semantic_context.must_hold (list[str], no id, first item dropped under budget: chunk_payload_builder.py:504,557-562); schemas.py:92-93 TargetProfile.domain_contracts/review_packs (untyped); schemas.py:170 SemanticChunk.contracts (constant ref list, semantic_chunker.py:424,768-772); chunk_response_contract.py:17-28 finding.contract_id (optional label, never validated)"
       ],
-      "consumer": ["NONE: ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state (schemas.py:298-305 and downstream)"],
+      "consumer": [
+        "NONE: ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state (schemas.py:298-305 and downstream)"
+      ],
       "required_evidence": [
         "a structured claim object with stable id admitted from a target-owned artifact",
         "a response slot for per-claim state bound to that id",
         "parser/synthesizer/gate consumption so that not_covered/partial of an applicable claim cannot co-exist with a conclusive approving verdict",
-        "fixture preserving AgentEscala #805: composed_24h_same_assignee + only single_shift targets + applicable pair-fidelity must-hold -> claim falsified/not_covered -> no approving conclusion"
+        "fixture preserving AgentEscala #805: composed_24h_same_assignee + only single_shift targets + applicable pair-fidelity must-hold -> material/merge-blocking outcome (owner requirement of record: #221 comment 2026-09-16)"
       ],
-      "degraded_by": ["claim present only as PR free text (never transported: no PR title/body in chunk payload)", "contracts shape not parseable by v1 flatteners"],
+      "degraded_by": [
+        "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
+        "contracts shape not parseable by v1 flatteners"
+      ],
       "live_status": "not_supported",
-      "countermodels": ["CM-C2-01", "CM-C2-02"],
+      "countermodels": [
+        "CM-CL2-01",
+        "CM-CL2-02"
+      ],
       "limitations": [
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
-        "Free-text PR claims may at most be advisory context, never a qualifying claim source."
+        "Task-contract restriction for this traversal (owner-confirmed 2026-09-30): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement."
       ],
       "risk": "STOP_OWNER_BOUNDARY likely: closing requires a new structured claim object, a response-contract extension (frozen v1 golden fixtures) and target-side authoring; see 04_EXECUTION_ROADMAP.md V1-C2.",
-      "slice": "V1-C2"
+      "slice": "V1-C2",
+      "owner_requirement_of_record": "#221 comment 2026-09-16: declared claims/relevant must-holds extracted from PR/contract pack; #805 fixture => material/merge-blocking; contracts_context_not_relevant impossible when the claim depends on the selected contract pack; material limitations degrade confidence/coverage",
+      "narrowing_status": "PENDING_HUMAN_DECISION for any part of the requirement of record not achievable within the traversal's permitted means (#221: the epic grants no waivers)"
     },
     {
-      "claim_id": "V1-C3",
+      "claim_id": "CL-3",
       "title": "Materiality",
-      "proposition": "A finding is confirmed only with ObservedChange + ApplicableRelation + ConcreteEvidence + NegativeConsequence + ExactSubjectAboutness; otherwise it stays an observation/downgraded risk.",
+      "proposition": "A finding is confirmed only with ObservedChange + ApplicableRelation + ConcreteEvidence + NegativeConsequence + ExactSubjectAboutness; otherwise it must not remain in the confirmed-finding partition.",
       "owner": "#343",
       "producer": [
         "app/agent_review/chunk_response_contract.py:17-28,53-57 (required: severity,title,file_path,impact,evidence; provenance: source_artifact|line_or_hunk)",
@@ -103,19 +137,31 @@
         "app/agent_review/quality_gate.py:362-408,539-557 (P0/P1 presence checks only; P2/P3 never rechecked)"
       ],
       "required_evidence": [
-        "RED per historical countermodel (CM-C3-01..06) as recorded model output replayed through parse -> synthesize -> gate",
-        "GREEN: each is downgraded to observation with a reason code",
+        "RED per historical countermodel (CM-CL3-01..06) as recorded model output replayed through parse -> synthesize -> gate",
+        "GREEN: each is removed from confirmed_findings with a reason code; the discriminator is the confirmed/risk/rejected partition, not only normalized_verdict",
         "positive control: real contract violation with concrete evidence and demonstrated consequence survives as confirmed at its severity",
         "mutation: removing each new predicate turns its focal test RED"
       ],
-      "degraded_by": ["normalizer has no access to hunk text, so aboutness is not checkable without new input (chunk payload or diff)"],
+      "degraded_by": [
+        "normalizer has no access to hunk text, so aboutness is not checkable without new input (chunk payload or diff)"
+      ],
       "live_status": "not_supported",
-      "countermodels": ["CM-C3-01", "CM-C3-02", "CM-C3-03", "CM-C3-04", "CM-C3-05", "CM-C3-06"],
-      "limitations": ["the deterministic layer can reject structurally unsupported findings; it cannot prove a stated consequence is true"],
-      "slice": "V1-C3"
+      "countermodels": [
+        "CM-CL3-01",
+        "CM-CL3-02",
+        "CM-CL3-03",
+        "CM-CL3-04",
+        "CM-CL3-05",
+        "CM-CL3-06"
+      ],
+      "limitations": [
+        "the deterministic layer can reject structurally unsupported findings; it cannot prove a stated consequence is true"
+      ],
+      "slice": "V1-C3",
+      "channel_constraint": "v1 has no neutral observation channel: NormalizedRisk (incl. source=downgraded_finding) escalates to approve_with_required_followup (final_synthesizer.py:474-475; quality_gate.py:544-545); rejected_findings yield approve_with_minor_notes (final_synthesizer.py:476). Downgrading a P3 into a risk makes the verdict stricter. Target channel is an open V1-C3 decision."
     },
     {
-      "claim_id": "V1-C4",
+      "claim_id": "CL-4",
       "title": "Limitation propagation",
       "proposition": "A limitation that prevents evaluating a required obligation makes that obligation not covered and degrades the reported coverage/confidence visible at the gate.",
       "owner": "#221 (#805 comment) with #232/#307 for coverage-bearing instances",
@@ -133,34 +179,50 @@
       ],
       "degraded_by": [],
       "live_status": "partial",
-      "countermodels": ["CM-C4-01", "CM-C4-02", "CM-C4-03"],
-      "limitations": ["model self-reported limitations never drive status (schemas.py:372-381) — by design, LLM advisory"],
+      "countermodels": [
+        "CM-CL4-01",
+        "CM-CL4-02",
+        "CM-CL4-03"
+      ],
+      "limitations": [
+        "model self-reported limitations never drive status (schemas.py:372-381) — by design, LLM advisory"
+      ],
       "slice": "distributed: V1-C1 (hunk), V1-C2 (contracts/claims), V1-C4 (result coverage)"
     },
     {
-      "claim_id": "V1-C5",
+      "claim_id": "CL-5",
       "title": "Non-vacuous blocker qualification / result coverage",
       "proposition": "A blocking outcome arises only from an adequately sustained blocker, and a surviving result does not certify coverage it did not receive (UntrustedBlockerCandidate != TrustedBlockingConclusion).",
       "owner": "#307",
-      "producer": ["app/agent_review/quality_gate.py:362-416 (_confirmed_blockers/_blocker_unreliable_reasons/_has_parsed_source_chunk)"],
-      "consumer": ["consumer publisher matrix docs/AGENT_REVIEW_QUALITY_GATE.md:103-125: passed|degraded + changes_requested + manual=false -> conclusive blocking publication"],
+      "producer": [
+        "app/agent_review/quality_gate.py:362-416 (_confirmed_blockers/_blocker_unreliable_reasons/_has_parsed_source_chunk)"
+      ],
+      "consumer": [
+        "consumer publisher matrix docs/AGENT_REVIEW_QUALITY_GATE.md:103-125: passed|degraded + changes_requested + manual=false -> conclusive blocking publication"
+      ],
       "required_evidence": [
-        "independent reproduction of TS1 class on master (the #275 trust set is ABSENT on master; the literal TS1 edge is defined relative to it)",
-        "RED: P1 on a file the same chunk reported files_not_reviewed -> gate passed/changes_requested/manual=false",
-        "RED: no-plan, all files not_reviewed, noncritical -> gate passed/approved (to be reproduced through the real synthesizer, not a hand-set final status)",
+        "independent reproduction of literal TS1 (CM-CL5-03): ChunkResults schema_id/target_repo mutated after construction via the Python API + valid P1 -> trusted blocker (the #275 trust set is ABSENT on master)",
+        "additional #307 result-coverage countermodel, not TS1: RED P1 on a file the same chunk reported files_not_reviewed -> gate passed/changes_requested/manual=false (CM-CL5-01, REPRODUCED)",
+        "additional #307 result-coverage countermodel, not TS1: all files not_reviewed, noncritical, with and without plan -> gate passed/approved (CM-CL5-02, REPRODUCED through the real parser/synthesizer)",
         "mechanism removed -> focal RED; restored -> focal GREEN",
         "bounded mutation over the remaining trust edges"
       ],
       "degraded_by": [],
       "live_status": "not_supported",
-      "countermodels": ["CM-C5-01", "CM-C5-02", "CM-C5-03"],
-      "limitations": ["literal TS1 (removal of chunk_results_schema_mismatch from #275's trust set) is not reachable through the CLI because load_chunk_results rejects schema mismatch on disk (quality_gate.py:151-158); it is reachable via the Python API with mutable models"],
+      "countermodels": [
+        "CM-CL5-01",
+        "CM-CL5-02",
+        "CM-CL5-03"
+      ],
+      "limitations": [
+        "literal TS1 (removal of chunk_results_schema_mismatch from #275's trust set) is not reachable through the CLI because load_chunk_results rejects schema mismatch on disk (quality_gate.py:151-158); it is reachable via the Python API with mutable models"
+      ],
       "slice": "V1-C4"
     },
     {
-      "claim_id": "V1-C6",
+      "claim_id": "CL-6",
       "title": "Egress",
-      "proposition": "WEAK FORM ONLY: v1 applies regex/blocklist secret redaction and absolute/home-path redaction before chunk payloads leave the engine, compatible with its historical contract. It does NOT guarantee that raw source or raw repository paths cannot reach inference transport.",
+      "proposition": "WEAK FORM ONLY: L-CHUNK applies regex/blocklist secret redaction plus absolute/home-path redaction before chunk payloads leave the engine; L-LEGACY applies inline regex secret redaction only, with no path redaction. Neither guarantees that raw source or raw repository paths cannot reach inference transport.",
       "owner": "#315",
       "producer": [
         "app/agent_review/redaction.py:95-133,239-257; app/agent_review/artifact_loader.py:84-91; chunk_payload_builder.py:242",
@@ -168,28 +230,57 @@
       ],
       "consumer": [
         "L-CHUNK: consumer wrapper sends each chunk payload whole to Router /v1/chat/completions (full raw git diff block per file + repo-relative paths)",
-        "L-LEGACY: github_agent_review.py:2090-2146 sends PR title/body, raw paths, full patch for small PRs, <=2000-char head file source for some frontend files"
+        "L-LEGACY: github_agent_review.py:1415-1589 (_build_sanitized_bundle: PR title/body :1441-1442, raw paths, full patch for small PRs, <=2000-char head file source for some frontend files), :2037-2102 (build_agent_router_payload), :2128-2157 (call_agent_router_review)"
       ],
-      "required_evidence": ["an explicit disposition among #315's options A/B/C", "docs no longer state stronger protection than implemented"],
-      "degraded_by": ["output_safe_for_llm is a constant True (cli.py:109), not a computed property"],
+      "required_evidence": [
+        "an explicit disposition among #315's options A/B/C",
+        "docs no longer state stronger protection than implemented"
+      ],
+      "degraded_by": [
+        "output_safe_for_llm is a constant True in L-CHUNK (cli.py:109), not a computed property"
+      ],
       "live_status": "supported_weak_form_only",
-      "countermodels": ["CM-C6-01", "CM-C6-02", "CM-C6-03"],
-      "limitations": ["a code reviewer must transmit reviewed code to its inference transport; a structural no-source guarantee is incompatible with L-CHUNK's function as designed"],
+      "countermodels": [
+        "CM-CL6-01",
+        "CM-CL6-02",
+        "CM-CL6-03"
+      ],
+      "limitations": [
+        "a code reviewer must transmit reviewed code to its inference transport; a structural no-source guarantee is incompatible with L-CHUNK's function as designed"
+      ],
       "slice": "V1-C5"
     },
     {
-      "claim_id": "V1-C7",
+      "claim_id": "CL-7",
       "title": "Publication fidelity",
       "proposition": "The consumer publisher publishes the same result produced by the engine on CT104 (SemanticReviewAuthority != GitHubWriteAuthority; PublicationValidation != SemanticReexecution).",
       "owner": "consumer AgentEscala (#675 implementation, #802 merged 3c162f5b); upstream reference #342",
-      "producer": ["app/agent_review/final_synthesizer.py:572-617 (final-review.md, sanitized)"],
-      "consumer": ["AgentEscala scripts/consume-aiops-quality-gate.py (publication_digest) and agent-review-publish.yml / scripts/aiops/publication_comment.mjs (digest recheck, no recomputation)"],
-      "required_evidence": ["dated historical evidence: AgentEscala #803 canary, producer run 34813119876, publisher run 34813217373, source_digest == published_digest ff0ce3b6…909c", "a new exact-subject canary after any repin"],
-      "degraded_by": ["digest is produced and checked within the same CT104 artifact; it proves non-alteration between producer and publisher, not independent attestation of the semantic result"],
-      "live_status": "supported",
-      "limitations": ["historical evidence is not proof for the next HEAD/pin; final-review.md may echo <=180-char model-quoted evidence and repo-relative paths"],
+      "producer": [
+        "app/agent_review/final_synthesizer.py:167-255 (render_final_review_markdown) and :606-617 (_sanitize_review/_sanitize_markdown)"
+      ],
+      "consumer": [
+        "AgentEscala scripts/consume-aiops-quality-gate.py (publication_digest) and agent-review-publish.yml / scripts/aiops/publication_comment.mjs (digest recheck, no recomputation)"
+      ],
+      "required_evidence": [
+        "dated historical evidence: AgentEscala #803 canary, producer run 34813119876, publisher run 34813217373, source_digest == published_digest ff0ce3b6…909c",
+        "a new exact-subject canary after any repin"
+      ],
+      "degraded_by": [
+        "digest is produced and checked within the same CT104 artifact; it proves non-alteration between producer and publisher, not independent attestation of the semantic result"
+      ],
+      "live_status": "supported_historical",
+      "limitations": [
+        "historical evidence is not proof for the next HEAD/pin; final-review.md may echo <=180-char model-quoted evidence and repo-relative paths"
+      ],
       "countermodels": [],
       "slice": "V1-C6 (conformance only; no engine change planned)"
     }
-  ]
+  ],
+  "id_namespaces": {
+    "claims": "CL-0..CL-7",
+    "obligations": "OBL-CLn-xx",
+    "countermodels": "CM-CLn-xx",
+    "positive_controls": "PC-CLn",
+    "slices": "V1-C0..V1-C6 (traversal slices only; slice V1-Cn != claim CL-n)"
+  }
 }

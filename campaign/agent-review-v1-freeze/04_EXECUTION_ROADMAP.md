@@ -14,7 +14,7 @@ Uma slice estrutural ativa por vez. Qualificação nunca é empilhada entre PRs.
 | 1 | V1-C1 coverage truth | #232 | comportamento v1 (planner + propagação) | `V1_C1_COVERAGE_TRUTH_READY` | médio: decisão de semântica "complete" (tier solicitado vs revisão textual) deve sair do texto de #232, não ser inventada |
 | 2 | V1-C2 claim coverage / limitation propagation | #221 (#805) | comportamento v1 mínimo | `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` | **alto: `STOP_OWNER_BOUNDARY` provável** (ver abaixo) |
 | 3 | V1-C3 materiality | #343 | comportamento v1 (normalizer) | `V1_C3_MATERIALITY_READY` | médio: aboutness exige material revisado como nova entrada do parser; mudança de response contract toca golden fixtures congeladas |
-| 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-C5-01/02 já reproduzidos |
+| 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-CL5-01/02 já reproduzidos |
 | 5 | V1-C5 egress disposition | #315 | decision contract primeiro | `V1_C5_EGRESS_DISPOSITION_READY` ou `BLOCKED_BY_EXPLICIT_HUMAN_DECISION` | **alto: `STOP_UNRESOLVED_POLICY` provável** |
 | 6 | V1-C6 final conformance | #221 | corpus consolidado; sem feature | `V1_FINAL_SOURCE_CANDIDATE_READY` | depende de 1–5 |
 
@@ -25,7 +25,7 @@ Seguir a "proposta mínima" do próprio #232: (1) generalizar a exclusão com
 `reason_code` distinto para não-must; (2) dar hunks sintéticos aos fixtures cujo
 assunto não é disponibilidade de hunk; (3) revalidar `_plan_status` →
 `chunk_result_parser` → `final_synthesizer` → `quality_gate`. O e2e contract test
-que hoje afirma `passed` com arquivos sem hunk (CM-C1-01) precisa ser reconciliado
+que hoje afirma `passed` com arquivos sem hunk (CM-CL1-01) precisa ser reconciliado
 explicitamente no PR. Espelhar qualquer mudança de `chunk.limitations` na projeção do
 planner (`payload_cost_model.py:1488,1492`).
 
@@ -43,26 +43,38 @@ do response contract (golden fixtures congeladas), e consumo em parse/synth/gate
 isso é nova arquitetura de claim, que #221/#357 reservam ao sucessor. Menor
 alternativa compatível já identificada, candidata a ficar **dentro** do v1:
 
-1. honestidade de limitação para contratos não achatáveis (OBL-V1C2-02 / CM-C2-02);
-2. propagação ao gate das limitações que impedem avaliar obrigação (OBL-V1C4-01),
+1. honestidade de limitação para contratos não achatáveis (OBL-CL4-02 / CM-CL2-02);
+2. propagação ao gate das limitações que impedem avaliar obrigação (OBL-CL4-01),
    em especial `aux_context`/`must_hold` omitido por budget;
 3. declarar como non-claim explícito que o v1 não produz claim coverage e que
    `approve_*` do v1 não afirma satisfação de claims do PR.
+
+A exigência de registro é o comentário de #221 de 2026-09-16 (#805), incluindo
+"extraídas do PR/contract pack" e fixture "=> material/merge-blocking". O task
+contract da travessia restringe os meios (sem NLP genérico de texto livre do PR);
+isso não dispõe da exigência. Qualquer parte não atendível dentro dos meios é
+redução funcional → `PENDING_HUMAN_DECISION`.
 
 A decisão entre "alternativa mínima e seguir" e "parar a travessia" pertence à
 slice V1-C2 após reconciliação de owner; este roteiro não a antecipa. Se for STOP, a
 travessia para ali (regra "não contornar STOP").
 
 ### V1-C3 (#343)
-Anexar predicados determinísticos em `finding_normalizer._normalize_finding`
-reutilizando `_downgrade_or_reject` (confirmado → risco `downgraded_finding`, sem
-novo canal). Aboutness exige que o parser receba o material revisado (payload do
+Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O
+canal de saída é decisão aberta:** `_downgrade_or_reject` gera `NormalizedRisk`, e
+qualquer risk escala o veredito para `approve_with_required_followup`; `rejected`
+leva a `approve_with_minor_notes`; não existe canal neutro de observação. A slice não
+pode "corrigir" um P3 tornando o resultado mais estrito, e o discriminador deve
+observar a partição confirmed/risk/rejected, não só o veredito. Aboutness exige que o parser receba o material revisado (payload do
 chunk ou diff) — mudança de interface de CLI a justificar. O positive control
-PC-C3-01 é obrigatório antes e depois.
+PC-CL3-01 é obrigatório antes e depois.
 
 ### V1-C4 (#307)
-Reproduzir TS1 independentemente (o trust set de #275 está ausente em master; a
-forma alcançável é CM-C5-01/02). Não portar a asserção vacuosa de #275. Mutação
+Reproduzir TS1 independentemente na forma literal (CM-CL5-03: `ChunkResults` com
+`schema_id`/`target_repo` adulterados após construção via API Python → blocker
+confiável; o trust set de #275 está ausente em master). CM-CL5-01/02 (já
+reproduzidos) são countermodels adicionais de result coverage no escopo de #307, não
+TS1. Não portar a asserção vacuosa de #275. Mutação
 bounded conforme #307.
 
 ### V1-C5 (#315)

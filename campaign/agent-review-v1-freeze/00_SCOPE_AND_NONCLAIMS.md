@@ -9,6 +9,11 @@
 **Subject de derivação:** `master = ab92e89f096b391bc50759afa3d0f6050881633a`, tree `a811df6344ab5ba450b3a1b5fd12cd45d0477552` (observado em 2026-09-30)
 **Baseline publicada/consumida:** `v0.22.0 = 2ce1f45768b8779cb48ef8a302d4ed796349f0e5`
 
+**Namespaces:** claims do ledger são `CL-0…CL-7`; obrigações `OBL-CLn-xx`;
+countermodels `CM-CLn-xx`; positive controls `PC-CLn`. Os nomes `V1-C0…V1-C6`
+designam **somente slices** da travessia (e seus terminais `V1_Cn_*_READY`). Claim
+`CL-n` e slice `V1-Cn` não são a mesma coisa.
+
 Este artefato **não altera comportamento** e **não concede autoridade**. Ele fixa o
 que o v1 final pode afirmar, que evidência cada afirmação exige, o que a degrada, e o
 que o v1 explicitamente não afirma. Toda afirmação sobre o código foi derivada do
@@ -59,14 +64,14 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 
 | Id | Claim | Owner | Estado no subject de derivação |
 |---|---|---|---|
-| V1-C0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | sustentado por design; ver non-claims |
-| V1-C1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | **não sustentado** (CM-C1-01, CM-C1-02) |
-| V1-C2 | Claim/must-hold **estruturada e admitida** aplicável recebe estado `covered/partial/not_covered/not_applicable` separado de file coverage. | #221 (comentário #805) — sem issue dedicada | **não sustentado**; primitiva estruturada inexistente (risco `STOP_OWNER_BOUNDARY`) |
-| V1-C3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-C3-*) |
-| V1-C4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só `must_review` + `critical_pr` degradam o gate |
-| V1-C5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-C5-01, CM-C5-02) |
-| V1-C6 | Egress: proteção/redaction compatível com o contrato histórico (regex/blocklist). **Não** garantia estrutural. | #315 | sustentado **somente** na forma fraca; disposição pendente |
-| V1-C7 | O publisher target publica o **mesmo** resultado produzido pelo engine no CT104. | consumer (AgentEscala #802/#803) | evidência histórica datada; não prova do próximo HEAD |
+| CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | sustentado por design; ver non-claims |
+| CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | **não sustentado** (CM-CL1-01, CM-CL1-02) |
+| CL-2 | Claim/must-hold **estruturada e admitida** aplicável recebe estado `covered/partial/not_covered/not_applicable` separado de file coverage. | #221 (comentário #805) — sem issue dedicada | **não sustentado**; primitiva estruturada inexistente (risco `STOP_OWNER_BOUNDARY`); estreitamento da exigência de #805 = `PENDING_HUMAN_DECISION` (§6) |
+| CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-C3-*) |
+| CL-4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só limitações de nível plan (via `plan.status`/`files_not_covered`) e de resultado alcançam o gate; limitações de payload/brief são descartadas antes dele |
+| CL-5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-CL5-01, CM-CL5-02) |
+| CL-6 | Egress: proteção/redaction compatível com o contrato histórico (regex/blocklist). **Não** garantia estrutural. | #315 | sustentado **somente** na forma fraca (L-CHUNK: regex + path absoluto/home; L-LEGACY: regex sem redaction de path); disposição pendente |
+| CL-7 | O publisher target publica o **mesmo** resultado produzido pelo engine no CT104. | consumer (AgentEscala #802/#803) | `supported_historical`: evidência datada (#803); não prova do próximo HEAD |
 
 ## 4. Non-claims explícitos do v1 final
 
@@ -87,7 +92,7 @@ ausência de finding = satisfação de todo contrato
 confiança do LLM = verdade
 redaction regex = sanitização completa
 output_safe_for_llm = propriedade computada   (é constante True: app/agent_review/cli.py:109)
-extração determinística de claims a partir de texto livre do PR
+claim coverage de claims declaradas no corpo do PR (o v1 não transporta título/corpo do PR ao payload da L-CHUNK)
 ```
 
 Regras epistêmicas permanentes desta campanha:
@@ -107,7 +112,7 @@ LLM output = hipótese advisory; evidência determinística = evidência; grant 
 `campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md` §6 afirmava como
 legado permanente "a sanitização estrita de dados antes do egresso para o Router". O
 código observado aplica apenas redaction regex/blocklist e envia hunks/paths
-relativos crus (CM-C6-01). A linha foi corrigida para a forma não sobre-afirmada, com
+relativos crus (CM-CL6-01). A linha foi corrigida para a forma não sobre-afirmada, com
 referência a #315. Nenhum outro documento foi reescrito nesta slice.
 
 ## 6. Fora de escopo desta campanha
@@ -119,14 +124,29 @@ deploy / CT102 / produção                   -> STOP_PRODUCTION_BOUNDARY
 arquitetura Advisory/Assured (#357)         -> fora
 v2 / G2C / structural_egress_projection_v2  -> fora (não copiar)
 AgentEscala#678 (escopo server-side do token) -> owner target; residual externo
-extração NLP de claims do corpo do PR        -> proibida
+extração NLP genérica de claims do corpo do PR -> proibida pelo task contract da travessia
 ```
+
+**Tensão registrada, não resolvida aqui.** O comentário de #221 de 2026-09-16
+(AgentEscala #805) é a exigência de registro: "claims declaradas/must-hold relevantes
+devem ser extraídas do PR/contract pack", fixture #805 "=> finding
+material/merge-blocking", e "`contracts_context_not_relevant` deve ser impossível
+quando a claim depende do contract pack selecionado". O task contract desta travessia
+(confirmado pelo owner em 2026-09-30) restringe os **meios**: texto livre do PR não
+vira autoridade determinística e não há NLP genérico de claims. Essa restrição de
+meios **não** dispõe da exigência de #805. Qualquer parte da exigência que não possa
+ser atendida dentro dos meios permitidos é redução funcional e fica
+`PENDING_HUMAN_DECISION` (#221: "esta epic não concede dispensas"); a slice V1-C2
+decide entre fechamento, `STOP_OWNER_BOUNDARY` ou pedido de decisão.
 
 ## 7. Fato de release já estabelecido
 
 A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):
 `da5a03b` (#225/#227) e `ffa3040` (#231, H1-B) alteraram `semantic_chunker.py`,
 `chunk_payload_builder.py`, `payload_cost_model.py` (novo), `pr_brief.py`,
-`quality_gate.py`, `chunk_result_parser.py`. O consumer em produção executa `v0.22.0`
+`quality_gate.py`, `chunk_result_parser.py`, `scripts/aiops-review-build-payloads.py`,
+`scripts/aiops-review-plan-chunks.py`. Além disso `app/agent_review/versioning.py`
+(escopo v1, sem sufixo `_v2`) foi alterado por commits v2 (`5b94632` #270,
+`6d13aa0` #200-G1C2). O consumer em produção executa `v0.22.0`
 e portanto **não** contém essas correções. Uma release de manutenção será
 necessária antes do repin — ação fora deste grant (`STOP_RELEASE_BOUNDARY`).
