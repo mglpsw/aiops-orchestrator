@@ -33,7 +33,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297693
+      14832168
      ]
     },
     {
@@ -44,7 +44,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297694
+      14832169
      ]
     },
     {
@@ -55,7 +55,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808662
+      2076714
      ]
     }
    ],
@@ -64,7 +64,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808662,
+    "cwd_ino": 2076714,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -74,7 +74,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12293534]"
+      "target": "pipe:[14874748]"
      },
      {
       "fd": 2,
@@ -82,7 +82,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784063
+    "pid": 898010
    },
    "teardown": {
     "signalled": 1,
@@ -92,11 +92,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808662,
+   "orig_ino": 2076714,
    "decoy_ino": null
   }
  },
@@ -134,7 +136,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297698
+      14832172
      ]
     },
     {
@@ -145,7 +147,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297699
+      14832173
      ]
     },
     {
@@ -156,16 +158,16 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808664
+      2076716
      ]
     }
    ],
-   "spawn_control_regained_s": 0.002,
+   "spawn_control_regained_s": 0.001,
    "child_report": {
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808664,
+    "cwd_ino": 2076716,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -175,7 +177,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12285711]"
+      "target": "pipe:[14858190]"
      },
      {
       "fd": 2,
@@ -183,7 +185,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784065
+    "pid": 898012
    },
    "teardown": {
     "signalled": 1,
@@ -193,12 +195,14 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808664,
-   "decoy_ino": 1808665
+   "orig_ino": 2076716,
+   "decoy_ino": 2076717
   }
  },
  {
@@ -235,7 +239,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297701
+      14832175
      ]
     },
     {
@@ -246,7 +250,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297702
+      14832176
      ]
     },
     {
@@ -257,7 +261,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808667
+      2076719
      ]
     }
    ],
@@ -270,6 +274,8 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "transport_spawn_failed",
     "detail": "SubprocessError: Exception occurred in preexec_fn."
@@ -277,7 +283,7 @@
    "escaped": null,
    "outcome": "transport_spawn_failed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808667,
+   "orig_ino": 2076719,
    "decoy_ino": null
   }
  },
@@ -315,7 +321,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297704
+      14832178
      ]
     },
     {
@@ -326,7 +332,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297705
+      14832179
      ]
     },
     {
@@ -337,7 +343,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808669
+      2076721
      ]
     }
    ],
@@ -350,14 +356,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "injected_parent_failure",
-    "detail": "RuntimeError: injected parent failure after fork (child 784069 exists)"
+    "detail": "RuntimeError: injected parent failure after fork (child 898016 exists)"
    },
    "escaped": null,
    "outcome": "injected_parent_failure",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808669,
+   "orig_ino": 2076721,
    "decoy_ino": null
   }
  },
@@ -395,7 +403,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297707
+      14832181
      ]
     },
     {
@@ -406,7 +414,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297708
+      14832182
      ]
     },
     {
@@ -417,7 +425,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808671
+      2076723
      ]
     }
    ],
@@ -430,11 +438,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
    "outcome": "escaped",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808671,
+   "orig_ino": 2076723,
    "decoy_ino": null
   }
  },
@@ -472,7 +482,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297710
+      14832184
      ]
     },
     {
@@ -483,7 +493,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297711
+      14832185
      ]
     },
     {
@@ -494,7 +504,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808673
+      2076725
      ]
     }
    ],
@@ -507,6 +517,8 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "unit_deadline",
     "detail": "no protocol line before the unit deadline"
@@ -514,7 +526,7 @@
    "escaped": null,
    "outcome": "unit_deadline",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808673,
+   "orig_ino": 2076725,
    "decoy_ino": null
   }
  },
@@ -552,7 +564,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297713
+      14832187
      ]
     },
     {
@@ -563,7 +575,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297714
+      14832188
      ]
     },
     {
@@ -574,7 +586,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808675
+      2076727
      ]
     }
    ],
@@ -587,6 +599,8 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "transport_spawn_failed",
     "detail": "FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent/s1b-spike-exe'"
@@ -594,7 +608,7 @@
    "escaped": null,
    "outcome": "transport_spawn_failed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808675,
+   "orig_ino": 2076727,
    "decoy_ino": null
   }
  },
@@ -632,7 +646,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297716
+      14832190
      ]
     },
     {
@@ -643,7 +657,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297717
+      14832191
      ]
     },
     {
@@ -654,7 +668,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808677
+      2076729
      ]
     }
    ],
@@ -663,7 +677,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808677,
+    "cwd_ino": 2076729,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -673,7 +687,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12299614]"
+      "target": "pipe:[14861796]"
      },
      {
       "fd": 2,
@@ -681,7 +695,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784077
+    "pid": 898024
    },
    "teardown": {
     "signalled": 2,
@@ -691,11 +705,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808677,
+   "orig_ino": 2076729,
    "decoy_ino": null
   }
  },
@@ -733,7 +749,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297719
+      14832193
      ]
     },
     {
@@ -744,7 +760,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297720
+      14832194
      ]
     },
     {
@@ -755,7 +771,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808679
+      2076731
      ]
     }
    ],
@@ -773,11 +789,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808679,
+   "orig_ino": 2076731,
    "decoy_ino": null
   }
  },
@@ -803,14 +821,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 1808682]}"
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 2076734]}"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808681,
+   "orig_ino": 2076733,
    "decoy_ino": null
   }
  },
@@ -836,14 +856,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'fifo', 'chr'}/r"
+    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'chr', 'fifo'}/r"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808684,
+   "orig_ino": 2076736,
    "decoy_ino": null
   }
  },
@@ -869,14 +891,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 1808686]}, expected {'dir'}/r"
+    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 2076738]}, expected {'dir'}/r"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808686,
+   "orig_ino": 2076738,
    "decoy_ino": null
   }
  },
@@ -902,14 +926,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 1808687]}"
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 2076739]}"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808688,
+   "orig_ino": 2076740,
    "decoy_ino": null
   }
  },
@@ -949,7 +975,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297734
+      14832208
      ]
     },
     {
@@ -960,7 +986,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297735
+      14832209
      ]
     },
     {
@@ -971,7 +997,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808690
+      2076742
      ]
     }
    ],
@@ -982,18 +1008,20 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784088
+     898035
     ],
     "any_child_or_zombie": true
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "injected_parent_failure",
-    "detail": "RuntimeError: injected parent failure after fork (child 784088 exists)"
+    "detail": "RuntimeError: injected parent failure after fork (child 898035 exists)"
    },
    "escaped": null,
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808690,
+   "orig_ino": 2076742,
    "decoy_ino": null
   }
  },
@@ -1033,7 +1061,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297738
+      14832212
      ]
     },
     {
@@ -1044,7 +1072,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297739
+      14832213
      ]
     },
     {
@@ -1055,7 +1083,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808692
+      2076744
      ]
     }
    ],
@@ -1066,15 +1094,17 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784090
+     898037
     ],
     "any_child_or_zombie": true
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808692,
+   "orig_ino": 2076744,
    "decoy_ino": null
   }
  },
@@ -1114,7 +1144,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297742
+      14832216
      ]
     },
     {
@@ -1125,7 +1155,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297743
+      14832217
      ]
     },
     {
@@ -1136,16 +1166,16 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808694
+      2076746
      ]
     }
    ],
-   "spawn_control_regained_s": 0.002,
+   "spawn_control_regained_s": 0.001,
    "child_report": {
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808694,
+    "cwd_ino": 2076746,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1155,7 +1185,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12285787]"
+      "target": "pipe:[14861836]"
      },
      {
       "fd": 2,
@@ -1163,7 +1193,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784092
+    "pid": 898039
    },
    "teardown": {
     "signalled": 1,
@@ -1171,15 +1201,17 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784093
+     898040
     ],
     "any_child_or_zombie": true
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808694,
+   "orig_ino": 2076746,
    "decoy_ino": null
   }
  },
@@ -1219,7 +1251,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297746
+      14832220
      ]
     },
     {
@@ -1230,7 +1262,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297747
+      14832221
      ]
     },
     {
@@ -1241,7 +1273,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808696
+      2076748
      ]
     }
    ],
@@ -1250,7 +1282,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808696,
+    "cwd_ino": 2076748,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1260,7 +1292,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12300334]"
+      "target": "pipe:[14875897]"
      },
      {
       "fd": 2,
@@ -1268,7 +1300,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784095
+    "pid": 898042
    },
    "teardown": {
     "signalled": 1,
@@ -1278,11 +1310,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808696,
+   "orig_ino": 2076748,
    "decoy_ino": null
   }
  },
@@ -1322,7 +1356,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297750
+      14832224
      ]
     },
     {
@@ -1333,7 +1367,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297751
+      14832225
      ]
     },
     {
@@ -1344,16 +1378,16 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808698
+      2076750
      ]
     }
    ],
-   "spawn_control_regained_s": 0.001,
+   "spawn_control_regained_s": 0.002,
    "child_report": {
     "nnp": "0",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808698,
+    "cwd_ino": 2076750,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1363,7 +1397,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12285807]"
+      "target": "pipe:[14861856]"
      },
      {
       "fd": 2,
@@ -1371,7 +1405,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784098
+    "pid": 898045
    },
    "teardown": {
     "signalled": 1,
@@ -1381,11 +1415,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808698,
+   "orig_ino": 2076750,
    "decoy_ino": null
   }
  },
@@ -1425,7 +1461,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297753
+      14832227
      ]
     },
     {
@@ -1436,7 +1472,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297754
+      14832228
      ]
     },
     {
@@ -1447,7 +1483,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808700
+      2076752
      ]
     }
    ],
@@ -1456,7 +1492,7 @@
     "nnp": "1",
     "as_soft": "unlimited",
     "cwd_dev": 2096,
-    "cwd_ino": 1808700,
+    "cwd_ino": 2076752,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1466,7 +1502,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12292849]"
+      "target": "pipe:[14872512]"
      },
      {
       "fd": 2,
@@ -1474,7 +1510,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784100
+    "pid": 898047
    },
    "teardown": {
     "signalled": 1,
@@ -1484,11 +1520,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808700,
+   "orig_ino": 2076752,
    "decoy_ino": null
   }
  },
@@ -1528,7 +1566,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297756
+      14832230
      ]
     },
     {
@@ -1539,7 +1577,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297757
+      14832231
      ]
     },
     {
@@ -1550,7 +1588,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808702
+      2076754
      ]
     }
    ],
@@ -1559,7 +1597,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808703,
+    "cwd_ino": 2076755,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1569,7 +1607,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12300355]"
+      "target": "pipe:[14861875]"
      },
      {
       "fd": 2,
@@ -1577,7 +1615,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784102
+    "pid": 898049
    },
    "teardown": {
     "signalled": 1,
@@ -1587,12 +1625,14 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808702,
-   "decoy_ino": 1808703
+   "orig_ino": 2076754,
+   "decoy_ino": 2076755
   }
  },
  {
@@ -1631,7 +1671,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297759
+      14832233
      ]
     },
     {
@@ -1642,7 +1682,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297760
+      14832234
      ]
     },
     {
@@ -1653,7 +1693,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808705
+      2076757
      ]
     }
    ],
@@ -1671,11 +1711,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808705,
+   "orig_ino": 2076757,
    "decoy_ino": null
   }
  },
@@ -1700,7 +1742,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808707,
+    "cwd_ino": 2076759,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1710,7 +1752,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12292869]"
+      "target": "pipe:[14876760]"
      },
      {
       "fd": 2,
@@ -1718,7 +1760,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784108
+    "pid": 898063
    },
    "teardown": {
     "signalled": 1,
@@ -1728,11 +1770,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808707,
+   "orig_ino": 2076759,
    "decoy_ino": null
   }
  },
@@ -1770,7 +1814,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297765
+      14832239
      ]
     },
     {
@@ -1781,7 +1825,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297766
+      14832240
      ]
     },
     {
@@ -1792,7 +1836,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808710
+      2076762
      ]
     }
    ],
@@ -1801,7 +1845,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808710,
+    "cwd_ino": 2076762,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1811,7 +1855,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12292888]"
+      "target": "pipe:[14860046]"
      },
      {
       "fd": 2,
@@ -1819,7 +1863,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784110
+    "pid": 898065
    },
    "teardown": {
     "signalled": 1,
@@ -1829,11 +1873,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898065,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808710,
+   "orig_ino": 2076762,
    "decoy_ino": null
   }
  },
@@ -1871,7 +1921,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297768
+      14832242
      ]
     },
     {
@@ -1882,7 +1932,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297769
+      14832243
      ]
     },
     {
@@ -1893,7 +1943,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808712
+      2076764
      ]
     }
    ],
@@ -1902,7 +1952,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808712,
+    "cwd_ino": 2076764,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -1912,7 +1962,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12300413]"
+      "target": "pipe:[14875997]"
      },
      {
       "fd": 2,
@@ -1920,7 +1970,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784112
+    "pid": 898067
    },
    "teardown": {
     "signalled": 1,
@@ -1930,12 +1980,18 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898067,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808712,
-   "decoy_ino": 1808713
+   "orig_ino": 2076764,
+   "decoy_ino": 2076765
   }
  },
  {
@@ -1972,7 +2028,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297771
+      14832245
      ]
     },
     {
@@ -1983,7 +2039,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297772
+      14832246
      ]
     },
     {
@@ -1994,7 +2050,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808715
+      2076767
      ]
     }
    ],
@@ -2007,6 +2063,12 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898069,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": {
     "reason": "transport_spawn_failed",
     "detail": "RuntimeError:injected child setup failure"
@@ -2014,7 +2076,7 @@
    "escaped": null,
    "outcome": "transport_spawn_failed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808715,
+   "orig_ino": 2076767,
    "decoy_ino": null
   }
  },
@@ -2052,7 +2114,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297774
+      14832248
      ]
     },
     {
@@ -2063,7 +2125,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297775
+      14832249
      ]
     },
     {
@@ -2074,7 +2136,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808717
+      2076769
      ]
     }
    ],
@@ -2087,14 +2149,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "injected_parent_failure",
-    "detail": "RuntimeError: injected parent failure after fork (child 784116 exists)"
+    "detail": "RuntimeError: injected parent failure after fork (child 898071 exists)"
    },
    "escaped": null,
    "outcome": "injected_parent_failure",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808717,
+   "orig_ino": 2076769,
    "decoy_ino": null
   }
  },
@@ -2132,7 +2196,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297777
+      14832251
      ]
     },
     {
@@ -2143,7 +2207,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297778
+      14832252
      ]
     },
     {
@@ -2154,7 +2218,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808719
+      2076771
      ]
     }
    ],
@@ -2167,11 +2231,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
    "outcome": "escaped",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808719,
+   "orig_ino": 2076771,
    "decoy_ino": null
   }
  },
@@ -2209,7 +2275,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297780
+      14832254
      ]
     },
     {
@@ -2220,7 +2286,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297781
+      14832255
      ]
     },
     {
@@ -2231,7 +2297,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808721
+      2076773
      ]
     }
    ],
@@ -2244,6 +2310,12 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898075,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": {
     "reason": "unit_deadline",
     "detail": "no protocol line before the unit deadline"
@@ -2251,7 +2323,7 @@
    "escaped": null,
    "outcome": "unit_deadline",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808721,
+   "orig_ino": 2076773,
    "decoy_ino": null
   }
  },
@@ -2289,7 +2361,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297787
+      14832257
      ]
     },
     {
@@ -2300,7 +2372,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297788
+      14832258
      ]
     },
     {
@@ -2311,7 +2383,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808723
+      2076775
      ]
     }
    ],
@@ -2324,6 +2396,12 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898077,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": {
     "reason": "transport_spawn_failed",
     "detail": "FileNotFoundError:[Errno 2] No such file or directory: '/nonexistent/s1b-spike-exe'"
@@ -2331,7 +2409,7 @@
    "escaped": null,
    "outcome": "transport_spawn_failed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808723,
+   "orig_ino": 2076775,
    "decoy_ino": null
   }
  },
@@ -2369,7 +2447,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297790
+      14832260
      ]
     },
     {
@@ -2380,7 +2458,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297791
+      14832261
      ]
     },
     {
@@ -2391,7 +2469,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808725
+      2076777
      ]
     }
    ],
@@ -2400,7 +2478,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808725,
+    "cwd_ino": 2076777,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -2410,7 +2488,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12299738]"
+      "target": "pipe:[14861894]"
      },
      {
       "fd": 2,
@@ -2418,7 +2496,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784127
+    "pid": 898079
    },
    "teardown": {
     "signalled": 2,
@@ -2428,11 +2506,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898079,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808725,
+   "orig_ino": 2076777,
    "decoy_ino": null
   }
  },
@@ -2470,7 +2554,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297793
+      14832263
      ]
     },
     {
@@ -2481,7 +2565,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297794
+      14832264
      ]
     },
     {
@@ -2492,7 +2576,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808727
+      2076779
      ]
     }
    ],
@@ -2510,11 +2594,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808727,
+   "orig_ino": 2076779,
    "decoy_ino": null
   }
  },
@@ -2540,14 +2626,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 1808730]}"
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'reg', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [2096, 2076782]}"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808729,
+   "orig_ino": 2076781,
    "decoy_ino": null
   }
  },
@@ -2573,14 +2661,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'chr', 'fifo'}/r"
+    "detail": "fd 0 is {'fd': 0, 'object_type': 'chr', 'access': 'rw', 'o_path': False, 'cloexec': False, 'kernel_identity': [6, 4]}, expected {'fifo', 'chr'}/r"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808732,
+   "orig_ino": 2076784,
    "decoy_ino": null
   }
  },
@@ -2606,14 +2696,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 1808734]}, expected {'dir'}/r"
+    "detail": "fd 3 is {'fd': 3, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': True, 'kernel_identity': [2096, 2076786]}, expected {'dir'}/r"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808734,
+   "orig_ino": 2076786,
    "decoy_ino": null
   }
  },
@@ -2639,14 +2731,16 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "reader_fd_capability_unexpected",
-    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 1808442]}"
+    "detail": "unexpected fd {'fd': 5, 'object_type': 'dir', 'access': 'r', 'o_path': True, 'cloexec': False, 'kernel_identity': [2096, 2076787]}"
    },
    "escaped": null,
    "outcome": "reader_fd_capability_unexpected",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808443,
+   "orig_ino": 2076788,
    "decoy_ino": null
   }
  },
@@ -2686,7 +2780,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297808
+      14866397
      ]
     },
     {
@@ -2697,7 +2791,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297809
+      14866398
      ]
     },
     {
@@ -2708,7 +2802,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808736
+      2076790
      ]
     }
    ],
@@ -2719,18 +2813,20 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784141
+     898090
     ],
     "any_child_or_zombie": true
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": {
     "reason": "injected_parent_failure",
-    "detail": "RuntimeError: injected parent failure after fork (child 784141 exists)"
+    "detail": "RuntimeError: injected parent failure after fork (child 898090 exists)"
    },
    "escaped": null,
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808736,
+   "orig_ino": 2076790,
    "decoy_ino": null
   }
  },
@@ -2770,7 +2866,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297812
+      14866401
      ]
     },
     {
@@ -2781,7 +2877,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297813
+      14866402
      ]
     },
     {
@@ -2792,7 +2888,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808738
+      2076792
      ]
     }
    ],
@@ -2803,15 +2899,17 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784143
+     898092
     ],
     "any_child_or_zombie": true
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": "KeyboardInterrupt: injected right after spawn, before pidfd",
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808738,
+   "orig_ino": 2076792,
    "decoy_ino": null
   }
  },
@@ -2851,7 +2949,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297816
+      14866405
      ]
     },
     {
@@ -2862,7 +2960,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297817
+      14866406
      ]
     },
     {
@@ -2873,7 +2971,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808740
+      2076794
      ]
     }
    ],
@@ -2882,7 +2980,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808740,
+    "cwd_ino": 2076794,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -2892,7 +2990,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12285915]"
+      "target": "pipe:[14876068]"
      },
      {
       "fd": 2,
@@ -2900,7 +2998,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784145
+    "pid": 898094
    },
    "teardown": {
     "signalled": 1,
@@ -2908,15 +3006,21 @@
     "not_child_skipped": 0,
     "rounds": 0,
     "remaining": [
-     784146
+     898095
     ],
     "any_child_or_zombie": true
    },
+   "owner": {
+    "pid": 898094,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "unit_teardown_incomplete",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808740,
+   "orig_ino": 2076794,
    "decoy_ino": null
   }
  },
@@ -2956,7 +3060,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297820
+      14866409
      ]
     },
     {
@@ -2967,7 +3071,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297821
+      14866410
      ]
     },
     {
@@ -2978,7 +3082,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808742
+      2076796
      ]
     }
    ],
@@ -2987,7 +3091,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808742,
+    "cwd_ino": 2076796,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -2997,7 +3101,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12293680]"
+      "target": "pipe:[14832335]"
      },
      {
       "fd": 2,
@@ -3005,7 +3109,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784148
+    "pid": 898097
    },
    "teardown": {
     "signalled": 1,
@@ -3015,11 +3119,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898097,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 1,
-   "orig_ino": 1808742,
+   "orig_ino": 2076796,
    "decoy_ino": null
   }
  },
@@ -3059,7 +3169,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297824
+      14866413
      ]
     },
     {
@@ -3070,7 +3180,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297825
+      14866414
      ]
     },
     {
@@ -3081,7 +3191,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808744
+      2076798
      ]
     }
    ],
@@ -3090,7 +3200,7 @@
     "nnp": "0",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808744,
+    "cwd_ino": 2076798,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -3100,7 +3210,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12301456]"
+      "target": "pipe:[14874913]"
      },
      {
       "fd": 2,
@@ -3108,7 +3218,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784151
+    "pid": 898100
    },
    "teardown": {
     "signalled": 1,
@@ -3118,11 +3228,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898100,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808744,
+   "orig_ino": 2076798,
    "decoy_ino": null
   }
  },
@@ -3162,7 +3278,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297827
+      14866418
      ]
     },
     {
@@ -3173,7 +3289,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297828
+      14866419
      ]
     },
     {
@@ -3184,7 +3300,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808746
+      2076801
      ]
     }
    ],
@@ -3193,7 +3309,7 @@
     "nnp": "1",
     "as_soft": "unlimited",
     "cwd_dev": 2096,
-    "cwd_ino": 1808746,
+    "cwd_ino": 2076801,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -3203,7 +3319,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12285935]"
+      "target": "pipe:[14872569]"
      },
      {
       "fd": 2,
@@ -3211,7 +3327,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784153
+    "pid": 898123
    },
    "teardown": {
     "signalled": 1,
@@ -3221,11 +3337,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898123,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808746,
+   "orig_ino": 2076801,
    "decoy_ino": null
   }
  },
@@ -3265,7 +3387,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297830
+      14866421
      ]
     },
     {
@@ -3276,7 +3398,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297831
+      14866422
      ]
     },
     {
@@ -3287,16 +3409,16 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808748
+      2076802
      ]
     }
    ],
-   "spawn_control_regained_s": 0.001,
+   "spawn_control_regained_s": 0.003,
    "child_report": {
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808749,
+    "cwd_ino": 2076803,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -3306,7 +3428,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12302338]"
+      "target": "pipe:[14832405]"
      },
      {
       "fd": 2,
@@ -3314,7 +3436,7 @@
       "target": "/dev/null"
      }
     ],
-    "pid": 784155
+    "pid": 898126
    },
    "teardown": {
     "signalled": 1,
@@ -3324,12 +3446,18 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898126,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808748,
-   "decoy_ino": 1808749
+   "orig_ino": 2076802,
+   "decoy_ino": 2076803
   }
  },
  {
@@ -3368,7 +3496,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297833
+      14866424
      ]
     },
     {
@@ -3379,7 +3507,7 @@
      "cloexec": false,
      "kernel_identity": [
       15,
-      12297834
+      14866425
      ]
     },
     {
@@ -3390,7 +3518,7 @@
      "cloexec": true,
      "kernel_identity": [
       2096,
-      1808751
+      2076805
      ]
     }
    ],
@@ -3408,11 +3536,13 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {},
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808751,
+   "orig_ino": 2076805,
    "decoy_ino": null
   }
  },
@@ -3438,7 +3568,7 @@
     "nnp": "1",
     "as_soft": "4294967296",
     "cwd_dev": 2096,
-    "cwd_ino": 1808753,
+    "cwd_ino": 2076807,
     "fds_post_exec": [
      {
       "fd": 0,
@@ -3448,7 +3578,7 @@
      {
       "fd": 1,
       "flags_octal": "0o1",
-      "target": "pipe:[12295842]"
+      "target": "pipe:[14832425]"
      },
      {
       "fd": 2,
@@ -3458,15 +3588,15 @@
      {
       "fd": 3,
       "flags_octal": "0o300000",
-      "target": "/tmp/s1b-p2-gop0z9nj/snapshot"
+      "target": "/tmp/s1b-p2-yjfza3sr/snapshot"
      },
      {
       "fd": 5,
       "flags_octal": "0o100002",
-      "target": "/tmp/s1b-p2-gop0z9nj/host-policy"
+      "target": "/tmp/s1b-p2-yjfza3sr/host-policy"
      }
     ],
-    "pid": 784161
+    "pid": 898132
    },
    "teardown": {
     "signalled": 1,
@@ -3476,11 +3606,17 @@
     "remaining": [],
     "any_child_or_zombie": false
    },
+   "owner": {
+    "pid": 898132,
+    "pidfd_open": "ok",
+    "exited_before_handshake": false
+   },
+   "d_state_double": null,
    "primary": null,
    "escaped": null,
    "outcome": "completed",
    "survivors_after_reader_exit": 0,
-   "orig_ino": 1808753,
+   "orig_ino": 2076807,
    "decoy_ino": null
   }
  }

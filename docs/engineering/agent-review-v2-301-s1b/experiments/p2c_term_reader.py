@@ -1,6 +1,6 @@
 """P2c (disposable experiment): external termination of the dedicated reader (S1B-REV-02).
 
-Reuses spike_reader.py (unchanged). Spawns the stand-in Git child with mechanism A in
+Reuses spike_reader.py (its mechanism-A spawn path). Spawns the stand-in Git child with mechanism A in
 `grandchild` mode (the child forks a grandchild that calls setsid()), prints
 `READY <json>` once the child is alive, then lingers so the harness can signal THIS
 process from outside. Options (JSON argv[1]):

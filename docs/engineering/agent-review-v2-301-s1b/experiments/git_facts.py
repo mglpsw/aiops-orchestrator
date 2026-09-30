@@ -5,8 +5,8 @@ then runs `git cat-file --batch` descriptor-relative (fchdir(snapshot fd) + GIT_
 cwd=None, NNP set, env allowlist, lazy fetch not enabled) and checks:
   F1  header grammar of every object line: <oid> SP <kind> SP (0|[1-9][0-9]{0,18}) LF
   F2  our canonical preimage digest == requested oid == git's own oid (sha1, sha256)
-  F3  a full-length absent oid yields exactly "<oid> missing" (answered locally). Descendant
-      processes are NOT observed here; lazy_fetch_structurally_irrelevant rests on the producer
+  F3  a full-length absent oid yields exactly "<oid> missing" on stdout with rc 0. Where it is answered and
+      whether descendants run are NOT observed here; lazy_fetch_structurally_irrelevant rests on the producer
       config + authored Git argv/env + the modelled acquisition path, not on this experiment
   F4  mutants of the preimage (omit type / SP / NUL, header size, body only, wrong kind)
       each fail the equality (the oracle discriminates)

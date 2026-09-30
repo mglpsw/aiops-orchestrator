@@ -18,6 +18,16 @@ waitid(P_PIDFD), bounded by a deadline. Survivors -> unit_teardown_incomplete.
 
 Ablations (discriminators, deliberately broken): handle_only, no_subreaper, no_nnp,
 rlimit_after_spawn, path_cwd, no_fd_census, B_no_close, bare_pid.
+
+Correction round 3b (B only): CONTROLLED signals are blocked from before fork() until the
+parent holds the pidfd and the child has reset the reader's signal machinery
+(set_wakeup_fd(-1), CONTROLLED + SIGCHLD -> SIG_DFL, wakeup endpoints closed); the child
+bootstrap ends in execve or os._exit, never in a Python unwind; the handshake select
+watches the setup-error pipe AND the reader's signal-wakeup read end; after the handshake
+deadline the child is SIGKILLed through the pidfd and ownership passes to the bounded
+teardown (no blocking wait). SIGCHLD state helpers implement B-LIF-11. Round-3b ablations:
+no_fork_block, no_child_signal_reset, child_unwind, handshake_ignores_wakeup,
+blocking_reap_after_deadline, no_sigchld_normalize, sigchld_handler_only.
 """
 import ctypes
 import fcntl
@@ -32,6 +42,8 @@ import sys
 import threading
 import time
 
+CONTROLLED = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+SA_NOCLDWAIT = 2
 PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER = 36, 37
 PR_SET_NO_NEW_PRIVS, PR_GET_NO_NEW_PRIVS = 38, 39
 _LIBC = ctypes.CDLL(None, use_errno=True)
@@ -50,6 +62,62 @@ def _subreaper() -> int:
     if _LIBC.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(v), 0, 0, 0) < 0:
         raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER")
     return v.value
+
+
+class _SigAction(ctypes.Structure):   # glibc x86_64 struct sigaction
+    _fields_ = [("handler", ctypes.c_void_p), ("mask", ctypes.c_ulong * 16), ("flags", ctypes.c_int),
+                ("restorer", ctypes.c_void_p)]
+
+
+def sigchld_state() -> dict:
+    """Effective SIGCHLD disposition read back from the kernel (sigaction(SIGCHLD, NULL, &old))."""
+    old = _SigAction()
+    if _LIBC.sigaction(signal.SIGCHLD, None, ctypes.byref(old)) != 0:
+        raise OSError(ctypes.get_errno(), "sigaction(SIGCHLD)")
+    h = old.handler or 0
+    return {"handler": {0: "SIG_DFL", 1: "SIG_IGN"}.get(h, "handler"), "sa_nocldwait": bool(old.flags & SA_NOCLDWAIT)}
+
+
+def set_sigchld_raw(handler: int, flags: int) -> None:
+    """Test fixture / mutant only: set SIGCHLD with raw sigaction flags (Python cannot set SA_NOCLDWAIT)."""
+    act = _SigAction()
+    act.handler, act.flags = handler, flags
+    if _LIBC.sigaction(signal.SIGCHLD, ctypes.byref(act), None) != 0:
+        raise OSError(ctypes.get_errno(), "sigaction(SIGCHLD, set)")
+
+
+def normalize_sigchld(abl: set) -> dict:
+    """B-LIF-11: SIGCHLD -> SIG_DFL without SA_NOCLDWAIT, then read back before any fork."""
+    if "no_sigchld_normalize" in abl:                  # ablation: inherited state kept, not verified
+        return sigchld_state()
+    if "sigchld_handler_only" in abl:                  # mutant: handler reset, SA_NOCLDWAIT kept
+        set_sigchld_raw(0, SA_NOCLDWAIT if sigchld_state()["sa_nocldwait"] else 0)
+    else:
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)  # CPython sigaction: flags = SA_ONSTACK only
+    st = sigchld_state()
+    if st != {"handler": "SIG_DFL", "sa_nocldwait": False}:
+        raise Refusal("reader_sigchld_state_not_normalized", json.dumps(st))
+    return st
+
+
+# P2d R3B-H2: a test double for a child whose SIGKILL does not complete (uninterruptible
+# sleep). It only hides completion from pidfd waits until the given instant; it never
+# claims anything about real D-state tasks.
+_REAL_WAITID = os.waitid
+_D_STATE = {"until": None, "nohang_hidden": 0, "blocking_waits": 0}
+
+
+def _waitid(idtype, ident, options):
+    until = _D_STATE["until"]
+    if until is not None and idtype == os.P_PIDFD:
+        if options & os.WNOHANG:
+            if time.monotonic() < until:
+                _D_STATE["nohang_hidden"] += 1
+                return None
+        else:
+            _D_STATE["blocking_waits"] += 1
+            time.sleep(max(0.0, until - time.monotonic()))
+    return _REAL_WAITID(idtype, ident, options)
 
 
 class Refusal(Exception):
@@ -119,7 +187,7 @@ def own_children() -> list:
     return out
 
 
-def teardown(deadline_s: float, handle_pidfd, handle_only: bool) -> dict:
+def teardown(deadline_s: float, handle_pidfd, handle_only: bool, on_phase=None) -> dict:
     end = time.monotonic() + deadline_s
     stats = {"signalled": 0, "reaped": 0, "not_child_skipped": 0, "rounds": 0}
 
@@ -131,7 +199,7 @@ def teardown(deadline_s: float, handle_pidfd, handle_only: bool) -> dict:
             pass
         while time.monotonic() < end:
             try:
-                if os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG) is not None:
+                if _waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG) is not None:
                     stats["reaped"] += 1
                     return
             except ChildProcessError:
@@ -147,6 +215,8 @@ def teardown(deadline_s: float, handle_pidfd, handle_only: bool) -> dict:
             kids = own_children()
             if not kids:
                 break
+            if on_phase is not None:
+                on_phase("scan")              # P2d R3B-S6/S7: observable point INSIDE teardown
             for pid in kids:
                 try:
                     fd = os.pidfd_open(pid)
@@ -154,7 +224,7 @@ def teardown(deadline_s: float, handle_pidfd, handle_only: bool) -> dict:
                     continue
                 try:
                     try:  # childness via the pidfd itself: a non-child gives ECHILD
-                        os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        _waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
                     except ChildProcessError:
                         stats["not_child_skipped"] += 1
                         continue
@@ -214,7 +284,8 @@ def spawn_A(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
     return Handle(p.pid, pidfd, p.stdout.fileno(), p)
 
 
-def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
+def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set, owner: dict | None = None) -> Handle:
+    owner = {} if owner is None else owner      # pre-existing owner record (filled right after fork)
     limit = cfg["as_limit"]
     r_out, w_out = os.pipe()          # CLOEXEC (non-inheritable) by default
     r_x, w_x = os.pipe()              # setup-error pipe, CLOEXEC
@@ -222,11 +293,31 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
     r_in = w_in = None
     if cfg.get("stdin_pipe"):                   # P2d CM-W6: a protocol request channel into the child
         r_in, w_in = os.pipe()
+    wake_fds = tuple(cfg.get("_wakeup_fds", ()))
+    wake_r = cfg.get("_wakeup_read")
+    # fork signal critical section: CONTROLLED stays blocked until the parent holds the pidfd
+    # and the child has reset the reader's signal machinery
+    saved = None if "no_fork_block" in abl else signal.pthread_sigmask(signal.SIG_BLOCK, CONTROLLED)
     pid = os.fork()
     if pid == 0:
         try:
+            if inject == "stall_before_reset":
+                time.sleep(cfg.get("stall_s", 0.8))    # P2d: widens the fork -> reset window (experiment only)
+            if "no_child_signal_reset" not in abl:
+                signal.set_wakeup_fd(-1)               # unregister BEFORE closing the child's copies
+                for s in CONTROLLED:
+                    signal.signal(s, signal.SIG_DFL)
+                signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+                for fd in wake_fds:
+                    os.close(fd)
+            if saved is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, saved)   # the child's intended mask: CONTROLLED unblocked
             if inject == "setup_exception":
                 raise RuntimeError("injected child setup failure")
+            if inject == "child_baseexception":
+                raise KeyboardInterrupt("injected BaseException in the child bootstrap")
+            if inject == "child_exit_immediately":
+                os._exit(0)                            # P2d R3B-C*: child gone before the parent's pidfd_open
             if inject == "pre_exec_stall":
                 time.sleep(cfg.get("stall_s", 3.0))   # P2d: a child stalled before exec completes
             os.dup2(r_in if r_in is not None else devnull, 0)
@@ -256,40 +347,68 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
                 if left != {0, 1, 2, w_x} or not fcntl.fcntl(w_x, fcntl.F_GETFD) & fcntl.FD_CLOEXEC:
                     raise RuntimeError(f"pre-exec fd set {sorted(left)}")
             os.execve(argv[0], argv, _ENV)
-        except BaseException as exc:  # noqa: BLE001 -- child side, reported and _exit
+        except BaseException as exc:  # noqa: BLE001 -- child side: bounded report, then _exit; never unwind
+            if "child_unwind" in abl:
+                raise                                  # P2d ablation: the child unwinds into the reader's control flow
             try:
                 os.write(w_x, f"{type(exc).__name__}:{exc}".encode()[:300])
             finally:
                 os._exit(127)
-    if inject == "constructor_fails_after_fork":
-        raise RuntimeError(f"injected parent failure after fork (child {pid} exists)")
-    if inject == "baseexception_after_spawn":
-        raise KeyboardInterrupt("injected right after spawn, before pidfd")
-    pidfd = os.pidfd_open(pid)
+    try:
+        if inject == "constructor_fails_after_fork":
+            raise RuntimeError(f"injected parent failure after fork (child {pid} exists)")
+        if inject == "baseexception_after_spawn":
+            raise KeyboardInterrupt("injected right after spawn, before pidfd")
+        if cfg.get("pidfd_delay_s"):
+            time.sleep(cfg["pidfd_delay_s"])          # P2d R3B-C*: the child has certainly exited by now
+        owner["pid"] = pid
+        try:
+            pidfd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            owner["pidfd_open"] = "ESRCH"
+            raise Refusal("transport_spawn_failed", "pidfd_open ESRCH: the child was reaped before ownership")
+        owner.update(pidfd=pidfd, pidfd_open="ok")
+        st = _REAL_WAITID(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        owner["exited_before_handshake"] = st is not None
+    finally:
+        if saved is not None:
+            signal.pthread_sigmask(signal.SIG_SETMASK, saved)   # pending CONTROLLED signals are delivered here
+    if cfg.get("announce_fork"):
+        sys.stdout.write(f"FORKED {pid}\n")
+        sys.stdout.flush()
     for fd in (w_out, w_x, devnull) + ((r_in,) if r_in is not None else ()):
-        os.close(fd)
+        os.close(fd)                                   # the parent's copy of the error-pipe write end is closed first
     if "rlimit_after_spawn" in abl:
         time.sleep(0.3)
         resource.prlimit(pid, resource.RLIMIT_AS, (limit, limit))
-    # P2d (correction round 3): the setup/exec error pipe is watched under the UNIT
+    # the setup/exec error pipe AND the signal-wakeup read end are watched under the UNIT
     # deadline that started before fork(); the child is already owned (pidfd) here.
     deadline_at = cfg.get("_deadline_at", time.monotonic() + 3600)
     if cfg.get("handshake_deadline_off"):      # P2d ablation: the handshake is NOT under the unit deadline
         deadline_at = time.monotonic() + 3600
+    watch = [r_x]
+    if wake_r is not None and "handshake_ignores_wakeup" not in abl:
+        watch.append(wake_r)
     err = b""
     try:
         while True:
             left = deadline_at - time.monotonic()
             if left <= 0:
-                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-                os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                if "blocking_reap_after_deadline" in abl:
+                    _waitid(os.P_PIDFD, pidfd, os.WEXITED)   # P2d ablation: unbounded wait after the deadline
                 raise Refusal("unit_deadline", "exec handshake did not complete before the unit deadline")
-            r, _, _ = select.select([r_x], [], [], left)
-            if not r:
+            r, _, _ = select.select(watch, [], [], left)
+            if wake_r is not None and wake_r in r:
+                raise Refusal("unit_terminated_by_signal", "controlled signal during the exec handshake")
+            if r_x not in r:
                 continue
             chunk = os.read(r_x, 512)
             if not chunk:
-                break                              # EOF: the CLOEXEC error pipe closed at a successful exec
+                break                              # EOF: the CLOEXEC error pipe closed (exec, or child death)
             err += chunk
     finally:
         os.close(r_x)
@@ -350,7 +469,9 @@ def main() -> None:
     abl, inject, mech = set(cfg.get("ablations", [])), cfg.get("inject"), cfg["mechanism"]
     spawn = spawn_A if mech == "A" else spawn_B
     res = {"mechanism": mech, "scenario": cfg["scenario"], "ablations": sorted(abl)}
-    handle, primary, escaped, report = None, None, None, None
+    handle, primary, escaped, report, owner = None, None, None, None, {}
+    if cfg.get("d_state_sim_s"):
+        _D_STATE["until"] = time.monotonic() + cfg["d_state_sim_s"]
     try:
         if threading.active_count() != 1 or len(os.listdir("/proc/self/task")) != 1:
             raise Refusal("reader_process_not_dedicated")
@@ -376,7 +497,7 @@ def main() -> None:
             t_start = time.monotonic()               # the unit deadline starts BEFORE the spawn attempt
             cfg["_deadline_at"] = t_start + cfg.get("unit_deadline", 3.0)
             try:
-                handle = spawn(cfg, argv, inject, abl)
+                handle = spawn(cfg, argv, inject, abl, owner) if mech == "B" else spawn(cfg, argv, inject, abl)
             finally:
                 res["spawn_control_regained_s"] = round(time.monotonic() - t_start, 3)
             report = read_report(handle, max(0.0, cfg["_deadline_at"] - time.monotonic()))
@@ -389,8 +510,10 @@ def main() -> None:
     except BaseException as e:  # noqa: BLE001 -- recorded, torn down, then reported as escaped
         escaped = f"{type(e).__name__}: {e}"
     finally:
-        td = teardown(3.0, handle.pidfd if handle else None, "handle_only" in abl)
+        td = teardown(3.0, handle.pidfd if handle else owner.get("pidfd"), "handle_only" in abl)
     res["teardown"] = td
+    res["owner"] = {k: v for k, v in owner.items() if k != "pidfd"}
+    res["d_state_double"] = dict(_D_STATE, until=None) if cfg.get("d_state_sim_s") else None
     res["primary"] = primary
     res["escaped"] = escaped
     if td["remaining"] or td["any_child_or_zombie"]:

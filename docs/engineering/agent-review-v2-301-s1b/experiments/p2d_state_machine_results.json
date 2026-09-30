@@ -1,0 +1,70 @@
+{
+ "states": {
+  "READER_BOOTSTRAP": "no",
+  "READY_TO_FORK": "no",
+  "FORK_CRITICAL": "yes",
+  "HANDSHAKE": "yes",
+  "RUNNING": "yes",
+  "PRIMARY_RECORDED": "yes",
+  "TERMINATION_REQUESTED": "yes",
+  "UNIT_TIMEOUT": "yes",
+  "TEARDOWN": "yes",
+  "OUTCOME": "no",
+  "CHILD_BOOTSTRAP": "child",
+  "CHILD_EXECVE": "child",
+  "CHILD_EXIT": "child"
+ },
+ "edges": 22,
+ "laws": {
+  "L1_only_teardown_reaches_outcome": true,
+  "L2_no_dead_end": true,
+  "L2_owning_reaches_teardown": true,
+  "L3_required_exits_present": true,
+  "L4_handshake_observes_signal_and_deadline": true,
+  "L5_child_bootstrap_terminal": true,
+  "L6_states_declared": true,
+  "L7_prose_law_and_no_shortcut": true
+ },
+ "mutants": {
+  "M1_handshake_to_outcome": {
+   "killed": true,
+   "red_laws": [
+    "L1_only_teardown_reaches_outcome"
+   ]
+  },
+  "M2_primary_recorded_to_outcome": {
+   "killed": true,
+   "red_laws": [
+    "L1_only_teardown_reaches_outcome"
+   ]
+  },
+  "M3_handshake_ignores_wakeup": {
+   "killed": true,
+   "red_laws": [
+    "L4_handshake_observes_signal_and_deadline"
+   ]
+  },
+  "M4_child_unwinds_into_reader": {
+   "killed": true,
+   "red_laws": [
+    "L5_child_bootstrap_terminal"
+   ]
+  },
+  "M5_timeout_dead_end": {
+   "killed": true,
+   "red_laws": [
+    "L2_no_dead_end",
+    "L2_owning_reaches_teardown",
+    "L3_required_exits_present"
+   ]
+  },
+  "M6_undeclared_refused": {
+   "killed": true,
+   "red_laws": [
+    "L6_states_declared"
+   ]
+  }
+ },
+ "verdict": "PASS",
+ "failures": []
+}
