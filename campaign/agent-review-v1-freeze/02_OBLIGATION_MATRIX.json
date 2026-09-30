@@ -188,10 +188,16 @@
       "obligation_id": "OBL-CL6-02",
       "claim": "CL-6",
       "domain": "egress.claim_honesty",
-      "proposition": "No repository document states protection stronger than regex/blocklist redaction for v1.",
-      "mechanism_site": "campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md §6 (corrected in V1-C0)",
-      "closure_predicate": "grep of v1 docs for strict/structural sanitization claims returns only the weakened form",
-      "owner": "#315"
+      "proposition": "No repository document states v1 egress/redaction protection stronger than implemented (regex/blocklist secret redaction; path redaction only in L-CHUNK), including absolute 'never sends X' guarantees, not only 'strict/structural' wording.",
+      "mechanism_site": "documentation (see closure_predicate); V1-C0 corrected only campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md §6",
+      "closure_predicate": "Enumerated adjudication, recorded in the V1-C5 PR, of every egress/redaction/sanitization statement in the v1 doc set (at least docs/GITHUB_AGENT.md, docs/AGENT_REVIEW_ENGINE.md, docs/AGENT_REVIEW_E2E_PIPELINE.md, docs/AGENT_REVIEW_PR_BRIEF_AND_PAYLOADS.md, docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md, docs/AGENT_REVIEW_QUALITY_GATE.md, campaign/aocm-repository-reconciliation/09_AGENTREVIEW_V1.md): each statement is quoted and marked accurate / corrected / out of scope. A keyword grep (e.g. sanitiz|redact|never|nunca|secret|raw|strict|structural) is triage only; an empty or partial grep result is not evidence that no overclaim remains.",
+      "owner": "#315",
+      "known_overclaims_at_derivation_subject": [
+        "docs/GITHUB_AGENT.md:75-76 ('O payload enviado ao router é sanitizado e truncado'; 'O review nunca envia env, logs completos, secrets ou arquivos inteiros grandes') -- absolute no-secret guarantee not supported by regex redaction",
+        "docs/AGENT_REVIEW_ENGINE.md:60-62 ('Artifact content is sanitized before it enters the intake object') -- unqualified",
+        "docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md:293-294 ('Chunk payload request envelopes are temporary sanitized artifacts') -- unqualified",
+        "not exhaustive; corrected in V1-C5, not in V1-C0 (C0 corrected only 09)"
+      ]
     },
     {
       "obligation_id": "OBL-CL7-01",
