@@ -14,7 +14,7 @@ modificar; `git diff --name-only` fora dela é parada (`02` → `slice_gates.v1_
 |---|---|---|---|---|---|
 | 0 | V1-C0 contract freeze | #221 | docs/contrato; sem comportamento | `V1_C0_CONTRACT_READY` | baixo |
 | 1 | V1-C1 coverage truth | #232 | comportamento v1 (planner + propagação) | `V1_C1_COVERAGE_TRUTH_READY` | médio: decisão de semântica "complete" (tier solicitado vs revisão textual) deve sair do texto de #232, não ser inventada |
-| 2 | V1-C2 consumo de contexto/contratos/AOCM + propagação de limitações | #221 + AgentEscala#869 | comportamento v1 (engine genérico) + par target | `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` (nome mantido; ver contrato) | alto: depende do censo #869-A; parte #805 incompatível com o freeze → `PENDING_HUMAN_DECISION` |
+| 2 | V1-C2 contexto de contratos/packs + honestidade de limitação | #221 + AgentEscala#869 | slice de contrato (esta sincronização) + slice de implementação sucessora (engine genérico) | contrato: `V1_C2_CONTRACT_INTERFACE_DECIDED`; implementação: `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY` | médio: stop conditions explícitas (ver seção V1-C2); per-claim #805 adiada pelo owner |
 | 3 | V1-C3 materiality | #343 | comportamento v1 (normalizer) | `V1_C3_MATERIALITY_READY` | médio: aboutness exige material revisado como nova entrada do parser; mudança de response contract toca golden fixtures congeladas |
 | 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-CL5-01/02 já reproduzidos |
 | 5 | V1-C5 egress disposition | #315 | decision contract primeiro | `V1_C5_EGRESS_DISPOSITION_READY` ou `BLOCKED_BY_EXPLICIT_HUMAN_DECISION` | **alto: `STOP_UNRESOLVED_POLICY` provável** |
@@ -43,11 +43,41 @@ planner (`payload_cost_model.py:1488,1492`).
 
 **Ownership:** engine genérico (loader, seleção/aplicabilidade suportada, prompt/payload, orçamento, propagação) = V1-C2 neste repositório; fontes, projeção declarativa, configuração, conformance e adoção do par = AgentEscala#869 (slices A–D). O formato compatível é decidido com a C2 **após o censo de consumidores (#869-A)**. Alterações no AgentEscala estão fora do grant desta travessia; o censo pode ser preparado aqui em leitura.
 
-**#805:** requisito de registro preservado (claims/must-hold pertinentes do PR/contract pack; contramodelo #805 com resultado material). Orientação contextual útil ≠ per-claim coverage ≠ obrigação satisfeita. Parte incompatível com o freeze → `STOP_OWNER_BOUNDARY`/`PENDING_HUMAN_DECISION`; nenhuma non-claim fabricada encerra a exigência.
+**#805:** requisito de registro preservado (claims/must-hold pertinentes do PR/contract pack; contramodelo #805 com resultado material). Orientação contextual útil ≠ per-claim coverage ≠ obrigação satisfeita. Parte incompatível com o freeze → `STOP_OWNER_BOUNDARY`/`PENDING_HUMAN_DECISION`; nenhuma non-claim fabricada encerra a exigência. *(Histórico: resolvido pela decisão 4 do owner em 2026-09-30 — per-claim adiada; #805 mantido como controles A/B.)*
 
-*Superado em parte:* a "alternativa mínima" anterior (só honestidade do código `contracts_context_not_relevant`) é substituída, porque #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade. A exposição a `STOP_OWNER_BOUNDARY` da parte **estruturada per-claim de #805** permanece (sem objeto claim estruturado no v1; extensão seria nova arquitetura). Se a slice atingir um STOP, a travessia para ali (regra "não contornar STOP": body de #221, "sem aplicar patches futuros ou contornar STOP", e o task contract da travessia).
+*Superado em parte:* a "alternativa mínima" anterior (só honestidade do código `contracts_context_not_relevant`) é substituída, porque #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade. A exposição a `STOP_OWNER_BOUNDARY` da parte **estruturada per-claim de #805** foi resolvida pela decisão 4 do owner (per-claim adiada para #353/#357); `STOP_OWNER_BOUNDARY` aplica-se agora apenas se a implementação exigir ClaimV1/máquina per-claim. Se a slice atingir um STOP, a travessia para ali (regra "não contornar STOP": body de #221, "sem aplicar patches futuros ou contornar STOP", e o task contract da travessia).
 
-**Nome do terminal:** `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` é mantido por ser o nome fixado no task contract; ele designa o fechamento de CL-2 (consumo de contexto + honestidade de limitação) e **não** afirma per-claim coverage de #805.
+*Histórico:* o terminal previsto `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` é **substituído** por decisão do owner (2026-09-30) por `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`, que não implica per-claim coverage estruturada.
+
+#### Decisões do owner (adjudicação de 2026-09-30, registrada na PR #367)
+
+1. **Interface de contratos:** o engine suporta duas formas limitadas: (A) legada `rules: [...]` na raiz; (B) mapping de domínios do target (`calendar.slot_rules[]`, `swaps.rules[]`, …). Na forma B, a chave de domínio de topo é a identidade do contrato; nenhum `claim_id` autoritativo é inventado para strings `rule:`; projeção limitada `id/description/sections{…}` preserva identidade de seção e campos semânticos presentes; é adaptador de contexto, não ClaimV1 nem OGR; sem motor recursivo genérico de YAML. Documento não vazio fora das formas admitidas → limitação tipada de shape não suportado; `contracts_context_not_relevant` só após parse suportado + aplicabilidade avaliada + zero contrato aplicável. O AgentEscala **não** é reescrito para a forma plana.
+2. **Packs e seleção:** `packs` continua mapping no target. Engine: chave → `pack_id`, `paths` → aplicabilidade por arquivo com `fnmatch.fnmatchcase(canonical_repo_path, pattern)` (mesma semântica do target), `domain_contract` → relação explícita pack→contrato. Seleção = pack selecionado por id EXATO ∪ packs cujos `paths` casam arquivos do chunk; depois `domain_contract` seleciona os contratos de domínio. `domain_contract` ausente/ilegível em pack aplicável → limitação tipada que degrada a obrigação. Para a forma mapping, nada de substring difusa ou palavras-chave de grupo semântico como mecanismo autoritativo; fallback legado só para documentos legados.
+3. **Orçamento e honestidade:** `RequiredSemanticContext + MinimumReviewableHunkMaterial = NonSilentReviewFloor`. O planner estabelece contexto requerido aplicável e material mínimo de hunk, tenta encaixar ambos, reduz/divide o chunk e tenta de novo; unidade indivisível que não cabe → cobertura parcial/degradada/não conclusiva com limitação tipada visível no gate. Distinções obrigatórias: `contracts_context_reduced` (só detalhe opcional), `required_contract_context_omitted_due_to_budget`, `must_hold_omitted_due_to_budget`, `contracts_context_unsupported_shape`, `selected_contract_domain_missing:<pack>:<domain>` (nomes reconciliáveis com as convenções). Propagação pelo caminho existente plan → parse → synth → gate; nenhum novo consumidor de manifest salvo inadequação demonstrada. Controle positivo: hunk suficiente + contexto suficiente continua útil/conclusivo.
+4. **#805 / per-claim:** `structured_per_claim_coverage: NOT_SUPPORTED_BY_FINAL_V1`, `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357). #805 permanece como controle A (regressão determinística de transporte/gate) e controle B (avaliação semântica limitada com expectativas pré-definidas, tentativas registradas, sem re-execução até resultado favorável) — `02` OBL-CL2-07.
+
+**AOCM:** orientação de método target-owned; nada de semântica AgentEscala/AOCM hardcoded no engine; AgentEscala#869 possui projeção/seleção de fontes; V1-C2 possui a capacidade genérica de admitir, selecionar, transportar, orçar honestamente e expor perda material. Método AOCM ≠ contrato adotado ≠ especificação proposta ≠ intenção da PR ≠ evidência determinística.
+
+#### Slice de implementação sucessora (não autorizada por esta sincronização)
+Começa do `master` resultante desta slice e **rederiva** paths exatos. Famílias esperadas (sujeitas a leitura viva): `payload_cost_model.py`, `chunk_payload_builder.py`, `semantic_chunker.py`, testes v1 pertinentes, docs de reason codes. Famílias RED/GREEN obrigatórias:
+
+1. mapping de domínios hoje achata vazio → forma suportada emite conteúdo do contrato aplicável;
+2. review-packs mapping hoje achata vazio → mapping preservado no target e interpretado pelo engine;
+3. pack selecionado/casado por path com `domain_contract: calendar` → conteúdo `calendar` chega ao chunk pertinente;
+4. chunk irrelevante → `calendar` não é injetado só por existir;
+5. shape não suportado e não vazio → limitação de incompatibilidade, nunca "not relevant";
+6. pack selecionado aponta domínio ausente → limitação tipada degradante;
+7. chunk quase cheio hoje perde must_hold/contratos antes de hunks → planner divide/reduz mantendo o piso semântico requerido;
+8. conflito de orçamento indivisível → partial/degraded/manual, nunca aprovação limpa;
+9. redução só de detalhe opcional → pode continuar útil sem forçar manual;
+10. controle positivo → hunk + contexto suficientes continuam revisáveis/conclusivos;
+11. forma mapping do AgentEscala permanece compatível com seus consumidores target-side;
+12. forma plana legada continua suportada;
+13. sem regressão v2 via módulos compartilhados.
+
+Para cada novo predicado/reason: mecanismo ausente → RED focal; presente → GREEN focal; controle positivo GREEN. Usar o estado intermediário mais focal disponível, não só o veredito final.
+
+**Stop conditions:** `STOP_OWNER_BOUNDARY` (exige ClaimV1/máquina per-claim), `STOP_TARGET_COMPATIBILITY` (única saída é reescrever packs/contratos do AgentEscala), `STOP_CONTRACT_CONFLICT` (autoridade de regra ambígua ou adotado vs proposto sem resolução), `STOP_SCHEMA_EXPANSION` (novo schema/versão pública quando a propagação plan-level resolveria), `STOP_V2_COUPLING` (copiar/modificar Assured/OGR por conveniência), `STOP_POSITIVE_CONTROL` (honestidade só tornando toda revisão afetada manual), `STOP_SUBJECT_DRIFT`. Não contornar STOP enfraquecendo a claim.
 
 ### V1-C3 (#343)
 Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O
@@ -78,7 +108,7 @@ alcança transitivamente quase toda a lane v2 via `contracts_v2`: qualquer mudan
 regra de módulo compartilhado de `02` (`slice_gates.v1_v2_isolation`).
 
 ### V1-C6
-Corpus consolidado: coverage truth, consumo de contexto (CL-2) e a exigência #805 conforme decisão do owner (não encerrável por non-claim fabricada), limitation
+Corpus consolidado: coverage truth, consumo de contexto (CL-2) com os controles #805 A/B (per-claim adiada pelo owner para #353/#357), limitation
 propagation, materiality, TS1/non-vacuity, egress disposition, publication fidelity
 (evidência histórica + limitação), contraexemplos AgentEscala e positive controls.
 Reconstrução `Claim → mechanism → consumer → countermodel → discriminator →

@@ -66,7 +66,7 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 |---|---|---|---|
 | CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | por design + observado em 2026-09-30: `develop` do consumer sem branch protection e único ruleset `disabled` (nenhum required check); observação datada |
 | CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | **sustentado em `master`** a partir de `d3f5946c` (V1-C1, PR #366; CM-CL1-01/02/03 mortos); **não liberado** (consumer em `v0.22.0`) |
-| CL-2 | Contexto pertinente (contratos de produto, orientação AOCM) do target é **efetivamente consumido** no payload quando aplicável, e ausência/incompatibilidade/não aplicabilidade/omissão por orçamento são distinguidas e limitam a conclusão correspondente até o gate. Per-claim coverage (#805) permanece exigência de registro separada. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado** (CM-CL2-02 reproduzido); per-claim #805 = `PENDING_HUMAN_DECISION` para o que não couber no freeze |
+| CL-2 | O v1 pode ser **contract-aware** e orientado por obrigações no contexto advisory: contratos de domínio e packs do target, nas formas admitidas, são consumidos com aplicabilidade determinística, e a perda de contexto **requerido** chega ao gate. Per-claim coverage estruturada é **non-claim explícita** do v1 final. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado** (CM-CL2-02 reproduzido); interface decidida pelo owner em 2026-09-30 (`V1_C2_CONTRACT_INTERFACE_DECIDED`); per-claim: `NOT_SUPPORTED_BY_FINAL_V1` / `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357) |
 | CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-CL3-*) |
 | CL-4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só limitações de nível plan (via `plan.status`/`files_not_covered`) e de resultado alcançam o gate; limitações de payload/brief são descartadas antes dele |
 | CL-5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-CL5-01, CM-CL5-02) |
@@ -90,6 +90,8 @@ garantia estrutural de que nenhum source/path cru alcança o transporte de infer
 CLEAN = prova de correção
 file coverage = semantic claim coverage
 ausência de finding = satisfação de todo contrato
+per-claim coverage estruturada (covered/partial/not_covered/not_applicable) — non-claim do v1 final, adiada para #353/#357 por decisão do owner (2026-09-30)
+approve* = todas as claims declaradas satisfeitas / cobertura exaustiva de obrigações / prova de ausência de violação de contrato
 confiança do LLM = verdade
 redaction regex = sanitização completa
 output_safe_for_llm = propriedade computada   (é constante True: app/agent_review/cli.py:109)
@@ -127,7 +129,7 @@ AgentEscala#678 (escopo server-side do token) -> owner target; residual externo
 extração NLP genérica de claims do corpo do PR -> proibida pelo task contract da travessia
 ```
 
-**Tensão registrada, não resolvida aqui.** O comentário de #221 de 2026-09-16
+**Tensão registrada (histórico; resolvida pela decisão do owner abaixo).** O comentário de #221 de 2026-09-16
 (AgentEscala #805) é a exigência de registro: "claims declaradas/must-hold relevantes
 devem ser extraídas do PR/contract pack", fixture #805 "=> finding
 material/merge-blocking", e "`contracts_context_not_relevant` deve ser impossível
@@ -144,6 +146,19 @@ Estado observado no subject (fato, não disposição): o v1 não produz claim co
 e não transporta título/corpo do PR ao payload da L-CHUNK; portanto, hoje, nenhum
 `approve_*` do v1 atesta satisfação de claims declaradas no PR. Se isso vira non-claim
 final ou é fechado é exatamente a decisão pendente acima.
+
+**Decisão do owner (2026-09-30, adjudicação registrada na PR #367):** para o freeze
+histórico final do v1, per-claim coverage estruturada **não** é implementada
+(`DEFERRED_FROM_V1_FREEZE`; owners futuros #353/#357). É um **estreitamento explícito
+do claim budget pelo owner**, não entrega da capacidade. Claim final:
+
+> O AgentReview v1 pode ser contract-aware e orientado por obrigações no contexto
+> advisory, e reporta quando contexto requerido material não estava disponível. O v1
+> **não** certifica per-claim coverage exaustiva nem satisfação de todas as obrigações
+> aplicáveis.
+
+O requisito #805 **não** é apagado: permanece como dois controles (determinístico de
+transporte/gate e avaliação semântica limitada), ver `02` OBL-CL2-07.
 
 ## 7. Fato de release já estabelecido
 
