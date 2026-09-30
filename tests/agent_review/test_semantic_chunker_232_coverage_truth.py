@@ -40,6 +40,19 @@ NO_HUNK_BLOCKS = {
         "index 1111111..2222222 100644\n"
         "Binary files a/assets/logo.png and b/assets/logo.png differ",
     ),
+    # The form the consumer actually produces (`git diff --binary`).
+    "binary_patch": (
+        "assets/icon.png",
+        "diff --git a/assets/icon.png b/assets/icon.png\n"
+        "new file mode 100644\n"
+        "index 0000000..9daeafb\n"
+        "GIT binary patch\n"
+        "literal 12\n"
+        "Tc${NkU|?WnU|?WnU|?Wn01N;F\n"
+        "\n"
+        "literal 0\n"
+        "HcmV?d00001",
+    ),
     "mode_only": (
         "scripts/run.sh",
         "diff --git a/scripts/run.sh b/scripts/run.sh\nold mode 100644\nnew mode 100755",

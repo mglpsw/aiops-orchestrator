@@ -219,6 +219,9 @@ def test_semantic_chunker_uses_sanitized_intake_only(monkeypatch) -> None:  # no
     rendered = plan.model_dump_json()
     assert "SUPERSECRET" not in rendered
     assert "[REDACTED]" in rendered
+    # #232: the fixture diff is redacted the way the intake CLI stores it, so the
+    # secret-bearing path keys to its canonical `[REDACTED]` form and stays covered.
+    assert plan.files_covered == ["backend/services/token=[REDACTED]"], plan.limitations
 
 
 def test_semantic_chunker_accepts_current_phase1_intake_schema_with_limitation() -> None:
