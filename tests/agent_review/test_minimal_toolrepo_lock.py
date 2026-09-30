@@ -246,6 +246,34 @@ def test_install_script_rejects_old_glibc_before_venv_creation(tmp_path: Path) -
     assert "glibc 2.12" in result.stderr
 
 
+def test_install_script_rejects_32bit_interpreter_before_venv_creation(tmp_path: Path) -> None:
+    """P4: 32-bit interpreter ABI (word size 32-bit) is rejected fail-closed before venv creation."""
+    fake_python = tmp_path / "fake_32bit_python.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "INCOMPATIBLE: word size 32-bit (required: 64-bit)"\n'
+        '    exit 0\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv_32bit"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when interpreter word size is 32-bit"
+    assert "word size 32-bit (required: 64-bit)" in result.stderr
+
+
 def _make_fake_python311(tmp_path: Path) -> Path:
     fake_python = tmp_path / "fake_python311_runner.sh"
     host_python = sys.executable
@@ -535,6 +563,71 @@ def test_countermodel_m3_pip_isolation_ignores_user_pip_config(tmp_path: Path) -
     )
     assert res_caller_protected.returncode == 0
     assert "target=" not in res_caller_protected.stdout, "PIP_CONFIG_FILE=/dev/null must disable env-selected config"
+
+
+def test_countermodel_p1_pip_isolation_ignores_global_and_system_config(tmp_path: Path) -> None:
+    """P1: PIP_CONFIG_FILE=/dev/null and pip --isolated suppresses global/system-wide pip config,
+    proving ConfigFileEnumerated != ConfigValueApplied even when /etc/pip.conf or XDG_CONFIG_DIRS configures target."""
+    import zipfile
+
+    # Build a pure-python dummy wheel with standard metadata and RECORD
+    whl_path = tmp_path / "dummy_p1-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(whl_path, "w") as z:
+        z.writestr("dummy_p1.py", "VALUE = 42\n")
+        z.writestr("dummy_p1-0.1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: dummy-p1\nVersion: 0.1.0\n")
+        z.writestr("dummy_p1-0.1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        z.writestr(
+            "dummy_p1-0.1.0.dist-info/RECORD",
+            "dummy_p1.py,,\ndummy_p1-0.1.0.dist-info/METADATA,,\ndummy_p1-0.1.0.dist-info/WHEEL,,\ndummy_p1-0.1.0.dist-info/RECORD,,\n",
+        )
+
+    venv_dir = tmp_path / "venv_p1"
+    subprocess.run([sys.executable, "-I", "-S", "-m", "venv", str(venv_dir)], check=True)
+    venv_py = str(venv_dir / "bin" / "python3")
+
+    # Simulate system-wide global configuration via XDG_CONFIG_DIRS (treated as /etc/xdg/pip/pip.conf)
+    sys_dir = tmp_path / "sys_etc"
+    xdg_pip = sys_dir / "pip"
+    xdg_pip.mkdir(parents=True)
+    outside_dir = tmp_path / "outside_p1"
+    outside_dir.mkdir()
+    (xdg_pip / "pip.conf").write_text(f"[global]\ntarget = {outside_dir}\n", encoding="utf-8")
+
+    # Flaw proof: unisolated pip reflects system-wide target configuration
+    env_unisolated = dict(os.environ, XDG_CONFIG_DIRS=str(sys_dir))
+    res_unisolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "config", "list"],
+        env=env_unisolated,
+        capture_output=True,
+        text=True,
+    )
+    assert res_unisolated.returncode == 0
+    assert "target=" in res_unisolated.stdout, "Precondition: unisolated pip must reflect system-wide config"
+
+    # Fix proof 1: PIP_CONFIG_FILE=/dev/null and --isolated suppresses system-wide config values
+    env_isolated = dict(os.environ, XDG_CONFIG_DIRS=str(sys_dir), PIP_CONFIG_FILE="/dev/null")
+    res_isolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--isolated", "config", "list"],
+        env=env_isolated,
+        capture_output=True,
+        text=True,
+    )
+    assert res_isolated.returncode == 0
+    assert "target=" not in res_isolated.stdout, "PIP_CONFIG_FILE=/dev/null + --isolated must suppress system-wide config"
+
+    # Fix proof 2 (Causal Install Verification): installation installs strictly into venv, writing 0 files outside
+    res_install = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--isolated", "install", "--no-index", "--no-deps", str(whl_path)],
+        env=env_isolated,
+        capture_output=True,
+        text=True,
+    )
+    assert res_install.returncode == 0, res_install.stderr
+    assert len(list(outside_dir.iterdir())) == 0, "No packages must be redirected to outside target directory"
+
+    # The package must be successfully imported by the venv
+    res_import = subprocess.run([venv_py, "-c", "import dummy_p1; assert dummy_p1.VALUE == 42"], capture_output=True, text=True)
+    assert res_import.returncode == 0, f"Venv must be able to import installed package: {res_import.stderr}"
 
 
 def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:

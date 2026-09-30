@@ -31,6 +31,27 @@ DEFAULT_MANIFEST_PATH = (
 
 SUPPORTED_SCHEMA_IDS = frozenset({"agent-review.standalone-distribution-manifest.v1"})
 
+REQUIRED_DISTRIBUTION_CLIS_V1: frozenset[str] = frozenset(
+    {
+        "scripts/agent-review-target-pack-v2.py",
+        "scripts/aiops-acquire-authoritative-checks-v2.py",
+        "scripts/aiops-review-build-payload-set-v2.py",
+        "scripts/aiops-review-build-payloads.py",
+        "scripts/aiops-review-false-positives.py",
+        "scripts/aiops-review-intake.py",
+        "scripts/aiops-review-parse-chunks.py",
+        "scripts/aiops-review-plan-chunks.py",
+        "scripts/aiops-review-quality-gate-v2.py",
+        "scripts/aiops-review-quality-gate.py",
+        "scripts/aiops-review-synthesize.py",
+        "scripts/aiops-review-telemetry.py",
+        "scripts/export-agent-review-v2-schemas.py",
+        "scripts/github_agent_review.py",
+        "scripts/migrate-agent-review-profile-v1-v2.py",
+        "scripts/verify-agent-review-v2-conformance.py",
+    }
+)
+
 REQUIRED_BOUNDARY_ANCHORS_V1: dict[str, frozenset[str]] = {
     "core_packages": frozenset({"app/agent_review"}),
     "package_roots": frozenset({"app/__init__.py"}),
@@ -53,15 +74,7 @@ REQUIRED_BOUNDARY_ANCHORS_V1: dict[str, frozenset[str]] = {
             "docs/AGENT_REVIEW_V2_INSTALLATION.md",
         }
     ),
-    "distribution_clis": frozenset(
-        {
-            "scripts/agent-review-target-pack-v2.py",
-            "scripts/aiops-review-intake.py",
-            "scripts/aiops-review-quality-gate-v2.py",
-            "scripts/aiops-review-synthesize.py",
-            "scripts/github_agent_review.py",
-        }
-    ),
+    "distribution_clis": REQUIRED_DISTRIBUTION_CLIS_V1,
 }
 
 REQUIRED_INSTALL_BOUNDARY_V1 = REQUIRED_BOUNDARY_ANCHORS_V1["install_boundary"]
@@ -126,6 +139,13 @@ REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
     root
     for roots in KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1.values()
     for root in roots
+)
+
+REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
+    {
+        "migrate_savings_to_sqlite",
+        "compare_aiops_runtimes",
+    }
 )
 
 
@@ -218,6 +238,8 @@ def derive_ast_imports_from_file(
                     app_imports.add(name)
                 else:
                     external_pkgs.add(name.split(".")[0])
+                    for part in name.split("."):
+                        external_pkgs.add(part)
         elif isinstance(node, ast.ImportFrom):
             if node.level > 0:
                 if node.level > len(pkg_parts):
@@ -263,6 +285,11 @@ def derive_ast_imports_from_file(
                             app_imports.add(candidate)
             elif mod:
                 external_pkgs.add(mod.split(".")[0])
+                for part in mod.split("."):
+                    external_pkgs.add(part)
+                if mod == "scripts":
+                    for alias in node.names:
+                        external_pkgs.add(alias.name)
 
     return external_pkgs, app_imports
 
@@ -474,6 +501,12 @@ def validate_manifest(
         "trusted_check_supervisor_v2",
     }
 
+    forbidden_script_roots = set(REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1)
+    for fb in forbidden_surfaces:
+        fb_path = Path(fb)
+        if fb_path.suffix == ".py" and fb_path.stem.isidentifier() and not fb.startswith("app/"):
+            forbidden_script_roots.add(fb_path.stem.lower())
+
     for py_file in distribution_py_files:
         try:
             ext_pkgs, local_app_imports = derive_ast_imports_from_file(
@@ -483,12 +516,16 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages: direct imports of forbidden runtime dependencies fail closed
+        # Check external packages: direct imports of forbidden runtime dependencies or scripts fail closed
         for pkg in ext_pkgs:
             pkg_lower = pkg.lower()
             if pkg_lower in forbidden_import_roots:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
+                )
+            elif pkg_lower in forbidden_script_roots:
+                errors.append(
+                    f"Forbidden runtime script import root '{pkg}' imported by {py_file.relative_to(root)}"
                 )
 
         # Check local app imports

@@ -63,12 +63,13 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
 fi
 
 PLATFORM_STATUS="$("$PYTHON_BIN" -I -S -c '
-import sys, platform
+import sys, platform, struct
 impl = platform.python_implementation()
 ver = f"{sys.version_info.major}.{sys.version_info.minor}"
 os_name = platform.system()
 mach = platform.machine()
 libc_name, libc_ver = platform.libc_ver()
+pointer_bits = struct.calcsize("P") * 8
 
 errors = []
 if impl != "CPython" or ver != "3.11":
@@ -77,6 +78,8 @@ if os_name != "Linux":
     errors.append(f"OS {os_name} (required: Linux)")
 if mach not in ("x86_64", "AMD64"):
     errors.append(f"architecture {mach} (required: x86_64)")
+if pointer_bits != 64:
+    errors.append(f"word size {pointer_bits}-bit (required: 64-bit)")
 libc_desc = libc_name if libc_name else "non-glibc/musl"
 if libc_name.lower() != "glibc":
     errors.append(f"libc {libc_desc} (required: glibc >= 2.17)")

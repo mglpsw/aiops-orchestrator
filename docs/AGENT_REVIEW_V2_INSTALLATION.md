@@ -24,9 +24,9 @@ A branch name, tag, or abbreviated SHA is never an acceptable pin for the
 
 ## Interpreter and Platform contract
 
-Canonical toolrepo target platform: **CPython 3.11 on Linux x86_64 (glibc >= 2.17 / manylinux2014)**
+Canonical toolrepo target platform: **CPython 3.11 on Linux x86_64 (64-bit word size, glibc >= 2.17 / manylinux2014)**
 
-`requirements-agent-review.lock` is platform/interpreter specific; binary wheels (`pydantic-core`, `PyYAML`) are compiled for `manylinux2014_x86_64`. The installer validates the complete platform specification (CPython, 3.11, Linux, x86_64, glibc >= 2.17) in an isolated probe before venv creation, refusing incompatible environments (e.g. Python 3.12, ARM64, musl, macOS) fail-closed.
+`requirements-agent-review.lock` is platform/interpreter specific; binary wheels (`pydantic-core`, `PyYAML`) are compiled for `manylinux2014_x86_64`. The installer validates the complete platform and interpreter specification (CPython, 3.11, 64-bit pointer width via `struct.calcsize("P") == 8`, Linux, x86_64, glibc >= 2.17) in an isolated probe before venv creation, refusing incompatible environments (e.g. Python 3.12, 32-bit interpreters, ARM64, musl, macOS) fail-closed.
 
 ## Install script
 
@@ -50,7 +50,7 @@ The script:
 2. verifies that SHA against `git rev-parse HEAD` of the current checkout,
    rejecting a mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
-   matches CPython 3.11 on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
+   matches CPython 3.11 64-bit (`struct.calcsize("P") == 8`) on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms, 32-bit runtimes, or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. normalizes the prospective `<venv-dir>` path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
 5. creates a fresh venv at the verified, canonical prospective path using isolated venv execution (`$PYTHON_BIN -I -S -m venv`), completely isolated from ambient `PYTHONPATH`;
 6. installs `requirements-agent-review.lock` using isolated pip execution with pip-level isolation and configuration disabled

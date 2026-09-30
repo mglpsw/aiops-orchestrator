@@ -74,6 +74,10 @@ def test_manifest_loads_and_passes_deterministic_validation() -> None:
         f"Parity mismatch between canonical manifest and REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: "
         f"diff={set(manifest['forbidden_runtime_surfaces']) ^ validator.REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1}"
     )
+    assert set(manifest["distribution_boundary"]["distribution_clis"]) == validator.REQUIRED_DISTRIBUTION_CLIS_V1, (
+        f"Parity mismatch between canonical manifest and REQUIRED_DISTRIBUTION_CLIS_V1: "
+        f"diff={set(manifest['distribution_boundary']['distribution_clis']) ^ validator.REQUIRED_DISTRIBUTION_CLIS_V1}"
+    )
 
 
 def test_countermodel_m1_negative_boundary_providers_escape(tmp_path: Path) -> None:
@@ -1361,6 +1365,110 @@ def test_countermodel_f5_sibling_root_origin_confinement(tmp_path: Path) -> None
     # Fix proof: resolved path component confinement correctly rejects the sibling root
     is_contained = (resolved_file == resolved_root) or resolved_file.is_relative_to(resolved_root)
     assert not is_contained, "Component-aware is_relative_to must reject sibling directory path!"
+
+
+def test_countermodel_p2_distribution_cli_omission_fails_closed(tmp_path: Path) -> None:
+    """P2: Caller-supplied manifests omitting any mandatory distribution CLI fail validation and materialization."""
+    manifest = validator.load_manifest()
+
+    # Omission 1: aiops-review-plan-chunks.py
+    mutated1 = copy.deepcopy(manifest)
+    mutated1["distribution_boundary"]["distribution_clis"] = [
+        c for c in mutated1["distribution_boundary"]["distribution_clis"]
+        if c != "scripts/aiops-review-plan-chunks.py"
+    ]
+    errs1 = validator.validate_manifest(mutated1, repo_root=REPO_ROOT)
+    assert any("scripts/aiops-review-plan-chunks.py" in err for err in errs1), (
+        f"Expected validation error naming scripts/aiops-review-plan-chunks.py, got: {errs1}"
+    )
+    assert any("Required anchor(s) omitted from 'distribution_clis'" in err for err in errs1)
+
+    target1 = tmp_path / "standalone_p2_1"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc1:
+        validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=target1, manifest=mutated1)
+    assert "scripts/aiops-review-plan-chunks.py" in str(exc1.value)
+    assert not target1.exists()
+
+    # Omission 2: aiops-review-build-payloads.py
+    mutated2 = copy.deepcopy(manifest)
+    mutated2["distribution_boundary"]["distribution_clis"] = [
+        c for c in mutated2["distribution_boundary"]["distribution_clis"]
+        if c != "scripts/aiops-review-build-payloads.py"
+    ]
+    errs2 = validator.validate_manifest(mutated2, repo_root=REPO_ROOT)
+    assert any("scripts/aiops-review-build-payloads.py" in err for err in errs2)
+    assert any("Required anchor(s) omitted from 'distribution_clis'" in err for err in errs2)
+
+    # Omission 3: github_agent_review.py
+    mutated3 = copy.deepcopy(manifest)
+    mutated3["distribution_boundary"]["distribution_clis"] = [
+        c for c in mutated3["distribution_boundary"]["distribution_clis"]
+        if c != "scripts/github_agent_review.py"
+    ]
+    errs3 = validator.validate_manifest(mutated3, repo_root=REPO_ROOT)
+    assert any("scripts/github_agent_review.py" in err for err in errs3)
+    assert any("Required anchor(s) omitted from 'distribution_clis'" in err for err in errs3)
+
+    # Control: Canonical manifest containing all 16 CLIs passes
+    errs_control = validator.validate_manifest(manifest, repo_root=REPO_ROOT)
+    assert not errs_control
+
+
+def test_countermodel_p3_direct_import_of_forbidden_runtime_scripts(tmp_path: Path) -> None:
+    """P3: Distribution CLIs importing forbidden runtime scripts directly fail closed in AST validation."""
+    temp_repo = tmp_path / "repo_p3"
+    temp_repo.mkdir()
+
+    # Copy files declared in manifest into temp_repo
+    manifest = validator.load_manifest()
+    for cat in ("core_packages", "package_roots", "shared_primitives", "required_asset_trees", "install_boundary", "distribution_clis"):
+        for item in manifest["distribution_boundary"][cat]:
+            src = REPO_ROOT / item
+            dst = temp_repo / item
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_file():
+                shutil.copy2(src, dst)
+            elif src.is_dir():
+                shutil.copytree(src, dst)
+
+    # Also touch empty forbidden scripts in temp_repo so they exist on disk if probed
+    for fb in manifest["forbidden_runtime_surfaces"]:
+        dst = temp_repo / fb
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            if fb.endswith(".py") or fb.endswith(".sh") or fb.endswith(".yml") or fb.endswith(".yaml"):
+                dst.write_text("# dummy\n", encoding="utf-8")
+            else:
+                dst.mkdir(parents=True, exist_ok=True)
+
+    # Case A: Inject import of migrate_savings_to_sqlite into scripts/aiops-review-intake.py
+    cli_path = temp_repo / "scripts" / "aiops-review-intake.py"
+    original_code = cli_path.read_text(encoding="utf-8")
+
+    cli_path.write_text("import migrate_savings_to_sqlite\n" + original_code, encoding="utf-8")
+    errs_a = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime script import root 'migrate_savings_to_sqlite'" in err for err in errs_a), (
+        f"Expected error for migrate_savings_to_sqlite, got: {errs_a}"
+    )
+
+    # Materialization must fail closed
+    target_a = tmp_path / "standalone_p3_a"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
+        validator.materialize_standalone_distribution(repo_root=temp_repo, target_dir=target_a, manifest=manifest)
+    assert "migrate_savings_to_sqlite" in str(exc_a.value)
+    assert not target_a.exists()
+
+    # Case B: Inject from compare_aiops_runtimes import run
+    cli_path.write_text("from compare_aiops_runtimes import run\n" + original_code, encoding="utf-8")
+    errs_b = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert any("Forbidden runtime script import root 'compare_aiops_runtimes'" in err for err in errs_b), (
+        f"Expected error for compare_aiops_runtimes, got: {errs_b}"
+    )
+
+    # Case C (Control): Inject standard import json -> passes
+    cli_path.write_text("import json\n" + original_code, encoding="utf-8")
+    errs_c = validator.validate_manifest(manifest, repo_root=temp_repo)
+    assert not errs_c, f"Expected clean validation for harmless stdlib import, got: {errs_c}"
 
 
 @pytest.mark.requires_network
