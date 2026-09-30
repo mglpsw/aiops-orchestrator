@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- AgentReview v1 coverage truth (`#232`, V1-C1): a changed file with no observable
+  textual diff hunk (binary, mode-only, pure rename, empty new file, or no diff block)
+  is no longer packed and counted as covered when it is not `must_review`. It is
+  excluded from every chunk and reported by identity in `files_not_covered`, plus one
+  aggregate plan limitation `hunk_unavailable_count:<N>`
+  (`must_review_hunk_unavailable:<path>` is unchanged for `must_review` files). The
+  count is aggregated because plan limitations are embedded in every chunk payload. The
+  plan becomes `degraded`, so the quality gate never returns `passed` for such a PR
+  (`manual_review_required` when there is no confirmed blocker; `degraded` /
+  `changes_requested` when a reliable blocker exists). A PR containing, for example, an
+  empty new file, a pure rename or a binary asset is now reported as not fully reviewed
+  instead of `passed`. If the `full-diff` artifact is absent or unreadable (it is
+  declared `required: false`; any non-UTF-8 byte makes it unreadable), no file has
+  admitted material and every PR becomes non-conclusive. Test fixtures whose subject is
+  not hunk availability now carry synthetic hunks.
+
 - AgentReview v2 (`#333`, C4 structural prerequisite): `verify_executed_source_identity_v2`
   now enforces full Git tree structural equality (contract A) instead of tracked-leaf
   equality. Explicit (empty) tree nodes must exist, extra directories/special files are

@@ -205,18 +205,32 @@ def build_semantic_chunk_plan(
     contract_refs = _contract_refs(intake)
     available_refs = _artifact_refs(artifacts)
 
-    # A must_review file with no observable hunk material (binary, or the
-    # diff producer never emitted one) can never actually reach semantic
-    # review no matter how it is packed -- fail closed instead of reporting
-    # it as covered by an empty payload entry (rev.3 SS11 / RED-16).
-    hunk_unavailable_must_review = sorted(
+    # A file with no observable hunk material (binary, metadata-only such as
+    # a mode change or a pure rename, an empty new file, or the diff
+    # producer never emitted one) can never actually reach semantic review
+    # no matter how it is packed -- fail closed instead of reporting it as
+    # covered by an empty payload entry. rev.3 SS11 / RED-16 established
+    # this for must_review files; #232 extends it to every tier, because a
+    # packed path with no admitted material is PathPresent, not
+    # MaterialReviewed. The reason code stays tier-distinct. Non-must_review
+    # files are reported by identity in files_not_covered and by ONE aggregate
+    # limitation: plan limitations are embedded unshrunk in every chunk
+    # payload's brief, so a per-path code for each of hundreds of assets or
+    # pure renames would crowd the reviewable hunks out of every chunk.
+    hunk_unavailable = sorted(
         path
         for path in canonical_files
-        if path in required_files and not payload_cost_model.block_has_observable_textual_hunk(hunks.get(path) or "")
+        if not payload_cost_model.block_has_observable_textual_hunk(hunks.get(path) or "")
     )
-    hunk_unavailable_set = set(hunk_unavailable_must_review)
-    for path in hunk_unavailable_must_review:
-        limitations.append(f"must_review_hunk_unavailable:{path}")
+    hunk_unavailable_set = set(hunk_unavailable)
+    non_must_review_hunk_unavailable = 0
+    for path in hunk_unavailable:
+        if path in required_files:
+            limitations.append(f"must_review_hunk_unavailable:{path}")
+        else:
+            non_must_review_hunk_unavailable += 1
+    if non_must_review_hunk_unavailable:
+        limitations.append(f"hunk_unavailable_count:{non_must_review_hunk_unavailable}")
     packable_files = [path for path in canonical_files if path not in hunk_unavailable_set]
 
     grouped = group_files_by_semantics(packable_files)
@@ -326,7 +340,7 @@ def build_semantic_chunk_plan(
 
     assert pack_result is not None
     limitations.extend(pack_result.plan_limitations)
-    files_not_covered = _dedupe([*identity_not_covered, *hunk_unavailable_must_review, *pack_result.files_not_covered])
+    files_not_covered = _dedupe([*identity_not_covered, *hunk_unavailable, *pack_result.files_not_covered])
 
     status = _plan_status(
         intake_status=str(intake.get("status", "")),
