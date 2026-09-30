@@ -15,9 +15,14 @@ Read-only. Two checks, run on a slice's live base/head:
    `conftest.py`, `__init__.py` and anything under a `fixtures/` directory are never
    admitted as new files.
 
-Usage (repo root):
-    python campaign/agent-review-v1-freeze/evidence/v1_scope_check.py
-    python campaign/agent-review-v1-freeze/evidence/v1_scope_check.py --diff <base>..<head>
+Usage (from inside the slice worktree):
+    python campaign/agent-review-v1-freeze/evidence/v1_scope_check.py            # reach (advisory)
+  Binding diff gate -- ALWAYS run the BASE revision's copy, never the checked-out one,
+  so a slice cannot edit the checker to disable its own guard:
+    git show <base>:campaign/agent-review-v1-freeze/evidence/v1_scope_check.py > /tmp/v1_scope_check_base.py
+    python /tmp/v1_scope_check_base.py --diff <base>..<head>
+    git diff --quiet <base> <head> -- campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json \
+        campaign/agent-review-v1-freeze/evidence/v1_scope_check.py   # independent of the checker
 Exit 0 = clean, 1 = findings printed.
 """
 
@@ -32,7 +37,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+# The repository is the git toplevel of the CURRENT DIRECTORY, not of this file, so
+# the gate can execute the immutable BASE copy of this checker (see Usage) against
+# the slice worktree.
+ROOT = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True).stdout.strip())
 MATRIX = ROOT / "campaign" / "agent-review-v1-freeze" / "02_OBLIGATION_MATRIX.json"
 
 
