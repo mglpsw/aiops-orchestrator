@@ -36,22 +36,50 @@ def check(name, ok, detail):
 
 # -- REV01 --------------------------------------------------------------------------------
 
-def rev01() -> None:
-    def pre():
-        fds = sorted(int(n) for n in os.listdir("/proc/self/fd"))
-        os.write(2, json.dumps({"preexec_fds": fds}).encode() + b"\n")
+def _stable_fd_census_code() -> str:
+    # list candidate numbers, fstat each; the transient enumeration fd is gone by then
+    # and is skipped; EVERY other live fd is retained (no range filter)
+    return ("import os,json\n"
+            "live=[]\n"
+            "for n in os.listdir('/proc/self/fd'):\n"
+            "  try:\n"
+            "    os.fstat(int(n)); live.append(int(n))\n"
+            "  except OSError:\n"
+            "    pass\n"
+            "print(json.dumps(sorted(live)))\n")
 
-    code = "import os,json;print(json.dumps(sorted(int(n) for n in os.listdir('/proc/self/fd'))))"
-    extra = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)  # a reader-side fd (CLOEXEC)
-    p = subprocess.run([PY, "-I", "-S", "-c", code], capture_output=True, close_fds=True, pass_fds=(),
-                       preexec_fn=pre, env={}, stdin=subprocess.DEVNULL)
+
+def _rev01_run(pass_extra: bool):
+    extra = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)   # a known reader-side fd (CLOEXEC)
+
+    def pre():
+        live = []
+        for n in os.listdir("/proc/self/fd"):
+            try:
+                os.fstat(int(n))
+                live.append(int(n))
+            except OSError:
+                pass
+        os.write(2, json.dumps({"preexec_fds": sorted(live)}).encode() + b"\n")
+
+    p = subprocess.run([PY, "-I", "-S", "-c", _stable_fd_census_code()], capture_output=True, close_fds=True,
+                       pass_fds=(extra,) if pass_extra else (), preexec_fn=pre, env={}, stdin=subprocess.DEVNULL)
     os.close(extra)
     preexec = json.loads(p.stderr.decode().splitlines()[0])["preexec_fds"]
-    post = [fd for fd in json.loads(p.stdout) if fd <= 2]  # listdir's own fd excluded
-    check("REV01_preexec_view_precedes_close_fds", len(preexec) > 3 and post == [0, 1, 2],
-          {"fds_visible_at_preexec": preexec, "fds_after_exec": post,
-           "meaning": "the only in-child hook of A runs BEFORE CPython's close_fds; the exact inherited set is "
-                      "not observable in A before exec"})
+    post = json.loads(p.stdout)
+    return extra, preexec, post
+
+
+def rev01() -> None:
+    extra, preexec, post = _rev01_run(False)
+    check("REV01_preexec_view_precedes_close_fds", extra in preexec and post == [0, 1, 2],
+          {"known_reader_fd": extra, "fds_visible_at_preexec": preexec, "fds_after_exec": post,
+           "meaning": "the known reader fd is visible at the only in-child hook of A (preexec), so that hook runs BEFORE "
+                      "CPython's close_fds; after exec the stable census (no range filter) shows exactly [0,1,2]"})
+    extra, preexec, post = _rev01_run(True)
+    check("REV01_mutant_extra_inherited_detected", extra in post and post != [0, 1, 2],
+          {"mutant": "pass_fds=(extra,)", "known_reader_fd": extra, "fds_after_exec": post,
+           "meaning": "the post-exec witness turns RED when a leak is introduced (it discriminates)"})
 
 
 # -- REV02 --------------------------------------------------------------------------------

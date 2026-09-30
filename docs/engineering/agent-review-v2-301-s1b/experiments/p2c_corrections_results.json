@@ -2,13 +2,13 @@
  "REV01_preexec_view_precedes_close_fds": {
   "verdict": "PASS",
   "detail": {
+   "known_reader_fd": 3,
    "fds_visible_at_preexec": [
     0,
     1,
     2,
     3,
     4,
-    5,
     6,
     8,
     10
@@ -18,7 +18,21 @@
     1,
     2
    ],
-   "meaning": "the only in-child hook of A runs BEFORE CPython's close_fds; the exact inherited set is not observable in A before exec"
+   "meaning": "the known reader fd is visible at the only in-child hook of A (preexec), so that hook runs BEFORE CPython's close_fds; after exec the stable census (no range filter) shows exactly [0,1,2]"
+  }
+ },
+ "REV01_mutant_extra_inherited_detected": {
+  "verdict": "PASS",
+  "detail": {
+   "mutant": "pass_fds=(extra,)",
+   "known_reader_fd": 3,
+   "fds_after_exec": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "meaning": "the post-exec witness turns RED when a leak is introduced (it discriminates)"
   }
  },
  "REV02_T1_SIGTERM_no_handler": {
@@ -151,7 +165,7 @@
    "git": "git version 2.43.0",
    "discovery_without_safe_dir": [
     128,
-    "fatal: detected dubious ownership in repository at '/tmp/s1b-p2c-ezxf9_0w/r.git'\nTo add an"
+    "fatal: detected dubious ownership in repository at '/tmp/s1b-p2c-byutan2r/r.git'\nTo add an"
    ],
    "explicit_GIT_DIR_without_safe_dir": [
     0,

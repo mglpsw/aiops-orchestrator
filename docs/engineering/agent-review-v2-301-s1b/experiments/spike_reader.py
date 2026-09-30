@@ -174,8 +174,8 @@ def teardown(deadline_s: float, handle_pidfd, handle_only: bool) -> dict:
 # -- spawn mechanisms ---------------------------------------------------------------------
 
 class Handle:
-    def __init__(self, pid, pidfd, out_fd, popen=None) -> None:
-        self.pid, self.pidfd, self.out_fd, self.popen = pid, pidfd, out_fd, popen
+    def __init__(self, pid, pidfd, out_fd, popen=None, in_fd=None) -> None:
+        self.pid, self.pidfd, self.out_fd, self.popen, self.in_fd = pid, pidfd, out_fd, popen, in_fd
 
 
 def spawn_A(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
@@ -184,6 +184,8 @@ def spawn_A(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
     def pre() -> None:  # the ONLY pre-exec work in A: the rlimit
         if inject == "setup_exception":
             raise RuntimeError("injected child setup failure")
+        if inject == "pre_exec_stall":
+            time.sleep(cfg.get("stall_s", 3.0))   # P2d: a child stalled before exec completes
         if "rlimit_after_spawn" not in abl:
             resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
@@ -217,12 +219,17 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
     r_out, w_out = os.pipe()          # CLOEXEC (non-inheritable) by default
     r_x, w_x = os.pipe()              # setup-error pipe, CLOEXEC
     devnull = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+    r_in = w_in = None
+    if cfg.get("stdin_pipe"):                   # P2d CM-W6: a protocol request channel into the child
+        r_in, w_in = os.pipe()
     pid = os.fork()
     if pid == 0:
         try:
             if inject == "setup_exception":
                 raise RuntimeError("injected child setup failure")
-            os.dup2(devnull, 0)
+            if inject == "pre_exec_stall":
+                time.sleep(cfg.get("stall_s", 3.0))   # P2d: a child stalled before exec completes
+            os.dup2(r_in if r_in is not None else devnull, 0)
             os.dup2(w_out, 1)
             os.dup2(devnull, 2)
             if "rlimit_after_spawn" not in abl:
@@ -259,21 +266,36 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set) -> Handle:
     if inject == "baseexception_after_spawn":
         raise KeyboardInterrupt("injected right after spawn, before pidfd")
     pidfd = os.pidfd_open(pid)
-    for fd in (w_out, w_x, devnull):
+    for fd in (w_out, w_x, devnull) + ((r_in,) if r_in is not None else ()):
         os.close(fd)
     if "rlimit_after_spawn" in abl:
         time.sleep(0.3)
         resource.prlimit(pid, resource.RLIMIT_AS, (limit, limit))
+    # P2d (correction round 3): the setup/exec error pipe is watched under the UNIT
+    # deadline that started before fork(); the child is already owned (pidfd) here.
+    deadline_at = cfg.get("_deadline_at", time.monotonic() + 3600)
+    if cfg.get("handshake_deadline_off"):      # P2d ablation: the handshake is NOT under the unit deadline
+        deadline_at = time.monotonic() + 3600
     err = b""
-    while True:
-        chunk = os.read(r_x, 512)
-        if not chunk:
-            break
-        err += chunk
-    os.close(r_x)
+    try:
+        while True:
+            left = deadline_at - time.monotonic()
+            if left <= 0:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+                raise Refusal("unit_deadline", "exec handshake did not complete before the unit deadline")
+            r, _, _ = select.select([r_x], [], [], left)
+            if not r:
+                continue
+            chunk = os.read(r_x, 512)
+            if not chunk:
+                break                              # EOF: the CLOEXEC error pipe closed at a successful exec
+            err += chunk
+    finally:
+        os.close(r_x)
     if err:
         raise Refusal("transport_spawn_failed", err.decode(errors="replace"))
-    return Handle(pid, pidfd, r_out)
+    return Handle(pid, pidfd, r_out, in_fd=w_in)
 
 
 def read_report(h: Handle, deadline_s: float) -> dict:
@@ -351,8 +373,13 @@ def main() -> None:
         else:
             exe = cfg["python"] if inject != "exec_missing" else "/nonexistent/s1b-spike-exe"
             argv = [exe, "-I", "-S", cfg["child"], cfg["child_mode"], cfg["token"]]
-            handle = spawn(cfg, argv, inject, abl)
-            report = read_report(handle, cfg.get("unit_deadline", 3.0))
+            t_start = time.monotonic()               # the unit deadline starts BEFORE the spawn attempt
+            cfg["_deadline_at"] = t_start + cfg.get("unit_deadline", 3.0)
+            try:
+                handle = spawn(cfg, argv, inject, abl)
+            finally:
+                res["spawn_control_regained_s"] = round(time.monotonic() - t_start, 3)
+            report = read_report(handle, max(0.0, cfg["_deadline_at"] - time.monotonic()))
             res["child_report"] = report
     except Refusal as r:
         primary = {"reason": r.reason, "detail": r.detail[:300]}

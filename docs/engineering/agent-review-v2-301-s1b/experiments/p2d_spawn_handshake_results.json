@@ -1,0 +1,356 @@
+[
+ {
+  "id": "S-A1-normal",
+  "proposition": "spawn completes within the unit deadline",
+  "kind": "positive",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "completed",
+   "primary": null,
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.034,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-A3-setup-error",
+  "proposition": "setup failure before exec is bounded and typed",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "transport_spawn_failed",
+   "primary": "transport_spawn_failed",
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.023,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-A4-exec-missing",
+  "proposition": "exec failure is bounded and typed",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "transport_spawn_failed",
+   "primary": "transport_spawn_failed",
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.021,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-B1-normal",
+  "proposition": "spawn completes within the unit deadline",
+  "kind": "positive",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "completed",
+   "primary": null,
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.034,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-B3-setup-error",
+  "proposition": "setup failure before exec is bounded and typed",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "transport_spawn_failed",
+   "primary": "transport_spawn_failed",
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.022,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-B4-exec-missing",
+  "proposition": "exec failure is bounded and typed",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "transport_spawn_failed",
+   "primary": "transport_spawn_failed",
+   "spawn_control_regained_s": 0.001,
+   "reader_wall_s": 0.024,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-A2-pre-exec-stall",
+  "proposition": "A: the caller regains control only when the Popen handshake ends",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "unit_deadline",
+   "primary": "unit_deadline",
+   "spawn_control_regained_s": 3.002,
+   "reader_wall_s": 3.026,
+   "survivors": 0
+  },
+  "claim_limit": "demonstrates A does NOT satisfy B-RES-02 standalone: control regained after the stall, not at the 1.0s deadline"
+ },
+ {
+  "id": "S-B2-pre-exec-stall",
+  "proposition": "B: the unit deadline covers the exec handshake; child killed and reaped",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "unit_deadline",
+   "primary": "unit_deadline",
+   "spawn_control_regained_s": 1.001,
+   "reader_wall_s": 1.022,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "S-B2-ablation-no-handshake-deadline",
+  "proposition": "ablation: B without the handshake deadline waits for the stall",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "unit_deadline",
+   "primary": "unit_deadline",
+   "spawn_control_regained_s": 3.002,
+   "reader_wall_s": 3.03,
+   "survivors": 0
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "W-POS-dedicated-channel",
+  "proposition": "wakeup fds typed+admitted; not inherited; SIGTERM \u2192 wakeup \u2192 teardown",
+  "kind": "positive",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "terminated",
+   "survivors": 0,
+   "signals": [
+    15,
+    15
+   ],
+   "sentinel_bytes_after_close": 0,
+   "child_fds": [
+    0,
+    1,
+    2
+   ]
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-W1W2-old-allowlist",
+  "proposition": "the pre-round-3 closed fd contract refuses a conforming wakeup implementation",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "refused",
+   "primary": "reader_fd_capability_unexpected"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-W3-census-refuses-inheritable-wakeup",
+  "proposition": "the typed census refuses a non-CLOEXEC wakeup endpoint",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "refused",
+   "primary": "reader_fd_capability_unexpected"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-W3-wakeup-inherited-by-git",
+  "proposition": "ablation: non-CLOEXEC wakeup fd + no child-side close leaks into Git",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "child_fds": [
+    0,
+    1,
+    2,
+    4
+   ],
+   "wakeup_fds": [
+    3,
+    4
+   ]
+  },
+  "claim_limit": "the census refuses it too when not ablated (non-CLOEXEC wakeup write fd)"
+ },
+ {
+  "id": "CM-W4-blocking-wakeup",
+  "proposition": "a blocking wakeup endpoint is refused",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "refused",
+   "primary": "ValueError: the fd 4 must be in non-blocking mode"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-W5-close-while-registered",
+  "proposition": "ablation: closing the write end while registered sends later wakeups into whatever reuses the number",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "sentinel_bytes_after_close": 1
+  },
+  "claim_limit": "the positive row (W-POS) shows set_wakeup_fd(-1) before close leaves the sentinel at 0 bytes"
+ },
+ {
+  "id": "CM-W6-dedicated-positive",
+  "proposition": "dedicated channel: no wakeup byte reaches the protocol",
+  "kind": "positive",
+  "verdict": "PASS",
+  "observed": {
+   "child_stdin_bytes": "",
+   "outcome": "terminated"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-W6-shared-with-protocol",
+  "proposition": "ablation: wakeup shared with the protocol corrupts the request channel",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "child_stdin_bytes": "0f",
+   "outcome": "completed"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-07-signal-during-teardown",
+  "proposition": "non-raising handler: a signal at teardown does not abort it",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "survivors": 0,
+   "signals": [
+    15,
+    15
+   ],
+   "outcome": "completed"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-07-ablation-raising-handler",
+  "proposition": "ablation: a raising handler aborts the teardown",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "survivors": 1,
+   "outcome": "NO_RESULT"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-08-double-signal",
+  "proposition": "double signal: teardown once, zero survivors",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "survivors": 0,
+   "signals": [
+    15,
+    15,
+    15
+   ],
+   "outcome": "terminated"
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-04-SIGTERM-blocked-normalized",
+  "proposition": "SIGTERM blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "terminated",
+   "controlled_blocked_after_normalization": [],
+   "survivors": 0,
+   "seconds_from_signal_to_reader_exit": 0.12
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-04-SIGTERM-ablation-no-normalize",
+  "proposition": "ablation: SIGTERM stays pending; no wakeup; reader lingers",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "completed",
+   "controlled_blocked_after_normalization": [
+    15
+   ],
+   "seconds_from_signal_to_reader_exit": 2.912
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-05-SIGINT-blocked-normalized",
+  "proposition": "SIGINT blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "terminated",
+   "controlled_blocked_after_normalization": [],
+   "survivors": 0,
+   "seconds_from_signal_to_reader_exit": 0.11
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-05-SIGINT-ablation-no-normalize",
+  "proposition": "ablation: SIGINT stays pending; no wakeup; reader lingers",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "completed",
+   "controlled_blocked_after_normalization": [
+    2
+   ],
+   "seconds_from_signal_to_reader_exit": 2.911
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-06-SIGHUP-blocked-normalized",
+  "proposition": "SIGHUP blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+  "kind": "negative",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "terminated",
+   "controlled_blocked_after_normalization": [],
+   "survivors": 0,
+   "seconds_from_signal_to_reader_exit": 0.11
+  },
+  "claim_limit": ""
+ },
+ {
+  "id": "CM-R3-06-SIGHUP-ablation-no-normalize",
+  "proposition": "ablation: SIGHUP stays pending; no wakeup; reader lingers",
+  "kind": "ablation",
+  "verdict": "PASS",
+  "observed": {
+   "outcome": "completed",
+   "controlled_blocked_after_normalization": [
+    1
+   ],
+   "seconds_from_signal_to_reader_exit": 2.912
+  },
+  "claim_limit": ""
+ }
+]
