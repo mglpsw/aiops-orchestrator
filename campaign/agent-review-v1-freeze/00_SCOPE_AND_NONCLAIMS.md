@@ -81,6 +81,7 @@ O v1 final **não** declara, e nenhum teste deve ser tornado verde elevando esta
 ausência de defeitos
 completude semântica universal
 proveniência forte de execução
+binding exato resultado↔plano↔commit revisado / resistência a replay (plan/results v1 não carregam SHA nem digest)
 CI independente confiável
 S/E forte
 autoridade de nível Assured

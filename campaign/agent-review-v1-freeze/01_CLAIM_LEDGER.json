@@ -163,7 +163,8 @@
         "CM-CL3-06"
       ],
       "limitations": [
-        "the deterministic layer can reject structurally unsupported findings; it cannot prove a stated consequence is true"
+        "the deterministic layer can reject structurally unsupported findings; it cannot prove a stated consequence is true",
+        "absence claims about the tree outside the hunk (e.g. CM-CL3-03) are not decidable from hunk text; see OBL-CL3-01 decidability_constraint"
       ],
       "slice": "V1-C3",
       "channel_constraint": "v1 has no neutral observation channel: NormalizedRisk (incl. source=downgraded_finding) escalates to approve_with_required_followup (final_synthesizer.py:474-475; quality_gate.py:544-545); rejected_findings yield approve_with_minor_notes (final_synthesizer.py:476). Downgrading a P3 into a risk makes the verdict stricter. Target channel is an open V1-C3 decision."
@@ -224,7 +225,8 @@
         "CM-CL5-03"
       ],
       "limitations": [
-        "literal TS1 (removal of chunk_results_schema_mismatch from #275's trust set) is not reachable through the CLI because load_chunk_results rejects schema mismatch on disk (quality_gate.py:151-158); it is reachable via the Python API with mutable models"
+        "literal TS1 (removal of chunk_results_schema_mismatch from #275's trust set) is not reachable through the CLI because load_chunk_results rejects schema mismatch on disk (quality_gate.py:151-158); it is reachable via the Python API with mutable models",
+        "no exact plan/subject binding or replay resistance: v1 plan/results carry no commit SHA or plan digest (see OBL-CL5-04 non_claim)"
       ],
       "slice": "V1-C4"
     },

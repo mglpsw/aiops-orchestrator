@@ -96,7 +96,8 @@
         "response-contract change requires positive justification against frozen v1 golden fixtures"
       ],
       "owner": "#343",
-      "open_decision": "target channel: NormalizedRisk escalates to approve_with_required_followup; rejected_findings yields approve_with_minor_notes; v1 has no neutral observation channel"
+      "open_decision": "target channel: NormalizedRisk escalates to approve_with_required_followup; rejected_findings yields approve_with_minor_notes; v1 has no neutral observation channel",
+      "decidability_constraint": "A deterministic predicate can only decide what its input material decides. Hunk text decides aboutness of symbols cited as changed; it does NOT decide absence claims about the rest of the tree (CM-CL3-03: 'setting undocumented' while documented in four other places). For each CM-CL3 case the V1-C3 contract must either supply exact-tree evidence (search of the reviewed checkout at the exact head) or exclude that case from deterministic closure and record it as an advisory-only limitation. Over-rejecting every absence claim to turn CM-CL3-03 green is forbidden by PC-CL3-01."
     },
     {
       "obligation_id": "OBL-CL4-01",
@@ -157,7 +158,7 @@
       "obligation_id": "OBL-CL5-04",
       "claim": "CL-5",
       "domain": "result_coverage.result_identity_trust",
-      "proposition": "A P0/P1 carried by ChunkResults whose identity does not match the reviewed subject/plan (schema_id, target_repo, chunk_plan_ref) is an untrusted blocker candidate, not a trusted blocking conclusion (#307 mission 2, literal TS1).",
+      "proposition": "A P0/P1 carried by ChunkResults whose EXISTING identity metadata mismatches the reviewed plan/subject (schema_id/schema_version, target_repo, the fields present in chunk_plan_ref) is an untrusted blocker candidate, not a trusted blocking conclusion (#307 mission 2, literal TS1).",
       "mechanism_site": "app/agent_review/quality_gate.py:384-416 (_blocker_unreliable_reasons) and final_synthesizer.py:502-509; load-time schema check at quality_gate.py:151-158 is not re-applied inside evaluate",
       "countermodels": [
         "CM-CL5-03"
@@ -166,7 +167,8 @@
         "identity-matching ChunkResults with a reviewed-file P1 stays passed/changes_requested"
       ],
       "closure_predicate": "CM-CL5-03 RED -> GREEN via the Python API; each identity edge individually mutated turns its focal test RED (no edge covered only by a sibling)",
-      "owner": "#307"
+      "owner": "#307",
+      "non_claim": "Exact plan/subject binding and replay resistance are NOT claimed: chunk_plan_ref holds only schema/source/status/timestamp/chunk count, and neither SemanticChunkPlan nor ChunkResults carries the reviewed commit SHA, so a stale result from another head with matching shallow metadata is not detectable. Adding plan digests or subject provenance would be new trust architecture, which #221 reserves to v2/#357; this is recorded as a v1 non-claim (00 §4: strong execution provenance)."
     },
     {
       "obligation_id": "OBL-CL6-01",
@@ -323,7 +325,7 @@
         "procedural_checks": {
           "C1_scope": "`git diff --name-status <base>..<head>` is pasted in the PR and every path is shown to be in the declared allowlist (deterministic; no bespoke checker)",
           "C2_policy_immutability": "`git diff --quiet <base> <head> -- campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json` exits 0 in a behavioral slice (the isolation policy changes only in a dedicated contract slice under an owner decision)",
-          "C3_no_new_v2_dependency": "`git diff <base>..<head> -- <allowlisted non-campaign paths> | grep -E '^\\+' | grep -E '[A-Za-z_0-9]+_v2\\b|agent_review_v2'` is empty or every hit is adjudicated in the PR. Deliberately over-inclusive (matches any added line naming a *_v2 identifier) so that absolute, relative, package-form (`from app.agent_review import x_v2`, `from . import x_v2`) and multiline imports are all caught; a v1 slice never introduces a dependency on v2 code or evals",
+          "C3_no_new_v2_dependency": "`git diff <base>..<head> -- <allowlisted non-campaign paths> | grep -E '^\\+' | grep -Ei '_v2\\b|agent_review_v2|agent-review/v2|agentreview-v2|/v2/|target_profile_yaml_corpus|evals/agent_review_v2'` is empty or every hit is adjudicated in the PR. Deliberately over-inclusive: it matches *_v2 identifiers (absolute, relative, package-form, multiline imports) and path/module spellings of v2 surfaces without a _v2 identifier (schemas/agent-review/v2, templates/agentreview-v2-target-pack, tests/agent_review/target_profile_yaml_corpus, fixtures/v2). Before each slice, re-read v2_surface_reference for surfaces with other spellings and add them to the pattern in the PR. A v1 slice never introduces a dependency on v2 code, data or evals.",
           "C4_shared_paths": "any allowlisted shared_v1_owned path carries the v2-unchanged justification (shared_rule)"
         }
       },
