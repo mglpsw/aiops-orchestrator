@@ -292,3 +292,48 @@ def test_countermodel_p20_template_symlink_escaping_toolrepo_is_rejected(tmp_pat
     with pytest.raises(TargetPackBuildError) as exc_schema:
         build_target_pack_manifest_v2(toolrepo_root=standalone, toolrepo_sha=dummy_sha, pack_version="0.1.0")
     assert exc_schema.value.reason_code == BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2
+
+
+def test_countermodel_c8_nested_standalone_inside_parent_git_refuses_parent_authority(tmp_path: Path) -> None:
+    """C8 (Finding S3): A standalone directory nested inside a parent Git repository must NOT use parent Git authority."""
+    parent_repo = tmp_path / "parent_git_repo"
+    parent_repo.mkdir()
+    _init_git_repo(parent_repo)
+    (parent_repo / "dummy.txt").write_text("dummy", encoding="utf-8")
+    parent_sha = _commit_all(parent_repo)
+
+    nested_standalone = parent_repo / "nested" / "standalone"
+    nested_standalone.mkdir(parents=True)
+    template_dir = nested_standalone / "templates" / "agentreview-v2-target-pack"
+    template_dir.mkdir(parents=True)
+    (template_dir / "target-profile.v2.yaml").write_text("mode: standalone\n", encoding="utf-8")
+    schema_dir = nested_standalone / "schemas" / "agent-review" / "v2"
+    schema_dir.mkdir(parents=True)
+    (schema_dir / "agent-review.target-pack-manifest.v2.schema.json").write_text("{}\n", encoding="utf-8")
+
+    # Parent repo contains parent_sha, but nested_standalone is NOT a git repo root.
+    from app.agent_review.target_pack_build_v2 import _is_git_tree_accessible_v2
+    assert not _is_git_tree_accessible_v2(toolrepo_root=nested_standalone, toolrepo_sha=parent_sha)
+
+    # Standalone mode requires valid matching attestations
+    (nested_standalone / ".source-commit").write_text(f"{parent_sha}\n", encoding="utf-8")
+    (nested_standalone / ".toolrepo-sha").write_text(f"{parent_sha}\n", encoding="utf-8")
+    manifest = build_target_pack_manifest_v2(
+        toolrepo_root=nested_standalone, toolrepo_sha=parent_sha, pack_version="0.1.0"
+    )
+    assert manifest.toolrepo_sha == parent_sha
+
+
+def test_countermodel_c9_standalone_attestation_symlink_refused(tmp_path: Path) -> None:
+    """C9 (Finding S1): Symlinked attestation files in standalone mode are refused fail-closed."""
+    standalone = tmp_path / "standalone_symlink_attest"
+    standalone.mkdir()
+    outside_sha_file = tmp_path / "outside_sha.txt"
+    sha = "f" * 40
+    outside_sha_file.write_text(f"{sha}\n", encoding="utf-8")
+
+    (standalone / ".source-commit").symlink_to(outside_sha_file)
+    (standalone / ".toolrepo-sha").write_text(f"{sha}\n", encoding="utf-8")
+
+    from app.agent_review.target_pack_build_v2 import _resolve_attested_toolrepo_sha
+    assert _resolve_attested_toolrepo_sha(standalone) is None

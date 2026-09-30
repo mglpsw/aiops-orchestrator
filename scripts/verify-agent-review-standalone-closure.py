@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,32 +55,38 @@ REQUIRED_DISTRIBUTION_CLIS_V1: frozenset[str] = frozenset(
     }
 )
 
+REQUIRED_CORE_PACKAGES_V1: frozenset[str] = frozenset({"app/agent_review"})
+REQUIRED_PACKAGE_ROOTS_V1: frozenset[str] = frozenset({"app/__init__.py"})
+REQUIRED_SHARED_PRIMITIVES_V1: frozenset[str] = frozenset(
+    {
+        "app/common/strict_json.py",
+        "app/common/__init__.py",
+        "app/services/environment_context.py",
+        "app/services/__init__.py",
+    }
+)
+REQUIRED_ASSET_TREES_V1: frozenset[str] = frozenset(
+    {
+        "templates/agentreview-v2-target-pack",
+        "schemas/agent-review/v2",
+    }
+)
+REQUIRED_INSTALL_BOUNDARY_V1: frozenset[str] = frozenset(
+    {
+        "requirements-agent-review.lock",
+        "scripts/install-agent-review-toolrepo.sh",
+        "docs/AGENT_REVIEW_V2_INSTALLATION.md",
+    }
+)
+
 REQUIRED_BOUNDARY_ANCHORS_V1: dict[str, frozenset[str]] = {
-    "core_packages": frozenset({"app/agent_review"}),
-    "package_roots": frozenset({"app/__init__.py"}),
-    "shared_primitives": frozenset(
-        {
-            "app/common/strict_json.py",
-            "app/services/environment_context.py",
-        }
-    ),
-    "required_asset_trees": frozenset(
-        {
-            "templates/agentreview-v2-target-pack",
-            "schemas/agent-review/v2",
-        }
-    ),
-    "install_boundary": frozenset(
-        {
-            "requirements-agent-review.lock",
-            "scripts/install-agent-review-toolrepo.sh",
-            "docs/AGENT_REVIEW_V2_INSTALLATION.md",
-        }
-    ),
+    "core_packages": REQUIRED_CORE_PACKAGES_V1,
+    "package_roots": REQUIRED_PACKAGE_ROOTS_V1,
+    "shared_primitives": REQUIRED_SHARED_PRIMITIVES_V1,
+    "required_asset_trees": REQUIRED_ASSET_TREES_V1,
+    "install_boundary": REQUIRED_INSTALL_BOUNDARY_V1,
     "distribution_clis": REQUIRED_DISTRIBUTION_CLIS_V1,
 }
-
-REQUIRED_INSTALL_BOUNDARY_V1 = REQUIRED_BOUNDARY_ANCHORS_V1["install_boundary"]
 
 REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1: frozenset[str] = frozenset(
     {
@@ -169,7 +176,7 @@ REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1: frozenset[str] = frozenset(
     for root in roots
 )
 
-STDLIB_TOP_LEVELS_V1: frozenset[str] = frozenset(
+STDLIB_TOP_LEVELS_CPYTHON_311_V1: frozenset[str] = frozenset(
     {
         "__future__", "abc", "aifc", "argparse", "array", "ast", "asynchat", "asyncio",
         "asyncore", "base64", "bdb", "binascii", "bisect", "builtins", "bz2",
@@ -206,6 +213,67 @@ STDLIB_TOP_LEVELS_V1: frozenset[str] = frozenset(
         "trusted_check_supervisor_v2",
     }
 )
+STDLIB_TOP_LEVELS_V1 = STDLIB_TOP_LEVELS_CPYTHON_311_V1
+
+
+def canonical_distribution_name(name: str) -> str:
+    """Normalize distribution package name according to PEP 503 / Python packaging conventions."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def parse_lock_distributions(lock_path: Path) -> frozenset[str]:
+    """Parse requirement names from requirements-agent-review.lock and return canonical distribution names."""
+    if not lock_path.is_file():
+        return frozenset()
+    pkgs: set[str] = set()
+    for line in lock_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([a-zA-Z0-9_\-\.]+)\s*==\s*", line)
+        if m:
+            pkgs.add(canonical_distribution_name(m.group(1)))
+    return frozenset(pkgs)
+
+
+@dataclass(frozen=True)
+class CanonicalStandaloneContractV1:
+    """The single canonical code-owned product contract for AgentReview standalone distribution."""
+
+    manifest_version: str = "1.0.0"
+    schema_id: str = "agent-review.standalone-distribution-manifest.v1"
+    authority_effect: str = "projection_only"
+    core_packages: frozenset[str] = REQUIRED_CORE_PACKAGES_V1
+    package_roots: frozenset[str] = REQUIRED_PACKAGE_ROOTS_V1
+    shared_primitives: frozenset[str] = REQUIRED_SHARED_PRIMITIVES_V1
+    required_asset_trees: frozenset[str] = REQUIRED_ASSET_TREES_V1
+    install_boundary: frozenset[str] = REQUIRED_INSTALL_BOUNDARY_V1
+    distribution_clis: frozenset[str] = REQUIRED_DISTRIBUTION_CLIS_V1
+    forbidden_runtime_surfaces: frozenset[str] = REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1
+    forbidden_runtime_packages: frozenset[str] = REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1
+    allowed_third_party_packages: frozenset[str] = REQUIRED_ALLOWED_THIRD_PARTY_PACKAGES_V1
+    known_allowed_dependencies: dict[str, frozenset[str]] = field(
+        default_factory=lambda: dict(KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1)
+    )
+    known_forbidden_dependencies: dict[str, frozenset[str]] = field(
+        default_factory=lambda: dict(KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1)
+    )
+    forbidden_script_roots: frozenset[str] = REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1
+    stdlib_top_levels: frozenset[str] = STDLIB_TOP_LEVELS_CPYTHON_311_V1
+
+
+CANONICAL_CONTRACT_V1 = CanonicalStandaloneContractV1()
+
+# Disjointness invariants
+_allowed_dist_norm = frozenset(canonical_distribution_name(p) for p in REQUIRED_ALLOWED_THIRD_PARTY_PACKAGES_V1)
+_forbidden_dist_norm = frozenset(canonical_distribution_name(p) for p in REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1)
+assert _allowed_dist_norm.isdisjoint(_forbidden_dist_norm), "Allowed packages overlap forbidden runtime packages"
+assert REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1.isdisjoint(
+    REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1
+), "Allowed import roots overlap forbidden runtime import roots"
+assert REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1.isdisjoint(
+    REQUIRED_FORBIDDEN_RUNTIME_SCRIPT_IMPORT_ROOTS_V1
+), "Allowed import roots overlap forbidden script import roots"
 
 
 def admit_manifest_relative_path_v1(rel_path_str: str) -> Path:
@@ -264,9 +332,10 @@ def derive_ast_imports_from_file(
     file_path: Path,
     repo_root: Path | None = None,
     forbidden_surfaces: set[str] | None = None,
+    source_text: str | None = None,
 ) -> tuple[set[str], set[str]]:
     """Parse a Python source file and return (external_packages, internal_app_imports)."""
-    text = file_path.read_text(encoding="utf-8")
+    text = source_text if source_text is not None else file_path.read_text(encoding="utf-8")
     tree = ast.parse(text, filename=str(file_path))
     external_pkgs: set[str] = set()
     app_imports: set[str] = set()
@@ -386,6 +455,14 @@ def validate_manifest(
         )
         return errors
 
+    provenance = manifest.get("provenance")
+    if isinstance(provenance, dict):
+        auth_effect = provenance.get("authority_effect")
+        if auth_effect is not None and auth_effect != CANONICAL_CONTRACT_V1.authority_effect:
+            errors.append(
+                f"Unsupported provenance authority_effect: {auth_effect!r}. Expected: {CANONICAL_CONTRACT_V1.authority_effect!r}"
+            )
+
     # 1. Structural schema requirements and non-vacuity enforcement
     dist_boundary = manifest.get("distribution_boundary")
     if not isinstance(dist_boundary, dict):
@@ -442,8 +519,8 @@ def validate_manifest(
     if not raw_forbidden_pkgs:
         errors.append("Field 'forbidden_runtime_packages' cannot be empty.")
         return errors
-    forbidden_packages = {p.lower() for p in raw_forbidden_pkgs if isinstance(p, str)}
-    missing_negative_pkg_anchors = sorted(REQUIRED_FORBIDDEN_RUNTIME_PACKAGES_V1 - forbidden_packages)
+    forbidden_packages_norm = {canonical_distribution_name(p) for p in raw_forbidden_pkgs if isinstance(p, str)}
+    missing_negative_pkg_anchors = sorted(_forbidden_dist_norm - forbidden_packages_norm)
     if missing_negative_pkg_anchors:
         errors.append(
             f"Required negative runtime package anchor(s) omitted from 'forbidden_runtime_packages': {missing_negative_pkg_anchors}"
@@ -460,28 +537,61 @@ def validate_manifest(
     if not raw_allowed_pkgs:
         errors.append("Field 'allowed_third_party_packages' cannot be empty.")
         return errors
-    allowed_packages = {p.lower() for p in raw_allowed_pkgs if isinstance(p, str)}
-    missing_allowed_pkg_anchors = sorted(REQUIRED_ALLOWED_THIRD_PARTY_PACKAGES_V1 - allowed_packages)
+    allowed_packages_norm = {canonical_distribution_name(p) for p in raw_allowed_pkgs if isinstance(p, str)}
+    missing_allowed_pkg_anchors = sorted(_allowed_dist_norm - allowed_packages_norm)
     if missing_allowed_pkg_anchors:
         errors.append(
             f"Required allowed third-party package anchor(s) omitted from 'allowed_third_party_packages': {missing_allowed_pkg_anchors}"
         )
+    extra_allowed_pkgs = sorted(allowed_packages_norm - _allowed_dist_norm)
+    if extra_allowed_pkgs:
+        errors.append(
+            f"Undeclared package(s) in 'allowed_third_party_packages' violating canonical boundary: {extra_allowed_pkgs}"
+        )
+
+    # Finding D2: Disjointness check between allowed and forbidden packages
+    if not allowed_packages_norm.isdisjoint(forbidden_packages_norm):
+        overlap = sorted(allowed_packages_norm & forbidden_packages_norm)
+        errors.append(
+            f"Allowed third-party packages overlap forbidden runtime packages: {overlap}"
+        )
+
+    # Finding D3: Parity check between allowed_third_party_packages and requirements-agent-review.lock
+    lock_file = root / "requirements-agent-review.lock"
+    if lock_file.is_file():
+        lock_pkgs = parse_lock_distributions(lock_file)
+        if lock_pkgs:
+            missing_from_lock = sorted(allowed_packages_norm - lock_pkgs)
+            if missing_from_lock:
+                errors.append(
+                    f"Allowed package(s) declared in manifest but absent from requirements-agent-review.lock: {missing_from_lock}"
+                )
+            extra_in_lock = sorted(lock_pkgs - allowed_packages_norm)
+            if extra_in_lock:
+                errors.append(
+                    f"Package(s) present in requirements-agent-review.lock but omitted from manifest allowed_third_party_packages: {extra_in_lock}"
+                )
 
     # Project declared allowed packages to import roots via known contract
     allowed_third_party_import_roots: set[str] = set(REQUIRED_ALLOWED_THIRD_PARTY_IMPORT_ROOTS_V1)
-    for pkg in allowed_packages:
-        if pkg in KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1:
-            allowed_third_party_import_roots.update(KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1[pkg])
-        else:
-            allowed_third_party_import_roots.add(pkg.replace("-", "_"))
+    for pkg in raw_allowed_pkgs:
+        pkg_norm = canonical_distribution_name(pkg)
+        if pkg_norm in KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1:
+            allowed_third_party_import_roots.update(KNOWN_ALLOWED_THIRD_PARTY_DEPENDENCIES_V1[pkg_norm])
 
     # Project declared forbidden packages to import roots via known contract
     forbidden_import_roots: set[str] = set(REQUIRED_FORBIDDEN_RUNTIME_IMPORT_ROOTS_V1)
-    for pkg in forbidden_packages:
-        if pkg in KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1:
-            forbidden_import_roots.update(KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1[pkg])
-        else:
-            forbidden_import_roots.add(pkg.replace("-", "_"))
+    for pkg in raw_forbidden_pkgs:
+        pkg_norm = canonical_distribution_name(pkg)
+        if pkg_norm in KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1:
+            forbidden_import_roots.update(KNOWN_FORBIDDEN_RUNTIME_DEPENDENCIES_V1[pkg_norm])
+
+    # Disjointness check between allowed and forbidden import roots
+    if not allowed_third_party_import_roots.isdisjoint(forbidden_import_roots):
+        overlap_roots = sorted(allowed_third_party_import_roots & forbidden_import_roots)
+        errors.append(
+            f"Allowed import roots overlap forbidden runtime import roots: {overlap_roots}"
+        )
 
     # 3. Check for existence, path confinement and runtime surface leaks in declared files
     declared_paths: list[str] = []
@@ -611,7 +721,7 @@ def validate_manifest(
     for fb in forbidden_surfaces:
         fb_path = Path(fb)
         if fb_path.suffix == ".py" and fb_path.stem.isidentifier() and not fb.startswith("app/"):
-            forbidden_script_roots.add(fb_path.stem.lower())
+            forbidden_script_roots.add(fb_path.stem)
 
     for py_file in distribution_py_files:
         try:
@@ -622,18 +732,17 @@ def validate_manifest(
             errors.append(f"Failed to parse AST of {py_file.relative_to(root)}: {exc}")
             continue
 
-        # Check external packages against positive third-party closure (B1)
+        # Check external packages against positive third-party closure (B1) - Exact case matching!
         for pkg in ext_pkgs:
-            pkg_lower = pkg.lower()
-            if pkg_lower in STDLIB_TOP_LEVELS_V1:
+            if pkg in STDLIB_TOP_LEVELS_V1:
                 continue
-            elif pkg_lower in allowed_third_party_import_roots:
+            elif pkg in allowed_third_party_import_roots:
                 continue
-            elif pkg_lower in forbidden_import_roots:
+            elif pkg in forbidden_import_roots:
                 errors.append(
                     f"Forbidden runtime package '{pkg}' imported by {py_file.relative_to(root)}"
                 )
-            elif pkg_lower in forbidden_script_roots:
+            elif pkg in forbidden_script_roots:
                 errors.append(
                     f"Forbidden runtime script import root '{pkg}' imported by {py_file.relative_to(root)}"
                 )
@@ -694,35 +803,48 @@ def materialize_standalone_distribution(
             f"Cannot materialize invalid distribution:\n" + "\n".join(validation_errors)
         )
 
+    repo_resolved = repo_root.resolve()
+    target_resolved = target_dir.resolve()
+
     # Resolve verifiable source identity to preserve in the materialized distribution (P-09, P-14, A2)
     resolved_sha: str | None = None
     is_git_repo = False
 
     # 1. Detect usable Git identity first (Git HEAD wins whenever Git is available)
-    try:
-        proc_inside = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc_inside.returncode == 0 and proc_inside.stdout.strip() == "true":
-            proc_head = subprocess.run(
-                ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+    if not repo_root.is_symlink():
+        try:
+            proc_top = subprocess.run(
+                ["git", "-C", str(repo_resolved), "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if proc_head.returncode == 0:
-                cand = proc_head.stdout.strip().lower()
-                if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
-                    resolved_sha = cand
-                    is_git_repo = True
-    except Exception:
-        pass
+            if proc_top.returncode == 0 and Path(proc_top.stdout.strip()).resolve() == repo_resolved:
+                proc_head = subprocess.run(
+                    ["git", "-C", str(repo_resolved), "rev-parse", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if proc_head.returncode == 0:
+                    cand = proc_head.stdout.strip().lower()
+                    if re.fullmatch(r"^[0-9a-f]{40}$", cand) and cand != "0" * 40:
+                        resolved_sha = cand
+                        is_git_repo = True
+        except Exception:
+            pass
 
     src_commit_file = repo_root / ".source-commit"
     toolrepo_sha_file = repo_root / ".toolrepo-sha"
+
+    if src_commit_file.is_symlink():
+        raise StandaloneClosureValidationError(
+            f"Attestation file .source-commit in {repo_root} cannot be a symlink"
+        )
+    if toolrepo_sha_file.is_symlink():
+        raise StandaloneClosureValidationError(
+            f"Attestation file .toolrepo-sha in {repo_root} cannot be a symlink"
+        )
 
     commit_file_sha: str | None = None
     if src_commit_file.is_file():
@@ -784,9 +906,6 @@ def materialize_standalone_distribution(
     else:
         attested_sha = resolved_sha
 
-    repo_resolved = repo_root.resolve()
-    target_resolved = target_dir.resolve()
-
     dist_boundary = manifest_data.get("distribution_boundary", {})
     all_declared_items: list[str] = []
     for section_name in (
@@ -800,6 +919,14 @@ def materialize_standalone_distribution(
         items = dist_boundary.get(section_name, [])
         if isinstance(items, list):
             all_declared_items.extend(items)
+
+    forbidden_surfaces = set(manifest_data.get("forbidden_runtime_surfaces", []))
+
+    # Target directory safety checks
+    if target_dir.is_symlink() or target_resolved.is_symlink():
+        raise StandaloneClosureValidationError(
+            f"Materialization target directory cannot be a symlink: {target_dir}"
+        )
 
     # Disjointness check between target and declared source paths (run BEFORE creating target)
     for rel_path_str in all_declared_items:
@@ -818,85 +945,6 @@ def materialize_standalone_distribution(
                 f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
             )
 
-    # Refuse to attest a dirty working tree or ignored entries if source is a git repository (P-11, A1)
-    if is_git_repo:
-        try:
-            status_proc = subprocess.run(
-                ["git", "-C", str(repo_root), "status", "--porcelain", "--", *all_declared_items],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if status_proc.returncode != 0:
-                raise StandaloneClosureValidationError(
-                    f"Failed to verify working tree status of {repo_root}: {status_proc.stderr.strip()}"
-                )
-            if status_proc.stdout.strip():
-                raise StandaloneClosureValidationError(
-                    f"Cannot materialize distribution from dirty repository: uncommitted or untracked changes detected in declared distribution boundary:\n{status_proc.stdout.strip()}"
-                )
-
-            # Check for Git-ignored regular files inside declared boundary (A1)
-            ignored_proc = subprocess.run(
-                ["git", "-C", str(repo_root), "ls-files", "--others", "--ignored", "--exclude-standard", "--", *all_declared_items],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if ignored_proc.returncode != 0:
-                raise StandaloneClosureValidationError(
-                    f"Failed to verify ignored files in working tree of {repo_root}: {ignored_proc.stderr.strip()}"
-                )
-            ignored_entries = [
-                line.strip()
-                for line in ignored_proc.stdout.splitlines()
-                if line.strip() and not (
-                    "/__pycache__/" in line
-                    or line.endswith("/__pycache__")
-                    or line.endswith(".pyc")
-                    or line.endswith(".pyo")
-                )
-            ]
-            if ignored_entries:
-                raise StandaloneClosureValidationError(
-                    f"Cannot materialize distribution from dirty repository: ignored entries detected in declared distribution boundary:\n"
-                    + "\n".join(ignored_entries)
-                )
-        except StandaloneClosureValidationError:
-            raise
-        except Exception as exc:
-            raise StandaloneClosureValidationError(
-                f"Failed to verify working tree status of {repo_root}: {exc}"
-            )
-
-    # Pre-creation scan: verify all declared source items are regular files or directories without symlinks or special files (P-13)
-    for rel_path_str in all_declared_items:
-        rel_path = admit_manifest_relative_path_v1(rel_path_str)
-        src_path = repo_root / rel_path
-        if src_path.is_symlink():
-            raise StandaloneClosureValidationError(
-                f"Refusing to materialize symlink: {rel_path_str}"
-            )
-        if src_path.is_dir():
-            for sub in src_path.rglob("*"):
-                if sub.is_symlink():
-                    raise StandaloneClosureValidationError(
-                        f"Refusing to materialize distribution tree containing symlink: {sub.relative_to(repo_root)}"
-                    )
-                if not (sub.is_file() or sub.is_dir()):
-                    raise StandaloneClosureValidationError(
-                        f"Special file (FIFO, socket, device) not permitted in distribution boundary: {sub.relative_to(repo_root)}"
-                    )
-        elif not src_path.is_file():
-            raise StandaloneClosureValidationError(
-                f"Declared distribution item must be a regular file or directory: {rel_path_str}"
-            )
-
-    if target_dir.is_symlink() or target_resolved.is_symlink():
-        raise StandaloneClosureValidationError(
-            f"Materialization target directory cannot be a symlink: {target_dir}"
-        )
-
     if target_resolved.exists():
         if not target_resolved.is_dir():
             raise StandaloneClosureValidationError(
@@ -910,58 +958,85 @@ def materialize_standalone_distribution(
     else:
         target_resolved.mkdir(parents=True, exist_ok=True)
 
-    forbidden_surfaces = set(manifest_data.get("forbidden_runtime_surfaces", []))
     copied_manifest_paths: list[str] = []
 
-    for section_name in (
-        "core_packages",
-        "package_roots",
-        "shared_primitives",
-        "required_asset_trees",
-        "install_boundary",
-        "distribution_clis",
-    ):
-        items = dist_boundary.get(section_name, [])
-        for rel_path_str in items:
+    if is_git_repo:
+        # Layer M: Extract strictly from authoritative immutable Git commit tree
+        proc_tree = subprocess.run(
+            ["git", "-C", str(repo_resolved), "ls-tree", "-r", "-z", resolved_sha],
+            capture_output=True,
+            check=False,
+        )
+        if proc_tree.returncode != 0:
+            raise StandaloneClosureValidationError(
+                f"Failed to read git commit tree at {resolved_sha} in {repo_root}: {proc_tree.stderr.decode('utf-8', errors='replace')}"
+            )
+        records = proc_tree.stdout.split(b"\0")
+        for rec in records:
+            if not rec:
+                continue
+            try:
+                meta, path_bytes = rec.split(b"\t", 1)
+                meta_str = meta.decode("utf-8")
+                mode_str, type_str, object_sha = meta_str.split()
+                path_str = path_bytes.decode("utf-8")
+            except Exception as exc:
+                raise StandaloneClosureValidationError(f"Malformed git ls-tree record: {rec!r}: {exc}")
+
+            is_declared = any(
+                paths_overlap(path_str, decl)
+                for decl in all_declared_items
+            )
+            if not is_declared:
+                continue
+
+            for fb in forbidden_surfaces:
+                if paths_overlap(path_str, fb):
+                    raise StandaloneClosureValidationError(
+                        f"Refusing to materialize forbidden surface in git tree: {path_str} overlaps {fb}"
+                    )
+
+            if mode_str == "120000":
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize symlink in git tree: {path_str}"
+                )
+            if mode_str == "160000":
+                raise StandaloneClosureValidationError(
+                    f"Refusing to materialize gitlink/submodule in git tree: {path_str}"
+                )
+            if mode_str not in ("100644", "100755"):
+                raise StandaloneClosureValidationError(
+                    f"Unsupported file mode in git tree: {mode_str} for {path_str}"
+                )
+
+            proc_cat = subprocess.run(
+                ["git", "-C", str(repo_resolved), "cat-file", "-p", object_sha],
+                capture_output=True,
+                check=False,
+            )
+            if proc_cat.returncode != 0:
+                raise StandaloneClosureValidationError(
+                    f"Failed to read blob {object_sha} for {path_str} from git object database"
+                )
+
+            dest_path = target_resolved / path_str
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(proc_cat.stdout)
+            if mode_str == "100755":
+                dest_path.chmod(0o755)
+            else:
+                dest_path.chmod(0o644)
+            copied_manifest_paths.append(path_str)
+    else:
+        # Pre-creation scan: verify all declared source items are regular files or directories without symlinks or special files (P-13)
+        for rel_path_str in all_declared_items:
             rel_path = admit_manifest_relative_path_v1(rel_path_str)
             src_path = repo_root / rel_path
-            dest_path = target_resolved / rel_path
-
-            # Guard against copying forbidden surfaces
-            for forbidden in forbidden_surfaces:
-                if paths_overlap(rel_path_str, forbidden):
-                    raise StandaloneClosureValidationError(
-                        f"Refusing to materialize forbidden surface: {rel_path_str} overlaps {forbidden}"
-                    )
-
-            # Check resolved source confinement
-            resolved_src = src_path.resolve()
-            if not (resolved_src == repo_resolved or resolved_src.is_relative_to(repo_resolved)):
+            if src_path.is_symlink():
                 raise StandaloneClosureValidationError(
-                    f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
+                    f"Refusing to materialize symlink: {rel_path_str}"
                 )
-
-            # Check destination confinement against target_resolved (supports relative and absolute target paths)
-            resolved_dest = dest_path.resolve()
-            if not (resolved_dest == target_resolved or resolved_dest.is_relative_to(target_resolved)):
-                raise StandaloneClosureValidationError(
-                    f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
-                )
-
-            # Symlinks not permitted in declared distribution members or ancestor paths (fail-closed policy)
-            curr = repo_root
-            for part in rel_path.parts:
-                curr = curr / part
-                if curr.is_symlink():
-                    raise StandaloneClosureValidationError(
-                        f"Refusing to materialize distribution member with symlink component: {curr.relative_to(repo_root).as_posix()} in {rel_path_str}"
-                    )
-
-            if src_path.is_file():
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_path, dest_path)
-                copied_manifest_paths.append(rel_path_str)
-            elif src_path.is_dir():
+            if src_path.is_dir():
                 for sub in src_path.rglob("*"):
                     if sub.is_symlink():
                         raise StandaloneClosureValidationError(
@@ -969,16 +1044,70 @@ def materialize_standalone_distribution(
                         )
                     if not (sub.is_file() or sub.is_dir()):
                         raise StandaloneClosureValidationError(
-                            f"Refusing to materialize distribution tree containing special file: {sub.relative_to(repo_root)}"
+                            f"Special file (FIFO, socket, device) not permitted in distribution boundary: {sub.relative_to(repo_root)}"
                         )
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(
-                    src_path,
-                    dest_path,
-                    dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+            elif not src_path.is_file():
+                raise StandaloneClosureValidationError(
+                    f"Declared distribution item must be a regular file or directory: {rel_path_str}"
                 )
-                copied_manifest_paths.append(rel_path_str)
+
+        for section_name in (
+            "core_packages",
+            "package_roots",
+            "shared_primitives",
+            "required_asset_trees",
+            "install_boundary",
+            "distribution_clis",
+        ):
+            items = dist_boundary.get(section_name, [])
+            for rel_path_str in items:
+                rel_path = admit_manifest_relative_path_v1(rel_path_str)
+                src_path = repo_root / rel_path
+                dest_path = target_resolved / rel_path
+
+                # Guard against copying forbidden surfaces
+                for forbidden in forbidden_surfaces:
+                    if paths_overlap(rel_path_str, forbidden):
+                        raise StandaloneClosureValidationError(
+                            f"Refusing to materialize forbidden surface: {rel_path_str} overlaps {forbidden}"
+                        )
+
+                # Check resolved source confinement
+                resolved_src = src_path.resolve()
+                if not (resolved_src == repo_resolved or resolved_src.is_relative_to(repo_resolved)):
+                    raise StandaloneClosureValidationError(
+                        f"Refusing to materialize escaping source path: {rel_path_str} -> {resolved_src}"
+                    )
+
+                # Check destination confinement against target_resolved
+                resolved_dest = dest_path.resolve()
+                if not (resolved_dest == target_resolved or resolved_dest.is_relative_to(target_resolved)):
+                    raise StandaloneClosureValidationError(
+                        f"Refusing to materialize escaping destination path: {rel_path_str} -> {resolved_dest}"
+                    )
+
+                # Symlinks not permitted in declared distribution members or ancestor paths
+                curr = repo_root
+                for part in rel_path.parts:
+                    curr = curr / part
+                    if curr.is_symlink():
+                        raise StandaloneClosureValidationError(
+                            f"Refusing to materialize distribution member with symlink component: {curr.relative_to(repo_root).as_posix()} in {rel_path_str}"
+                        )
+
+                if src_path.is_file():
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src_path, dest_path)
+                    copied_manifest_paths.append(rel_path_str)
+                elif src_path.is_dir():
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(
+                        src_path,
+                        dest_path,
+                        dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+                    )
+                    copied_manifest_paths.append(rel_path_str)
 
     # Write verifiable source identity attestation files (P-09)
     (target_resolved / ".source-commit").write_text(f"{attested_sha}\n", encoding="utf-8")
@@ -999,6 +1128,14 @@ def materialize_standalone_distribution(
                 raise StandaloneClosureValidationError(
                     f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
                 )
+
+    # Post-materialization closure verification: ensure the target itself passes validation
+    post_errors = validate_manifest(manifest_data, repo_root=target_resolved)
+    if post_errors:
+        shutil.rmtree(target_resolved, ignore_errors=True)
+        raise StandaloneClosureValidationError(
+            f"Materialized distribution failed validation:\n" + "\n".join(post_errors)
+        )
 
     return target_resolved
 

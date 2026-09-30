@@ -21,6 +21,7 @@ _VALIDATOR_PATH = REPO_ROOT / "scripts" / "verify-agent-review-standalone-closur
 _spec = importlib.util.spec_from_file_location("verify_agent_review_standalone_closure", _VALIDATOR_PATH)
 assert _spec and _spec.loader
 validator = importlib.util.module_from_spec(_spec)
+sys.modules["verify_agent_review_standalone_closure"] = validator
 _spec.loader.exec_module(validator)
 
 
@@ -1787,7 +1788,7 @@ def test_countermodel_p10_check_and_materialize_mutually_exclusive_write_zero(tm
 
 
 def test_countermodel_p11_refuse_materialize_from_dirty_boundary(tmp_path: Path) -> None:
-    """P11: Materialization refuses to attest a dirty working tree if uncommitted or untracked changes exist in declared distribution boundary."""
+    """P11 / Option B: Materialization extracts strictly from Git commit tree; working-tree mutations are irrelevant."""
     fake_repo = tmp_path / "fake_git_repo"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
     (fake_repo / ".source-commit").unlink()
@@ -1795,27 +1796,43 @@ def test_countermodel_p11_refuse_materialize_from_dirty_boundary(tmp_path: Path)
     _init_git_in_standalone(fake_repo)
 
     target_dirty = tmp_path / "target_dirty"
-    # Case A: Modify a tracked file inside declared boundary
+    # Case A: Modify a tracked file inside declared boundary in working tree
     tracked_file = fake_repo / "app" / "agent_review" / "contracts_v2.py"
     original_text = tracked_file.read_text(encoding="utf-8")
     try:
         tracked_file.write_text(original_text + "\n# dirty uncommitted modification\n", encoding="utf-8")
-        with pytest.raises(validator.StandaloneClosureValidationError) as exc_a:
-            validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dirty)
-        assert "dirty repository" in str(exc_a.value)
-        assert not target_dirty.exists()
+        dest_a = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dirty)
+        assert dest_a.exists()
+        mat_text = (dest_a / "app" / "agent_review" / "contracts_v2.py").read_text(encoding="utf-8")
+        assert mat_text == original_text, "Materialized output must reflect committed Git HEAD, not dirty working tree"
+        assert "# dirty uncommitted modification" not in mat_text
     finally:
         tracked_file.write_text(original_text, encoding="utf-8")
 
-    # Case B: Untracked file inside declared distribution directory
+    # Case A2 (Finding S2): Tracked file marked with git update-index --assume-unchanged
+    target_assume = tmp_path / "target_assume"
+    try:
+        subprocess.run(["git", "update-index", "--assume-unchanged", "app/agent_review/contracts_v2.py"], cwd=fake_repo, check=True)
+        tracked_file.write_text(original_text + "\n# assume-unchanged dirty modification\n", encoding="utf-8")
+        dest_assume = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_assume)
+        assert dest_assume.exists()
+        mat_assume_text = (dest_assume / "app" / "agent_review" / "contracts_v2.py").read_text(encoding="utf-8")
+        assert mat_assume_text == original_text
+        assert "# assume-unchanged dirty modification" not in mat_assume_text
+    finally:
+        tracked_file.write_text(original_text, encoding="utf-8")
+        subprocess.run(["git", "update-index", "--no-assume-unchanged", "app/agent_review/contracts_v2.py"], cwd=fake_repo, check=True)
+
+    # Case B: Untracked file inside declared distribution directory is ignored
     untracked_inside = fake_repo / "app" / "agent_review" / "untracked_probe.py"
     target_untracked = tmp_path / "target_untracked"
     try:
         untracked_inside.write_text("# untracked file\n", encoding="utf-8")
-        with pytest.raises(validator.StandaloneClosureValidationError) as exc_b:
-            validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_untracked)
-        assert "dirty repository" in str(exc_b.value)
-        assert not target_untracked.exists()
+        dest_b = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_untracked)
+        assert dest_b.exists()
+        assert not (dest_b / "app" / "agent_review" / "untracked_probe.py").exists(), (
+            "Untracked working tree file must not be materialized from Git commit tree"
+        )
     finally:
         if untracked_inside.exists():
             untracked_inside.unlink()
@@ -1980,7 +1997,7 @@ def test_countermodel_p14_verify_explicit_source_sha_against_source(tmp_path: Pa
 
 
 def test_countermodel_p15_refuse_materialize_when_ignored_entries_exist(tmp_path: Path) -> None:
-    """P15: Materialization refuses to attest a git checkout containing ignored entries inside declared boundary (A1)."""
+    """P15 / Option B: Git working tree ignored entries do not leak; committed symlinks in git tree fail closed."""
     fake_repo = tmp_path / "fake_git_repo_p15"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
     (fake_repo / ".source-commit").unlink()
@@ -1990,37 +2007,37 @@ def test_countermodel_p15_refuse_materialize_when_ignored_entries_exist(tmp_path
     (fake_repo / ".gitignore").write_text("*.key\n.env\n*.pem\n__pycache__/\n*.pyc\n*.pyo\n", encoding="utf-8")
     _init_git_in_standalone(fake_repo)
 
-    # 1. Ignored *.key file inside declared distribution boundary
+    # 1. Ignored *.key file inside declared distribution boundary in working tree is bypassed
     ignored_key = fake_repo / "app" / "agent_review" / "codex_ignored_probe.key"
     ignored_key.write_text("secret_key_data\n", encoding="utf-8")
 
-    target_dest = tmp_path / "target_should_not_exist_p15"
-    with pytest.raises(validator.StandaloneClosureValidationError) as exc_key:
-        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
-    assert "ignored entries detected in declared distribution boundary" in str(exc_key.value)
-    assert "codex_ignored_probe.key" in str(exc_key.value)
-    assert not target_dest.exists(), "Preview/dry-run is write-zero: destination must not exist"
-
-    ignored_key.unlink()
-
-    # 2. Ignored .env secret file
+    # 2. Ignored .env secret file in working tree is bypassed
     env_file = fake_repo / "app" / "agent_review" / ".env"
     env_file.write_text("SECRET=1\n", encoding="utf-8")
-    with pytest.raises(validator.StandaloneClosureValidationError) as exc_env:
-        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
-    assert "ignored entries detected in declared distribution boundary" in str(exc_env.value)
-    assert not target_dest.exists()
 
-    env_file.unlink()
-
-    # 3. Python bytecode in __pycache__ or *.pyc is ignored by gitignore but allowed by the filter
+    # 3. Python bytecode in __pycache__ in working tree is bypassed
     pycache_dir = fake_repo / "app" / "agent_review" / "__pycache__"
     pycache_dir.mkdir(parents=True, exist_ok=True)
     (pycache_dir / "probe.cpython-312.pyc").write_bytes(b"bytecode")
-    clean_dest = tmp_path / "target_clean_bytecode_p15"
-    res = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=clean_dest)
+
+    target_dest = tmp_path / "target_clean_p15"
+    res = validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_dest)
     assert res.exists()
-    assert not (clean_dest / "app" / "agent_review" / "__pycache__").exists()
+    assert not (target_dest / "app" / "agent_review" / "codex_ignored_probe.key").exists()
+    assert not (target_dest / "app" / "agent_review" / ".env").exists()
+    assert not (target_dest / "app" / "agent_review" / "__pycache__").exists()
+
+    # 4. Invariant: Committed symlink in git tree is rejected fail-closed
+    symlink_file = fake_repo / "app" / "agent_review" / "committed_symlink.py"
+    symlink_file.symlink_to(fake_repo / "app" / "common" / "strict_json.py")
+    subprocess.run(["git", "add", "app/agent_review/committed_symlink.py"], cwd=fake_repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "commit bad symlink"], cwd=fake_repo, check=True, capture_output=True)
+
+    target_symlink_fail = tmp_path / "target_symlink_fail"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_symlink:
+        validator.materialize_standalone_distribution(repo_root=fake_repo, target_dir=target_symlink_fail)
+    assert "Symlink found in declared distribution tree" in str(exc_symlink.value) or "Refusing to materialize symlink in git tree" in str(exc_symlink.value)
+    assert not target_symlink_fail.exists()
 
 
 def test_countermodel_p16_prefer_git_head_over_local_attestation(tmp_path: Path) -> None:
@@ -2157,6 +2174,129 @@ def test_countermodel_p18_reject_undeclared_third_party_imports(tmp_path: Path) 
     manifest_omitted["dependency_closure"]["allowed_third_party_packages"] = ["pydantic"]  # omitted pyyaml
     errs_omitted = validator.validate_manifest(manifest_omitted, repo_root=fake_source)
     assert any("Required allowed third-party package anchor(s) omitted" in e for e in errs_omitted)
+
+
+def test_finding_s1_attestation_symlink_fails_closed(tmp_path: Path) -> None:
+    """Finding S1: Attestation file as symlink is refused fail-closed."""
+    fake_source = tmp_path / "fake_source_s1"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    valid_commit = (fake_source / ".source-commit").read_text(encoding="utf-8").strip()
+
+    outside_commit = tmp_path / "outside_commit.txt"
+    outside_commit.write_text(f"{valid_commit}\n", encoding="utf-8")
+
+    # Replace .source-commit with symlink
+    (fake_source / ".source-commit").unlink()
+    (fake_source / ".source-commit").symlink_to(outside_commit)
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_commit:
+        validator.materialize_standalone_distribution(repo_root=fake_source, target_dir=tmp_path / "target_s1_a")
+    assert "Attestation file .source-commit in" in str(exc_commit.value)
+    assert "cannot be a symlink" in str(exc_commit.value)
+
+    # Replace .toolrepo-sha with symlink
+    (fake_source / ".source-commit").unlink()
+    (fake_source / ".source-commit").write_text(f"{valid_commit}\n", encoding="utf-8")
+    (fake_source / ".toolrepo-sha").unlink()
+    (fake_source / ".toolrepo-sha").symlink_to(outside_commit)
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_toolrepo:
+        validator.materialize_standalone_distribution(repo_root=fake_source, target_dir=tmp_path / "target_s1_b")
+    assert "Attestation file .toolrepo-sha in" in str(exc_toolrepo.value)
+    assert "cannot be a symlink" in str(exc_toolrepo.value)
+
+
+def test_finding_d1_exact_case_import_classification(tmp_path: Path) -> None:
+    """Finding D1: Import classification enforces exact case; case-folded variants fail closed as undeclared."""
+    fake_source = tmp_path / "fake_source_d1"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    manifest = validator.load_manifest()
+
+    cli_file = fake_source / "app" / "agent_review" / "cli.py"
+    orig_cli = cli_file.read_text(encoding="utf-8")
+    try:
+        # Case folded allowed third-party import: 'import YAML' must fail closed
+        cli_file.write_text("import YAML\n" + orig_cli, encoding="utf-8")
+        errs_yaml = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Undeclared external package 'YAML'" in e for e in errs_yaml), (
+            f"Expected undeclared error for 'YAML', got: {errs_yaml}"
+        )
+
+        # Case folded stdlib import: 'import JSON' must fail closed
+        cli_file.write_text("import JSON\n" + orig_cli, encoding="utf-8")
+        errs_json = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Undeclared external package 'JSON'" in e for e in errs_json), (
+            f"Expected undeclared error for 'JSON', got: {errs_json}"
+        )
+
+        # Case folded forbidden runtime import: 'import FastAPI' must fail closed as undeclared
+        cli_file.write_text("import FastAPI\n" + orig_cli, encoding="utf-8")
+        errs_fastapi = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert any("Undeclared external package 'FastAPI'" in e for e in errs_fastapi), (
+            f"Expected undeclared error for 'FastAPI', got: {errs_fastapi}"
+        )
+
+        # Exact case allowed: 'import yaml' passes
+        cli_file.write_text("import yaml\n" + orig_cli, encoding="utf-8")
+        errs_exact_yaml = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert not any("yaml" in e for e in errs_exact_yaml)
+
+        # Exact case stdlib: 'import json' passes
+        cli_file.write_text("import json\n" + orig_cli, encoding="utf-8")
+        errs_exact_json = validator.validate_manifest(manifest, repo_root=fake_source)
+        assert not any("json" in e for e in errs_exact_json)
+    finally:
+        cli_file.write_text(orig_cli, encoding="utf-8")
+
+
+def test_finding_d2_allowed_forbidden_overlap_fails_closed() -> None:
+    """Finding D2: Any overlap between allowed and forbidden packages fails closed."""
+    manifest = validator.load_manifest()
+
+    # Case A: Inject forbidden package into allowed_third_party_packages
+    mutated_a = copy.deepcopy(manifest)
+    mutated_a["dependency_closure"]["allowed_third_party_packages"].append("fastapi")
+    errs_a = validator.validate_manifest(mutated_a, repo_root=REPO_ROOT)
+    assert any("Allowed third-party packages overlap forbidden runtime packages" in e for e in errs_a)
+    assert any("fastapi" in e for e in errs_a)
+
+    # Case B: Inject allowed package into forbidden_runtime_packages
+    mutated_b = copy.deepcopy(manifest)
+    mutated_b["dependency_closure"]["forbidden_runtime_packages"].append("pydantic")
+    errs_b = validator.validate_manifest(mutated_b, repo_root=REPO_ROOT)
+    assert any("Allowed third-party packages overlap forbidden runtime packages" in e for e in errs_b)
+    assert any("pydantic" in e for e in errs_b)
+
+
+def test_finding_s3_parent_git_repo_capture_refused(tmp_path: Path) -> None:
+    """Finding S3: Standalone directory nested inside a parent Git repository refuses parent Git authority."""
+    parent_repo = tmp_path / "parent_git_repo"
+    parent_repo.mkdir()
+    (parent_repo / "README.md").write_text("# parent repo\n", encoding="utf-8")
+    _init_git_in_standalone(parent_repo)
+
+    nested_standalone = parent_repo / "nested_standalone"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=nested_standalone)
+    valid_commit = (nested_standalone / ".source-commit").read_text(encoding="utf-8").strip()
+
+    # The nested directory is NOT a git repo itself; its git top level would be parent_repo
+    # Materializer must refuse to treat it as a git repo, requiring valid standalone attestation
+    target_dest = tmp_path / "target_nested_s3"
+    dest = validator.materialize_standalone_distribution(repo_root=nested_standalone, target_dir=target_dest)
+    assert dest.exists()
+    assert (dest / ".source-commit").read_text(encoding="utf-8").strip() == valid_commit
+
+
+def test_finding_d3_allowed_package_absent_lock_fails_closed(tmp_path: Path) -> None:
+    """Finding D3: Allowed package declared in manifest but absent from lockfile fails closed."""
+    manifest = validator.load_manifest()
+
+    # Mutate manifest to declare extra third-party package not in lockfile
+    mutated = copy.deepcopy(manifest)
+    mutated["dependency_closure"]["allowed_third_party_packages"].append("requests")
+    errs = validator.validate_manifest(mutated, repo_root=REPO_ROOT)
+    assert any("Allowed package(s) declared in manifest but absent from requirements-agent-review.lock" in e for e in errs)
+    assert any("requests" in e for e in errs)
 
 
 

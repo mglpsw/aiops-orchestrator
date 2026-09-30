@@ -34,13 +34,17 @@ A verificação do B0 não tenta construir um resolvedor estático universal nem
                                      |
                                      v
 +-------------------------------------------------------------------------+
-| Layer M: Safe Materializer                                              |
-|   - Validação da Layer S antes de qualquer escrita                      |
+| Layer M: Safe Materializer (Immutable Git Tree Authority)               |
+|   - Autoridade mandatória do Git commit tree em checkout Git (Option B) |
+|   - Extração bit-a-bit de blobs via git ls-tree e git cat-file          |
+|   - Imunidade a mutações de working tree (dirty, assume-unchanged, fifos)|
+|   - Leitura segura de filesystem com atestação em diretório standalone  |
+|   - Validação da Layer S antes e depois da escrita                      |
 |   - Disjunção estrita entre origem e destino antes da criação (U-04)   |
 |   - Destino limpo: ausente ou vazio na identidade resolvida (T-05, L-01)|
 |   - Confinamento da escrita estritamente a target_resolved (R-02)       |
 |   - Proibição estrita de destinos symlink (R-02)                        |
-|   - Cópia estrita dos membros declarados e fechamento de saída          |
+|   - Fechamento estrito de saída e atestação (.source-commit/.toolrepo-sha) |
 +------------------------------------+------------------------------------+
                                      |
                                      v
@@ -130,10 +134,13 @@ Nenhum arquivo ou diretório declarado na distribuição pode ser um link simbó
 
 O validador [`scripts/verify-agent-review-standalone-closure.py`](../scripts/verify-agent-review-standalone-closure.py) implementa as camadas estática e de materialização (Layers S e M):
 
-1. **Validação de Schema e Âncoras (Layer S):** Valida `manifest_version`, seções obrigatórias e âncoras positivas/negativas (`REQUIRED_BOUNDARY_ANCHORS_V1` e `REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1`).
-2. **Verificação de Caminhos e Symlinks (Layer S):** Assegura que todos os caminhos sejam canônicos, existam em disco, permaneçam confinados ao repositório e não contenham symlinks.
-3. **Inspeção de AST (Layer S):** Analisa recursivamente todas as árvores de código Python da distribuição declarada e garante que nenhum import direto de módulo ou pacote proibido exista.
-4. **Materialização Segura (Layer M):** A função `materialize_standalone_distribution(repo_root, target_dir)` valida o manifesto, verifica disjunção de origem/destino, assegura que o destino seja diretório vazio ou ausente na sua identidade canônica resolvida (`target_resolved`, nunca symlink), confina a criação e escrita estritamente a `target_resolved` (impedindo que caminhos não-canônicos com segmentos intermediários não-criados contornem checagens de limpeza), preserva a atestação imutável de identidade de fonte (`.source-commit` e `.toolrepo-sha`) para consumo pelo instalador, verifica o fechamento de saída e garante preservação estrita de write-zero quando acionado com `--check`.
+1. **Validação de Schema e Projeção Canônica (Layer S):** Valida `CanonicalStandaloneContractV1` como autoridade única de código, exigindo que o manifesto JSON seja uma projeção exata (`authority_effect: "projection_only"`), com âncoras positivas/negativas estritas e paridade entre `allowed_third_party_packages` e `requirements-agent-review.lock`.
+2. **Classificação Exata de Imports AST (Layer S):** Classificação case-sensitive (sem `pkg.lower()`) contra biblioteca padrão CPython 3.11 e import roots permitidos; variantes com capitalização incorreta (`YAML`, `JSON`, `FastAPI`) falham closed como pacotes não declarados.
+3. **Verificação de Caminhos e Symlinks (Layer S):** Assegura que todos os caminhos sejam canônicos, existam em disco, permaneçam confinados ao repositório e não contenham symlinks.
+4. **Materialização Imutável a Partir do Git Commit Tree (Layer M / Option B):**
+   - Em repositório Git (`git rev-parse --show-toplevel == repo_root.resolve()`): a materialização extrai arquivos estritamente a partir dos blobs do commit Git (`git ls-tree -r -z` e `git cat-file -p`), tornando mutações de working tree (`--assume-unchanged`, uncommitted changes, untracked files, ignored files, FIFOs) 100% irrelevantes. Symlinks e gitlinks no commit tree são rejeitados fail-closed.
+   - Em diretório standalone (sem Git): leitura física de arquivos com atestação imutável (`.source-commit`/`.toolrepo-sha`) e rejeição de links simbólicos ou arquivos especiais.
+   - Pós-validação: a própria árvore materializada é validada pela Layer S antes do retorno ao chamador.
 
 Execução da verificação:
 
@@ -206,16 +213,22 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **P-08** | Correspondência exata da raiz de importação de pacotes internos (`app` e `scripts`) | O parser AST verifica a correspondência exata do componente raiz (`root_pkg == "app"` ou `root_pkg == "scripts"`), impedindo que pacotes externos legítimos cujos nomes apenas começam com `app` (ex.: `appdirs`, `application`) sejam erroneamente classificados como módulos internos de `app` e rejeitados. |
 | **P-09** | Preservação de atestação de identidade de fonte imutável na materialização (`.source-commit` e `.toolrepo-sha`) | A materialização grava arquivos de atestação imutáveis com o SHA exato de 40 dígitos hexadecimais da fonte, permitindo que consumidores e instaladores (`install-agent-review-toolrepo.sh`) validem o pino `--toolrepo-sha` na ausência de metadados Git do repositório original. |
 | **P-10** | Exclusão mútua mandatória entre `--check` e `--materialize-to` (preservação estrita de write-zero) | O CLI rejeita a combinação concorrente de `--check` e `--materialize-to`, garantindo fail-closed (código de saída 2) e assegurando que invocações de validação ou dry-run permaneçam estritamente write-zero (0 arquivos gravados no destino). |
-| **P-11** | Recusa de materialização a partir de working tree suja (`git status --porcelain`) | Quando o repositório fonte contém arquivos modificados ou não rastreados dentro da fronteira declarada de distribuição, a materialização recusa fail-closed antes da criação do destino, impedindo atestar um commit para bytes modificados em disco. |
+| **P-11** | Imunidade a mutações de working tree no modo Git (`WorkingTree != Authority`) | A materialização extrai arquivos estritamente dos blobs do Git commit tree em HEAD, garantindo que arquivos modificados em disco (`uncommitted` ou marcados com `assume-unchanged`) e arquivos não rastreados não contaminem a distribuição nem alterem os bytes materializados. |
 | **P-12** | Operabilidade nativa das CLIs de target-pack (`init` e `doctor`) em árvore standalone sem Git | Leitor de materiais com suporte a atestação (`.source-commit`/`.toolrepo-sha`) carrega templates e schemas diretamente de diretórios materializados, viabilizando execução integral do CLI sem necessidade de repositório Git sintético. |
 | **P-13** | Rejeição de arquivos especiais (FIFO, socket, device) dentro das árvores declaradas | A validação (`--check`) e a materialização realizam varredura pre-creation em todos os membros e descendentes declarados, rejeitando fail-closed qualquer arquivo não-regular (FIFO, socket, device) antes de criar diretório de destino (write-zero). |
 | **P-14** | Validação estrita de `--source-sha` contra a identidade independente da fonte | Sobrecarga explícita `--source-sha` exige correspondência exata contra a identidade resolvida independentemente (Git HEAD ou atestação prévia) e recusa valores all-zero (`0`*40) ou SHAs arbitrários, impedindo fabricação de prova. |
-| **P-15** | Rejeição de arquivos ignorados pelo Git antes da materialização (`--others --ignored`) | A materialização valida a ausência de arquivos ignorados pelo Git (ex.: `*.key`, `.env`, `*.pem`) nas árvores declaradas antes de criar o diretório de destino (write-zero), filtrando exclusivamente bytecode Python (`__pycache__`/`*.pyc`). |
+| **P-15** | Ignorados pelo Git em working tree são irrelevantes; symlinks commitados em Git falham closed | Arquivos ignorados pelo Git (ex.: `*.key`, `.env`) na working tree não são lidos porque a materialização lê o Git commit tree; symlinks commitados no Git tree (modo 120000) causam recusa fail-closed imediata. |
 | **P-16** | Precedência mandatória do Git HEAD sobre arquivos de atestação locais | Em checkout Git, `git rev-parse HEAD` é a autoridade única e mandatória de identidade; arquivos `.source-commit` e `.toolrepo-sha` divergentes causam recusa fail-closed; atestações locais são autoridade apenas na ausência de repositório Git e exigem paridade recíproca. |
 | **P-17** | Rejeição de arquivos especiais (FIFO) antes do parse AST com tempo delimitado | Arquivos especiais (como FIFOs) com terminação `.py` são rejeitados na admissão física preliminar e excluídos da auditoria AST, impedindo que chamadas `open()` travem a execução indefinidamente. |
 | **P-18** | Fechamento positivo de dependências externas contra pacotes permitidos e stdlib | A validação estática projeta `allowed_third_party_packages` para import roots conhecidos e audita todas as dependências externas contra a biblioteca padrão e os pacotes permitidos, rejeitando fail-closed qualquer pacote externo não declarado. |
 | **P-19** | Varredura recursiva de árvores de schemas com paridade Git vs Standalone | A enumeração de schemas opera recursivamente (`rglob("*.schema.json")` / `git ls-tree -r`) com ordenação determinística e chaves relativas, garantindo digests idênticos sob consumo Git e distribuição standalone para schemas em qualquer profundidade. |
 | **P-20** | Confinamento estrito de templates e schemas standalone à raiz do toolrepo | Leituras de templates e enumeração de schemas na distribuição standalone utilizam a autoridade `validate_external_input_file_v2`, recusando fail-closed symlinks que escapem da raiz do toolrepo (`EXTERNAL_PATH_ESCAPES_ROOT_REASON_V2`). |
+| **S-01** | Rejeição estrita de symlinks em atestações de identidade | Arquivos de atestação (`.source-commit` e `.toolrepo-sha`) que sejam links simbólicos causam recusa fail-closed (`cannot be a symlink`), impedindo falsificação de identidade por escape de arquivo. |
+| **S-02** | Imunidade contra escape por `assume-unchanged` | Bytes modificados em working tree marcados com `git update-index --assume-unchanged` não entram na distribuição materializada pois os bytes são lidos diretamente do banco de objetos do Git (`git cat-file -p <blob_sha>`). |
+| **S-03** | Recusa de captura por repositório Git pai | Diretórios standalone aninhados dentro de um checkout Git pai verificam `git rev-parse --show-toplevel == repo_root.resolve()`; a autoridade do pai é recusada e a atestação standalone local é exigida. |
+| **D-01** | Classificação de imports AST sensível a maiúsculas/minúsculas (exact-case) | A validação de imports não utiliza case folding (`pkg.lower()`); identificadores como `YAML`, `JSON` ou `FastAPI` falham closed como pacotes não declarados, refletindo fielmente a semântica do Linux e do interpretador Python. |
+| **D-02** | Disjunção estrita entre pacotes permitidos e proibidos | Qualquer sobreposição entre `allowed_third_party_packages` e `forbidden_runtime_packages` (ou seus import roots correspondentes) invalida o manifesto fail-closed. |
+| **D-03** | Paridade mandatória entre dependências permitidas e o lockfile | O conjunto de pacotes em `allowed_third_party_packages` deve corresponder exatamente às distribuições declaradas em `requirements-agent-review.lock`; pacotes adicionais ou faltantes invalidam o manifesto. |
 
 ---
 

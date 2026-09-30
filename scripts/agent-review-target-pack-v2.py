@@ -112,13 +112,13 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
     is_git_repo = False
     git_head_sha: str | None = None
     try:
-        proc_inside = subprocess.run(
-            ["git", "-C", str(toolrepo_root), "rev-parse", "--is-inside-work-tree"],
+        proc_top = subprocess.run(
+            ["git", "-C", str(toolrepo_root), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
             check=False,
         )
-        if proc_inside.returncode == 0 and proc_inside.stdout.strip() == "true":
+        if proc_top.returncode == 0 and Path(proc_top.stdout.strip()).resolve() == toolrepo_root.resolve():
             proc_head = subprocess.run(
                 ["git", "-C", str(toolrepo_root), "rev-parse", "HEAD"],
                 capture_output=True,
@@ -136,6 +136,8 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
     toolrepo_file_sha: str | None = None
     for fname in (".source-commit", ".toolrepo-sha"):
         target_path = toolrepo_root / fname
+        if target_path.is_symlink():
+            raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
         try:
             capability = validate_external_input_file_v2(target_path, root=toolrepo_root)
             content = capability.read_text(encoding="utf-8").strip().lower()

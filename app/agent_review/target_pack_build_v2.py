@@ -43,6 +43,7 @@ from pathlib import Path
 
 from app.agent_review.external_path_ingress_v2 import (
     ExternalPathIngressError,
+    validate_external_input_directory_v2,
     validate_external_input_file_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import (
@@ -119,6 +120,17 @@ def _require_valid_toolrepo_sha_v2(toolrepo_sha: str) -> None:
 
 def _is_git_tree_accessible_v2(*, toolrepo_root: Path, toolrepo_sha: str) -> bool:
     try:
+        proc_top = subprocess.run(
+            ["git", "-C", str(toolrepo_root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc_top.returncode != 0:
+            return False
+        if Path(proc_top.stdout.strip()).resolve() != toolrepo_root.resolve():
+            return False
+
         proc = subprocess.run(
             ["git", "-C", str(toolrepo_root), "rev-parse", "--verify", f"{toolrepo_sha}^{{commit}}"],
             capture_output=True,
@@ -136,6 +148,9 @@ def _resolve_attested_toolrepo_sha(toolrepo_root: Path) -> str | None:
 
     for fname in (".source-commit", ".toolrepo-sha"):
         target_path = toolrepo_root / fname
+        if target_path.is_symlink():
+            # Refuse symlinked attestation files fail-closed
+            return None
         try:
             capability = validate_external_input_file_v2(target_path, root=toolrepo_root)
             content = capability.read_text(encoding="utf-8").strip().lower()
@@ -258,21 +273,23 @@ def build_target_pack_manifest_v2(
             )
 
         schema_root = toolrepo_root / _SCHEMA_TREE_PATH_V2
-        if not schema_root.is_dir():
-            raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
-
-        schema_files = sorted(schema_root.rglob("*.schema.json"))
-        if not schema_files:
+        try:
+            schema_dir_cap = validate_external_input_directory_v2(schema_root, root=toolrepo_root)
+            schema_files = schema_dir_cap.iter_input_files_recursive()
+        except ExternalPathIngressError:
             raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
 
         schema_digests = {}
-        for p in schema_files:
-            rel_key = p.relative_to(schema_root).as_posix()
-            try:
-                capability = validate_external_input_file_v2(p, root=toolrepo_root)
-                schema_digests[rel_key] = _sha256_hex(capability.read_bytes())
-            except ExternalPathIngressError:
-                raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
+        for entry in sorted(schema_files, key=lambda item: item.entry_name):
+            if entry.entry_name.endswith(".schema.json"):
+                rel_key = entry.entry_name
+                try:
+                    schema_digests[rel_key] = _sha256_hex(entry.read_bytes())
+                except ExternalPathIngressError:
+                    raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
+
+        if not schema_digests:
+            raise TargetPackBuildError(BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2)
 
     return TargetPackManifestV2(
         schema_id="agent-review.target-pack-manifest.v2",

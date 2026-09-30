@@ -212,6 +212,33 @@ class ExternalInputDirectoryV2:
                 files.append(ExternalInputFileV2(entry_resolved, self._root, entry.name))
         return tuple(sorted(files, key=lambda item: item.entry_name))
 
+    def iter_input_files_recursive(self) -> tuple[ExternalInputFileV2, ...]:
+        resolved = _resolve_v2(self._resolved_path)
+        _enforce_containment_v2(resolved, root=self._root)
+
+        files: list[ExternalInputFileV2] = []
+        stack = [resolved]
+        while stack:
+            curr = stack.pop()
+            try:
+                entries = tuple(curr.iterdir())
+            except FileNotFoundError as exc:
+                raise ExternalPathIngressError(EXTERNAL_PATH_MISSING_REASON_V2) from exc
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ExternalPathIngressError(EXTERNAL_DIRECTORY_UNREADABLE_REASON_V2) from exc
+
+            for entry in entries:
+                entry_resolved = _resolve_v2(entry)
+                _enforce_containment_v2(entry_resolved, root=self._root)
+                mode = _stat_v2(entry_resolved).st_mode
+                if stat.S_ISDIR(mode):
+                    if not entry.is_symlink():
+                        stack.append(entry_resolved)
+                elif stat.S_ISREG(mode):
+                    rel_name = entry_resolved.relative_to(resolved).as_posix()
+                    files.append(ExternalInputFileV2(entry_resolved, self._root, rel_name))
+        return tuple(sorted(files, key=lambda item: item.entry_name))
+
 
 @dataclass(frozen=True)
 class ExternalOutputPathV2:

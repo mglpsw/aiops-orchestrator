@@ -248,6 +248,19 @@ def test_output_parent_outside_root_is_refused(tmp_path: Path) -> None:
     assert _reason(excinfo) == EXTERNAL_PATH_ESCAPES_ROOT_REASON_V2
 
 
+def test_input_directory_enumerates_recursive_files(tmp_path: Path) -> None:
+    root = tmp_path / "schemas"
+    root.mkdir()
+    (root / "root.json").write_text("root", encoding="utf-8")
+    nested = root / "nested" / "sub"
+    nested.mkdir(parents=True)
+    (nested / "nested.json").write_text("nested", encoding="utf-8")
+    capability = validate_external_input_directory_v2(root, root=tmp_path)
+    entries = capability.iter_input_files_recursive()
+    assert [entry.entry_name for entry in entries] == ["nested/sub/nested.json", "root.json"]
+    assert [entry.read_text() for entry in entries] == ["nested", "root"]
+
+
 def test_no_broad_exception_handler_in_authority() -> None:
     source = Path("app/agent_review/external_path_ingress_v2.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
