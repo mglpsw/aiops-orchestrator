@@ -36,8 +36,21 @@ ROOT = Path(__file__).resolve().parents[3]
 MATRIX = ROOT / "campaign" / "agent-review-v1-freeze" / "02_OBLIGATION_MATRIX.json"
 
 
-def _load_scope() -> tuple[list[str], list[str]]:
-    gate = json.loads(MATRIX.read_text(encoding="utf-8"))["slice_gates"]["v1_v2_isolation"]["positive_write_scope"]
+MATRIX_REL = "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json"
+SELF_REL = "campaign/agent-review-v1-freeze/evidence/v1_scope_check.py"
+
+
+def _load_scope(revision: str | None = None) -> tuple[list[str], list[str]]:
+    """Load v1_path_set. With --diff, it is read from the immutable BASE revision so a
+    slice cannot widen its own scope in the same change it is checked against."""
+    if revision:
+        shown = subprocess.run(["git", "show", f"{revision}:{MATRIX_REL}"], cwd=ROOT, capture_output=True, text=True)
+        if shown.returncode != 0:
+            raise SystemExit(f"v1_scope_check: no isolation policy at base {revision} (only the contract slice that introduces it may lack one)")
+        raw = shown.stdout
+    else:
+        raw = MATRIX.read_text(encoding="utf-8")
+    gate = json.loads(raw)["slice_gates"]["v1_v2_isolation"]["positive_write_scope"]
     path_set = gate["v1_path_set"]
     return path_set["v1_exclusive"], path_set["shared_v1_owned"]
 
@@ -74,6 +87,9 @@ def check_reach(v1_exclusive: list[str], shared_paths: list[str]) -> list[str]:
             for name, entry in names.items():
                 if name in text:
                     findings.append(f"note: {rel} names v1_exclusive {entry} (non-Python; adjudicate)")
+            for stem, entry in modules.items():
+                if re.search(rf"app\.agent_review\.{stem}\b", text):
+                    findings.append(f"note: {rel} names module of v1_exclusive {entry} (e.g. python -m / -c; adjudicate)")
             continue
         try:
             tree = ast.parse(text)
@@ -109,7 +125,10 @@ def _admissible_new_file(path: str) -> bool:
     name = Path(path).name
     if name in {"conftest.py", "__init__.py"} or "/fixtures/" in f"/{path}":
         return False
-    return fnmatch.fnmatch(path, "tests/agent_review/test_*.py") or path.startswith("campaign/agent-review-v1-freeze/")
+    pure = Path(path)
+    if pure.parent.as_posix() == "tests/agent_review":
+        return fnmatch.fnmatch(pure.name, "test_*.py")
+    return path.startswith("campaign/agent-review-v1-freeze/")
 
 
 def check_diff(spec: str, v1_exclusive: list[str], shared: list[str]) -> list[str]:
@@ -129,6 +148,10 @@ def check_diff(spec: str, v1_exclusive: list[str], shared: list[str]) -> list[st
             if status.startswith("A") and _admissible_new_file(path):
                 continue
             findings.append(f"diff: {status} {path} is outside v1_path_set")
+    for row in rows:
+        for path in row.split("\t")[1:]:
+            if path in {MATRIX_REL, SELF_REL}:
+                findings.append(f"diff: {path} changed; the isolation policy/checker may change only in a dedicated contract slice (owner decision), never in a behavioral slice")
     return findings
 
 
@@ -139,7 +162,8 @@ def main() -> int:
     v1_exclusive, shared = _load_scope()
     findings = check_reach(v1_exclusive, shared)
     if args.diff:
-        findings += check_diff(args.diff, v1_exclusive, shared)
+        base_exclusive, base_shared = _load_scope(args.diff.split("..", 1)[0])
+        findings += check_diff(args.diff, base_exclusive, base_shared)
     blocking = [item for item in findings if not item.startswith("note:")]
     for item in findings:
         print(item)
