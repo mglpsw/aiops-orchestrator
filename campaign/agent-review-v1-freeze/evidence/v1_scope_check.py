@@ -2,9 +2,13 @@
 
 Read-only. Two checks, run on a slice's live base/head:
 
-1. reach: no v2 file imports, loads by path, or names any `v1_exclusive` entry of
-   v1_path_set. A hit means that entry is really shared and must be reclassified
-   (in 02) before the slice patches it.
+1. reach (ADVISORY): scans every tracked .py/.sh/.yml file OUTSIDE v1_path_set.
+   Blocking = a static import (absolute, relative, or bare `from . import x`) of a
+   `v1_exclusive` module. Notes = non-docstring string constants naming a v1_exclusive
+   file or its `app.agent_review.<stem>` module path (possible load-by-path, dynamic
+   import or subprocess); every note must be adjudicated in the slice PR. It cannot
+   detect computed/dynamic imports or subprocess targets built at runtime: it is a
+   review aid, not a proof of isolation.
 2. diff (with --diff BASE..HEAD): every changed path is in v1_path_set, or is a new
    `tests/agent_review/test_*.py` / `campaign/agent-review-v1-freeze/**` file.
    `conftest.py`, `__init__.py` and anything under a `fixtures/` directory are never
@@ -27,9 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path.cwd()
+ROOT = Path(__file__).resolve().parents[3]
 MATRIX = ROOT / "campaign" / "agent-review-v1-freeze" / "02_OBLIGATION_MATRIX.json"
-V2_IMPORT = re.compile(r"(?:from|import)\s+(?:app\.agent_review\.\w+_v2\b|app\.agent_review\s+import\s+[^\n]*\b\w+_v2\b|evals\.agent_review_v2)")
 
 
 def _load_scope() -> tuple[list[str], list[str]]:
@@ -37,9 +40,6 @@ def _load_scope() -> tuple[list[str], list[str]]:
     path_set = gate["v1_path_set"]
     return path_set["v1_exclusive"], path_set["shared_v1_owned"]
 
-
-def _is_v2_file(rel: str, text: str) -> bool:
-    return "v2" in Path(rel).name or "/v2/" in f"/{rel}" or "agent_review_v2" in rel or bool(V2_IMPORT.search(text))
 
 
 def _docstring_ids(tree: ast.AST) -> set[int]:
@@ -52,7 +52,7 @@ def _docstring_ids(tree: ast.AST) -> set[int]:
     return ids
 
 
-def check_reach(v1_exclusive: list[str]) -> list[str]:
+def check_reach(v1_exclusive: list[str], shared_paths: list[str]) -> list[str]:
     """Blocking: a v2 file IMPORTS a v1_exclusive module. Note (must be adjudicated in
     the PR): a v2 file holds a non-docstring string constant naming a v1_exclusive file
     (possible load-by-path or subprocess), or a v2 YAML/shell file names one."""
@@ -60,13 +60,12 @@ def check_reach(v1_exclusive: list[str]) -> list[str]:
     modules = {Path(e).stem: e for e in concrete if e.startswith("app/agent_review/") and e.endswith(".py")}
     names = {Path(e).name: e for e in concrete}
     findings: list[str] = []
+    in_scope = set(concrete) | set(shared_paths)
     tracked = subprocess.run(["git", "ls-files", "*.py", "*.sh", "*.yml", "*.yaml"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.split()
     for rel in tracked:
-        if rel in concrete or rel.startswith("campaign/"):
+        if rel in in_scope or rel.startswith("campaign/"):
             continue
         text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
-        if not _is_v2_file(rel, text):
-            continue
         if not rel.endswith(".py"):
             for name, entry in names.items():
                 if name in text:
@@ -79,10 +78,11 @@ def check_reach(v1_exclusive: list[str]) -> list[str]:
             continue
         docstrings = _docstring_ids(tree)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module:
-                targets = [node.module] + [f"{node.module}.{alias.name}" for alias in node.names]
+            if isinstance(node, ast.ImportFrom):
+                base = node.module or ""
                 if node.level:
-                    targets = [f"app.agent_review.{node.module}"] + [f"app.agent_review.{node.module}.{a.name}" for a in node.names]
+                    base = f"app.agent_review.{base}" if base else "app.agent_review"
+                targets = [base] + [f"{base}.{alias.name}" for alias in node.names]
             elif isinstance(node, ast.Import):
                 targets = [alias.name for alias in node.names]
             else:
@@ -95,6 +95,9 @@ def check_reach(v1_exclusive: list[str]) -> list[str]:
                 for name, entry in names.items():
                     if name in node.value:
                         findings.append(f"note: {rel}:{node.lineno} string constant names v1_exclusive {entry} (possible path load; adjudicate)")
+                for stem, entry in modules.items():
+                    if f"app.agent_review.{stem}" in node.value:
+                        findings.append(f"note: {rel}:{node.lineno} string constant names module of v1_exclusive {entry} (possible dynamic import; adjudicate)")
     return findings
 
 
@@ -130,7 +133,7 @@ def main() -> int:
     parser.add_argument("--diff")
     args = parser.parse_args()
     v1_exclusive, shared = _load_scope()
-    findings = check_reach(v1_exclusive)
+    findings = check_reach(v1_exclusive, shared)
     if args.diff:
         findings += check_diff(args.diff, v1_exclusive, shared)
     blocking = [item for item in findings if not item.startswith("note:")]
