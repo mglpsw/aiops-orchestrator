@@ -62,15 +62,40 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     exit 2
 fi
 
-INTERP_INFO="$("$PYTHON_BIN" -I -S -c '
+PLATFORM_STATUS="$("$PYTHON_BIN" -I -S -c '
 import sys, platform
 impl = platform.python_implementation()
 ver = f"{sys.version_info.major}.{sys.version_info.minor}"
-print(f"{impl} {ver}")
-' 2>/dev/null || echo "UNKNOWN")"
+os_name = platform.system()
+mach = platform.machine()
+libc_name, libc_ver = platform.libc_ver()
 
-if [ "$INTERP_INFO" != "CPython 3.11" ]; then
-    echo "Blocked: requirements-agent-review.lock is qualified for CPython 3.11; selected interpreter is $INTERP_INFO." >&2
+errors = []
+if impl != "CPython" or ver != "3.11":
+    errors.append(f"interpreter {impl} {ver} (required: CPython 3.11)")
+if os_name != "Linux":
+    errors.append(f"OS {os_name} (required: Linux)")
+if mach not in ("x86_64", "AMD64"):
+    errors.append(f"architecture {mach} (required: x86_64)")
+libc_desc = libc_name if libc_name else "non-glibc/musl"
+if libc_name.lower() != "glibc":
+    errors.append(f"libc {libc_desc} (required: glibc >= 2.17)")
+else:
+    try:
+        parts = [int(p) for p in libc_ver.split(".")[:2]]
+        if len(parts) < 2 or tuple(parts) < (2, 17):
+            errors.append(f"glibc {libc_ver} (required: glibc >= 2.17)")
+    except Exception:
+        errors.append(f"unparseable glibc version {libc_ver!r} (required: glibc >= 2.17)")
+
+if errors:
+    print("INCOMPATIBLE: " + "; ".join(errors))
+else:
+    print("OK")
+' 2>/dev/null || echo "PROBE_FAILED")"
+
+if [ "$PLATFORM_STATUS" != "OK" ]; then
+    echo "Blocked: requirements-agent-review.lock is qualified for CPython 3.11 on Linux x86_64 (glibc >= 2.17); platform incompatibility detected: $PLATFORM_STATUS." >&2
     exit 2
 fi
 
@@ -101,13 +126,13 @@ if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
     exit 2
 fi
 
-"$PYTHON_BIN" -m venv "$VENV_TARGET"
+"$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step
 # would fetch whatever pip version happens to be latest at install time,
 # an unpinned, unverified download that undermines reproducibility between
 # two installs of the same lock file. The venv's own bundled pip (from
 # Python's ensurepip) already supports --require-hashes.
-"$VENV_TARGET/bin/python3" -m pip install --require-hashes --no-deps -r "$LOCK_FILE"
+"$VENV_TARGET/bin/python3" -I -m pip install --require-hashes --no-deps -r "$LOCK_FILE"
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"

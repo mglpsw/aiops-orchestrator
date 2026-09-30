@@ -22,11 +22,11 @@ publish only artifacts allowlisted by the target's own workflow
 A branch name, tag, or abbreviated SHA is never an acceptable pin for the
 `aiops-orchestrator` checkout consumed by a target workflow.
 
-## Interpreter contract
+## Interpreter and Platform contract
 
-Canonical toolrepo interpreter: **CPython 3.11**
+Canonical toolrepo target platform: **CPython 3.11 on Linux x86_64 (glibc >= 2.17 / manylinux2014)**
 
-`requirements-agent-review.lock` is platform/interpreter specific; the installer refuses an incompatible Python before installation.
+`requirements-agent-review.lock` is platform/interpreter specific; binary wheels (`pydantic-core`, `PyYAML`) are compiled for `manylinux2014_x86_64`. The installer validates the complete platform specification (CPython, 3.11, Linux, x86_64, glibc >= 2.17) in an isolated probe before venv creation, refusing incompatible environments (e.g. Python 3.12, ARM64, musl, macOS) fail-closed.
 
 ## Install script
 
@@ -50,11 +50,11 @@ The script:
 2. verifies that SHA against `git rev-parse HEAD` of the current checkout,
    rejecting a mismatch;
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
-   is CPython 3.11 via an isolated/no-site probe (`-I -S`), refusing incompatible interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
+   matches CPython 3.11 on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. normalizes the prospective `<venv-dir>` path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
-5. creates a fresh venv at the verified, canonical prospective path using the verified CPython 3.11 interpreter;
-6. installs `requirements-agent-review.lock` with
-   `pip install --require-hashes --no-deps`.
+5. creates a fresh venv at the verified, canonical prospective path using isolated venv execution (`$PYTHON_BIN -I -S -m venv`), completely isolated from ambient `PYTHONPATH`;
+6. installs `requirements-agent-review.lock` using isolated pip execution
+   (`$VENV_TARGET/bin/python3 -I -m pip install --require-hashes --no-deps -r "$LOCK_FILE"`), preventing ambient `PYTHONPATH` from shadowing pip or injecting unverified packages.
 
 `--toolrepo-sha` is optional for local iteration but should always be
 supplied by an automated privileged workflow, so the install step itself

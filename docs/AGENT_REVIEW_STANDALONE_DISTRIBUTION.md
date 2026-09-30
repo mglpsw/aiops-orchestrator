@@ -37,8 +37,9 @@ A verificação do B0 não tenta construir um resolvedor estático universal nem
 | Layer M: Safe Materializer                                              |
 |   - Validação da Layer S antes de qualquer escrita                      |
 |   - Disjunção estrita entre origem e destino antes da criação (U-04)   |
-|   - Destino limpo: ausente ou vazio, nunca symlink (T-05, R-02)         |
-|   - Confinamento do destino relativo ou absoluto a target_resolved      |
+|   - Destino limpo: ausente ou vazio na identidade resolvida (T-05, L-01)|
+|   - Confinamento da escrita estritamente a target_resolved (R-02)       |
+|   - Proibição estrita de destinos symlink (R-02)                        |
 |   - Cópia estrita dos membros declarados e fechamento de saída          |
 +------------------------------------+------------------------------------+
                                      |
@@ -135,7 +136,7 @@ O validador [`scripts/verify-agent-review-standalone-closure.py`](../scripts/ver
 1. **Validação de Schema e Âncoras (Layer S):** Valida `manifest_version`, seções obrigatórias e âncoras positivas/negativas (`REQUIRED_BOUNDARY_ANCHORS_V1` e `REQUIRED_FORBIDDEN_RUNTIME_SURFACES_V1`).
 2. **Verificação de Caminhos e Symlinks (Layer S):** Assegura que todos os caminhos sejam canônicos, existam em disco, permaneçam confinados ao repositório e não contenham symlinks.
 3. **Inspeção de AST (Layer S):** Analisa recursivamente todas as árvores de código Python da distribuição declarada e garante que nenhum import direto de módulo ou pacote proibido exista.
-4. **Materialização Segura (Layer M):** A função `materialize_standalone_distribution(repo_root, target_dir)` valida o manifesto, verifica disjunção de origem/destino, assegura que o destino seja diretório vazio ou ausente (nunca symlink), confina a escrita estritamente a `target_resolved` e verifica o fechamento de saída.
+4. **Materialização Segura (Layer M):** A função `materialize_standalone_distribution(repo_root, target_dir)` valida o manifesto, verifica disjunção de origem/destino, assegura que o destino seja diretório vazio ou ausente na sua identidade canônica resolvida (`target_resolved`, nunca symlink), confina a criação e escrita estritamente a `target_resolved` (impedindo que caminhos não-canônicos com segmentos intermediários não-criados contornem checagens de limpeza) e verifica o fechamento de saída.
 
 Execução da verificação:
 
@@ -192,6 +193,9 @@ A suíte [`tests/agent_review/test_standalone_distribution_closure.py`](../tests
 | **J-01** | Reutilização de venv pré-existente / contaminação residual | `scripts/install-agent-review-toolrepo.sh` exige alvo ausente (`[ -e "$VENV_DIR" ] || [ -L "$VENV_DIR" ]`), recusando fail-closed (código 2) reutilizar diretórios ou symlinks pré-existentes, impedindo a sobrevivência de artefatos obsoletos em `site-packages`. |
 | **J-02** | Falso positivo no probe de ausência por falha transitiva | `missing_is_requested_module_or_parent` valida que a exceção `ModuleNotFoundError` corresponde ao módulo requisitado ou a seu ancestral, comprovando que módulos vazados com falhas transitivas (ex.: `app.main` importando dependência ausente) são rejeitados. |
 | **J-03** | Falso positivo no teste de hash por erro sintático | `test_require_hashes_rejects_a_tampered_lock_file` altera exatamente 1 nibble mantendo 64 caracteres hexadecimais minúsculos (`[0-9a-f]{64}`), comprovando rejeição criptográfica pelo pip (`THESE PACKAGES DO NOT MATCH THE HASHES`) e não rejeição preliminar por sintaxe malformada. |
+| **L-01** | Checagem de limpeza com path não-canônico | Caminho não-canônico com prefixo não-criado (`/tmp/new/../existing-target`) é resolvido antes da checagem; destino não-vazio pré-existente é recusado fail-closed e diretórios intermediários não são criados. |
+| **L-02** | Sombra de venv e pip por `PYTHONPATH` ambiental | Criação do venv (`-I -S -m venv`) e execução do pip (`-I -m pip`) operam em modo isolado, provando imunidade contra shadowing por scripts `venv.py` ou pacotes `pip` presentes no `PYTHONPATH`. |
+| **L-03** | Incompatibilidade de plataforma do lockfile antes da criação do venv | O probe isolado valida a plataforma completa (CPython 3.11, Linux, x86_64, glibc >= 2.17) antes de criar o venv, impedindo venvs parciais/quebrados em arquiteturas ou libcs incompatíveis (aarch64, musl, macOS). |
 
 ---
 

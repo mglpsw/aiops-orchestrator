@@ -818,6 +818,51 @@ def test_countermodel_t05_clean_materialization_target_and_output_closure(tmp_pa
     assert dirty_marker.read_text(encoding="utf-8") == "# preexisting dirty runtime file"
 
 
+def test_countermodel_l1_noncanonical_alias_to_existing_materialization_target(tmp_path: Path) -> None:
+    """L1: Noncanonical target (/tmp/new/../existing-target) is resolved before cleanliness check.
+
+    Pre-existing nonempty target is rejected fail-closed, uncreated intermediate directory is NEVER created,
+    and pre-existing target contents are never merged into or overwritten.
+    """
+    manifest = validator.load_manifest()
+
+    existing_target = tmp_path / "existing-target"
+    existing_target.mkdir()
+    marker = existing_target / "existing_file.txt"
+    marker.write_text("PREEXISTING_DATA", encoding="utf-8")
+
+    uncreated_intermediate = tmp_path / "new"
+    assert not uncreated_intermediate.exists()
+
+    noncanonical_target = uncreated_intermediate / ".." / "existing-target"
+    assert not noncanonical_target.exists(), "Precondition: raw noncanonical path does not exist because parent is absent"
+
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc_info:
+        validator.materialize_standalone_distribution(
+            repo_root=REPO_ROOT,
+            target_dir=noncanonical_target,
+            manifest=manifest,
+        )
+
+    assert "Materialization target directory must be empty or absent" in str(exc_info.value)
+    assert not uncreated_intermediate.exists(), "Uncreated intermediate directory must NOT have been created"
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8") == "PREEXISTING_DATA"
+    assert not (existing_target / "app").exists(), "Distribution files must not be copied into pre-existing target"
+
+    # Positive control: noncanonical path pointing to a fresh, absent target succeeds and returns resolved target
+    fresh_target = uncreated_intermediate / ".." / "fresh-target"
+    assert not (tmp_path / "fresh-target").exists()
+    dest = validator.materialize_standalone_distribution(
+        repo_root=REPO_ROOT,
+        target_dir=fresh_target,
+        manifest=manifest,
+    )
+    assert dest == (tmp_path / "fresh-target").resolve()
+    assert dest.is_dir()
+    assert (dest / "app" / "agent_review").is_dir()
+
+
 def test_countermodel_m6_v1_or_v2_partial_boundary(tmp_path: Path) -> None:
     """Countermodel M6: An accidental v1-only or v2-only boundary fails the opposite profile's positive control."""
     standalone = tmp_path / "standalone_m6"

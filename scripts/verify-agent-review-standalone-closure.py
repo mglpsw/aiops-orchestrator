@@ -557,23 +557,23 @@ def materialize_standalone_distribution(
                 f"Declared source path is nested inside target directory: {src_path} inside {target_dir}"
             )
 
-    if target_dir.is_symlink():
+    if target_dir.is_symlink() or target_resolved.is_symlink():
         raise StandaloneClosureValidationError(
             f"Materialization target directory cannot be a symlink: {target_dir}"
         )
 
-    if target_dir.exists():
-        if not target_dir.is_dir():
+    if target_resolved.exists():
+        if not target_resolved.is_dir():
             raise StandaloneClosureValidationError(
-                f"Materialization target exists and is not a directory: {target_dir}"
+                f"Materialization target exists and is not a directory: {target_resolved}"
             )
-        existing_items = list(target_dir.iterdir())
+        existing_items = list(target_resolved.iterdir())
         if existing_items:
             raise StandaloneClosureValidationError(
-                f"Materialization target directory must be empty or absent, but contains {len(existing_items)} existing item(s): {target_dir}"
+                f"Materialization target directory must be empty or absent, but contains {len(existing_items)} existing item(s): {target_resolved}"
             )
     else:
-        target_dir.mkdir(parents=True, exist_ok=True)
+        target_resolved.mkdir(parents=True, exist_ok=True)
 
     forbidden_surfaces = set(manifest_data.get("forbidden_runtime_surfaces", []))
     copied_manifest_paths: list[str] = []
@@ -590,7 +590,7 @@ def materialize_standalone_distribution(
         for rel_path_str in items:
             rel_path = admit_manifest_relative_path_v1(rel_path_str)
             src_path = repo_root / rel_path
-            dest_path = target_dir / rel_path
+            dest_path = target_resolved / rel_path
 
             # Guard against copying forbidden surfaces
             for forbidden in forbidden_surfaces:
@@ -639,9 +639,9 @@ def materialize_standalone_distribution(
                 copied_manifest_paths.append(rel_path_str)
 
     # Output closure check: verify every materialized file belongs to the declared boundary
-    for item in target_dir.rglob("*"):
+    for item in target_resolved.rglob("*"):
         if item.is_file():
-            rel_to_target = item.relative_to(target_dir).as_posix()
+            rel_to_target = item.relative_to(target_resolved).as_posix()
             is_declared = any(
                 paths_overlap(rel_to_target, decl)
                 for decl in copied_manifest_paths
@@ -651,7 +651,7 @@ def materialize_standalone_distribution(
                     f"Output closure violation: Undeclared file found in materialized target: {rel_to_target}"
                 )
 
-    return target_dir
+    return target_resolved
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -138,7 +138,7 @@ def test_install_script_rejects_incompatible_interpreter_before_venv_creation(tm
     fake_python.write_text(
         "#!/bin/sh\n"
         'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    echo "CPython 3.12"\n'
+        '    echo "INCOMPATIBLE: interpreter CPython 3.12 (required: CPython 3.11)"\n'
         '    exit 0\n'
         "fi\n"
         "exit 1\n",
@@ -161,6 +161,90 @@ def test_install_script_rejects_incompatible_interpreter_before_venv_creation(tm
     assert "CPython 3.12" in result.stderr
 
 
+def test_install_script_rejects_incompatible_architecture_before_venv_creation(tmp_path: Path) -> None:
+    """L3: Non-x86_64 architecture (e.g. aarch64) is rejected fail-closed before venv creation."""
+    fake_python = tmp_path / "fake_aarch64.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "INCOMPATIBLE: architecture aarch64 (required: x86_64)"\n'
+        '    exit 0\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv_arch"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when architecture is incompatible"
+    assert "architecture aarch64" in result.stderr
+
+
+def test_install_script_rejects_musl_libc_before_venv_creation(tmp_path: Path) -> None:
+    """L3: Non-glibc systems (e.g. Alpine musl) are rejected fail-closed before venv creation."""
+    fake_python = tmp_path / "fake_musl.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "INCOMPATIBLE: libc non-glibc/musl (required: glibc >= 2.17)"\n'
+        '    exit 0\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv_musl"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when libc is non-glibc"
+    assert "libc non-glibc/musl" in result.stderr
+
+
+def test_install_script_rejects_old_glibc_before_venv_creation(tmp_path: Path) -> None:
+    """L3: Glibc versions older than 2.17 (manylinux2014 minimum floor) are rejected fail-closed."""
+    fake_python = tmp_path / "fake_old_glibc.sh"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "INCOMPATIBLE: glibc 2.12 (required: glibc >= 2.17)"\n'
+        '    exit 0\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    target_venv = tmp_path / "should_not_exist_venv_glibc"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_python))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert not target_venv.exists(), "Venv must not be created when glibc is older than 2.17"
+    assert "glibc 2.12" in result.stderr
+
+
 def _make_fake_python311(tmp_path: Path) -> Path:
     fake_python = tmp_path / "fake_python311_runner.sh"
     host_python = sys.executable
@@ -170,7 +254,7 @@ def _make_fake_python311(tmp_path: Path) -> Path:
         '    if [ -n "${5:-}" ]; then\n'
         f'        exec "{host_python}" "$@"\n'
         '    fi\n'
-        '    echo "CPython 3.11"\n'
+        '    echo "OK"\n'
         '    exit 0\n'
         "fi\n"
         '# Reached venv creation: echo marker and exit 42\n'
@@ -194,10 +278,10 @@ def test_install_script_accepts_compatible_interpreter_through_version_guard(tmp
         check=False,
         env=env,
     )
-    # Exit code 42 proves the script passed the version check and proceeded to "$PYTHON_BIN -m venv <canonical_target>"
+    # Exit code 42 proves the script passed the version check and proceeded to "$PYTHON_BIN -I -S -m venv <canonical_target>"
     assert result.returncode == 42
     assert "requirements-agent-review.lock is qualified for CPython 3.11" not in result.stderr
-    assert f"GUARD_PASSED_CALLED_WITH: -m venv {str(target_venv.resolve())}" in result.stderr
+    assert f"GUARD_PASSED_CALLED_WITH: -I -S -m venv {str(target_venv.resolve())}" in result.stderr
 
 
 def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Path) -> None:
@@ -210,7 +294,7 @@ def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Pa
         f"import sys\n"
         f"from pathlib import Path\n"
         f'Path("{marker}").write_text("SITECUSTOMIZE_RAN", encoding="utf-8")\n'
-        f'print("CPython 3.11")\n'
+        f'print("OK")\n'
         f"sys.exit(0)\n",
         encoding="utf-8",
     )
@@ -220,7 +304,7 @@ def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Pa
         f"#!/bin/sh\n"
         f'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
         f'    "{sys.executable}" -I -S -c "pass"\n'
-        f'    echo "CPython 3.14"\n'
+        f'    echo "INCOMPATIBLE: interpreter CPython 3.14 (required: CPython 3.11)"\n'
         f"    exit 0\n"
         f"fi\n"
         f'exec "{sys.executable}" "$@"\n',
@@ -242,6 +326,87 @@ def test_install_script_probe_isolates_from_malicious_sitecustomize(tmp_path: Pa
     assert not target_venv.exists(), "Venv must not be created when interpreter is incompatible"
     assert "requirements-agent-review.lock is qualified for CPython 3.11" in result.stderr
     assert "CPython 3.14" in result.stderr
+
+
+def test_countermodel_l2_ambient_pythonpath_cannot_shadow_venv(tmp_path: Path) -> None:
+    """L2: Ambient PYTHONPATH containing malicious venv.py is ignored by isolated venv invocation (-I -S)."""
+    evil_dir = tmp_path / "evil_path_venv"
+    evil_dir.mkdir()
+    marker = tmp_path / "evil_venv_executed.marker"
+    evil_venv = evil_dir / "venv.py"
+    evil_venv.write_text(
+        f"from pathlib import Path\n"
+        f'Path("{marker}").write_text("PWNED_VENV", encoding="utf-8")\n'
+        f"raise SystemExit(99)\n",
+        encoding="utf-8",
+    )
+
+    # Positive proof of isolation: -I -S -m venv creates target without executing evil venv.py
+    target_isolated = tmp_path / "venv_isolated"
+    res_isolated = subprocess.run(
+        [sys.executable, "-I", "-S", "-m", "venv", str(target_isolated)],
+        env=dict(os.environ, PYTHONPATH=str(evil_dir)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_isolated.returncode == 0
+    assert not marker.exists(), "Malicious venv.py on PYTHONPATH must NOT be executed under -I -S"
+    assert (target_isolated / "bin" / "python3").is_file()
+
+    # Countermodel flaw proof: unisolated -m venv would execute malicious venv.py
+    target_unisolated = tmp_path / "venv_unisolated"
+    res_unisolated = subprocess.run(
+        [sys.executable, "-m", "venv", str(target_unisolated)],
+        env=dict(os.environ, PYTHONPATH=str(evil_dir)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_unisolated.returncode == 99, "Precondition: unisolated -m venv must fail due to evil venv.py"
+    assert marker.exists(), "Precondition: unisolated -m venv must execute evil venv.py"
+
+
+def test_countermodel_l2_ambient_pythonpath_cannot_shadow_pip(tmp_path: Path) -> None:
+    """L2: Ambient PYTHONPATH containing malicious pip package is ignored by isolated pip invocation (-I)."""
+    target_venv = tmp_path / "base_venv"
+    subprocess.run([sys.executable, "-I", "-S", "-m", "venv", str(target_venv)], check=True)
+    venv_py = str(target_venv / "bin" / "python3")
+
+    evil_dir = tmp_path / "evil_path_pip"
+    evil_dir.mkdir()
+    evil_pip = evil_dir / "pip"
+    evil_pip.mkdir()
+    (evil_pip / "__init__.py").write_text("", encoding="utf-8")
+    marker = tmp_path / "evil_pip_executed.marker"
+    (evil_pip / "__main__.py").write_text(
+        f"from pathlib import Path\n"
+        f'Path("{marker}").write_text("PWNED_PIP", encoding="utf-8")\n'
+        f"raise SystemExit(88)\n",
+        encoding="utf-8",
+    )
+
+    # Positive proof of isolation: venv_python -I -m pip ignores evil pip
+    res_isolated = subprocess.run(
+        [venv_py, "-I", "-m", "pip", "--version"],
+        env=dict(os.environ, PYTHONPATH=str(evil_dir)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_isolated.returncode == 0
+    assert not marker.exists(), "Malicious pip on PYTHONPATH must NOT be executed under -I"
+
+    # Countermodel flaw proof: unisolated -m pip would execute malicious pip
+    res_unisolated = subprocess.run(
+        [venv_py, "-m", "pip", "--version"],
+        env=dict(os.environ, PYTHONPATH=str(evil_dir)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_unisolated.returncode == 88, "Precondition: unisolated -m pip must fail due to evil pip"
+    assert marker.exists(), "Precondition: unisolated -m pip must execute evil pip"
 
 
 def test_install_script_rejects_existing_nonempty_directory(tmp_path: Path) -> None:
@@ -393,17 +558,23 @@ def test_install_script_normalizes_relative_target_before_venv_creation(tmp_path
     )
     assert result.returncode == 42
     expected_canonical = str((tmp_path / "rel_venv").resolve())
-    assert f"GUARD_PASSED_CALLED_WITH: -m venv {expected_canonical}" in result.stderr
+    assert f"GUARD_PASSED_CALLED_WITH: -I -S -m venv {expected_canonical}" in result.stderr
 
 
 @pytest.mark.requires_network
 def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
     venv_dir = tmp_path / "agent-review-venv"
+    env = os.environ.copy()
+    if "AGENT_REVIEW_PYTHON" not in env:
+        py311 = shutil.which("python3.11")
+        if py311:
+            env["AGENT_REVIEW_PYTHON"] = py311
     result = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), str(venv_dir)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
 
