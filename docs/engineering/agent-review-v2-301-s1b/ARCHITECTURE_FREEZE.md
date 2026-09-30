@@ -1,7 +1,7 @@
 # #301-S1-B: Architecture Freeze, "safe reader context"
 
 ```yaml
-status: ARCHITECTURE_FREEZE_CORRECTION_REQUIRED   # FINAL_CONVERGENCE_ROUND_3C (adjudicação do mantenedor em b454723); 3b NOT_CONVERGED; a ratificação 5917390110 é HISTORICAL_SUPERSEDED
+status: ARCHITECTURE_FREEZE_CORRECTION_REQUIRED   # FINAL_BOUNDED_FREEZE_AMENDMENT (#301 5921013078; STOP_STRUCTURAL_REDESIGN de 0053d77 adjudicado: redesign não exigido); 3b NOT_CONVERGED; a ratificação 5917390110 é HISTORICAL_SUPERSEDED
 ArchitectureFreezeReady: false         # nova adjudicação humana exigida após a revisão independente do successor
 ImplementationGrant: false             # ArchitectureFreezeReady != ImplementationGrant
 implementation: NOT_STARTED            # B1, B2, B3 não iniciadas
@@ -15,11 +15,12 @@ owner_issue: "#301"                    # Refs #301; esta PR não fecha nenhuma i
 ```yaml
 repository: mglpsw/aiops-orchestrator
 base:
-  master_sha: d3f5946c4d0513def9f7c2018b63703a53df1cc7     # realinhado na round 3b (antes: ab92e89)
-  master_tree: 9d134eb1e913d852748470c12235e0b6832fc4b8
+  master_sha: 2941b558ffb849973df84cef1a4535a015ae559e     # realinhado na emenda final (antes: d3f5946; ab92e89)
+  master_tree: ba9e06b38365c954033fdee7ccf41b3fb8239612
   drift_reconciled:
     - "ab92e89 → b3657d3 = #365 (freeze V1, docs-only, só campaign/**; sem app/**, sem caminhos S1-B, sem overlap)"
     - "b3657d3 → d3f5946 = #366 (fix V1-C1/#232: app/agent_review/semantic_chunker.py + testes V1; sem overlap com esta branch; fora do fecho de imports da evidência S1-B: physical_snapshot_v2 → bounded_git_v2, trusted_object_authority_v2)"
+    - "d3f5946 → 2941b55 = #351 (distribuição standalone: scripts/, docs/, tests/, manifest; sem app/**; sem overlap; fora do fecho de imports da evidência S1-B)"
     - "rebase linear, sem merge commit"
 predecessor:
   slice: S1-A
@@ -38,10 +39,11 @@ forge_records:
   "#301 ratificação ArchitectureFreezeReady (HISTORICAL_SUPERSEDED)": 5917390110
   "#301 correction round 3 (review post-Ready 5370887198)": 5918385379
   "#301 correction round 3b grant (R3 NOT_CONVERGED; N3 → S1-B)": 5919204387
+  "#301 final freeze amendment grant (AB-1, AB-2; redesign não exigido)": 5921013078
   "#46 reconciliada (2026-09-30)": "S1-A INTEGRATED; S1-B próxima, só planejamento; C4 incompleto; G5 não atingido"
 state:
   S1_A: INTEGRATED
-  S1_B: {architecture: FINAL_CONVERGENCE_ROUND_3C, implementation: NOT_STARTED}
+  S1_B: {architecture: FINAL_BOUNDED_FREEZE_AMENDMENT, implementation: NOT_STARTED}
   S1_C: NOT_STARTED
   S1_D: NOT_STARTED
   S_D: NOT_STARTED
@@ -172,6 +174,12 @@ ReaderSignalState != ChildExecSignalState
 OneStuckChildCannotStarveSiblingTeardown
 ForkFailurePreservesCancellationState
 OwnerCapabilitiesClosedOnEveryTeardownPath
+LibcAddressableSignals != AllKernelSignalNumbers                    (emenda final, AB-1)
+NPTLReservedSignal != ApplicationSignalCapability
+CannotSafelyCanonicalizeReservedSignal → VerifyCompatibleStateOrRefuse
+FinalOutcomeIsDerivedAfterTeardown                                  (emenda final, AB-2)
+QualificationGap != ArchitectureBlocker   (dado: mecanismo especificado, dono e autoridade existentes, sem contradição normativa, obrigação explícita)
+ExperimentalEvidence != ImplementationQualification
 PythonException != SIGTERMDefaultAction != SIGKILL != ParentProcessDeath != HostCrash
 ProcessGroupKill != WholeUnitTeardown
 DominantOutcome != OnlyRecordedFailure
@@ -570,7 +578,7 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
 | 1 | Pré-condição dedicada: single-thread (`threading.active_count()==1` e uma única task em `/proc/self/task`), verificada; nenhum outro filho | — |
 | 2 | Subreaper: `PR_SET_CHILD_SUBREAPER` antes do spawn, verificado por `PR_GET_CHILD_SUBREAPER == 1` | ablação `no_subreaper` + grandchild com `setsid` → sobrevivente |
 | 3 | **Bootstrap de sinais do reader** (B-LIF-10, B-LIF-11), na ordem congelada em B-LIF-10 (bloqueia → pipe de wakeup → handlers que não levantam → `set_wakeup_fd` → SIGCHLD normalizado → estado de término pronto → desbloqueia → lê a máscara de volta → inspeciona wakeup e flag → só então admite trabalho). Depois NNP, `fchdir` e census tipado no reader antes do spawn | P2d R3B-S1..S3, R3B-S1-pidns, R3B-C1..C3, CM-R3-04..06; §8, §9, §10 |
-| 4 | **Spawn com seção crítica de sinais** (B-LIF-12): o envelope da unidade é fixado antes do `fork`; CONTROLLED bloqueado antes do `fork`; o `fork` fica sob uma guarda que restaura a máscara (e fecha os pipes) se ele falhar; no filho, o **estado de sinais do exec é construído, não herdado** (M1): bloqueia todos os sinais, `set_wakeup_fd(-1)`, **toda disposição capturável → `SIG_DFL` no kernel** (`sigaction`, nunca o cache do Python), fecha as cópias das pontas de wakeup, máscara de exec = **conjunto vazio exato**, e verifica disposições e máscara lendo do kernel; então `dup2` do stdio do protocolo, `RLIMIT_AS`, fechamento dos fds não permitidos, census pré-exec exato e `execve` (env allowlist, argv absoluto, cwd do `fchdir`); a saída do bootstrap é `execve` **ou** relato limitado no canal de erro CLOEXEC + `os._exit`, nunca `raise`/`return`/desenrolar | P2d S-B1..B4, R3C-M1a..d, R3B-G1, R3B-S4/S4b (suporte preliminar), R3B-U1, R3B-F1; P2 (B) |
+| 4 | **Spawn com seção crítica de sinais** (B-LIF-12): o envelope da unidade é fixado antes do `fork`; CONTROLLED bloqueado antes do `fork`; o `fork` fica sob uma guarda que restaura a máscara (e fecha os pipes) se ele falhar; no filho, o **estado de sinais do exec é construído, não herdado** (M1): bloqueia todos os sinais, `set_wakeup_fd(-1)`, **toda disposição do conjunto de sinais endereçáveis pela libc → `SIG_DFL` no kernel** (`sigaction`, nunca o cache do Python), fecha as cópias das pontas de wakeup, máscara de exec vazia para esse conjunto, verifica disposições e máscara lendo do kernel, e **verifica que os bits `SigIgn`/`SigBlk` visíveis no kernel dos sinais reservados à NPTL (32, 33) estão limpos, senão recusa antes do exec** (AB-1); então `dup2` do stdio do protocolo, `RLIMIT_AS`, fechamento dos fds não permitidos, census pré-exec exato e `execve` (env allowlist, argv absoluto, cwd do `fchdir`); a saída do bootstrap é `execve` **ou** relato limitado no canal de erro CLOEXEC + `os._exit`, nunca `raise`/`return`/desenrolar | P2d S-B1..B4, R3C-M1a..d, R3B-G1, R3B-S4/S4b (suporte preliminar), R3B-U1, R3B-F1; P2 (B) |
 | 5 | **Identidade:** no pai, `pidfd_open` **imediatamente após o `fork`**, ainda com CONTROLLED bloqueado. Depois restaura a máscara normalizada do reader, e um sinal que chegou durante o bloqueio é entregue nesse ponto, ao handler e ao wakeup. **HANDSHAKE:** `select` em `{setup_error_read, signal_wakeup_read}` sob o deadline (B-RES-02). Nenhuma API reapeia por PID nu | P2d R3B-H1 (1,001 s) vs ablação sem deadline (3,002 s) e A2 (3,002 s); R3B-S5; R3B-H2 |
 | 6 | Dono = o reader, por **atribuição do kernel**: a cada rodada, varre `/proc/[pid]/stat` por `ppid == self` (inclui netos reparentados ao subreaper) | ablação `handle_only` → sobrevivente em TF5-B, TF5-C e TF5-F |
 | 7 | **Teardown em duas fases** (M2, `OneStuckChildCannotStarveSiblingTeardown`). **Fase 1, atribuição e sinal:** varre todos os filhos atribuíveis, faz `pidfd_open` e a **prova de filiação** (`waitid(P_PIDFD, WEXITED\|WNOHANG\|WNOWAIT)`; um não-filho dá ECHILD e não é sinalizado) e envia `SIGKILL` a **todo** filho vivo atribuído, sem nenhum reap entre os sinais. **Fase 2, reap limitado:** `waitid(P_PIDFD, WEXITED\|WNOHANG)` sobre todos os pidfds possuídos; repete a varredura (netos reparentados), sinaliza os novos e repete o reap, até zero filhos ou o fim do envelope comum. Pelo menos uma passada de atribuição e sinal roda mesmo com o envelope esgotado. **Finalização (M4):** o pidfd do dono e os pidfds candidatos são fechados exatamente uma vez num `finally` externo que cobre varredura, `pidfd_open`, `pidfd_send_signal`, close de candidato e reap | R3C-M2 (dois filhos, um preso), R3C-M2b (neto reparentado), R3C-M4 (5 famílias de falha); R3B-H2; S-B1, W-POS |
@@ -616,14 +624,18 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
     - **Filho: o estado de sinais do exec é CONSTRUÍDO, não herdado** (round 3c, M1; `ChildExecSignalStateIsConstructedNotInherited`, `ReaderSignalState != ChildExecSignalState`):
       1. bloqueia **todos** os sinais durante a construção;
       2. `set_wakeup_fd(-1)`;
-      3. para **todo sinal capturável** (todos exceto SIGKILL e SIGSTOP), a disposição **no kernel** vira `SIG_DFL` via `sigaction`. O cache do Python (`signal.getsignal`) nunca é o truth-maker (`PythonSignalCache != KernelSignalDisposition`);
+      3. para todo sinal capturável **exposto à aplicação pela libc/runtime qualificador** (o conjunto endereçável pela libc; no domínio glibc/NPTL, todos exceto SIGKILL, SIGSTOP e os reservados 32 e 33), a disposição **no kernel** vira `SIG_DFL` via `sigaction`. O cache do Python (`signal.getsignal`) nunca é o truth-maker (`PythonSignalCache != KernelSignalDisposition`);
       4. fecha as cópias das pontas de wakeup, **depois** de desregistrar;
-      5. máscara de exec = **conjunto vazio exato**. Não é a máscara herdada do reader (`InheritedSignalMask != AuthorizedExecSignalMask`);
-      6. verifica, lendo do kernel, que toda disposição capturável é `SIG_DFL` e que a máscara está vazia. Divergência → relato no canal de erro e `os._exit`;
-      7. só então `dup2`, `setrlimit`, census de fds e `execve`.
+      5. máscara de exec vazia para o conjunto endereçável. Não é a máscara herdada do reader (`InheritedSignalMask != AuthorizedExecSignalMask`);
+      6. verifica, lendo do kernel, que toda disposição do conjunto endereçável é `SIG_DFL` e que a máscara está vazia. Divergência → relato no canal de erro e `os._exit`;
+      7. **sinais reservados à NPTL (32, 33; emenda final, AB-1):** não são capabilities da aplicação (`NPTLReservedSignal != ApplicationSignalCapability`; `LibcAddressableSignals != AllKernelSignalNumbers`).
+        - A S1-B **não** tenta sobrescrever essas disposições por syscall crua só para satisfazer a antiga afirmação universal.
+        - Antes do exec, os bits `SigIgn` e `SigBlk` desses sinais, visíveis no kernel (`/proc/self/status`), têm de estar **limpos**. Se algum reservado estiver ignorado ou bloqueado → **FAIL CLOSED** com recusa tipada de setup/contexto (nome indicativo `reader_child_signal_state_unusable`; o nome final é detalhe de B2).
+        - Lei: `CannotSafelyCanonicalizeReservedSignal → VerifyCompatibleStateOrRefuse`.
+      8. só então `dup2`, `setrlimit`, census de fds e `execve`.
     - **Estados distintos:**
       - **reader:** TERM/INT/HUP com handlers que não levantam, pipe de wakeup dedicado e desbloqueio só depois de handlers e wakeup instalados; SIGCHLD `SIG_DFL` sem `SA_NOCLDWAIT`;
-      - **filho:** sem registro de wakeup do reader, sem handlers do reader, todas as disposições capturáveis canônicas, máscara de exec canônica (vazia).
+      - **filho:** sem registro de wakeup do reader, sem handlers do reader, disposições do conjunto endereçável canônicas, máscara de exec canônica (vazia), sinais reservados verificados compatíveis ou recusa.
     - Não depende de o `execve` resetar os handlers: a falha existe justamente **antes** do exec.
     - **Histórico (iteração 2 da 3b, superado pela M1):** o reset de `SIG_IGN` baseado em `signal.getsignal` e a restauração da máscara herdada. A revisão e o Codex mostraram que o cache do Python não vê um `SIG_IGN` nativo e que a máscara herdada leva sinais bloqueados ao Git.
     - **Falha do `fork()`** (Codex 4149311510; round 3c, M3, `ForkFailurePreservesCancellationState`): o `fork` fica sob uma guarda. Se ele falhar, não há filho, e acontece nesta ordem:
@@ -641,7 +653,8 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
     - R3B-S4 (SIGTERM ao filho depois do reset; **suporte preliminar**, round 3c Q3: o spike não sincroniza com o ponto de reset, então não prova qual lado do reset recebeu o sinal; o witness exato é obrigação de B2): o filho morre por SIGTERM (`CLD_KILLED`/15, observado por `waitid(WNOWAIT)` antes do teardown — é a confirmação da injeção, review F2); o reader não registra nenhum sinal e não reporta término. Ablação sem reset: o handler herdado escreve `0f` no pipe do reader, e o reader reporta `terminated` sem ter recebido sinal (causa misatribuída).
     - R3B-S4b (SIGTERM ao filho **antes** do reset, janela alargada artificialmente): fica pendente e depois toma `SIG_DFL`. Ablação sem o bloqueio do fork: `0f` misatribuído.
     - R3B-G1: o programa exec'ado (`grep`, um programa C; um substituto CPython reignoraria SIGPIPE/SIGXFSZ na própria inicialização) mostra `SigIgn` 0. Ablação sem a construção: 0x1001000.
-    - **R3C-M1** (alvo `grep -E '^Sig(Blk|Ign|Cgt):' /proc/self/status`): o exec vê `SigBlk` 0 e `SigIgn` 0 em todos os contramodelos. Ablação com o reset da iteração 2 (cache do Python + máscara herdada):
+    - **P2e AB-1** (emenda final): com os estados criados por syscall crua (32 ignorado, 33 ignorado, 32 bloqueado, 33 bloqueado; AB1-CM1..CM4), a checagem congelada recusa com `reader_child_signal_state_unusable`, e o mutante que verifica só o conjunto da libc aceita ("canonicalização fingida"). O `sigaction` da glibc dá EINVAL para o 32. `AB1_evidence: {freeze_requirement: "o estado visível no kernel é checável", implementation_qualification: B2}`.
+    - **R3C-M1** (alvo `grep -E '^Sig(Blk|Ign|Cgt):' /proc/self/status`; o spike cobre o conjunto endereçável; a checagem de 32/33 é da emenda e é qualificada em B2): o exec vê `SigBlk` 0 e `SigIgn` 0 em todos os contramodelos. Ablação com o reset da iteração 2 (cache do Python + máscara herdada):
       - SIGPIPE bloqueado na entrada → `SigBlk` 0x1000;
       - SIGXFSZ bloqueado → 0x1000000;
       - `sigaction(SIGUSR1, SIG_IGN)` nativo, invisível ao cache → `SigIgn` 0x200;
@@ -695,9 +708,29 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
     termination_request: <controlled-signal record | null>        # round 3c (M3): ortogonal; registrado sempre que observado
   ```
 
-  `termination_request` (round 3c, M3) é uma dimensão **ortogonal**: registrada sempre que um sinal controlado foi observado (handler ou byte de wakeup), em qualquer caminho, inclusive falha do `fork` e erros de handshake. Ela não entra na precedência de `dominant_reason`, e nenhuma outra dimensão a apaga ou é apagada por ela.
+  `termination_request` (round 3c, M3) é uma dimensão **ortogonal**: registrada sempre que um sinal controlado foi observado (handler ou byte de wakeup), em qualquer caminho, inclusive falha do `fork`, erros de handshake e **observações durante o TEARDOWN**. Ela não entra na precedência de `dominant_reason`, e nenhuma outra dimensão a apaga ou é apagada por ela.
 
-  | Combinação | dominant_reason | primary | close | teardown |
+  **`FinalOutcomeIsDerivedAfterTeardown`** (emenda final, AB-2). O outcome é derivado **depois** das observações finais do teardown.
+
+  ```text
+  COMPLETED  iff  work completed
+                  AND teardown completed
+                  AND no primary failure
+                  AND no descriptor-close failure
+                  AND no teardown failure
+                  AND no controlled termination request was observed before OUTCOME
+  ```
+
+  - **Sinal durante o teardown depois de trabalho concluído:** `NORMAL_WORK_COMPLETION → termination signal observed → NOT COMPLETED`. O resultado é `FailureOutcome` com `primary_failure.reason = unit_terminated_by_signal`, `termination_request.signals = [...]`, e os registros de close e de teardown (presentes ou nulos). Não existe `COMPLETED_WITH_SIGNAL`.
+  - **Precedência preservada:** `unit_teardown_incomplete > reader_descriptor_close_failed > primary_failure`. Exemplo: conclusão normal + SIGTERM no teardown + teardown incompleto → `dominant_reason: unit_teardown_incomplete`, `primary_failure: unit_terminated_by_signal`, `termination_request: {signals: [SIGTERM]}`, `teardown_failure` presente. Nenhuma informação se perde.
+  - **Contagem de dimensões:** a representação normativa tem pelo menos quatro dimensões (`primary_failure`, `descriptor_close_failure`, `teardown_failure`, `termination_request`). A antiga afirmação "3 dimensões / 7 combinações" está **obsoleta**. A tabela abaixo ilustra só a precedência entre as três dimensões que competem por `dominant_reason`; ela **não** é uma enumeração completa. As regras normativas são os invariantes:
+    - **(I1)** nenhuma dimensão presente fica `null`;
+    - **(I2)** `dominant_reason` segue a precedência;
+    - **(I3)** `termination_request` nunca é apagada nem apaga;
+    - **(I4)** `COMPLETED` segue a definição acima.
+  - **P2e AB-2:** conclusão normal + sinal no teardown → `FailureOutcome` (`unit_terminated_by_signal`, `termination_request [15]`); com teardown incompleto → `dominant_reason unit_teardown_incomplete`, primária e término preservados. O mutante que captura o outcome antes do teardown devolve `COMPLETED`. Isto é um modelo focal da ordem de derivação; a qualificação do reader de produção é de B2. O reader do P2d (spike) ainda captura o término antes do teardown e **não** é evidência desta regra.
+
+  | Ilustração da precedência (não é enumeração completa) | dominant_reason | primary | close | teardown |
   |---|---|---|---|---|
   | só primária | primary | ✓ | — | — |
   | só close | `reader_descriptor_close_failed` | — | ✓ | — |
@@ -707,7 +740,7 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
   | close + teardown | `unit_teardown_incomplete` | — | ✓ | ✓ |
   | primária + close + teardown | `unit_teardown_incomplete` | ✓ | ✓ | ✓ |
 
-  O modelo anterior ("primária preservada") perdia a falha de close sob `unit_teardown_incomplete`. **Contramodelo:** qualquer combinação acima em que uma dimensão presente fique `null`. **Discriminador:** um mutante que colapsa dimensões por precedência.
+  O modelo anterior ("primária preservada") perdia a falha de close sob `unit_teardown_incomplete`. **Contramodelo:** qualquer combinação, com ou sem `termination_request`, em que uma dimensão presente fique `null`, ou `COMPLETED` com pedido de término observado. **Discriminador:** um mutante que colapsa dimensões por precedência; um mutante que deriva o outcome antes do teardown (P2e).
 - Não há sucesso parcial. Um objeto entregue antes de uma falha posterior da unidade não é "sucesso da unidade".
 - Nenhuma saída da S1-B ativa `S_G`.
 
@@ -750,9 +783,9 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | B-LIF-09 | sinal de término controlado → teardown, por **canal de wakeup dedicado e tipado**, observado também no HANDSHAKE | S1B-REV-02; round 3/3b / S1-B | reader | handler que **não levanta** + `set_wakeup_fd(write)` + `select(read)` + transição do loop; `set_wakeup_fd(-1)` antes de fechar | loop único; `select` do handshake | P2d W-POS (SIGTERM → wakeup → teardown, 0 sobreviventes, Git sem as pontas); R3B-S5 | SIGTERM sem handler; sinal **dentro** do teardown (R3B-S6); sinal duplo dentro do teardown (R3B-S7); sinal no HANDSHAKE (R3B-S5); canal compartilhado (CM-W6); fechar registrado (CM-W5) | P2d: handler que levanta + sinal dentro do teardown → 1 sobrevivente; handshake sem wakeup → `unit_deadline`; canal compartilhado → byte `0f`; fechar registrado → sentinela escrita | **P2d** (experimento, não qualificação de implementação); B2 qualifica | P2c T2/T7 continuam só evidência de interceptabilidade | LIVE |
 | B-LIF-10 | bootstrap de sinais controlados: **handlers e wakeup antes do desbloqueio**, máscara lida de volta, wakeup inspecionado antes de admitir trabalho | round 3 (4148411723); round 3b (4148788381) / S1-B | reader | `pthread_sigmask` + leitura de volta; inspeção do wakeup | reader dedicado single-thread | P2d: pendente na entrada → handler → `terminated` antes do spawn (R3B-S1..S3; pidns) | TERM/INT/HUP pendentes na entrada (CM-SIG-01..03); bloqueados na entrada (CM-R3-04..06) | P2d: ordem da round 3 → rc −15/−2/−1 ou descarte silencioso no pidns; sem desbloqueio → pendente (2,912–2,914 s) | **P2d**; B2 qualifica | a máscara é estado local da S1-B, não autoridade da #350 | LIVE |
 | B-LIF-11 | estado de reaping de SIGCHLD normalizado antes de qualquer `fork` (`SIG_DFL`, sem `SA_NOCLDWAIT`, lido de volta) | round 3b (N3), [5919204387](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5919204387) / S1-B | reader | `sigaction(SIGCHLD, NULL, &old)` | bootstrap de sinais (passo 5) | P2d R3B-C3: o filho sai antes do `pidfd_open` → zumbi, pidfd ok | `SIG_IGN` herdado (CM-CHLD-01); `SA_NOCLDWAIT` (CM-CHLD-02); filho sai antes do `pidfd_open` (CM-CHLD-03) | P2d: sem normalização → auto-reap, ESRCH; mutante só-handler → recusado pela leitura de volta | **P2d**; B2 qualifica | `SA_NOCLDWAIT` só chega por estado do processo (execve zera `sa_flags`) | LIVE |
-| B-LIF-12 | seção crítica de sinais no fork; **estado de sinais do exec construído** (toda disposição capturável `SIG_DFL` no kernel, máscara vazia exata, verificada); bootstrap terminal (`execve` ou `os._exit`); falha do `fork` preserva o pedido de término | round 3b (N2, N6) / S1-B | bootstrap do filho | máscara bloqueada através do fork; ordem do reset | bootstrap único | P2d R3C-M1a..d: `SigBlk` 0 e `SigIgn` 0 no exec; R3B-S4/S4b (preliminar): sinal ao filho não chega ao reader; R3B-U1: cleanup do reader roda uma vez; R3B-F1 e R3C-M3: máscara restaurada e término preservado na falha do `fork` | sinal ao filho antes/depois do reset (CM-R3B-S4/S4b); `BaseException` no bootstrap (CM-R3B-U1); `SIG_IGN` herdado (CM-R3B-G1); `fork()` falha (CM-R3B-F1); sinal na seção crítica (CM-R3B-S8) | P2d: reset da iteração 2 → `SigBlk` 0x1000/0x1000000, `SigIgn` 0x200; sem reset / sem bloqueio no fork → `0f` misatribuído; filho que desenrola → cleanup duplicado no filho; sem guarda → máscara bloqueada; caminho de erro sem inspeção → término perdido | **P2d**; B2 qualifica | a janela fork→reset é alargada artificialmente no experimento | LIVE |
+| B-LIF-12 | seção crítica de sinais no fork; **estado de sinais do exec construído** (disposições do conjunto endereçável pela libc `SIG_DFL` no kernel, máscara vazia, verificadas; reservados NPTL 32/33 verificados limpos ou recusa); bootstrap terminal (`execve` ou `os._exit`); falha do `fork` preserva o pedido de término | round 3b (N2, N6) / S1-B | bootstrap do filho | máscara bloqueada através do fork; ordem do reset | bootstrap único | P2d R3C-M1a..d: `SigBlk` 0 e `SigIgn` 0 no exec; P2e AB1-CM1..CM4: reservado ignorado/bloqueado → recusa (mutante só-libc aceita); R3B-S4/S4b (preliminar): sinal ao filho não chega ao reader; R3B-U1: cleanup do reader roda uma vez; R3B-F1 e R3C-M3: máscara restaurada e término preservado na falha do `fork` | sinal ao filho antes/depois do reset (CM-R3B-S4/S4b); `BaseException` no bootstrap (CM-R3B-U1); `SIG_IGN` herdado (CM-R3B-G1); `fork()` falha (CM-R3B-F1); sinal na seção crítica (CM-R3B-S8) | P2d: reset da iteração 2 → `SigBlk` 0x1000/0x1000000, `SigIgn` 0x200; sem reset / sem bloqueio no fork → `0f` misatribuído; filho que desenrola → cleanup duplicado no filho; sem guarda → máscara bloqueada; caminho de erro sem inspeção → término perdido | **P2d**; B2 qualifica | a janela fork→reset é alargada artificialmente no experimento | LIVE |
 | B-LIF-07 | fds lineares (lei #354), inclusive as pontas de wakeup (posse por fase, §8), o canal de erro, os pipes do protocolo e o pidfd do dono; **guardas de ciclo de vida externas** (`OwnerCapabilitiesClosedOnEveryTeardownPath`, M4) | #354 / S1-B | reader | dono pré-existente, `close_once` | latch padrão S1-A | census de fds limpo | reuso numérico, re-close; wakeup fechado ainda registrado | mutantes do padrão S1-A (M-L3); P2d CM-W5; **R3C-M4** (falha injetada em varredura, `pidfd_open`, `pidfd_send_signal`, close de candidato e reap: pidfd do dono fechado, 0 pidfds e 0 fifos; ablação sem guarda: pidfd do dono vaza) e R3C-M4 dos pipes do protocolo (0 vs 1 fifo) | B1, B2, B3 | — | MIXED |
-| B-OUT-01..03 | type-state; reason codes fechados; precedência só em `dominant_reason`; as 3 dimensões preservadas; sem ativar S_G | CONTRACT §7.1 / S1-B | saída | `FailureOutcome` (§15) | tabela de 7 combinações | — | sucesso com sobrevivente; substituição de causa; dimensão colapsada (S1B-REV-04) | mutante que colapsa dimensões | B1, B2, B3 | — | MIXED |
+| B-OUT-01..03 | type-state; reason codes fechados; precedência só em `dominant_reason`; as dimensões preservadas (≥ 4, invariantes I1–I4); `FinalOutcomeIsDerivedAfterTeardown`; sem ativar S_G | CONTRACT §7.1 / S1-B; emenda final (AB-2) | saída | `FailureOutcome` (§15) | derivação depois do teardown; invariantes I1–I4 | — | sucesso com sobrevivente; substituição de causa; dimensão colapsada (S1B-REV-04); sinal no teardown depois de conclusão normal | mutante que colapsa dimensões; mutante que deriva antes do teardown (P2e AB2) | B1, B2, B3 | — | MIXED |
 | B-QUA-01..04 | harness sai ≠ 0 em falha; `gate_unavailable ≠ PASS`; census estático e dinâmico | adendo 5861631976 / S1-B | qualificação | exit code do harness; census | harness | — | verde com falha | caso deliberadamente falho | **P2: harness exercitado RED (execuções 1–2)** | Python dinâmico não universal | STATIC |
 
 ## 17. Countermodel pack
@@ -787,7 +820,8 @@ Colunas: **ID · proposição · fonte/dono · domínio/aplicabilidade · truth-
 | Handshake do spawn (round 3) | CM-R3-09 stall antes do exec; CM-R3-10 erro de setup antes do exec; CM-R3-11 exec ausente | **P2d** (A vs B) |
 | Evidência REV01 (round 3) | fd extra vazado deliberadamente após o exec | **P2c** `REV01_mutant_extra_inherited_detected` (witness RED) |
 | Identidade de pidns (B-RC-06) | pidns não privado, init de outro pidns, procfs do host, expectativa auto-derivada | **B2** (domínio exato exige root) |
-| Informação de falha (S1B-REV-04) | as 7 combinações de primária, close e teardown | tabela §15; B1–B3 |
+| Informação de falha (S1B-REV-04; emenda AB-2) | combinações de primária, close, teardown e `termination_request`; sinal no teardown depois de conclusão normal | invariantes I1–I4 da §15; P2e AB2; B1–B3 |
+| Sinais reservados à NPTL (emenda AB-1) | AB1-CM1 32 ignorado; AB1-CM2 33 ignorado; AB1-CM3 32 bloqueado; AB1-CM4 33 bloqueado | **P2e** AB1 (recusa antes do exec vs mutante só-libc que aceita); B2 qualifica |
 | Lifecycle | TF5-A (exceção no setup do filho), TF5-B (filho existe e o construtor falha), TF5-C (`BaseException` pós-spawn), TF5-D (travado antes do protocolo), TF5-E (falha pré-exec), TF5-F (setsid), TF5-G (reuso real de PID), falha de close, estado D, erro primário com sobrevivente | **TF5-A..J: P2 PASS em A e B** (B requalificado na round 3b); estado D real: `gate_unavailable` (lógica do limite: R3B-H2) |
 
 ## 18. Positive controls
@@ -940,8 +974,8 @@ EDGE CHILD_BOOTSTRAP -> CHILD_EXIT : bounded_setup_report_then_os_exit
 | `HANDSHAKE` | `select` em `{setup_error_read, signal_wakeup_read}` sob o deadline de trabalho (B-RES-02); EOF = exec presumido |
 | `RUNNING` | protocolo (request → header → admissão → body → hash)×N |
 | `UNIT_TIMEOUT` | SIGKILL via pidfd; a posse passa ao `TEARDOWN`, sem espera bloqueante |
-| `TEARDOWN` | duas fases por rodada: (1) varredura por ppid → pidfd → prova de filiação → SIGKILL em **todo** filho atribuído; (2) reap com `WNOHANG` de todos. Repete (netos reparentados) até vazio ou até o fim do envelope; fecha o pidfd do dono uma vez num `finally` externo |
-| `OUTCOME` | `COMPLETED` ou `FailureOutcome{dominant_reason, primary, close, teardown}`, derivado **depois** do teardown |
+| `TEARDOWN` | pode observar `termination_request` (sinal controlado registrado sem interromper). Duas fases por rodada: (1) varredura por ppid → pidfd → prova de filiação → SIGKILL em **todo** filho atribuído; (2) reap com `WNOHANG` de todos. Repete (netos reparentados) até vazio ou até o fim do envelope; fecha o pidfd do dono uma vez num `finally` externo |
+| `OUTCOME` | derivado **depois** das observações finais do teardown: `COMPLETED` ou `FailureOutcome{dominant_reason, primary_failure, descriptor_close_failure, teardown_failure, termination_request}`, conforme a §15 (`FinalOutcomeIsDerivedAfterTeardown`); a topologia não muda |
 | `CHILD_*` | só o processo filho: o bootstrap é terminal (B-LIF-12) |
 
 A morte não controlada do reader (SIGKILL, crash) está fora desta máquina: o kernel mata o PID namespace inteiro (pré-condição #350; D-B-LIFE-PIDNS; B-LIF-08).
@@ -984,7 +1018,7 @@ A lei da #354 vale para todo fd novo: o novo dono é adquirido antes de o anteri
 - CDLL e `prctl` fora da gramática congelada (wrapper único);
 - aquisição de descriptor sem dono pré-existente;
 - re-close numérico stale;
-- bootstrap do filho que faça algo além de: construção do estado de sinais do exec (bloquear todos os sinais, `set_wakeup_fd(-1)`, `sigaction(SIG_DFL)` em todo sinal capturável, fechamento das cópias das pontas de wakeup, máscara vazia exata, leitura de volta no kernel), `dup2` do stdio, `setrlimit`, fechamento, census pré-exec, relato pelo canal de erro, `execve` e `os._exit`;
+- bootstrap do filho que faça algo além de: construção do estado de sinais do exec (bloquear todos os sinais, `set_wakeup_fd(-1)`, `sigaction(SIG_DFL)` em todo sinal do conjunto endereçável pela libc, verificação dos bits `SigIgn`/`SigBlk` dos reservados 32/33 com recusa, fechamento das cópias das pontas de wakeup, máscara vazia exata, leitura de volta no kernel), `dup2` do stdio, `setrlimit`, fechamento, census pré-exec, relato pelo canal de erro, `execve` e `os._exit`;
 - saída do bootstrap do filho que não seja `execve` ou `os._exit` (`raise`, `return`, desenrolar para o código do reader) (B-LIF-12);
 - `fork` sem CONTROLLED bloqueado, reset do filho depois de desbloquear, ou `fork` sem guarda que restaure a máscara se ele falhar (B-LIF-12);
 - pidfd do dono não fechado exatamente uma vez no teardown; outcome final decidido antes do resultado do teardown (§15);
@@ -996,7 +1030,8 @@ A lei da #354 vale para todo fd novo: o novo dono é adquirido antes de o anteri
 - `signal.getsignal` (cache do Python) como truth-maker de disposição; máscara de exec derivada da máscara herdada (M1);
 - esperar/reapear um candidato antes de sinalizar todos os atribuídos (M2);
 - close do pidfd do dono (ou de capability temporária) fora de um `finally` externo (M4);
-- caminho de erro que descarta o estado de término observado (M3);
+- caminho de erro que descarta o estado de término observado (M3); outcome derivado antes das observações finais do teardown (AB-2);
+- sobrescrever disposições dos sinais reservados à NPTL por syscall crua, ou declarar canonicalizado um estado não verificado (AB-1);
 - `set_wakeup_fd` num fd que não seja a ponta dedicada `signal_wakeup_write`; fechar essa ponta sem `set_wakeup_fd(-1)` antes;
 - stderr bruto em estado público ou de resultado;
 - import de símbolo privado de `bounded_git_v2`;
@@ -1082,7 +1117,8 @@ may_claim:   # após a qualificação de cada slice, nunca por este freeze
   - controlled_signal_mask_normalized                               # B-LIF-10
   - controlled_signal_handlers_installed_before_unblock             # B-LIF-10 (round 3b)
   - child_reaping_signal_state_normalized                           # B-LIF-11
-  - child_exec_signal_state_constructed_and_kernel_verified          # B-LIF-12, M1 (round 3c)
+  - child_exec_signal_state_constructed_and_kernel_verified          # B-LIF-12, M1: conjunto endereçável pela libc; reservados NPTL verificados ou recusa (AB-1)
+  - final_outcome_derived_after_teardown                              # §15, AB-2
   - child_bootstrap_terminal_exit                                    # B-LIF-12
   - teardown_fairness_signal_all_before_wait                         # M2
   - cancellation_preserved_across_fork_failure                       # M3
@@ -1095,7 +1131,7 @@ may_claim:   # após a qualificação de cada slice, nunca por este freeze
   - per_object_resource_enforcement_mechanism
   - lifecycle_ownership_from_spawn                    # controlled_exit_domain + external_termination_domain (pidns precondition, D-B-LIFE-PIDNS ADOPT); B-LIF-09 qualified only in B2
   - zero_survivors_or_typed_refusal
-  - failure_information_preserved_across_precedence   # FailureOutcome, 3 dimensions
+  - failure_information_preserved_across_precedence   # FailureOutcome, >= 4 dimensions (invariants I1-I4)
   - content_address_authentication_of_delivered_object_bytes
 may_not_claim:
   - AuthorizedReaderExecutionContext_provenance
@@ -1121,6 +1157,8 @@ may_not_claim:
   - child_post_reset_signal_witness                    # Q3: B2
   - post_exec_stall_under_absolute_unit_deadline       # Q4: B2/B3
   - implementation_qualified                           # ArchitectureMechanismSpecified != ImplementationQualified
+  - canonicalization_of_nptl_reserved_signals          # AB-1: only verified-compatible-or-refuse
+  - experiments_qualify_B2                             # P2/P2b/P2c/P2d/P2e are design evidence only
   - survival_of_host_or_kernel_crash
   - production_ready
   - PROVED
@@ -1319,7 +1357,7 @@ A API aditiva de B-HO-02 **não** é `STOP_S1B_REQUIRES_S1A_SEMANTIC_CHANGE`: el
 ### 30.5 Final disposition
 
 ```yaml
-disposition: S1B_FINAL_CONVERGENCE_ROUND_3C     # adjudicação do mantenedor em b454723; a disposição terminal é registrada no forge após a revisão do exact head, não neste arquivo
+disposition: S1B_FINAL_BOUNDED_FREEZE_AMENDMENT   # #301 5921013078; a disposição terminal é registrada no forge após a revisão do exact head, não neste arquivo
 reviewed_head: b4a572a97465472d94165977edb05f720faf44eb     # independent review → S1B_FREEZE_CORRECTION_REQUIRED
 correction_rounds: [1 (3dc2965), 2 (adjudication round)]
 independent_review_of_b92a102: {material_findings: 0, authority_conflicts: 0, owner_conflicts: 0, obligation_domains: 11/11_CONFORMANT, S1B-REV-NIT-01: ACCEPTED_NON_BLOCKING_EDITORIAL}
@@ -1523,3 +1561,51 @@ O mesmo bloco de claims está em `p2d_spawn_handshake_results.json` → `claims`
 **Regra terminal da round 3c** (uma única iteração):
 - revisão com `architecture_blockers: 0` → `S1B_ARCHITECTURE_FREEZE_READY_FOR_MAINTAINER_ADJUDICATION`, desde que todo `QUALIFICATION_GAP` tenha dono B1/B2/B3 e nenhum experimento o exagere;
 - `architecture_blockers > 0` → `STOP_STRUCTURAL_REDESIGN`.
+
+### 30.11 Final bounded freeze amendment ([5921013078](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5921013078); predecessor `0053d77`)
+
+O `STOP_STRUCTURAL_REDESIGN` de `0053d77` foi adjudicado pelo mantenedor: `procedural_stop: valid`, `structural_redesign: required: false`. Os dois `ARCHITECTURE_BLOCKER` são contradições normativas locais. Nenhum altera o mecanismo B, a divisão de autoridade e dono, a topologia da máquina de estados ou o slicing B1/B2/B3.
+
+Base realinhada linearmente a `2941b55` (#351, ortogonal); o conteúdo S1-B ficou byte-idêntico após o rebase.
+
+| Blocker | Disposição | Emenda | Evidência |
+|---|---|---|---|
+| AB-1: reservados NPTL 32/33 | BOUNDED_NORMATIVE_AMENDMENT | a afirmação universal "todo sinal capturável → `SIG_DFL`" foi removida. Duas categorias: (a) conjunto endereçável pela libc → `SIG_DFL` e máscara vazia; (b) reservados 32/33 → bits `SigIgn`/`SigBlk` no kernel verificados limpos, senão recusa antes do exec (B-LIF-12 passo 7) | P2e AB1-POS, AB1-CM1..CM4 (recusa) vs mutante só-libc (aceita); B2 qualifica |
+| AB-2 = Codex 4149910902: término observado no teardown | BOUNDED_NORMATIVE_AMENDMENT | `FinalOutcomeIsDerivedAfterTeardown`; definição de `COMPLETED`; sinal no teardown → `FailureOutcome` com `unit_terminated_by_signal`; precedência preservada; "3 dimensões / 7 combinações" trocado pelos invariantes I1–I4; §20 esclarecida sem mudar a topologia | P2e AB2-POS (x2) vs mutante que captura antes do teardown (`COMPLETED`); B2 qualifica |
+
+**`B2_MANDATORY_QUALIFICATION_GAPS`** (transferência formal; complementa a lista da §30.10, que continua valendo):
+
+```yaml
+B2_MANDATORY_QUALIFICATION_GAPS_ADDENDUM:
+  state_machine:
+    - exercise every terminal edge in the implementation
+    - the structural checker is a lint/mutation discriminator, not a completeness proof
+  double_signal:
+    - two independently observed controlled-signal deliveries during teardown
+  child_reset_point:
+    - synchronized post-reset injection point
+  post_exec_deadline:
+    - every wait/read uses the remaining absolute deadline (B2/B3)
+  guard_coverage:
+    - injected failures at every capability/ownership phase, including the window between fork() and pidfd/Handle ownership (Codex 4149910886)
+  capability_close_confirmation:
+    - ownership released only after the close outcome is recorded; fault injected at the real close boundary (Codex 4149910893)
+  experiment_source_identity:
+    - qualification artifacts bound to the exact source/digest where required (Codex 4149910908)
+  teardown_budget_floor:
+    - witness of at least one attribution+signal pass on an exhausted envelope (review QG-1)
+  reserved_signal_state:
+    - production bootstrap refuses unexpected NPTL-reserved 32/33 ignored/blocked state before exec (AB-1)
+  outcome_after_teardown:
+    - production outcome derivation after final teardown observations; signal during teardown after normal completion (AB-2)
+  claims_metadata:
+    - per-experiment claims block present for every qualification artifact (review QG-2)
+```
+
+**Status dos experimentos:** P2, P2b, P2c, P2d e P2e têm o papel de `design_evidence`, `countermodel_discovery` e `causal_support`, e **não** de `implementation_qualification` (`ExperimentalEvidence != ImplementationQualification`). Eles não são apresentados como qualificação coletiva de B2. Os spikes **não** foram endurecidos nesta emenda (item 17); as lacunas acima foram contraídas e atribuídas.
+
+**Lei:** `QualificationGap != ArchitectureBlocker`, dado um mecanismo totalmente especificado, dono e autoridade existentes, nenhuma contradição normativa restante e obrigação de qualificação explícita.
+
+**Regra terminal:** um único ciclo de revisão.
+- `architecture_blockers: 0`, lacunas explícitas e atribuídas, sem conflito de autoridade ou dono, sem contradição normativa, CI GREEN e Codex sem blocker → `S1B_ARCHITECTURE_FREEZE_READY_FOR_MAINTAINER_ADJUDICATION`;
+- `architecture_blockers > 0` → `S1B_ARCHITECTURE_REDESIGN_REQUIRED`.

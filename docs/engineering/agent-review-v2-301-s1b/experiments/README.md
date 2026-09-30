@@ -65,7 +65,15 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
       - pidfd do dono fechado (S-B1, W-POS)
 - `p2d_spawn_handshake_results.json`: resultado do P2d, round 3b: `{rows: 64, contracts: 18}` (iteração 2), todos PASS, com injeção confirmada; estável em 3 execuções
 - `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. **Claim (round 3c):** lint estrutural + discriminador de mutação, **não** prova de completude; B2 testa todo caminho terminal. Lê as arestas do próprio freeze e prova as leis L1–L10 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M9 têm de tornar alguma lei RED
+- `p2e_amendment_witness.py`: emenda final (#301 5921013078). Witness focal de AB-1: estados reservados NPTL 32/33 ignorados ou bloqueados (AB1-CM1..CM4, criados por syscall crua) são detectados nos bits do kernel e recusados antes do exec; o mutante que só verifica o conjunto da libc aceita. Witness focal de AB-2: sinal no teardown depois de conclusão normal → `FailureOutcome` com `termination_request`; o mutante que captura o outcome antes do teardown devolve `COMPLETED`. É um modelo da ordem de derivação, não o reader do P2d
+- `p2e_amendment_witness_results.json`: 12/12 PASS, estável em 3 execuções
 - `p2d_state_machine_results.json`: resultado do verificador no freeze deste head: leis GREEN e M1–M9 mortos
+
+## Status dos experimentos
+
+`ExperimentalEvidence != ImplementationQualification`. P2, P2b, P2c, P2d e P2e são `design_evidence`, `countermodel_discovery` e `causal_support`, **nunca** `implementation_qualification`. Nenhum deles, isolado ou em conjunto, qualifica B1, B2 ou B3. As lacunas de qualificação conhecidas estão atribuídas a B2/B3 em `B2_MANDATORY_QUALIFICATION_GAPS` (freeze §30.10 e §30.11).
+
+Divergência conhecida: o reader do P2d captura `termination_request` **antes** do teardown. A regra congelada (AB-2) deriva o outcome depois, e o witness é o P2e. O spike não foi alterado (emenda final, item 17).
 
 ## Reprodução
 
@@ -75,6 +83,7 @@ python3.11 git_facts.py <worktree-no-subject> out-git.json
 python3.11 -I -S p2c_corrections.py "$(command -v python3.11)" out-p2c.json   # REV-02 T5–T7 exigem userns sem privilégio
 python3.11 -I -S p2d_spawn_handshake.py harness "$(command -v python3.11)" out-p2d.json   # R3B-S1-pidns exige userns sem privilégio
 python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.json
+python3.11 -I -S p2e_amendment_witness.py out-p2e.json
 ```
 
 ## Histórico das execuções (defeitos de harness encontrados e corrigidos; nenhum no mecanismo)
@@ -126,3 +135,6 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
      - com SIGCHLD mantido ignorado (ablação R3C-M1d), o filho é auto-reapeado e o `waitid(WNOWAIT)` diagnóstico dava ECHILD não tratado; agora registra `reaped_without_owner`.
    - **Claims:** cada experimento declara o que estabelece, o que não estabelece e o dono da qualificação futura (freeze §30.10; `p2d_spawn_handshake_results.json` → `claims`).
    - **Leituras não normativas:** o verificador da §20 é lint estrutural; R3B-S4/S4b são suporte preliminar; R3B-S7 não prova duas entregas observadas independentemente; o `read_report` do spike não qualifica o deadline global. Todos são obrigações de B2/B3.
+9. **Emenda final** (#301 5921013078; redesign não exigido).
+   - Um único witness focal novo: P2e, 12/12 PASS em 3 execuções.
+   - P2, P2c e P2d **não** foram reexecutados nem alterados, porque o código deles não mudou desde `0053d77`. A branch foi realinhada a `2941b55` (#351, ortogonal).

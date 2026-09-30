@@ -1,0 +1,249 @@
+{
+ "rows": [
+  {
+   "id": "AB1-POS-clean-state",
+   "proposition": "clean reserved state is accepted by the frozen check",
+   "kind": "positive",
+   "observed": {
+    "applied": {},
+    "frozen": [
+     "accepted",
+     null,
+     {}
+    ],
+    "mutant_libc_only": [
+     "accepted",
+     null,
+     {}
+    ],
+    "glibc_sigaction_32_errno": [
+     -1,
+     22
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB1-CM1-32-ignored",
+   "proposition": "unexpected reserved state is detected and refused before exec (typed)",
+   "kind": "negative",
+   "observed": {
+    "applied": {
+     "ign32": 0
+    },
+    "frozen": [
+     "refused",
+     "reader_child_signal_state_unusable",
+     {
+      "32": {
+       "ignored": true,
+       "blocked": false
+      }
+     }
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": "raw syscalls create the state; the check reads kernel-visible /proc/self/status bits"
+  },
+  {
+   "id": "AB1-CM1-32-ignored-mutant-libc-only",
+   "proposition": "mutant: the libc-addressable check pretends canonicalization succeeded",
+   "kind": "mutant",
+   "observed": {
+    "mutant": [
+     "accepted",
+     null,
+     {}
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB1-CM2-33-ignored",
+   "proposition": "unexpected reserved state is detected and refused before exec (typed)",
+   "kind": "negative",
+   "observed": {
+    "applied": {
+     "ign33": 0
+    },
+    "frozen": [
+     "refused",
+     "reader_child_signal_state_unusable",
+     {
+      "33": {
+       "ignored": true,
+       "blocked": false
+      }
+     }
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": "raw syscalls create the state; the check reads kernel-visible /proc/self/status bits"
+  },
+  {
+   "id": "AB1-CM2-33-ignored-mutant-libc-only",
+   "proposition": "mutant: the libc-addressable check pretends canonicalization succeeded",
+   "kind": "mutant",
+   "observed": {
+    "mutant": [
+     "accepted",
+     null,
+     {}
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB1-CM3-32-blocked",
+   "proposition": "unexpected reserved state is detected and refused before exec (typed)",
+   "kind": "negative",
+   "observed": {
+    "applied": {
+     "blk32": 0
+    },
+    "frozen": [
+     "refused",
+     "reader_child_signal_state_unusable",
+     {
+      "32": {
+       "ignored": false,
+       "blocked": true
+      }
+     }
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": "raw syscalls create the state; the check reads kernel-visible /proc/self/status bits"
+  },
+  {
+   "id": "AB1-CM3-32-blocked-mutant-libc-only",
+   "proposition": "mutant: the libc-addressable check pretends canonicalization succeeded",
+   "kind": "mutant",
+   "observed": {
+    "mutant": [
+     "accepted",
+     null,
+     {}
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB1-CM4-33-blocked",
+   "proposition": "unexpected reserved state is detected and refused before exec (typed)",
+   "kind": "negative",
+   "observed": {
+    "applied": {
+     "blk33": 0
+    },
+    "frozen": [
+     "refused",
+     "reader_child_signal_state_unusable",
+     {
+      "33": {
+       "ignored": false,
+       "blocked": true
+      }
+     }
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": "raw syscalls create the state; the check reads kernel-visible /proc/self/status bits"
+  },
+  {
+   "id": "AB1-CM4-33-blocked-mutant-libc-only",
+   "proposition": "mutant: the libc-addressable check pretends canonicalization succeeded",
+   "kind": "mutant",
+   "observed": {
+    "mutant": [
+     "accepted",
+     null,
+     {}
+    ]
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB2-POS-signal-in-teardown",
+   "proposition": "normal completion + signal during teardown \u2192 NOT COMPLETED; primary unit_terminated_by_signal; termination_request retained",
+   "kind": "negative",
+   "observed": {
+    "signals_seen": [
+     15
+    ],
+    "result": {
+     "outcome": "FailureOutcome",
+     "dominant_reason": "unit_terminated_by_signal",
+     "primary_failure": "unit_terminated_by_signal",
+     "descriptor_close_failure": null,
+     "teardown_failure": null,
+     "termination_request": {
+      "signals": [
+       15
+      ]
+     }
+    }
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB2-MUT-capture-before-teardown",
+   "proposition": "mutant: outcome captured before teardown loses the signal and returns COMPLETED",
+   "kind": "mutant",
+   "observed": {
+    "signals_seen": [
+     15
+    ],
+    "result": {
+     "outcome": "COMPLETED"
+    }
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  },
+  {
+   "id": "AB2-POS-signal-plus-incomplete-teardown",
+   "proposition": "normal completion + signal + incomplete teardown \u2192 dominant unit_teardown_incomplete; primary and termination_request retained",
+   "kind": "negative",
+   "observed": {
+    "signals_seen": [
+     15
+    ],
+    "result": {
+     "outcome": "FailureOutcome",
+     "dominant_reason": "unit_teardown_incomplete",
+     "primary_failure": "unit_terminated_by_signal",
+     "descriptor_close_failure": null,
+     "teardown_failure": {
+      "remaining": [
+       "stuck"
+      ]
+     },
+     "termination_request": {
+      "signals": [
+       15
+      ]
+     }
+    }
+   },
+   "verdict": "PASS",
+   "claim_limit": ""
+  }
+ ],
+ "claims": {
+  "establishes": [
+   "reserved 32/33 unexpected state is kernel-visible and refusable before exec (AB-1)",
+   "outcome derived after teardown retains a teardown-time termination request (AB-2)"
+  ],
+  "does_not_establish": [
+   "the production child bootstrap or outcome derivation (B2)"
+  ],
+  "future_qualification_owner": "B2"
+ }
+}
