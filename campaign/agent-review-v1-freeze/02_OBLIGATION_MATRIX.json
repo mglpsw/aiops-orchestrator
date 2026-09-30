@@ -215,7 +215,23 @@
     ],
     "v1_v2_isolation": {
       "principle": "ownership is decided by the import graph, not by the *_v2 filename suffix",
-      "v2_only_paths": "diff of every v2-only surface must be empty for every v1 slice: app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*v2* (includes *-v2.py plus export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py), evals/agent_review_v2/**, tests/agent_review/*v2*; the set is re-derived on each slice's live base (suffix/name scan plus the import graph), not taken from this list",
+      "v2_only_paths": {
+        "rule": "NORMATIVE: every v1 slice re-derives the v2-only set on its live base by (a) name scan for v2 in any path segment and (b) the import graph (any file importing only *_v2 modules or evals.agent_review_v2); diff of that set must be empty. The list below is the set KNOWN at the derivation subject and is illustrative, not exhaustive.",
+        "known_at_derivation_subject": [
+          "app/agent_review/*_v2.py",
+          "schemas/agent-review/v2/**",
+          "scripts/*v2* (incl. export-agent-review-v2-schemas.py, run-agent-review-v2-evals.py, verify-agent-review-v2-conformance.py)",
+          "evals/agent_review_v2/**",
+          "tests/agent_review/*v2*",
+          "tests/agent_review/fixtures/v2/**",
+          "tests/agent_review/fixtures/router_receipt_v2/**",
+          "tests/evals/*v2*",
+          "templates/agentreview-v2-target-pack/**",
+          "import-graph-only v2 code: scripts/generate-target-pack-runtime-authority-view.py, tests/agent_review/test_c3_focal_obligations.py, tests/agent_review/test_c3_workspace_ownership.py, tests/agent_review/test_target_profile_yaml_corpus_metadata.py",
+          "v2 benchmark tooling (reads/imports evals.agent_review_v2): scripts/{compare-review-observations,generate-benchmark-report,generate-benchmark-corpus-manifest,generate-benchmark-identity-final,generate-benchmark-premanifest,materialize-benchmark-case,validate-benchmark-corpus-safety}.py and tests/evals/test_{benchmark_identity_final,benchmark_report,corpus_safety,reviewable_corpus}.py",
+          "non-code v2 surfaces: docs/AGENT_REVIEW_V2_*.md, reports/agent-review-v2-*, campaign/agent-review-v2-replan/"
+        ]
+      },
       "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite (not the non-v2 subset), and (b) state in the PR why v2 behavior is unchanged across the whole transitive reach, not only the direct importers; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
       "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
       "derivation": "AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",
