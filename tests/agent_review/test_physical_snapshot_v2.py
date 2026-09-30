@@ -4157,19 +4157,42 @@ def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_
     assert any("not part of an admitted ownership transition" in v for v in _acquisition_census(mutated))
 
 
+_CLOSE_ONCE_WITH_BOOKKEEPING = """def close_once(self, reason_code=PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2):
+    fd = self.fd
+    if fd is None:
+        return
+    try:
+        self.fd = None  # fd-release
+        _RELEASED_LOG_V2.append(fd)  # fd-release
+        os.close(fd)  # fd-release
+    except OSError as exc:
+        raise _RefusalV2(reason_code) from exc
+"""
+
+
+#: Each release primitive is swept on a shape where it closes a HELD
+#: descriptor. Since §17 the complete path releases through `close_once`
+#: (the pre-commit latch); `close_quietly` still closes `stage_fd` on the
+#: Indeterminate path, so its mutant is swept there (not vacuously on a
+#: shape where it only ever sees empty slots).
+_N1_BOOKKEEPING_MUTANTS = {
+    "close_quietly": (_RELEASE_WITH_BOOKKEEPING, _scenario_unobservable),
+    "close_once": (_CLOSE_ONCE_WITH_BOOKKEEPING, lambda monkeypatch: _SweepScenario("complete", CompletePublicationV2)),
+}
+
+
+@pytest.mark.parametrize("primitive", sorted(_N1_BOOKKEEPING_MUTANTS))
 def test_mutation_n1_allocating_call_on_a_release_marked_statement_is_killed_by_the_fault_sweep(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, primitive: str,
 ) -> None:
     """The same N1 mutant under the sweep: the fault at the `append` call
     after the detach is on an `invalid` marked statement, so the orphaned
     descriptor is reported (the 0672d16 tolerance accepted it)."""
+    source, scenario = _N1_BOOKKEEPING_MUTANTS[primitive]
     monkeypatch.setattr(psv, "_RELEASED_LOG_V2", [], raising=False)
-    monkeypatch.setattr(psv._FdSlotV2, "close_quietly", _compile_mutant(_RELEASE_WITH_BOOKKEEPING))
-    assert _transition_lines(_RELEASE_WITH_BOOKKEEPING) == {}
-    violations = _mutant_sweep(
-        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), _RELEASE_WITH_BOOKKEEPING,
-        {"close_quietly"},
-    )
+    monkeypatch.setattr(psv._FdSlotV2, primitive, _compile_mutant(source))
+    assert _transition_lines(source) == {}
+    violations = _mutant_sweep(tmp_path, monkeypatch, scenario(monkeypatch), source, {primitive})
     assert any("leaked" in v and _MUTANT_FILE in v and "'CALL'" in v for v in violations), violations
 
 
@@ -4314,14 +4337,14 @@ def test_n1_variants_are_killed_by_the_bytecode_window_sweep(tmp_path: Path, mon
     """Dynamic side: installed as `_FdSlotV2.close_quietly`, each variant
     leaves a descriptor unowned at a fault site that NO ownership transition
     covers (the 3ff700a line model tolerated the semicolon, one-line-if and
-    counter forms)."""
+    counter forms). Swept on the Indeterminate shape, where `close_quietly`
+    closes a HELD `stage_fd` (since §17 the Complete shape releases through
+    the pre-commit latch's `close_once`)."""
     monkeypatch.setattr(psv, "_RELEASED_LOG_V2", [], raising=False)
     monkeypatch.setattr(psv, "_ROOTS_COUNTER_V2", type("Counter", (), {"_roots_released": 0})(), raising=False)
     source = _n1_variant(variant)
     monkeypatch.setattr(psv._FdSlotV2, "close_quietly", _compile_mutant(source))
-    violations = _mutant_sweep(
-        tmp_path, monkeypatch, _SweepScenario("complete", CompletePublicationV2), source, {"close_quietly"},
-    )
+    violations = _mutant_sweep(tmp_path, monkeypatch, _scenario_unobservable(monkeypatch), source, {"close_quietly"})
     assert any("leaked" in v and _MUTANT_FILE in v for v in violations), violations
 
 
@@ -4894,3 +4917,481 @@ def test_mutation_mp3_returned_refreshed_but_carried_outcome_stale_is_killed(tmp
         tmp_path, monkeypatch, close_failure=False, rmdir_failures=1, interrupt_first_settle=True, publish=mutant,
     )
     assert (facts["escaped"], facts["residue"], facts["staged"]) == ("KeyboardInterrupt", True, False)
+
+
+# ================================================================================
+# PRECOMMIT_LOCAL_CLOSE_FAILURE_VISIBILITY (fef9b6b independent review; residual
+# owner class of Codex 4139084924; IMPLEMENTATION_ADJUDICATION §17)
+#
+#   SessionDescriptorCloseVisibility != AllPreCommitDescriptorCloseVisibility
+#   freeze §21: OSError of close = fd released + failure
+#               (pre-commit -> NotPublishedV2 descriptor_close_failed), never re-close
+# ================================================================================
+
+_LOCAL_ID = "e" * 32
+_BIG_LOOSE = "c" * 38
+
+
+class _LocalCloseFaultOs:
+    """`os` proxy for the local-owner witnesses. The FIRST descriptor whose
+    `open` matches `match(name, flags)` (or that `adopt` hands over) is the
+    target: its close releases the descriptor, then a sentinel is pinned to
+    the number just released (`dup2`), and only then is EIO reported. A re-close of the released number would
+    close the sentinel (`FdReuse`), which the witness observes. Optionally
+    `fsync` of the target fails first (a primary refusal while the local
+    owner still holds it). Frames here are test code."""
+
+    def __init__(self, real, *, match=None, inject_close: bool = True, fail_fsync: bool = False) -> None:
+        self._real = real
+        self._match = match
+        self.inject_close = inject_close
+        self.fail_fsync = fail_fsync
+        self.target: int | None = None
+        self.fired = 0
+        self.sentinel: int | None = None
+        self.sentinel_reuses_released_number = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+    def adopt(self, fd: int) -> None:
+        if self.target is None:
+            self.target = fd
+
+    def open(self, name, flags, *args, **kwargs):
+        fd = self._real.open(name, flags, *args, **kwargs)
+        if self.target is None and self._match is not None and self._match(name, flags):
+            self.target = fd
+        return fd
+
+    def fsync(self, fd: int) -> None:
+        if self.fail_fsync and fd == self.target:
+            raise OSError(errno.EIO, "injected: fsync of the target failed")
+        return self._real.fsync(fd)
+
+    def close(self, fd: int) -> None:
+        self._real.close(fd)
+        if self.inject_close and not self.fired and fd == self.target:
+            self.fired += 1
+            spare = self._real.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC)
+            if spare == fd:
+                self.sentinel = spare
+            else:
+                try:
+                    self.sentinel = self._real.dup2(spare, fd, inheritable=False)  # pinned to the released number
+                finally:
+                    self._real.close(spare)
+            self.sentinel_reuses_released_number = self.sentinel == fd
+            raise OSError(errno.EIO, "injected: released, and the close reported failure")
+
+
+class _FirstDupFcntl:
+    """`fcntl` proxy: hands the FIRST `F_DUPFD_CLOEXEC` result made through
+    S1-A's own module (the run's staging duplicate of W) to `faulty`."""
+
+    def __init__(self, real, faulty: _LocalCloseFaultOs) -> None:
+        self._real = real
+        self._faulty = faulty
+        self._seen = False
+
+    def __getattr__(self, name: str):
+        return getattr(self._real, name)
+
+    def fcntl(self, fd, cmd, *args):
+        result = self._real.fcntl(fd, cmd, *args)
+        if cmd == self._real.F_DUPFD_CLOEXEC and not self._seen:
+            self._seen = True
+            self._faulty.adopt(result)
+        return result
+
+
+def _is_source_file_open(flags: int) -> bool:
+    return not flags & os.O_CREAT and not flags & os.O_DIRECTORY
+
+
+_LOCAL_OWNER_SCENARIOS = {
+    # L1 -- read_optional_pointer: the `commondir` read exceeds pointer_bytes
+    # (.git 34 + commondir 6 > 35) while the local slot holds it.
+    "L1-optional-pointer": dict(
+        budget=dict(max_pointer_bytes=35), fifo_candidate=False, big_object=False,
+        match=lambda name, flags: name == "commondir" and _is_source_file_open(flags),
+        primary=(psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "pointer_bytes"),
+    ),
+    # L2 -- check_listed_candidate: the lone idx is a FIFO -> special_file_rejected.
+    "L2-listed-candidate": dict(
+        budget={}, fifo_candidate=True, big_object=False,
+        match=lambda name, flags: name == "pack-" + "2" * 40 + ".idx" and _is_source_file_open(flags),
+        primary=(psv.PHYSICAL_SNAPSHOT_SPECIAL_FILE_REJECTED_REASON_V2, None),
+    ),
+    # L3 -- read_listed_object: a 1000-byte object against max_source_bytes=500
+    # (every pointer together stays far below) -> source_bytes.
+    "L3-listed-object": dict(
+        budget=dict(max_source_bytes=500), fifo_candidate=False, big_object=True,
+        match=lambda name, flags: name == _BIG_LOOSE and _is_source_file_open(flags),
+        primary=(psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "source_bytes"),
+    ),
+    # L4 -- write_file (destination file, freeze §21 "fd de arquivo destino"):
+    # its fsync fails -> publication_io_failed while the local slot holds it.
+    "L4-destination-file": dict(
+        budget={}, fifo_candidate=False, big_object=False, fail_fsync=True,
+        match=lambda name, flags: name == "config" and bool(flags & os.O_CREAT),
+        primary=(psv.PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2, None),
+    ),
+    # L5 -- abort (stage_fd, "fechado em NotPublished"): a files_copied refusal;
+    # the stage descriptor's first close is the pre-commit abort's.
+    "L5-abort-stage": dict(
+        budget=dict(max_files_copied=2), fifo_candidate=False, big_object=False,
+        match=lambda name, flags: name == _LOCAL_ID and bool(flags & os.O_DIRECTORY),
+        primary=(psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "files_copied"),
+    ),
+    # L6 -- settlement (the run's staging duplicate of W): same refusal; the
+    # duplicate's first and only close is the mandatory settlement's.
+    "L6-settlement-duplicate": dict(
+        budget=dict(max_files_copied=2), fifo_candidate=False, big_object=False, first_dup=True,
+        match=None,
+        primary=(psv.PHYSICAL_SNAPSHOT_BUDGET_EXCEEDED_REASON_V2, "files_copied"),
+    ),
+}
+
+
+def _local_owner_publication(tmp_path: Path, monkeypatch, scenario: str, *, inject_close: bool = True,
+                             primary_refusal: bool = True, publish=None) -> dict:
+    """One publication where a pre-commit S1-A-owned descriptor OTHER than the
+    source session's is released, then its close reports failure."""
+    spec = _LOCAL_OWNER_SCENARIOS[scenario]
+    src, repo = _sweep_fixture(tmp_path / "fixture")
+    objects = src / "main" / ".git" / "objects"
+    if spec["fifo_candidate"]:
+        lone = objects / "pack" / ("pack-" + "2" * 40 + ".idx")
+        lone.unlink()
+        os.mkfifo(lone)
+    if spec["big_object"]:
+        (objects / "ab" / _BIG_LOOSE).write_bytes(b"x" * 1000)
+    pub = tmp_path / "pub"
+    root = _publication_root(pub)
+    capability = AuthorizedGitStorageSetV2.from_roots([str(src)])
+    faulty = _LocalCloseFaultOs(
+        os, match=spec["match"], inject_close=inject_close,
+        fail_fsync=spec.get("fail_fsync", False) and primary_refusal,
+    )
+    before = _fd_census()
+    monkeypatch.setattr(psv, "os", faulty)
+    if spec.get("first_dup"):
+        monkeypatch.setattr(psv, "fcntl", _FirstDupFcntl(fcntl, faulty))
+    try:
+        outcome = (publish or psv.publish_physical_snapshot_v2)(
+            source_authority=capability,
+            source_locator=SourceRepositoryLocatorV2.absolute(str(repo)),
+            object_format=SHA1,
+            physical_budget=_budget(**(spec["budget"] if primary_refusal else {})),
+            publication_root=root,
+            _snapshot_id=_LOCAL_ID,
+        )
+    finally:
+        monkeypatch.setattr(psv, "os", os)
+        monkeypatch.setattr(psv, "fcntl", fcntl)
+        sentinel_intact = None
+        if faulty.sentinel is not None:
+            try:
+                os.fstat(faulty.sentinel)
+                sentinel_intact = True
+                os.close(faulty.sentinel)
+            except OSError:
+                sentinel_intact = False
+        leaked = sorted(_fd_census() - before)
+        capability.close()
+        root.close()
+    _release_outcome(outcome)
+    return {
+        "type": type(outcome).__name__,
+        "reason": getattr(outcome, "reason_code", None),
+        "axis": getattr(outcome, "exceeded_axis", None),
+        "residue": getattr(outcome, "staging_residue", None),
+        "staged": os.path.lexists(pub / "staging" / _LOCAL_ID),
+        "committed": os.path.lexists(pub / "committed" / _LOCAL_ID),
+        "fired": faulty.fired,
+        "sentinel_reuses_released_number": faulty.sentinel_reuses_released_number,
+        "sentinel_intact": sentinel_intact,
+        "leaked": leaked,
+    }
+
+
+@pytest.mark.parametrize("scenario", sorted(_LOCAL_OWNER_SCENARIOS))
+def test_fp1_local_owner_close_failure_during_refusal_takes_precedence(tmp_path: Path, monkeypatch, scenario: str) -> None:
+    """F-P1-L1..L6: a primary refusal while a pre-commit local owner holds its
+    descriptor, then that descriptor's first close releases and reports
+    failure -> descriptor_close_failed, no axis; nothing leaks, nothing is
+    staged, and the released number is never closed again (the sentinel that
+    reused it survives)."""
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario)
+    assert facts == {
+        "type": "NotPublishedV2", "reason": psv.PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2, "axis": None,
+        "residue": False, "staged": False, "committed": False, "fired": 1,
+        "sentinel_reuses_released_number": True, "sentinel_intact": True, "leaked": [],
+    }
+
+
+@pytest.mark.parametrize("scenario", sorted(_LOCAL_OWNER_SCENARIOS))
+def test_fp1_local_owner_positive_control_clean_close_preserves_the_primary_refusal(
+    tmp_path: Path, monkeypatch, scenario: str,
+) -> None:
+    """The same primary refusal with a clean close: reason AND axis preserved
+    exactly (the target was reached: it was opened)."""
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario, inject_close=False)
+    assert (facts["type"], (facts["reason"], facts["axis"]), facts["residue"], facts["staged"], facts["leaked"]) == (
+        "NotPublishedV2", _LOCAL_OWNER_SCENARIOS[scenario]["primary"], False, False, [],
+    )
+
+
+@pytest.mark.parametrize("scenario", ["L3-listed-object", "L4-destination-file"])
+def test_fp1_local_owner_close_failure_without_a_primary_refusal_is_reported(
+    tmp_path: Path, monkeypatch, scenario: str,
+) -> None:
+    """The rule is not conditional on a primary refusal: an otherwise
+    successful pre-commit step whose local close fails is not published."""
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario, primary_refusal=False)
+    assert (facts["type"], facts["reason"], facts["axis"], facts["fired"], facts["staged"], facts["committed"]) == (
+        "NotPublishedV2", psv.PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2, None, 1, False, False,
+    )
+    assert (facts["sentinel_intact"], facts["leaked"]) == (True, [])
+
+
+# -- census: the class is closed, not three sites patched -------------------------------------
+
+#: Every `close_quietly` reference in the S1-A write-set, keyed by (enclosing
+#: qualname, receiver), with (phase, close_role). A new reference fails the
+#: census until it is classified here; no reference may be
+#: PRE_COMMIT + FIRST_OR_ONLY_CLOSE on an S1-A-owned descriptor.
+_CLOSE_QUIETLY_SITES = {
+    ("_FdSlotV2.__del__", "self"): ("FINALIZER_ONLY", "BEST_EFFORT_OUTSIDE_THIS_CLAIM"),
+    ("_SharedFdSlotV2.close_quietly", "_FdSlotV2"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("SnapshotPublicationRootV2.close", "self._root"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("SnapshotPublicationRootV2.close", "self._staging"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("SnapshotPublicationRootV2.close", "self._committed"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("PublishedSnapshotV2.close", "self._descriptor"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("CommittedSnapshotResidualV2.close", "self._descriptor"): ("CALLER_OWNED_PUBLIC_CAPABILITY", "FIRST_OR_ONLY_CLOSE"),
+    ("_StagingWriterV2.release_descriptors", "slot"): ("COMMIT_ATTEMPTED_OR_POST_COMMIT", "FIRST_OR_ONLY_CLOSE"),
+    ("_StagingWriterV2.release_descriptors", "self.stage"): ("COMMIT_ATTEMPTED_OR_POST_COMMIT", "FIRST_OR_ONLY_CLOSE"),
+    ("_classify_after_attempt_v2", "run.writer.stage"): ("COMMIT_ATTEMPTED_OR_POST_COMMIT", "FIRST_OR_ONLY_CLOSE"),
+    # Every path that produces a pre-commit outcome closes the session
+    # strictly first (the refusal handler, step 5b); settlement's is the
+    # idempotent fallback, or runs under an escaping exception (no outcome).
+    ("_PublicationRunV2.settle", "self.session"): ("PRE_COMMIT", "SECOND_IDEMPOTENT_FALLBACK_AFTER_STRICT_CLOSE"),
+}
+
+#: Every local `_FdSlotV2()` owner (a name bound in a function). Each is a
+#: pre-commit S1-A owner and is released through the run's latch in a
+#: `finally` (its first close observable on every exit path), except
+#: `ensure_dir`, whose slot is handed to the writer's directory table
+#: (released by `finalize_subdirectories` / the latch in `abort`).
+_LOCAL_OWNERS = {
+    ("_SourceSessionV2.admit", "successor"): "latch_finally",
+    ("_SourceSessionV2.read_optional_pointer", "slot"): "latch_finally",
+    ("_SourceSessionV2.check_listed_candidate", "slot"): "latch_finally",
+    ("_SourceSessionV2.read_listed_object", "slot"): "latch_finally",
+    ("_StagingWriterV2.write_file", "slot"): "latch_finally",
+    ("_remove_children_v2", "child"): "latch_finally",
+    ("_remove_tree_by_name_v2", "slot"): "latch_finally",
+    ("_StagingWriterV2.ensure_dir", "slot"): "registered_in_writer_dirs",
+}
+
+#: Attribute-held pre-commit owners released through the latch (§17).
+_LATCH_ATTRIBUTE_RELEASES = {
+    ("_StagingWriterV2.abort", "self.stage"),
+    ("_StagingWriterV2.abort", "slot"),  # the writer's directory table
+    ("_PublicationRunV2.settle", "self.staging"),
+    ("_PublicationRunV2.settle", "self.committed"),
+}
+
+
+def _qualified_nodes(tree):
+    """(qualname, node) for every node, qualname of the innermost def/class chain."""
+    out = []
+
+    def visit(node, qual):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = child.name if not qual else f"{qual}.{child.name}"
+                out.append((qual, child))
+                visit(child, inner)
+            else:
+                out.append((qual, child))
+                visit(child, qual)
+
+    visit(tree, "")
+    return out
+
+
+def _precommit_close_census(source: str) -> dict:
+    tree = ast.parse(source)
+    nodes = _qualified_nodes(tree)
+    quiet: dict[tuple[str, str], int] = {}
+    latch_releases: set[tuple[str, str]] = set()
+    local_owners: dict[tuple[str, str], ast.AST] = {}
+    finally_latch: set[tuple[str, str]] = set()
+    for qual, node in nodes:
+        if isinstance(node, ast.Attribute) and node.attr == "close_quietly":
+            key = (qual, ast.unparse(node.value))
+            quiet[key] = quiet.get(key, 0) + 1
+        if (
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "release"
+            and ast.unparse(node.func.value) in ("self._closes", "closes", "self.closes") and node.args
+        ):
+            latch_releases.add((qual, ast.unparse(node.args[0])))
+        if (
+            isinstance(node, ast.Call) and ast.unparse(node.func) == "_retry_once_v2" and len(node.args) == 2
+            and ast.unparse(node.args[0]) == "self.closes.release"
+        ):
+            latch_releases.add((qual, ast.unparse(node.args[1])))
+        if (
+            isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "_FdSlotV2"
+        ):
+            local_owners[(qual, node.targets[0].id)] = node
+        if isinstance(node, ast.Try):
+            for stmt in node.finalbody:
+                for inner in ast.walk(stmt):
+                    if (
+                        isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "release" and inner.args
+                        and ast.unparse(inner.func.value) in ("self._closes", "closes")
+                    ):
+                        finally_latch.add((qual, ast.unparse(inner.args[0])))
+    return {"quiet": quiet, "latch": latch_releases, "local": set(local_owners), "finally_latch": finally_latch}
+
+
+def _precommit_close_violations(source: str) -> list[str]:
+    census = _precommit_close_census(source)
+    violations = []
+    for key in census["quiet"]:
+        if key not in _CLOSE_QUIETLY_SITES:
+            violations.append(f"unclassified close_quietly {key}")
+        elif _CLOSE_QUIETLY_SITES[key] == ("PRE_COMMIT", "FIRST_OR_ONLY_CLOSE"):
+            violations.append(f"silent first close of a pre-commit owner {key}")
+    for key in _CLOSE_QUIETLY_SITES:
+        if key not in census["quiet"]:
+            violations.append(f"classified close_quietly site vanished {key} (reclassify it)")
+    if census["local"] != set(_LOCAL_OWNERS):
+        violations.append(f"local owners {sorted(census['local'] ^ set(_LOCAL_OWNERS))} unclassified or vanished")
+    for key, kind in _LOCAL_OWNERS.items():
+        if kind == "latch_finally" and key not in census["finally_latch"]:
+            violations.append(f"local owner {key} is not released through the latch in a finally")
+        if (key[0], key[1]) in census["quiet"]:
+            violations.append(f"local owner {key} has a silent close")
+    for key in _LATCH_ATTRIBUTE_RELEASES:
+        if key not in census["latch"]:
+            violations.append(f"attribute owner {key} is not released through the latch")
+    return violations
+
+
+def test_precommit_close_census_no_pre_commit_first_close_is_silent() -> None:
+    """PRECOMMIT_LOCAL_CLOSE_FAILURE_VISIBILITY, static side: the census is
+    total over `close_quietly` references and local `_FdSlotV2()` owners of
+    the exact source, and closes the class."""
+    source = Path(_PSV_FILE).read_text()
+    assert _precommit_close_violations(source) == []
+    census = _precommit_close_census(source)
+    assert len(census["quiet"]) == len(_CLOSE_QUIETLY_SITES) == 11
+    assert len(census["local"]) == 8
+    # The fallback classification of settlement's session close rests on the
+    # strict closes that precede it on every outcome-producing path.
+    run_source = textwrap.dedent(inspect.getsource(psv._publish_run_v2))
+    assert run_source.count("session.close()") == 2
+
+
+@pytest.mark.parametrize(
+    ("anchor", "silent"),
+    [
+        ("        finally:\n            self._closes.release(slot)\n        return data\n",
+         "        finally:\n            slot.close_quietly()\n        return data\n"),
+        ("                    _retry_once_v2(self.closes.release, self.staging)\n",
+         "                    _retry_once_v2(self.staging.close_quietly)\n"),
+        ("            self._closes.release(self.stage)\n", "            self.stage.close_quietly()\n"),
+    ],
+)
+def test_precommit_close_census_is_not_vacuous(anchor: str, silent: str) -> None:
+    source = Path(_PSV_FILE).read_text()
+    assert source.count(anchor) >= 1
+    mutated = source.replace(anchor, silent, 1)
+    assert _precommit_close_violations(mutated) != []
+
+
+# -- causal mutants: each killed by the intended proposition -----------------------------------
+
+
+def _method_mutant(owner, name: str, old: str, new: str):
+    source = inspect.getsource(getattr(owner, name))  # module indentation; `_compile_mutant` dedents
+    assert source.count(old) == 1, (name, old)
+    return _compile_mutant(source.replace(old, new, 1))
+
+
+#: Reintroduced silence, one representative per owner class the census found.
+_SILENCE_MUTANTS = {
+    # M-L1: a source reader's finally is again its only (silent) close.
+    "M-L1-source-reader": (
+        "L1-optional-pointer", lambda: psv._SourceSessionV2, "read_optional_pointer",
+        "            self._closes.release(slot)\n", "            slot.close_quietly()\n",
+    ),
+    "M-L4-destination-file": (
+        "L4-destination-file", lambda: psv._StagingWriterV2, "write_file",
+        "            self._closes.release(slot)\n", "            slot.close_quietly()\n",
+    ),
+    "M-L5-abort-cleanup": (
+        "L5-abort-stage", lambda: psv._StagingWriterV2, "abort",
+        "            self._closes.release(self.stage)\n", "            self.stage.close_quietly()\n",
+    ),
+    "M-L6-settlement-duplicate": (
+        "L6-settlement-duplicate", lambda: psv._PublicationRunV2, "settle",
+        "                    _retry_once_v2(self.closes.release, self.staging)\n",
+        "                    _retry_once_v2(self.staging.close_quietly)\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_SILENCE_MUTANTS))
+def test_mutation_ml1_reintroduced_silent_first_close_is_killed(tmp_path: Path, monkeypatch, mutant: str) -> None:
+    """M-L1 (and one representative per further owner class): the close
+    still releases and fails, but silently -- the witness's proposition fails
+    exactly: the PRIMARY refusal (reason and axis) is returned."""
+    scenario, owner, name, old, new = _SILENCE_MUTANTS[mutant]
+    monkeypatch.setattr(owner(), name, _method_mutant(owner(), name, old, new))
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario)
+    assert facts["fired"] == 1 and facts["leaked"] == []
+    assert (facts["reason"], facts["axis"]) == _LOCAL_OWNER_SCENARIOS[scenario]["primary"]
+
+
+@pytest.mark.parametrize("scenario", sorted(_LOCAL_OWNER_SCENARIOS))
+def test_mutation_ml2_recorded_close_failure_without_precedence_is_killed(
+    tmp_path: Path, monkeypatch, scenario: str,
+) -> None:
+    """M-L2: the failure is still recorded, but does not take precedence
+    over the primary refusal -- every local-owner witness returns the primary."""
+    monkeypatch.setattr(psv, "_close_failure_precedence_v2", lambda outcome, run: outcome)
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario)
+    assert facts["fired"] == 1 and facts["leaked"] == []
+    assert (facts["reason"], facts["axis"]) == _LOCAL_OWNER_SCENARIOS[scenario]["primary"]
+
+
+_RECLOSE_AFTER_FAILED_CLOSE = """def release(self, slot):
+    fd = slot.fd
+    try:
+        slot.close_once()
+    except _RefusalV2:
+        self.failed = True
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+"""
+
+
+@pytest.mark.parametrize("scenario", ["L1-optional-pointer", "L5-abort-stage"])
+def test_mutation_ml3_reclose_after_a_failed_strict_close_is_killed(tmp_path: Path, monkeypatch, scenario: str) -> None:
+    """M-L3: after the strict close released and failed, the number is closed
+    AGAIN. The reason is still right -- the fd-reuse witness is what kills it:
+    the sentinel pinned to the released number is closed behind its owner."""
+    monkeypatch.setattr(psv._PrecommitCloseLatchV2, "release", _compile_mutant(_RECLOSE_AFTER_FAILED_CLOSE))
+    facts = _local_owner_publication(tmp_path, monkeypatch, scenario)
+    assert facts["reason"] == psv.PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2
+    assert (facts["fired"], facts["sentinel_reuses_released_number"], facts["sentinel_intact"]) == (1, True, False)

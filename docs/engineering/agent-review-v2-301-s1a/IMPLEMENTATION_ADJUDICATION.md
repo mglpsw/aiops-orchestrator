@@ -1086,3 +1086,123 @@ The previous exact-head qualification is historical. The new exact head is requa
 - CI is green, and the independent review and Codex each report 0 material findings.
 
 **Every** inline finding of **every** review on the exact head (and on its byte-identical production predecessors) is enumerated before the disposition. Only after that may a separate human grant authorize Ready or merge.
+
+## 17. fef9b6b: residual owner class of 4139084924; PRECOMMIT_LOCAL_CLOSE_FAILURE_VISIBILITY (append-only)
+
+```yaml
+subject: fef9b6bdd8c6e237094dd51ea05c1aa98275a886
+source: independent reviewer relaunched after a WSL restart (the earlier reviewer process did not survive it)
+codex_exact_head: "summary 'Didn't find any major issues'; no review and no inline comment on fef9b6b"
+finding:
+  title: source-local descriptor owners still close silently on the refusal path
+  classification: ESTABLISHED_PRODUCTION_FINDING   # maintainer adjudication, 2026-09-30
+  class: lifecycle_visibility
+  relation_to_4139084924:
+    original_correction: {session_owned_descriptors: CLOSED}
+    new_finding: {source_local_descriptor_owners: NOT_CLOSED}
+    classification: [SAME_PROPOSITION, RESIDUAL_OWNER_CLASS]
+  new_N1_N2_N3_theme: false
+  reproduced: >
+    read_optional_pointer, check_listed_candidate and read_listed_object hold their fd in a
+    local slot whose `finally: slot.close_quietly()` is the first and only close when a
+    primary refusal escapes; a close that releases and then reports EIO was dropped and the
+    primary refusal returned (pointer_bytes via commondir; special_file_rejected via a FIFO
+    lone candidate). The descriptor was released (no leak): visibility, not ownership.
+  falsified: ["§16.1 (unqualified)", "§16.4 'a descriptor-close failure is not suppressed'", "ARCHITECTURE_FREEZE §21 close rule"]
+disposition_during_round: [STOP_NEW_PRODUCTION_FINDING, STOP_DECLARED_DOMAIN_INVALIDATION]
+claim_restriction: REJECTED   # freeze §21 applies to every pre-commit S1-A-owned descriptor
+rule: "SessionDescriptorCloseVisibility != AllPreCommitDescriptorCloseVisibility"
+write_set: [app/agent_review/physical_snapshot_v2.py, tests/agent_review/test_physical_snapshot_v2.py, docs/engineering/agent-review-v2-301-s1a/IMPLEMENTATION_ADJUDICATION.md]
+unchanged: [ARCHITECTURE_FREEZE.md, trusted_object_authority_v2.py, wire schemas, PublicationOutcomeV2, post-commit semantics, public capability close semantics, N1, N2, N3, C2_A, physical budget, layout grammar, NOREPLACE, durability sequence]
+```
+
+### 17.1 Census (read-only, before any production change)
+
+Every `close_quietly` reference and every local `_FdSlotV2()` owner in the S1-A write-set, classified by phase and close role. The class to close is `PRE_COMMIT ∧ FIRST_OR_ONLY_CLOSE ∧ S1A_OWNED_DESCRIPTOR`.
+
+| Site (fef9b6b) | Descriptor (freeze §21) | Phase | Close role | In class |
+|---|---|---|---|---|
+| `read_optional_pointer` finally | source pointer | PRE_COMMIT | FIRST_OR_ONLY on refusal | **yes** (the finding) |
+| `check_listed_candidate` finally | source object candidate | PRE_COMMIT | FIRST_OR_ONLY on refusal | **yes** (the finding) |
+| `read_listed_object` finally | source object | PRE_COMMIT | FIRST_OR_ONLY on refusal | **yes** (the finding) |
+| `write_file` finally | destination file | PRE_COMMIT | FIRST_OR_ONLY on refusal (fsync/write failure) | **yes** (found by the census) |
+| `abort`: directory table, `stage` | staging dirs, `stage_fd` ("fechado em NotPublished") | PRE_COMMIT | FIRST_OR_ONLY | **yes** (found by the census) |
+| `_remove_children_v2`, `_remove_tree_by_name_v2` | cleanup directories opened by abort | PRE_COMMIT | FIRST_OR_ONLY | **yes** (found by the census) |
+| `settle`: `staging`/`committed` duplicates of W | the run's publication duplicates | PRE_COMMIT when not attempted | FIRST_OR_ONLY | **yes** (found by the census) |
+| `admit` successor finally | descent intermediate | PRE_COMMIT | FIRST_OR_ONLY only while `admitted.close_once()` already failed | routed through the same primitive; the reason is already `descriptor_close_failed` |
+| `settle`: `session.close_quietly` | source session | PRE_COMMIT | SECOND_IDEMPOTENT_FALLBACK (the handler and step 5b close strictly first) or under an escaping exception (no outcome) | no |
+| `release_descriptors`, `_classify_after_attempt_v2` | staging dirs, `stage_fd` | COMMIT_ATTEMPTED_OR_POST_COMMIT | — | no |
+| `PublishedSnapshotV2.close`, `CommittedSnapshotResidualV2.close`, `_SharedFdSlotV2.close_quietly`, `SnapshotPublicationRootV2.close` | public capabilities / W | CALLER_OWNED_PUBLIC_CAPABILITY | — | no |
+| `_FdSlotV2.__del__` | any | FINALIZER_ONLY | BEST_EFFORT_OUTSIDE_THIS_CLAIM | no |
+
+The census found in-class owners beyond the three readers: the destination file, the abort cleanup descriptors, `stage_fd` and the run's W duplicates. All of them could use the same primitive without changing `PublicationOutcomeV2`, post-commit semantics or public capability close semantics, so under the maintainer's rule they are **included in this bounded closure**. `STOP_SCOPE_EXPANSION` was not needed.
+
+### 17.2 Mechanism (one primitive, one precedence point)
+
+- `_PrecommitCloseLatchV2.release(slot)` is the single strict release. It calls `close_once` (detach, then close exactly once). A close failure is **recorded** in the latch, never dropped and never retried, and the descriptor counts as released either way.
+- There is one latch per `_PublicationRunV2`. The run shares it with the source session and the staging writer.
+- Every in-class owner is released through the latch:
+  - local owners, in a `finally`, so the first close is observable on every exit path;
+  - `abort`, for its directory table and `stage`;
+  - the removal helpers, which take the latch as a parameter;
+  - `settle`, for the W duplicates (`_retry_once_v2` now forwards arguments).
+- `_close_failure_precedence_v2` is the one place the rule is applied. It runs on the **returned** outcome, after `_settled_outcome_v2`, on both settlement paths of `publish_physical_snapshot_v2`. It applies to a pre-commit `NotPublishedV2` (`run.attempted` false) when the latch recorded a failure: the outcome is rebuilt as `descriptor_close_failed` with `exceeded_axis = null`, and the settled residue is kept. A clean latch returns the outcome unchanged, so the primary refusal is preserved exactly.
+- On the normal path, a local owner's own `close_once` still raises `descriptor_close_failed` directly. The rule therefore does not depend on a primary refusal being present.
+- The session's strict `session.close()` in the refusal handler (§16.1) is unchanged. M-P1 still discriminates it.
+- No retry of a detached descriptor: `close_once` detaches before `os.close`, and any later release of the same slot is a no-op.
+- N3 boundary: an outcome carried by an asynchronous interruption (`_commit_v2`'s `BaseException` path) keeps its reason. The precedence is required for normal execution and for synchronous refusals, and is not widened to KeyboardInterrupt, SystemExit or other async exceptions combined with a close failure. A non-refusal exception that escapes before the commit point produces no outcome and is unchanged. `STOP_N3_BOUNDARY_CONFLICT` was not needed.
+- `_settled_outcome_v2` is unchanged (§16.2), so returned and exception-carried residue truth stay equal.
+
+### 17.3 Witnesses (public API; RED = fef9b6b production, GREEN = successor)
+
+The fault model is the same as §16: `os.close` releases the descriptor and then raises EIO. At that moment a sentinel is pinned to the released number (`dup2`), so any re-close of that number would close the sentinel (`FdReuse`).
+
+| Witness | Primary refusal | fef9b6b | successor |
+|---|---|---|---|
+| F-P1-L1 `read_optional_pointer` | `budget_exceeded` / `pointer_bytes` | primary (**RED**) | `descriptor_close_failed` / null |
+| F-P1-L2 `check_listed_candidate` | `special_file_rejected` / null | primary (**RED**) | `descriptor_close_failed` / null |
+| F-P1-L3 `read_listed_object` | `budget_exceeded` / `source_bytes` | primary (**RED**) | `descriptor_close_failed` / null |
+| F-P1-L4 `write_file` (destination) | `publication_io_failed` / null | primary (**RED**) | `descriptor_close_failed` / null |
+| F-P1-L5 `abort` (`stage_fd`) | `budget_exceeded` / `files_copied` | primary (**RED**) | `descriptor_close_failed` / null |
+| F-P1-L6 `settle` (W duplicate) | `budget_exceeded` / `files_copied` | primary (**RED**) | `descriptor_close_failed` / null |
+| positive controls L1–L6, clean close | as above | primary exactly | primary exactly |
+| no primary refusal, L3/L4 close fails | — | `descriptor_close_failed` | `descriptor_close_failed` |
+| static census (§17.1) | — | **RED** (silent first closes) | clean, total (11 `close_quietly` sites, 8 local owners) |
+
+In every GREEN row: no fd leak, nothing staged, nothing committed, the sentinel is intact, and exactly one close failure was injected.
+
+| Mutant | Killed by |
+|---|---|
+| M-L1: a source reader's `finally` is again a silent `close_quietly` | F-P1-L1 returns the primary refusal (reason and axis); also flagged by the census |
+| M-L2: the failure is recorded but does not take precedence | each F-P1-L1..L6 returns its primary refusal |
+| M-L3: re-close after a strict close that released and failed | the fd-reuse witness: the pinned sentinel is closed (L1, L5) |
+| M-L4 / M-L5 / M-L6: silence reintroduced in `write_file` / `abort` / `settle` (one per further owner class) | F-P1-L4 / L5 / L6 return the primary refusal |
+
+Every mutant test asserts that the injection fired, that nothing leaked, and that the wrong result is exactly the primary reason and axis (or, for M-L3, a closed sentinel), so no kill comes from a fixture, import or unrelated error. F-P1/F-P2 and M-P1/M-P2/M-P3 of §16 are unchanged gates.
+
+**Qualification-layer adjustment:** the N1 anti-vacuity sweep of the "allocating call on a release-marked statement" mutant had been installed on `_FdSlotV2.close_quietly` and swept on the Complete shape. Since the complete path now releases only through `close_once`, that sweep became vacuous. It is now parametrized:
+- the `close_quietly` mutant is swept on the Indeterminate shape, where `close_quietly` still closes `stage_fd`;
+- the same mutant on `close_once` is swept on the Complete shape.
+
+Both are killed by the intended `'CALL'` leak.
+
+For the same reason, the dynamic side of the N1 line-model variants (`test_n1_variants_are_killed_by_the_bytecode_window_sweep`: semicolon, one-line `if`, unrelated counter, and so on) is now swept on the Indeterminate shape. Each variant is still killed by an unowned-descriptor leak inside the mutant.
+
+The static N1 census, its mutants and the static side of the variants are unchanged.
+
+### 17.4 Environment note
+
+The local `.venv` is CPython 3.12.3. There, the C11 sweep fails and then deadlocks on a futex, identically on e8ca263 and fef9b6b. The full local 3.12 suite also gave counts that differ from the pre-restart ledger. Class: `environment`.
+
+The 3.12 numbers are **not** used as regression evidence. The qualifying runtime remains CPython 3.11, the CI runtime and the standalone install contract.
+
+### 17.5 Requalification and terminal rule
+
+The terminal rule is the maintainer's §18 of the 2026-09-30 adjudication. **`301_S1A_STRUCTURAL_REDESIGN_CANDIDATE`** holds only when:
+- there are 0 production findings and 0 domain invalidations;
+- `precommit_close_visibility` holds: the source session and source-local slots pass, the census has 0 unclassified sites, close-failure precedence holds, and there is no re-close after a failed close;
+- `NotPublished_final_truth` holds for the returned outcome, the exception-carried outcome and persistent residue;
+- N1 is closed, N2 passes, and N3 is calibrated;
+- CI is green, and Codex and the independent review each report 0 material findings.
+
+Before any "0 findings" statement, every review surface of the exact head is enumerated: PR reviews, every inline comment, review threads, top-level comments and the Codex summary. Ready, merge, release, deploy, closing #301 and starting S1-B remain behind a separate human grant.

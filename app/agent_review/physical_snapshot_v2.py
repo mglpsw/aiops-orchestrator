@@ -620,6 +620,30 @@ class _SharedFdSlotV2(_FdSlotV2):
             _FdSlotV2.close_quietly(self)
 
 
+class _PrecommitCloseLatchV2:
+    """`PRECOMMIT_LOCAL_CLOSE_FAILURE_VISIBILITY` (freeze §21; IMPLEMENTATION_ADJUDICATION §17).
+
+    The single strict release for an S1-A-owned descriptor whose first close
+    may happen while something else is already being reported (a refusal in
+    flight, the pre-commit abort, the mandatory settlement): the slot is
+    detached and closed exactly once (`close_once`) and a close failure is
+    RECORDED here, never dropped and never retried -- the descriptor counts as
+    released either way. One latch per publication run; before the commit
+    point a recorded failure takes precedence over the returned refusal
+    (`_close_failure_precedence_v2`)."""
+
+    __slots__ = ("failed",)
+
+    def __init__(self) -> None:
+        self.failed = False
+
+    def release(self, slot: _FdSlotV2) -> None:
+        try:
+            slot.close_once()
+        except _RefusalV2:
+            self.failed = True
+
+
 # -- sealed capability and state types (IMPLEMENTATION_ADJUDICATION, Codex 4133910390) --
 #
 # `ExactType + NoSubclassPolymorphism + FactoryInvariant`. A subclass could
@@ -1021,8 +1045,9 @@ class _SourceSessionV2:
     not-yet-released descriptor with its owner.
     """
 
-    def __init__(self, tracker: PhysicalWorkTrackerV2) -> None:
+    def __init__(self, tracker: PhysicalWorkTrackerV2, closes: _PrecommitCloseLatchV2 | None = None) -> None:
         self._tracker = tracker
+        self._closes = _PrecommitCloseLatchV2() if closes is None else closes
         self._roots: tuple[AuthorizedStorageRootDuplicateV2, ...] = ()
         self._roots_released = 0
         self._live: list[_AdmittedDirV2] = []
@@ -1121,7 +1146,7 @@ class _SourceSessionV2:
                 successor.move_to(admitted)
                 current = admitted.fd
         finally:
-            successor.close_quietly()
+            self._closes.release(successor)
         return admitted
 
     def child(self, parent: _AdmittedDirV2, name: str, missing_reason: str) -> _AdmittedDirV2:
@@ -1191,7 +1216,7 @@ class _SourceSessionV2:
             data = _read_charged_v2(self._tracker, slot.fd, pointer=True)
             slot.close_once()
         finally:
-            slot.close_quietly()
+            self._closes.release(slot)
         return data
 
     def check_listed_candidate(self, parent: _AdmittedDirV2, name: str) -> None:
@@ -1206,7 +1231,7 @@ class _SourceSessionV2:
             _open_source_file_into_v2(slot, parent.fd, name, missing_is_legitimate=False)
             slot.close_once()
         finally:
-            slot.close_quietly()
+            self._closes.release(slot)
 
     def read_listed_object(self, parent: _AdmittedDirV2, name: str) -> bytes:
         """A file already seen in a listing: charged as a copied file and an
@@ -1220,7 +1245,7 @@ class _SourceSessionV2:
             data = _read_charged_v2(self._tracker, slot.fd, pointer=False)
             slot.close_once()
         finally:
-            slot.close_quietly()
+            self._closes.release(slot)
         return data
 
     def probe_dotgit(self, repo: _AdmittedDirV2) -> tuple[str, _AdmittedDirV2 | bytes | None]:
@@ -1319,9 +1344,10 @@ class _StagingWriterV2:
     idempotent and resumable.
     """
 
-    def __init__(self, staging: _FdSlotV2, snapshot_id: str) -> None:
+    def __init__(self, staging: _FdSlotV2, snapshot_id: str, closes: _PrecommitCloseLatchV2 | None = None) -> None:
         self.snapshot_id = snapshot_id
         self._staging = staging
+        self._closes = _PrecommitCloseLatchV2() if closes is None else closes
         self.stage = _FdSlotV2()
         self._dirs: dict[str, _FdSlotV2] = {}
         self._manifest: dict[str, tuple[str, str, int, int, str]] = {".": ("dir", ".", _DIR_MODE_V2, 0, "")}
@@ -1387,7 +1413,7 @@ class _StagingWriterV2:
                 raise _RefusalV2(PHYSICAL_SNAPSHOT_PUBLICATION_IO_FAILED_REASON_V2) from exc
             slot.close_once()
         finally:
-            slot.close_quietly()
+            self._closes.release(slot)
         if relpath != PHYSICAL_SNAPSHOT_RECEIPT_FILENAME_V2:
             self._manifest[relpath] = ("file", relpath, _FILE_MODE_V2, len(data), digest)
         if copied:
@@ -1451,18 +1477,18 @@ class _StagingWriterV2:
         if self._aborted:
             return False
         for slot in list(self._dirs.values()):
-            slot.close_quietly()
+            self._closes.release(slot)
         residue = False
         if self.stage.fd is None:
             if self.created:
-                residue = not _remove_tree_by_name_v2(self._staging, self.snapshot_id)
+                residue = not _remove_tree_by_name_v2(self._staging, self.snapshot_id, self._closes)
         else:
             try:
                 os.fchmod(self.stage.fd, _STAGING_DIR_MODE_V2)
-                residue = not _remove_children_v2(self.stage.fd)
+                residue = not _remove_children_v2(self.stage.fd, self._closes)
             except OSError:
                 residue = True
-            self.stage.close_quietly()
+            self._closes.release(self.stage)
             if self._staging.fd is None:
                 residue = True
             else:
@@ -1477,10 +1503,11 @@ class _StagingWriterV2:
         return residue
 
 
-def _remove_children_v2(dir_fd: int) -> bool:
+def _remove_children_v2(dir_fd: int, closes: _PrecommitCloseLatchV2) -> bool:
     """Remove everything below an owned staging directory: fchmod 0700
     top-down (finalized dirs are 0555), unlinkat bottom-up. Publication side
-    only. Returns False if anything could not be removed."""
+    only. Returns False if anything could not be removed; a close failure of
+    a descriptor it opened is recorded in `closes`, not reported as residue."""
     ok = True
     try:
         with os.scandir(dir_fd) as iterator:
@@ -1499,12 +1526,12 @@ def _remove_children_v2(dir_fd: int) -> bool:
                 try:
                     child.fd = os.open(name, _DIR_OPEN_FLAGS_V2, dir_fd=dir_fd)  # fd-install
                     os.fchmod(child.fd, _STAGING_DIR_MODE_V2)
-                    ok = _remove_children_v2(child.fd) and ok
+                    ok = _remove_children_v2(child.fd, closes) and ok
                 except OSError:
                     ok = False
-                child.close_quietly()
+                closes.release(child)
             finally:
-                child.close_quietly()
+                closes.release(child)
             try:
                 os.rmdir(name, dir_fd=dir_fd)
             except OSError:
@@ -1517,7 +1544,7 @@ def _remove_children_v2(dir_fd: int) -> bool:
     return ok
 
 
-def _remove_tree_by_name_v2(parent: _FdSlotV2, name: str) -> bool:
+def _remove_tree_by_name_v2(parent: _FdSlotV2, name: str, closes: _PrecommitCloseLatchV2) -> bool:
     if parent.fd is None:
         return False
     slot = _FdSlotV2()
@@ -1530,12 +1557,12 @@ def _remove_tree_by_name_v2(parent: _FdSlotV2, name: str) -> bool:
             return False
         try:
             os.fchmod(slot.fd, _STAGING_DIR_MODE_V2)
-            ok = _remove_children_v2(slot.fd)
+            ok = _remove_children_v2(slot.fd, closes)
         except OSError:
             ok = False
-        slot.close_quietly()
+        closes.release(slot)
     finally:
-        slot.close_quietly()
+        closes.release(slot)
     try:
         os.rmdir(name, dir_fd=parent.fd)
     except OSError:
@@ -1863,8 +1890,8 @@ class _PublicationRunV2:
     owned -- nothing is released by building a new owner."""
 
     __slots__ = (
-        "tracker", "snapshot_id", "staging", "committed", "session", "writer", "receipt", "committed_identity",
-        "attempted", "final_residue",
+        "tracker", "snapshot_id", "staging", "committed", "closes", "session", "writer", "receipt",
+        "committed_identity", "attempted", "final_residue",
     )
 
     def __init__(self, tracker: PhysicalWorkTrackerV2, snapshot_id: str, committed_identity: KernelObjectIdentityV2) -> None:
@@ -1872,8 +1899,10 @@ class _PublicationRunV2:
         self.snapshot_id = snapshot_id
         self.staging = _FdSlotV2()
         self.committed = _FdSlotV2()
-        self.session = _SourceSessionV2(tracker)
-        self.writer = _StagingWriterV2(self.staging, snapshot_id)
+        # One latch for every pre-commit local owner of this run (§17).
+        self.closes = _PrecommitCloseLatchV2()
+        self.session = _SourceSessionV2(tracker, self.closes)
+        self.writer = _StagingWriterV2(self.staging, snapshot_id, self.closes)
         self.receipt: PublishedSnapshotReceiptV2 | None = None
         self.committed_identity = committed_identity
         self.attempted = False
@@ -1903,9 +1932,9 @@ class _PublicationRunV2:
                 _retry_once_v2(self._settle_writer)
             finally:
                 try:
-                    _retry_once_v2(self.staging.close_quietly)
+                    _retry_once_v2(self.closes.release, self.staging)
                 finally:
-                    _retry_once_v2(self.committed.close_quietly)
+                    _retry_once_v2(self.closes.release, self.committed)
 
 
 def _settled_outcome_v2(outcome: PublicationOutcomeV2 | None, run: _PublicationRunV2) -> PublicationOutcomeV2 | None:
@@ -1925,6 +1954,25 @@ def _settled_outcome_v2(outcome: PublicationOutcomeV2 | None, run: _PublicationR
     )
 
 
+def _close_failure_precedence_v2(outcome: PublicationOutcomeV2 | None, run: _PublicationRunV2) -> PublicationOutcomeV2 | None:
+    """`DescriptorCloseFailure` takes precedence over `PrimaryRefusalReason`
+    for every pre-commit S1-A-owned descriptor, not only the session's
+    (freeze §21; §17): if the run's latch recorded a close failure before the
+    commit point, the RETURNED `NotPublishedV2` is rebuilt as
+    `descriptor_close_failed` with no axis and its settled residue. The
+    outcome carried by an asynchronous interruption keeps its reason (N3
+    boundary, not widened here)."""
+    if type(outcome) is not NotPublishedV2 or run.attempted or not run.closes.failed:
+        return outcome
+    if outcome.reason_code == PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2 and outcome.exceeded_axis is None:
+        return outcome
+    return NotPublishedV2(
+        reason_code=PHYSICAL_SNAPSHOT_DESCRIPTOR_CLOSE_FAILED_REASON_V2,
+        exceeded_axis=None,
+        staging_residue=outcome.staging_residue,
+    )
+
+
 def _settle_attached_v2(exc: BaseException | None, run: _PublicationRunV2) -> None:
     """The outcome carried by an escaping exception gets the same final truth."""
     attached = getattr(exc, "physical_snapshot_outcome", None)
@@ -1932,13 +1980,13 @@ def _settle_attached_v2(exc: BaseException | None, run: _PublicationRunV2) -> No
         exc.physical_snapshot_outcome = _settled_outcome_v2(attached, run)  # type: ignore[union-attr]
 
 
-def _retry_once_v2(step: Callable[[], object]) -> None:
+def _retry_once_v2(step: Callable[..., object], *args: object) -> None:
     """Run an idempotent, resumable cleanup step; if it is interrupted, run it
     again (releasing what the first attempt did not), then re-raise."""
     try:
-        step()
+        step(*args)
     except BaseException:
-        step()
+        step(*args)
         raise
 
 
@@ -2191,7 +2239,7 @@ def publish_physical_snapshot_v2(
             run.settle()
             # FinalSettlementTruth (Codex 4139084932): the returned and the
             # exception-carried outcome both reflect the settlement just done.
-            final = _settled_outcome_v2(outcome, run)
+            final = _close_failure_precedence_v2(_settled_outcome_v2(outcome, run), run)
             _settle_attached_v2(escaping, run)
         except BaseException as interruption:
             # Settling is resumable: finish it, then report. An outcome that
@@ -2199,7 +2247,7 @@ def publish_physical_snapshot_v2(
             # propagated -- is never lost behind a cleanup failure, within the
             # qualified fault model (C10; §10.4, §16).
             run.settle()
-            final = _settled_outcome_v2(outcome, run)
+            final = _close_failure_precedence_v2(_settled_outcome_v2(outcome, run), run)
             _settle_attached_v2(escaping, run)
             known = final if final is not None else getattr(escaping, "physical_snapshot_outcome", None)
             if known is not None:
