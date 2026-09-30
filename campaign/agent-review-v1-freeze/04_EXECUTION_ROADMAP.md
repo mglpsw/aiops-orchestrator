@@ -83,8 +83,9 @@ incompatível com a função da L-CHUNK (revisar código exige transmiti-lo). Op
 cabe como fechamento **mais forte e compatível** (p.ex. tornar `output_safe_for_llm`
 computado, reduzir superfície da L-LEGACY), e mesmo assim deixa risco residual cuja
 aceitação é decisão humana. B e C são reservadas a humano por #221. Não copiar
-G2C/`structural_egress_projection_v2.py`. `redaction.py` é importado por cinco módulos v2:
-qualquer mudança nele cai na regra de módulo compartilhado de `02` (`slice_gates.v1_v2_isolation`).
+G2C/`structural_egress_projection_v2.py`. `redaction.py` é importado diretamente por cinco módulos v2 e pelo script de conformance v2, e
+alcança transitivamente quase toda a lane v2 via `contracts_v2`: qualquer mudança nele cai na
+regra de módulo compartilhado de `02` (`slice_gates.v1_v2_isolation`).
 
 ### V1-C6
 Corpus consolidado: coverage truth, claim coverage (ou non-claim), limitation

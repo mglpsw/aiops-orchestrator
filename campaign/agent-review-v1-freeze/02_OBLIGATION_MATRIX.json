@@ -216,13 +216,17 @@
     "v1_v2_isolation": {
       "principle": "ownership is decided by the import graph, not by the *_v2 filename suffix",
       "v2_only_paths": "diff of app/agent_review/*_v2.py, schemas/agent-review/v2/**, scripts/*-v2.py must be empty for every v1 slice",
-      "shared_modules_imported_by_v2": {
+      "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite (not the non-v2 subset), and (b) state in the PR why v2 behavior is unchanged across the whole transitive reach, not only the direct importers; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
+      "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
+      "derivation": "AST scan of absolute, 'from app.agent_review import X' and relative imports over app/**, scripts/** and evals/** at ab92e89f (shared set {redaction, schemas, versioning} verified complete, including transitive closure); recompute on each slice's live base",
+      "shared_modules_direct_v2_importers": {
         "redaction.py": [
           "app/agent_review/contracts_v2.py",
           "app/agent_review/isolated_executor_v2.py",
           "app/agent_review/payload_references_v2.py",
           "app/agent_review/review_content_v2.py",
-          "app/agent_review/review_content_extraction_v2.py"
+          "app/agent_review/review_content_extraction_v2.py",
+          "scripts/verify-agent-review-v2-conformance.py"
         ],
         "schemas.py": [
           "app/agent_review/profile_migration_v1_v2.py",
@@ -233,9 +237,7 @@
           "scripts/aiops-review-quality-gate-v2.py"
         ]
       },
-      "shared_module_rule": "a v1 slice that edits any shared module must (a) run the full tests/agent_review suite, including the v2 tests that exercise the importers above (e.g. test_payload_references_v2.py, test_review_transport_v2.py, test_consumer_v2.py, test_profile_migration_v1_v2.py), and (b) state in the PR why the v2 importers' behavior is unchanged; an intended or unexplained v2 behavior change is STOP_UNEXPECTED_V2_COUPLING",
-      "not_shared_on_derivation_subject": "semantic_chunker.py and payload_cost_model.py are not imported by v2 (asserted by tests/agent_review/test_semantic_chunker_225_red.py:312); recompute the import graph on each slice's live base",
-      "derivation": "grep of 'from app.agent_review.<module> import' in app/agent_review/*_v2.py, app/agent_review/packaging/*.py, scripts/*-v2.py at ab92e89f"
+      "transitive_reach": "contracts_v2 imports redaction, and redaction imports schemas; versioning imports schemas and contracts_v2. A change to redaction.py or schemas.py therefore reaches essentially the whole v2 lane transitively (via contracts_v2), and a change to versioning.py reaches the v2 parser/synthesis/readiness/transport/consumer chain and scripts/aiops-review-quality-gate-v2.py. The direct-importer lists above are not the blast radius."
     },
     "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
   }
