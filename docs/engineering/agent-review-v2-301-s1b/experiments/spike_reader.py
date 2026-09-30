@@ -28,8 +28,14 @@ deadline the child is SIGKILLed through the pidfd and ownership passes to the bo
 teardown (no blocking wait). SIGCHLD state helpers implement B-LIF-11. Round-3b ablations:
 no_fork_block, no_child_signal_reset, child_unwind, handshake_ignores_wakeup,
 blocking_reap_after_deadline, no_sigchld_normalize, sigchld_handler_only.
+Round 3b, iteration 2: the fork is guarded (the mask is restored if fork() fails;
+ablation no_fork_restore_guard); the child also resets every SIG_IGN disposition to SIG_DFL
+(CPython ignores SIGPIPE/SIGXFSZ at start-up; ablation no_child_sigign_reset); the teardown
+closes the owner pidfd exactly once and counts pidfds left open; the teardown budget is the
+remainder of a unit envelope (work deadline + teardown reserve) fixed before fork().
 """
 import ctypes
+import errno
 import fcntl
 import json
 import os
@@ -237,8 +243,25 @@ def teardown(deadline_s: float, handle_pidfd, handle_only: bool, on_phase=None) 
         any_child = True
     except ChildProcessError:
         any_child = False
-    stats.update(remaining=remaining, any_child_or_zombie=any_child)
+    if handle_pidfd is not None:                  # the owner pidfd: closed exactly once, on every path
+        try:
+            os.close(handle_pidfd)
+            stats["owner_pidfd_closed"] = True
+        except OSError as e:
+            stats["owner_pidfd_close_error"] = errno.errorcode.get(e.errno, str(e.errno))
+    stats.update(remaining=remaining, any_child_or_zombie=any_child, pidfds_open_after=count_pidfds())
     return stats
+
+
+def count_pidfds() -> int:
+    n = 0
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink(f"/proc/self/fd/{name}") == "anon_inode:[pidfd]":
+                n += 1
+        except OSError:
+            pass
+    return n
 
 
 # -- spawn mechanisms ---------------------------------------------------------------------
@@ -298,7 +321,16 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set, owner: dict | N
     # fork signal critical section: CONTROLLED stays blocked until the parent holds the pidfd
     # and the child has reset the reader's signal machinery
     saved = None if "no_fork_block" in abl else signal.pthread_sigmask(signal.SIG_BLOCK, CONTROLLED)
-    pid = os.fork()
+    try:
+        if inject == "fork_fails":
+            raise OSError(errno.EAGAIN, "injected fork() failure")
+        pid = os.fork()
+    except BaseException:
+        if saved is not None and "no_fork_restore_guard" not in abl:
+            signal.pthread_sigmask(signal.SIG_SETMASK, saved)     # no child: restore before propagating
+        for fd in (r_out, w_out, r_x, w_x, devnull) + tuple(x for x in (r_in, w_in) if x is not None):
+            os.close(fd)
+        raise
     if pid == 0:
         try:
             if inject == "stall_before_reset":
@@ -308,6 +340,10 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set, owner: dict | N
                 for s in CONTROLLED:
                     signal.signal(s, signal.SIG_DFL)
                 signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+                if "no_child_sigign_reset" not in abl:          # CPython ignores SIGPIPE/SIGXFSZ at start-up;
+                    for s in signal.valid_signals():            # SIG_IGN would survive execve into Git
+                        if s not in (signal.SIGKILL, signal.SIGSTOP) and signal.getsignal(s) == signal.SIG_IGN:
+                            signal.signal(s, signal.SIG_DFL)
                 for fd in wake_fds:
                     os.close(fd)
             if saved is not None:
@@ -359,6 +395,9 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set, owner: dict | N
             raise RuntimeError(f"injected parent failure after fork (child {pid} exists)")
         if inject == "baseexception_after_spawn":
             raise KeyboardInterrupt("injected right after spawn, before pidfd")
+        if cfg.get("signal_in_fork_critical"):          # P2d R3B-S8: a signal while CONTROLLED is blocked
+            os.kill(os.getpid(), signal.SIGTERM)
+            owner["pending_before_restore"] = sorted(int(x) for x in signal.sigpending())
         if cfg.get("pidfd_delay_s"):
             time.sleep(cfg["pidfd_delay_s"])          # P2d R3B-C*: the child has certainly exited by now
         owner["pid"] = pid
@@ -408,7 +447,7 @@ def spawn_B(cfg: dict, argv: list, inject: str | None, abl: set, owner: dict | N
                 continue
             chunk = os.read(r_x, 512)
             if not chunk:
-                break                              # EOF: the CLOEXEC error pipe closed (exec, or child death)
+                break                              # EOF: exec presumed (the CLOEXEC pipe also closes on child death)
             err += chunk
     finally:
         os.close(r_x)
@@ -429,7 +468,10 @@ def read_report(h: Handle, deadline_s: float) -> dict:
             if not chunk:
                 raise Refusal("transport_failed", "EOF before protocol line")
             buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0])
+    line = buf.split(b"\n", 1)[0]
+    if line.startswith(b"SigIgn:"):                # P2d R3B-G1: a non-Python exec target (grep) reporting
+        return {"sig_ign": line.split()[1].decode()}   # the dispositions it inherited through execve
+    return json.loads(line)
 
 
 # -- PID-reuse witness (TF5-G), run as pid 1 of a private user+pid namespace ---------------
@@ -493,9 +535,11 @@ def main() -> None:
             res["pid_reuse"] = pid_reuse_witness(cfg, spawn, abl)
         else:
             exe = cfg["python"] if inject != "exec_missing" else "/nonexistent/s1b-spike-exe"
-            argv = [exe, "-I", "-S", cfg["child"], cfg["child_mode"], cfg["token"]]
+            argv = cfg.get("raw_argv") or [exe, "-I", "-S", cfg["child"], cfg["child_mode"], cfg["token"]]
             t_start = time.monotonic()               # the unit deadline starts BEFORE the spawn attempt
             cfg["_deadline_at"] = t_start + cfg.get("unit_deadline", 3.0)
+            cfg["_hard_end"] = cfg["_deadline_at"] + cfg.get("teardown_reserve", 3.0)   # envelope fixed before fork
+            res["unit_envelope_s"] = round(cfg["_hard_end"] - t_start, 3)
             try:
                 handle = spawn(cfg, argv, inject, abl, owner) if mech == "B" else spawn(cfg, argv, inject, abl)
             finally:
@@ -510,7 +554,10 @@ def main() -> None:
     except BaseException as e:  # noqa: BLE001 -- recorded, torn down, then reported as escaped
         escaped = f"{type(e).__name__}: {e}"
     finally:
-        td = teardown(3.0, handle.pidfd if handle else owner.get("pidfd"), "handle_only" in abl)
+        budget = cfg["_hard_end"] - time.monotonic() if "_hard_end" in cfg else cfg.get("teardown_reserve", 3.0)
+        td = teardown(max(0.0, budget), handle.pidfd if handle else owner.get("pidfd"), "handle_only" in abl)
+        if "_hard_end" in cfg:
+            res["unit_elapsed_s"] = round(time.monotonic() - (cfg["_hard_end"] - res["unit_envelope_s"]), 3)
     res["teardown"] = td
     res["owner"] = {k: v for k, v in owner.items() if k != "pidfd"}
     res["d_state_double"] = dict(_D_STATE, until=None) if cfg.get("d_state_sim_s") else None

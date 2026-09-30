@@ -30,7 +30,13 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
     - helpers de SIGCHLD (B-LIF-11) e um registro de dono preenchido logo após o `fork`;
     - test double de SIGKILL que não completa (`d_state_sim_s`);
     - gancho `on_phase` no teardown;
-    - ablações `no_fork_block`, `no_child_signal_reset`, `child_unwind`, `handshake_ignores_wakeup`, `blocking_reap_after_deadline`, `no_sigchld_normalize`, `sigchld_handler_only`
+    - ablações `no_fork_block`, `no_child_signal_reset`, `child_unwind`, `handshake_ignores_wakeup`, `blocking_reap_after_deadline`, `no_sigchld_normalize`, `sigchld_handler_only`;
+    - iteração 2:
+      - guarda do `fork()` (ablação `no_fork_restore_guard`);
+      - reset de toda disposição `SIG_IGN` no filho (ablação `no_child_sigign_reset`);
+      - teardown fecha o pidfd do dono uma vez e conta pidfds abertos;
+      - orçamento do teardown = restante do envelope fixado antes do `fork` (`teardown_reserve`);
+      - `raw_argv` para um alvo de exec não-Python
 - `spike_child.py`: substituto do filho Git: observa NNP, `RLIMIT_AS`, cwd e fds como primeira ação após o exec; modos `report`, `stall`, `grandchild`, `hold`
 - `harness.py`: matriz mecanismo × obrigação × positivo/contramodelo/ablação; detecta sobreviventes **de fora** do leitor, por token no argv; sai com código diferente de zero em qualquer falha; `gate_unavailable` nunca conta como PASS
 - `git_facts.py`: P2b: snapshot **real** da S1-A (produtor de `master`, importado só para leitura), Git executado por descriptor (`fchdir` + `GIT_DIR=.`), gramática do header, paridade da preimage canônica sha1/sha256 e mutantes da preimage. **Round 3/3b:** a docstring de F3 foi estreitada (F3 mede só `<oid> missing` no stdout com rc 0; onde é respondido e se há descendentes não é observado). Na round 3b, o P2b foi reexecutado no tree realinhado (`b3657d3`, depois `d3f5946`) e o resultado é **idêntico** ao admitido
@@ -49,10 +55,17 @@ Os resultados foram **estabelecidos durante o procedimento** registrado aqui. N�
     - sinal ao reader no HANDSHAKE (R3B-S5);
     - sinal e sinal duplo **dentro** do teardown, sincronizados num marcador (R3B-S6, R3B-S7);
     - SIGCHLD (R3B-C1..C3 e o mutante só-handler);
-    - `BaseException` no bootstrap do filho (R3B-U1)
-- `p2d_spawn_handshake_results.json`: resultado do P2d, round 3b: `{rows: 55, contracts: 14}`, todos PASS, com injeção confirmada; estável em 3 execuções
-- `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. Lê as arestas do próprio freeze e prova as leis L1–L7 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M6 têm de tornar alguma lei RED
-- `p2d_state_machine_results.json`: resultado do verificador no freeze deste head: leis GREEN e M1–M6 mortos
+    - `BaseException` no bootstrap do filho (R3B-U1);
+    - iteração 2:
+      - `SIG_IGN` herdado (R3B-G1, alvo C `grep`);
+      - `fork()` falha (R3B-F1);
+      - sinal na seção crítica do fork (R3B-S8);
+      - outcome derivado do teardown (R3B-O1);
+      - envelope da unidade (R3B-H2);
+      - pidfd do dono fechado (S-B1, W-POS)
+- `p2d_spawn_handshake_results.json`: resultado do P2d, round 3b: `{rows: 64, contracts: 18}` (iteração 2), todos PASS, com injeção confirmada; estável em 3 execuções
+- `p2d_state_machine_check.py`: round 3b: discriminador **estático** da máquina de estados única da §20 do freeze. Lê as arestas do próprio freeze e prova as leis L1–L10 (só `TEARDOWN` alcança `OUTCOME`; sem beco sem saída; saídas exigidas presentes; o handshake observa sinal e deadline; o bootstrap do filho é terminal; estados declarados; lei em prosa sem atalho). Os mutantes M1–M9 têm de tornar alguma lei RED
+- `p2d_state_machine_results.json`: resultado do verificador no freeze deste head: leis GREEN e M1–M9 mortos
 
 ## Reprodução
 
@@ -77,7 +90,7 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
 5. **Correction round 3** (review post-Ready 5370887198 em `4343dba`).
    - **P2d: 26/26 PASS em 3 execuções.**
      - A (`Popen`) sob stall pré-exec de 3 s com deadline de 1 s só devolve o controle em 3,002 s.
-     - B devolve em 1,002 s (`unit_deadline`, 0 sobreviventes). A ablação B sem deadline no handshake volta a 3,0 s. *(Corrigido na 3b: o JSON admitido na round 3 registrava 1,001 s e 3,002 s.)*
+     - B devolve em 1,001 s (`unit_deadline`, 0 sobreviventes). A ablação B sem deadline no handshake leva 3,002 s. *(Na round 3 este README citava 1,002 s e 3,0 s; os valores do JSON admitido eram 1,001 s e 3,002 s.)*
      - Todos os CM-W e CM-R3 discriminam contra a própria ablação.
    - **P2 regenerado com o B limitado por deadline: 44/44 PASS em 3 execuções.**
    - **P2c REV01 reescrito: 14/14 PASS em 3 execuções.**
@@ -86,7 +99,7 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
    - **P2d: 55 linhas e 14 contratos, 0 falhas, em 3 execuções.**
    - **P2 (44/44) e P2c (14/14):** 3 execuções cada.
    - **P2b:** idêntico no tree realinhado.
-   - **Verificador da §20:** GREEN, M1–M6 mortos.
+   - **Verificador da §20:** GREEN, M1–M9 mortos.
    - **Primeira execução da 3b: 4 falhas, todas de expectativa, nenhuma de mecanismo:**
      - CM-W3c: o reset do filho passou a fechar as pontas de wakeup, uma **terceira** barreira independente. As linhas de isolamento agora desligam as outras duas explicitamente (CM-W3a/b/d) e CM-W3c remove as três.
      - CM-R3-04..06, ablações: o passo 1 do bootstrap novo bloqueia todo o CONTROLLED, então a ablação sem o passo 7 deixa `[1,2,15]` bloqueado em vez de `[s]`. O discriminador (pendente, sem wakeup, cerca de 2,9 s) não mudou; a expectativa passou a ser `s ∈ bloqueados`.
@@ -95,3 +108,8 @@ python3.11 -I -S p2d_state_machine_check.py ../ARCHITECTURE_FREEZE.md out-sm.jso
      - `SIG_DFL` com `SA_NOCLDWAIT` auto-reapeia;
      - `SIG_IGN` sobrevive ao execve;
      - o execve zera `sa_flags`.
+7. **Round 3b, iteração 2** (revisão independente e Codex 5371956614 em `8cad5d3`).
+   - **P2d: 64 linhas e 18 contratos, 0 falhas, em 3 execuções.**
+   - **P2 (44/44) e P2c (14/14):** 3 execuções cada.
+   - **Verificador da §20:** L1–L10 GREEN, M1–M9 mortos.
+   - **Defeito de witness corrigido:** a primeira versão de R3B-G1 lia `SigIgn` do substituto CPython (`spike_child.py`). O CPython reignora SIGPIPE/SIGXFSZ na própria inicialização, então positivo e ablação davam o mesmo 0x1001000. O witness passou a exec'ar `grep SigIgn /proc/self/status`, um programa C.

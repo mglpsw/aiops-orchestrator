@@ -14,7 +14,7 @@
   "CHILD_EXECVE": "child",
   "CHILD_EXIT": "child"
  },
- "edges": 22,
+ "edges": 21,
  "laws": {
   "L1_only_teardown_reaches_outcome": true,
   "L2_no_dead_end": true,
@@ -23,7 +23,10 @@
   "L4_handshake_observes_signal_and_deadline": true,
   "L5_child_bootstrap_terminal": true,
   "L6_states_declared": true,
-  "L7_prose_law_and_no_shortcut": true
+  "L7_prose_law_and_no_shortcut": true,
+  "L8_no_reader_to_child_edge": true,
+  "L9_only_outcome_is_terminal": true,
+  "L10_timeout_no_blocking_wait": true
  },
  "mutants": {
   "M1_handshake_to_outcome": {
@@ -53,15 +56,35 @@
   "M5_timeout_dead_end": {
    "killed": true,
    "red_laws": [
+    "L10_timeout_no_blocking_wait",
     "L2_no_dead_end",
     "L2_owning_reaches_teardown",
-    "L3_required_exits_present"
+    "L3_required_exits_present",
+    "L9_only_outcome_is_terminal"
    ]
   },
   "M6_undeclared_refused": {
    "killed": true,
    "red_laws": [
     "L6_states_declared"
+   ]
+  },
+  "M7_reader_edge_into_child_exit": {
+   "killed": true,
+   "red_laws": [
+    "L8_no_reader_to_child_edge"
+   ]
+  },
+  "M8_new_child_typed_abandon_state": {
+   "killed": true,
+   "red_laws": [
+    "L8_no_reader_to_child_edge"
+   ]
+  },
+  "M9_timeout_relabelled_blocking": {
+   "killed": true,
+   "red_laws": [
+    "L10_timeout_no_blocking_wait"
    ]
   }
  },

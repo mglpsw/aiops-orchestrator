@@ -18,6 +18,11 @@ and proves, on the frozen edges:
       and no child state has an edge into a reader state (N6)
   L6  every state named by an edge is declared, and no undeclared REFUSED/DONE state exists
   L7  the prose law line is present in §20, and §20 contains no "→ REFUSED" shortcut
+  L8  no reader state (owns_child yes/no) has an edge into a child-typed state: an owned
+      path cannot leave the reader machine and end outside OUTCOME (iteration 2, review F1)
+  L9  the only reader state without outgoing edges is OUTCOME (no alternative terminal)
+  L10 UNIT_TIMEOUT leaves only through the no-blocking-wait edge into TEARDOWN, and no label
+      anywhere names a blocking wait other than its negation
 Each mutant below is applied to the parsed edges in memory and MUST turn a law RED; a
 mutant that stays GREEN means the check does not discriminate (the run then fails).
 Usage: p2d_state_machine_check.py <ARCHITECTURE_FREEZE.md> <out.json>
@@ -27,7 +32,8 @@ import re
 import sys
 
 REQUIRED_EXITS = ["setup_error", "exec_error", "unit_deadline", "controlled_signal", "BaseException",
-                  "normal_completion", "transport_failure"]
+                  "normal_completion", "transport_failure", "fork_error"]
+NO_BLOCK = "sigkill_via_pidfd_no_blocking_wait"
 LAW = "EveryOwnedChildPath → TEARDOWN before final outcome"
 
 
@@ -80,16 +86,31 @@ def laws(sec, states, edges):
     named = {a for a, _, _ in edges} | {b for _, b, _ in edges}
     out["L6_states_declared"] = named <= set(states) and not ({"REFUSED", "DONE"} & set(states))
     out["L7_prose_law_and_no_shortcut"] = LAW in sec and "→ REFUSED" not in sec and "-> REFUSED" not in sec
+    out["L8_no_reader_to_child_edge"] = not any(states.get(a) in ("yes", "no") and states.get(b) == "child"
+                                                for a, b, _ in edges)
+    reader_all = [x for x, k in states.items() if k in ("yes", "no")]
+    out["L9_only_outcome_is_terminal"] = [x for x in reader_all if not any(a == x for a, _, _ in edges)] == ["OUTCOME"]
+    ut = [(b, ls) for a, b, ls in edges if a == "UNIT_TIMEOUT"]
+    labels = [x for _, _, ls in edges for x in ls]
+    out["L10_timeout_no_blocking_wait"] = ut == [("TEARDOWN", [NO_BLOCK])] and not any(
+        "blocking" in x and x != NO_BLOCK for x in labels)
     return out
 
 
-MUTANTS = {
-    "M1_handshake_to_outcome": lambda e: e + [("HANDSHAKE", "OUTCOME", ["setup_error"])],
-    "M2_primary_recorded_to_outcome": lambda e: e + [("PRIMARY_RECORDED", "OUTCOME", ["transport_failure"])],
-    "M3_handshake_ignores_wakeup": lambda e: [x for x in e if not (x[0] == "HANDSHAKE" and "controlled_signal" in x[2])],
-    "M4_child_unwinds_into_reader": lambda e: e + [("CHILD_BOOTSTRAP", "PRIMARY_RECORDED", ["BaseException"])],
-    "M5_timeout_dead_end": lambda e: [x for x in e if not (x[0] == "UNIT_TIMEOUT")],
-    "M6_undeclared_refused": lambda e: e + [("HANDSHAKE", "REFUSED", ["exec_error"])],
+MUTANTS = {   # (states, edges) -> (states, edges)
+    "M1_handshake_to_outcome": lambda st, e: (st, e + [("HANDSHAKE", "OUTCOME", ["setup_error"])]),
+    "M2_primary_recorded_to_outcome": lambda st, e: (st, e + [("PRIMARY_RECORDED", "OUTCOME", ["transport_failure"])]),
+    "M3_handshake_ignores_wakeup": lambda st, e: (st, [x for x in e if not (x[0] == "HANDSHAKE"
+                                                                         and "controlled_signal" in x[2])]),
+    "M4_child_unwinds_into_reader": lambda st, e: (st, e + [("CHILD_BOOTSTRAP", "PRIMARY_RECORDED", ["BaseException"])]),
+    "M5_timeout_dead_end": lambda st, e: (st, [x for x in e if not (x[0] == "UNIT_TIMEOUT")]),
+    "M6_undeclared_refused": lambda st, e: (st, e + [("HANDSHAKE", "REFUSED", ["exec_error"])]),
+    # iteration 2 (review F1): the two bypasses that passed L1-L7, and a relabelled blocking timeout
+    "M7_reader_edge_into_child_exit": lambda st, e: (st, e + [("HANDSHAKE", "CHILD_EXIT", ["unit_deadline"])]),
+    "M8_new_child_typed_abandon_state": lambda st, e: (dict(st, ABANDONED="child"),
+                                                       e + [("RUNNING", "ABANDONED", ["transport_failure"])]),
+    "M9_timeout_relabelled_blocking": lambda st, e: (st, [(a, b, ["blocking_waitid_after_deadline"])
+                                                          if a == "UNIT_TIMEOUT" else (a, b, ls) for a, b, ls in e]),
 }
 
 
@@ -101,7 +122,8 @@ def main():
     if len(edges) < 10 or len(states) < 8:
         fails.append("parse_too_small")
     for name, mut in MUTANTS.items():
-        ml = laws(sec, states, mut(list(edges)))
+        mst, med = mut(dict(states), list(edges))
+        ml = laws(sec, mst, med)
         red = sorted(k for k, v in ml.items() if not v)
         res["mutants"][name] = {"killed": bool(red), "red_laws": red}
         if not red:

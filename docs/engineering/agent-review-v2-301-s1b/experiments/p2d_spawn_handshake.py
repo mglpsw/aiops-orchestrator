@@ -77,7 +77,8 @@ def _wakeup_census(r, w, abl):
     return seen
 
 
-SPAWN_ABL = {"B_no_close", "no_fork_block", "no_child_signal_reset", "child_unwind", "handshake_ignores_wakeup"}
+SPAWN_ABL = {"B_no_close", "no_fork_block", "no_child_signal_reset", "child_unwind", "handshake_ignores_wakeup",
+             "no_fork_restore_guard", "no_child_sigign_reset"}
 
 
 def reader(cfg):
@@ -90,6 +91,8 @@ def reader(cfg):
         if "raising_handler" in abl and len(state["signals"]) == 1:
             raise TerminationRequested(signal.Signals(signum).name)
 
+    if cfg.get("d_state_sim_s"):                      # R3B-O1: non-completing SIGKILL test double
+        R._D_STATE["until"] = time.monotonic() + cfg["d_state_sim_s"]
     try:
         # simulated entry state (what a launcher or earlier in-process code left behind);
         # every injection is confirmed by read-back below, never assumed
@@ -134,6 +137,7 @@ def reader(cfg):
             raise R.Refusal("unit_terminated_by_signal", "controlled signal pending at reader entry")
         state["phase"] = "spawn"                                        # 10. admit spawn
         cfg["_deadline_at"] = time.monotonic() + cfg.get("unit_deadline", 5.0)
+        cfg["_hard_end"] = cfg["_deadline_at"] + cfg.get("teardown_reserve", 3.0)   # unit envelope, fixed before fork
         cfg["_wakeup_read"], cfg["_wakeup_fds"] = r, (r, w)
         if cfg.get("echo_child"):
             cfg["stdin_pipe"] = True
@@ -177,10 +181,20 @@ def reader(cfg):
         res["primary_detail"] = e.detail[:200]
     except ValueError as e:                  # set_wakeup_fd on a blocking fd
         outcome, primary = "refused", f"ValueError: {e}"
+    except OSError as e:                     # e.g. fork() failure (R3B-F1)
+        outcome, primary = "refused", "transport_spawn_failed"
+        res["primary_detail"] = f"{type(e).__name__}: {e}"[:200]
     finally:
         if cfg.get("cleanup_marker"):
             with open(cfg["cleanup_marker"], "a") as f:          # R3B-U1: who runs the reader cleanup?
                 f.write(f"{os.getpid()}\n")
+        res["controlled_blocked_at_teardown"] = sorted(
+            int(x) for x in signal.pthread_sigmask(signal.SIG_BLOCK, []) if x in CONTROLLED)
+        if owner.get("pidfd") is not None:          # how did the child end, before teardown touches it?
+            st = R._REAL_WAITID(os.P_PIDFD, owner["pidfd"], os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            res["child_status_before_teardown"] = None if st is None else {
+                "code": {os.CLD_EXITED: "CLD_EXITED", os.CLD_KILLED: "CLD_KILLED", os.CLD_DUMPED: "CLD_DUMPED"}
+                .get(st.si_code, st.si_code), "status": st.si_status}
         state["phase"] = "teardown"
 
         def on_phase(ph):
@@ -191,8 +205,14 @@ def reader(cfg):
                 time.sleep(cfg.get("teardown_pause_s", 0.5))   # the harness signals while we are HERE
 
         try:
-            td = R.teardown(3.0, owner.get("pidfd"), False, on_phase=on_phase)
+            budget = cfg["_hard_end"] - time.monotonic() if "_hard_end" in cfg else cfg.get("teardown_reserve", 3.0)
+            td = R.teardown(max(0.0, budget), owner.get("pidfd"), False, on_phase=on_phase)
             res["teardown"] = td
+            if (td["remaining"] or td["any_child_or_zombie"]) and "outcome_ignores_teardown" not in abl:
+                res["dominant_reason"] = "unit_teardown_incomplete"       # §15: teardown dominates; primary kept
+                outcome = "unit_teardown_incomplete"
+            if "_hard_end" in cfg:
+                res["unit_overrun_s"] = round(time.monotonic() - cfg["_hard_end"], 3)
         finally:
             state["phase"] = "cleanup"
             # wakeup channel lifecycle (CM-W5): unregister before close, even if teardown raised
@@ -213,7 +233,8 @@ def reader(cfg):
             if r is not None:
                 os.close(r)
     res.update(outcome=outcome, primary=primary, signals=state["signals"],
-               owner={k: v for k, v in owner.items() if k != "pidfd"})
+               owner={k: v for k, v in owner.items() if k != "pidfd"},
+               d_state_double=dict(R._D_STATE, until=None) if cfg.get("d_state_sim_s") else None)
     sys.stdout.write(json.dumps(res) + "\n")
     sys.stdout.flush()
 
@@ -261,7 +282,15 @@ def run_spike_reader(py, mech, inject=None, extra=None):
     return {"outcome": res["outcome"], "primary": (res.get("primary") or {}).get("reason"),
             "spawn_control_regained_s": res.get("spawn_control_regained_s"), "reader_wall_s": round(wall, 3),
             "survivors": len(surv), "owner": res.get("owner"), "d_state_double": res.get("d_state_double"),
-            "teardown_remaining": len(res["teardown"]["remaining"]), "teardown_signalled": res["teardown"]["signalled"]}
+            "teardown_remaining": len(res["teardown"]["remaining"]), "teardown_signalled": res["teardown"]["signalled"],
+            "pidfds_open_after": res["teardown"].get("pidfds_open_after"),
+            "owner_pidfd_closed": res["teardown"].get("owner_pidfd_closed"),
+            "unit_envelope_s": res.get("unit_envelope_s"), "unit_elapsed_s": res.get("unit_elapsed_s"),
+            "child_sig_ign": (res.get("child_report") or {}).get("sig_ign")}
+
+
+GREP = next(x for x in ("/usr/bin/grep", "/bin/grep") if os.path.exists(x))
+SIGIGN_ARGV = [GREP, "-m1", "SigIgn", "/proc/self/status"]   # C program: reports what it inherited
 
 
 def run_reader(py, *, abl=(), block=None, pend=None, sigchld_ign=False, send=(), send_on="READY",
@@ -363,8 +392,10 @@ def harness(py, out_path):
     # ---- S: spawn/exec handshake under a unit deadline of 1.0s (child pre-exec stall 3.0s)
     for mech in ("A", "B"):
         o = run_spike_reader(py, mech)
-        row(f"S-{mech}1-normal", "spawn completes within the unit deadline", "positive", o,
-            o["outcome"] == "completed" and o["survivors"] == 0)
+        row(f"S-{mech}1-normal", "spawn completes within the unit deadline; the owner pidfd is closed once and no "
+            "pidfd is left open", "positive", o,
+            o["outcome"] == "completed" and o["survivors"] == 0 and o["pidfds_open_after"] == 0
+            and o["owner_pidfd_closed"] is True)
         o = run_spike_reader(py, mech, "setup_exception")
         row(f"S-{mech}3-setup-error", "setup failure before exec is bounded and typed", "negative", o,
             o["outcome"] == "transport_spawn_failed" and o["spawn_control_regained_s"] < 1.0 and o["survivors"] == 0)
@@ -387,29 +418,53 @@ def harness(py, out_path):
              h1["owner"] and h1["owner"].get("pidfd_open") == "ok", "S-B1-normal", "S-B2-pre-exec-stall (R3B-H1)",
              "S-B2-ablation-no-handshake-deadline", "control regained ~1.0s vs >=2.9s without the handshake deadline",
              "killable child (sleep); the stall is an injected pre-exec delay")
-    h2 = o = run_spike_reader(py, "B", "pre_exec_stall", {"d_state_sim_s": 8.0})
+    h2 = o = run_spike_reader(py, "B", "pre_exec_stall", {"d_state_sim_s": 8.0, "teardown_reserve": 1.5})
     row("R3B-H2-non-completing-SIGKILL-bounded", "after the deadline, a child whose SIGKILL does not complete is "
-        "reported unit_teardown_incomplete within the teardown budget (no blocking wait)", "negative", o,
-        o["outcome"] == "unit_teardown_incomplete" and o["primary"] == "unit_deadline" and o["reader_wall_s"] < 6.0
+        "reported unit_teardown_incomplete INSIDE the unit envelope fixed before fork (work 1.0s + teardown reserve "
+        "1.5s); no blocking wait", "negative", o,
+        o["outcome"] == "unit_teardown_incomplete" and o["primary"] == "unit_deadline"
+        and o["unit_elapsed_s"] <= o["unit_envelope_s"] + 0.15
         and o["d_state_double"]["nohang_hidden"] > 0 and o["d_state_double"]["blocking_waits"] == 0,
         "test double: pidfd WNOHANG waits report 'still running' for 8s; qualifies the bound logic only, not real "
         "D-state or filesystem behaviour")
-    o = run_spike_reader(py, "B", "pre_exec_stall", {"d_state_sim_s": 8.0, "ablations": ["blocking_reap_after_deadline"]})
+    o = run_spike_reader(py, "B", "pre_exec_stall", {"d_state_sim_s": 8.0, "teardown_reserve": 1.5,
+                                                     "ablations": ["blocking_reap_after_deadline"]})
     row("R3B-H2-ablation-blocking-reap", "ablation: a blocking waitid after the deadline hangs for as long as the "
-        "SIGKILL does not complete", "ablation", o,
-        o["reader_wall_s"] >= 7.5 and o["d_state_double"]["blocking_waits"] >= 1)
+        "SIGKILL does not complete, far outside the unit envelope", "ablation", o,
+        o["unit_elapsed_s"] >= 7.5 and o["d_state_double"]["blocking_waits"] >= 1)
     contract("R3B-H2", "no blocking wait after the handshake deadline; ownership passes to the bounded teardown",
              h2["d_state_double"] and h2["d_state_double"]["nohang_hidden"] > 0 and h2["teardown_signalled"] >= 1,
              "S-B2-pre-exec-stall (R3B-H1)", "R3B-H2-non-completing-SIGKILL-bounded", "R3B-H2-ablation-blocking-reap",
-             "reader wall < 6s with unit_teardown_incomplete vs >= 7.5s with the blocking reap",
+             "unit elapsed <= envelope (2.5s) with unit_teardown_incomplete vs >= 7.5s with the blocking reap",
              "test double for a non-completing SIGKILL; no real D-state process is fabricated")
+
+    g1 = run_spike_reader(py, "B", None, {"raw_argv": SIGIGN_ARGV})
+    o = run_spike_reader(py, "B", None, {"raw_argv": SIGIGN_ARGV, "ablations": ["no_child_sigign_reset"]})
+    row("R3B-G1-child-sigign-reset", "the child bootstrap resets every SIG_IGN disposition: the exec'd C program "
+        "starts with SigIgn=0 (CPython ignores SIGPIPE/SIGXFSZ at start-up)", "negative",
+        pick(g1, "child_sig_ign", "outcome"), g1["child_sig_ign"] == "0000000000000000")
+    row("R3B-G1-ablation-no-sigign-reset", "ablation: without the reset Git inherits SIGPIPE (bit 13) and SIGXFSZ "
+        "(bit 25) as ignored", "ablation", pick(o, "child_sig_ign", "outcome"),
+        o["child_sig_ign"] == "0000000001001000")
+    contract("R3B-G1", "ChildBootstrapSignalMachinery: no inherited SIG_IGN reaches Git",
+             g1["child_sig_ign"] is not None and o["child_sig_ign"] is not None, "S-B1-normal",
+             "R3B-G1-child-sigign-reset",
+             "R3B-G1-ablation-no-sigign-reset", "SigIgn 0 vs 0x1001000 after exec",
+             "the exec target is grep (a CPython stand-in would re-ignore SIGPIPE/SIGXFSZ at its own start-up and "
+             "mask the result); only the reader's own SIG_IGN set (CPython defaults) is exercised; a launcher-set "
+             "SIG_IGN is reset by the same loop but is not injected here")
+    o = run_spike_reader(py, "B", "fork_fails")
+    row("R3B-F1-fork-failure-typed", "fork() failure: no child, typed transport_spawn_failed, mask restored",
+        "negative", pick(o, "outcome", "primary", "survivors", "owner"),
+        o["outcome"] == "transport_spawn_failed" and o["survivors"] == 0 and o["owner"] == {})
 
     # ---- W: typed signal-wakeup channel (dedicated reader, mechanism B)
     o = run_reader(py, send=[signal.SIGTERM])
     row("W-POS-dedicated-channel", "wakeup fds typed+admitted; not inherited; SIGTERM → wakeup → teardown", "positive",
         pick(o, "outcome", "survivors", "reader_signals", "sentinel_bytes_after_close") | {"child_fds": child_fds(o)},
         o["outcome"] == "terminated" and o["survivors"] == 0 and child_fds(o) == [0, 1, 2]
-        and o["sentinel_bytes_after_close"] == 0)
+        and o["sentinel_bytes_after_close"] == 0 and o["teardown"]["pidfds_open_after"] == 0
+        and o["teardown"].get("owner_pidfd_closed") is True)
     o = run_reader(py, abl=["old_allowlist"])
     row("CM-W1W2-old-allowlist", "the pre-round-3 closed fd contract refuses a conforming wakeup implementation",
         "negative", pick(o, "outcome", "primary"), o["primary"] == "reader_fd_capability_unexpected")
@@ -515,10 +570,12 @@ def harness(py, out_path):
     # ---- R3B-S4 / S4b: a signal addressed to the CHILD before exec must not reach the reader's machinery
     pos = run_reader(py, send=[signal.SIGTERM], send_on="FORKED", send_to="child", linger=0.5,
                      extra={"inject": "pre_exec_stall", "stall_s": 0.8, "announce_fork": True})
-    row("R3B-S4-child-signal-after-reset", "SIGTERM to the child in its pre-exec bootstrap (after the reset): no "
-        "wakeup byte in the reader, no misattributed termination", "negative",
-        pick(pos, "outcome", "primary", "reader_signals", "survivors"),
-        pos["outcome"] != "terminated" and pos["reader_signals"] == [] and pos["survivors"] == 0)
+    killed15 = {"code": "CLD_KILLED", "status": 15}
+    row("R3B-S4-child-signal-after-reset", "SIGTERM to the child in its pre-exec bootstrap (after the reset): the child "
+        "dies by SIG_DFL SIGTERM; no wakeup byte in the reader, no misattributed termination", "negative",
+        pick(pos, "outcome", "primary", "reader_signals", "survivors", "child_status_before_teardown"),
+        pos["primary"] == "transport_failed" and pos["reader_signals"] == [] and pos["survivors"] == 0
+        and pos.get("child_status_before_teardown") == killed15)
     abl = run_reader(py, send=[signal.SIGTERM], send_on="FORKED", send_to="child", linger=0.5,
                      abl=["no_child_signal_reset"], extra={"inject": "pre_exec_stall", "stall_s": 0.8,
                                                            "announce_fork": True})
@@ -527,15 +584,16 @@ def harness(py, out_path):
         pick(abl, "outcome", "primary", "reader_signals"),
         abl["outcome"] == "terminated" and abl["reader_signals"] == [])
     contract("R3B-S4", "ReaderSignalMachinery != ChildBootstrapSignalMachinery (reset step)",
-             pos.get("owner", {}).get("pidfd_open") == "ok", None, "R3B-S4-child-signal-after-reset",
+             pos.get("child_status_before_teardown") == killed15, None, "R3B-S4-child-signal-after-reset",
              "R3B-S4-ablation-no-child-reset", "no termination vs misattributed 'terminated' with zero reader signals",
              "the pre-exec stall is injected to make the window observable")
     pos = run_reader(py, send=[signal.SIGTERM], send_on="FORKED", send_to="child", linger=0.5,
                      extra={"inject": "stall_before_reset", "stall_s": 0.8, "announce_fork": True})
     row("R3B-S4b-fork-window-blocked", "SIGTERM to the child BEFORE its reset: CONTROLLED is blocked across fork, so it "
-        "stays pending until the reset and then takes SIG_DFL", "negative",
-        pick(pos, "outcome", "primary", "reader_signals", "survivors"),
-        pos["outcome"] != "terminated" and pos["reader_signals"] == [] and pos["survivors"] == 0)
+        "stays pending until the reset and then takes SIG_DFL (the child dies by SIGTERM)", "negative",
+        pick(pos, "outcome", "primary", "reader_signals", "survivors", "child_status_before_teardown"),
+        pos["primary"] == "transport_failed" and pos["reader_signals"] == [] and pos["survivors"] == 0
+        and pos.get("child_status_before_teardown") == killed15)
     abl = run_reader(py, send=[signal.SIGTERM], send_on="FORKED", send_to="child", linger=0.5,
                      abl=["no_fork_block"], extra={"inject": "stall_before_reset", "stall_s": 0.8,
                                                    "announce_fork": True})
@@ -544,7 +602,7 @@ def harness(py, out_path):
         pick(abl, "outcome", "primary", "reader_signals"),
         abl["outcome"] == "terminated" and abl["reader_signals"] == [])
     contract("R3B-S4b", "NoChildCanRunInheritedReaderHandlerBeforeReset (fork critical section)",
-             pos.get("owner", {}).get("pidfd_open") == "ok", None, "R3B-S4b-fork-window-blocked",
+             pos.get("child_status_before_teardown") == killed15, None, "R3B-S4b-fork-window-blocked",
              "R3B-S4b-ablation-no-fork-block", "no termination vs misattributed 'terminated'",
              "the fork→reset window is widened artificially (stall_before_reset); structural claim, not a timing race")
 
@@ -565,6 +623,58 @@ def harness(py, out_path):
              pos.get("reader_signal_phases") == ["spawn"], None, "R3B-S5-reader-signal-in-handshake",
              "R3B-S5-ablation-handshake-ignores-wakeup", "unit_terminated_by_signal vs unit_deadline",
              "phase 'spawn' = between fork and exec confirmation")
+
+    # ---- R3B-S8: a signal arriving while CONTROLLED is blocked in FORK_CRITICAL
+    pos = run_reader(py, linger=0.5, extra={"inject": "pre_exec_stall", "stall_s": 3.0, "unit_deadline": 2.0,
+                                            "signal_in_fork_critical": True})
+    row("R3B-S8-signal-in-fork-critical", "a signal raised while CONTROLLED is blocked (after fork, before pidfd) stays "
+        "pending, is delivered at mask restore and is observed by the handshake", "negative",
+        pick(pos, "primary", "reader_signals", "reader_signal_phases", "owner", "survivors"),
+        pos["primary"] == "unit_terminated_by_signal" and pos["reader_signal_phases"] == ["spawn"]
+        and 15 in pos["owner"].get("pending_before_restore", []) and pos["survivors"] == 0)
+    abl = run_reader(py, linger=0.5, abl=["handshake_ignores_wakeup"],
+                     extra={"inject": "pre_exec_stall", "stall_s": 3.0, "unit_deadline": 2.0,
+                            "signal_in_fork_critical": True})
+    row("R3B-S8-ablation-handshake-ignores-wakeup", "ablation: the delivered signal is recorded but the cause becomes "
+        "unit_deadline", "ablation", pick(abl, "primary", "reader_signals"),
+        abl["primary"] == "unit_deadline" and abl["reader_signals"] == [15])
+    contract("R3B-S8", "READY_TO_FORK/FORK_CRITICAL → TERMINATION_REQUESTED is observed (at mask restore, by HANDSHAKE)",
+             15 in pos["owner"].get("pending_before_restore", []), None, "R3B-S8-signal-in-fork-critical",
+             "R3B-S8-ablation-handshake-ignores-wakeup", "unit_terminated_by_signal vs unit_deadline",
+             "the signal is raised by the reader against itself while blocked; sigpending() confirms it before restore")
+
+    # ---- R3B-F1: fork() failure restores the controlled mask
+    pos = run_reader(py, linger=0.2, extra={"inject": "fork_fails"})
+    row("R3B-F1-fork-failure-mask-restored", "fork() fails inside the critical section: typed refusal, no child, "
+        "CONTROLLED unblocked again", "negative",
+        pick(pos, "outcome", "primary", "primary_detail", "controlled_blocked_at_teardown", "owner"),
+        pos["primary"] == "transport_spawn_failed" and "fork" in pos.get("primary_detail", "")
+        and pos["controlled_blocked_at_teardown"] == [] and pos["owner"] == {})
+    abl = run_reader(py, linger=0.2, abl=["no_fork_restore_guard"], extra={"inject": "fork_fails"})
+    row("R3B-F1-ablation-no-restore-guard", "ablation: without the guard the mask stays blocked after the failed fork",
+        "ablation", pick(abl, "primary", "controlled_blocked_at_teardown"),
+        abl["controlled_blocked_at_teardown"] == [1, 2, 15])
+    contract("R3B-F1", "a failed fork() leaves no blocked CONTROLLED mask behind",
+             "injected fork() failure" in pos.get("primary_detail", ""), "R3B-F1-fork-failure-typed",
+             "R3B-F1-fork-failure-mask-restored", "R3B-F1-ablation-no-restore-guard", "[] vs [1, 2, 15] blocked",
+             "fork() failure is injected (EAGAIN) at the call site")
+
+    # ---- R3B-O1: the final outcome is derived from the teardown result (§15 precedence)
+    pos = run_reader(py, send=[signal.SIGTERM], linger=3.0, extra={"d_state_sim_s": 8.0, "teardown_reserve": 1.0})
+    row("R3B-O1-teardown-dominates", "terminated by signal + a child whose SIGKILL does not complete: outcome "
+        "unit_teardown_incomplete, primary unit_terminated_by_signal kept", "negative",
+        pick(pos, "outcome", "primary", "dominant_reason", "unit_overrun_s", "survivors"),
+        pos["outcome"] == "unit_teardown_incomplete" and pos["primary"] == "unit_terminated_by_signal"
+        and pos.get("unit_overrun_s", 9) <= 0.15)
+    abl = run_reader(py, send=[signal.SIGTERM], linger=3.0, abl=["outcome_ignores_teardown"],
+                     extra={"d_state_sim_s": 8.0, "teardown_reserve": 1.0})
+    row("R3B-O1-ablation-outcome-ignores-teardown", "ablation: the teardown failure is recorded but the outcome stays "
+        "'terminated'", "ablation", pick(abl, "outcome", "primary"),
+        abl["outcome"] == "terminated" and abl["teardown"]["remaining"] != [])
+    contract("R3B-O1", "DominantOutcome derives from teardown; primary preserved",
+             bool(pos.get("d_state_double") and pos["d_state_double"]["nohang_hidden"] > 0), None,
+             "R3B-O1-teardown-dominates", "R3B-O1-ablation-outcome-ignores-teardown",
+             "unit_teardown_incomplete vs terminated", "test double for a non-completing SIGKILL")
 
     # ---- R3B-S6 / S7: signals INSIDE teardown (synchronised on an observable teardown phase)
     pos = run_reader(py, send=[signal.SIGTERM], send_on="TEARDOWN_PHASE", linger=0.3,
