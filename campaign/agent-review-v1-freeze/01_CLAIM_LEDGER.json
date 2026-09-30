@@ -85,7 +85,7 @@
         "diff artifact absent (diff_by_file returns {})",
         "payload-level limitations not restated at plan level"
       ],
-      "live_status": "not_supported",
+      "live_status": "supported",
       "countermodels": [
         "CM-CL1-01",
         "CM-CL1-02",
@@ -94,13 +94,23 @@
       "limitations": [
         "the LLM's own files_reviewed self-report is accepted verbatim by the parser (chunk_result_parser.py:256-279)"
       ],
-      "slice": "V1-C1"
+      "slice": "V1-C1",
+      "status_history": [
+        {
+          "at": "ab92e89f",
+          "status": "not_supported"
+        },
+        {
+          "at": "d3f5946c (V1-C1, PR #366, 2026-09-30)",
+          "status": "supported on master; not released (consumer pinned to v0.22.0)"
+        }
+      ]
     },
     {
       "claim_id": "CL-2",
-      "title": "Semantic claim coverage",
-      "proposition": "When a structured, admitted claim/must-hold is applicable to the subject, the review reports its coverage in {covered, partial, not_covered, not_applicable}, semantically separate from file coverage.",
-      "owner": "#221 (comment 2026-09-16, AgentEscala #805); no dedicated issue",
+      "title": "Context consumption and limitation honesty (per-claim coverage #805 kept as requirement of record)",
+      "proposition": "When pertinent target context (product contracts, AOCM guidance) applies to the subject, its CONTENT reaches the effective chunk payload through generic engine loading/selection; absent, incompatible, not-applicable and omitted-by-budget context are distinguished, and material context removed before review limits the corresponding conclusion through parse/synth/gate. Per-claim coverage in {covered, partial, not_covered, not_applicable} for structured claims (#805) remains the requirement of record, not closed by context consumption.",
+      "owner": "#221 V1-C2 (engine generic) + AgentEscala#869 (target sources/projection/config/conformance); #221 body 2026-09-30T20:46Z",
       "producer": [
         "NONE for structured claims. Existing primitives: payload_cost_model.py:1330-1336 aux_context.semantic_context.must_hold (list[str], no id, first item dropped under budget: chunk_payload_builder.py:504,557-562); schemas.py:92-93 TargetProfile.domain_contracts/review_packs (untyped); schemas.py:170 SemanticChunk.contracts (constant ref list, semantic_chunker.py:424,768-772); chunk_response_contract.py:17-28 finding.contract_id (optional label, never validated)"
       ],
@@ -129,7 +139,8 @@
       "risk": "STOP_OWNER_BOUNDARY likely: closing requires a new structured claim object, a response-contract extension (frozen v1 golden fixtures) and target-side authoring; see 04_EXECUTION_ROADMAP.md V1-C2.",
       "slice": "V1-C2",
       "owner_requirement_of_record": "#221 comment 2026-09-16: declared claims/relevant must-holds extracted from PR/contract pack; #805 fixture => material/merge-blocking; contracts_context_not_relevant impossible when the claim depends on the selected contract pack; material limitations degrade confidence/coverage",
-      "narrowing_status": "PENDING_HUMAN_DECISION for any part of the requirement of record not achievable within the traversal's permitted means (#221: the epic grants no waivers)"
+      "narrowing_status": "PENDING_HUMAN_DECISION for any part of the requirement of record not achievable within the traversal's permitted means (#221: the epic grants no waivers)",
+      "synced_from": "#221 body 'Contrato funcional de V1-C2' items 1-6 and AgentEscala#869 (OPEN, PLANNED)"
     },
     {
       "claim_id": "CL-3",

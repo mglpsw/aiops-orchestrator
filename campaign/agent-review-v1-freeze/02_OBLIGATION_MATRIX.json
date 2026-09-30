@@ -56,13 +56,45 @@
         "CM-CL2-01"
       ],
       "closure_predicate": "decided in V1-C2 owner reconciliation; if closure needs a new structured claim object + response contract extension + downstream consumption, STOP_OWNER_BOUNDARY and document the minimum compatible alternative",
-      "owner": "#221 (#805 comment); no dedicated issue"
+      "owner": "#221 (#805 comment); no dedicated issue",
+      "status_2026_09_30": "#805 requirement of record preserved by #221 and AgentEscala#869; context consumption (OBL-CL2-02/03) does not close it; any part incompatible with the freeze -> STOP_OWNER_BOUNDARY/PENDING_HUMAN_DECISION"
+    },
+    {
+      "obligation_id": "OBL-CL2-02",
+      "claim": "CL-2",
+      "domain": "context.consumption",
+      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no target-name hardcode, no new compiler in the target); the supported interface is frozen before the patch after the consumer census (AgentEscala#869-A).",
+      "countermodels": [
+        "CM-CL2-02 (target shapes flatten to [] at AgentEscala@e9cc03ff)",
+        "pertinent change whose contract content never reaches the payload"
+      ],
+      "positive_controls": [
+        "pertinent change with the correct contract content in the payload",
+        "non-pertinent change with no spurious obligation"
+      ],
+      "closure_predicate": "deterministic tests observe the payload CONTENT (not file presence, YAML validity or contract_id) for the frozen interface; the pair toolrepo SHA + target config/pack revision is qualified by #869-C",
+      "owner": "#221 V1-C2 + AgentEscala#869"
+    },
+    {
+      "obligation_id": "OBL-CL2-03",
+      "claim": "CL-2",
+      "domain": "context.limitation_semantics",
+      "proposition": "Absent, incompatible, not-applicable and omitted-by-budget context have distinct, honest consequences; must_hold/aux context or material contract content removed before review limits the corresponding conclusion and is not lost before parse/synth/gate, while reviews with sufficient context stay useful (not forced to manual).",
+      "countermodels": [
+        "CM-CL4-02",
+        "CM-CL4-03 (aux_context/must_hold omitted_due_to_budget dropped before the gate)"
+      ],
+      "positive_controls": [
+        "sufficient context -> conclusive review unchanged"
+      ],
+      "closure_predicate": "one test per class at gate level; a positive control proves no blanket downgrade",
+      "owner": "#221 V1-C2"
     },
     {
       "obligation_id": "OBL-CL4-02",
       "claim": "CL-4",
       "domain": "claim_coverage.contract_context_honesty",
-      "proposition": "A non-empty contracts/review-packs document that v1 cannot flatten yields a limitation distinct from contracts_context_not_relevant.",
+      "proposition": "Superseded in part by #221 (2026-09-30): a more honest code than contracts_context_not_relevant is NOT sufficient. Retained sub-obligation: a non-empty contracts/review-packs document that the engine cannot interpret yields an 'incompatible' limitation distinct from 'not applicable'; the primary obligation is OBL-CL2-02.",
       "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858",
       "countermodels": [
         "CM-CL2-02"

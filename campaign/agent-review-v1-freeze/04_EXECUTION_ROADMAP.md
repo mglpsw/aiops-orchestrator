@@ -14,7 +14,7 @@ modificar; `git diff --name-only` fora dela é parada (`02` → `slice_gates.v1_
 |---|---|---|---|---|---|
 | 0 | V1-C0 contract freeze | #221 | docs/contrato; sem comportamento | `V1_C0_CONTRACT_READY` | baixo |
 | 1 | V1-C1 coverage truth | #232 | comportamento v1 (planner + propagação) | `V1_C1_COVERAGE_TRUTH_READY` | médio: decisão de semântica "complete" (tier solicitado vs revisão textual) deve sair do texto de #232, não ser inventada |
-| 2 | V1-C2 claim coverage / limitation propagation | #221 (#805) | comportamento v1 mínimo | `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` | **alto: `STOP_OWNER_BOUNDARY` provável** (ver abaixo) |
+| 2 | V1-C2 consumo de contexto/contratos/AOCM + propagação de limitações | #221 + AgentEscala#869 | comportamento v1 (engine genérico) + par target | `V1_C2_SEMANTIC_CLAIM_COVERAGE_READY` (nome mantido; ver contrato) | alto: depende do censo #869-A; parte #805 incompatível com o freeze → `PENDING_HUMAN_DECISION` |
 | 3 | V1-C3 materiality | #343 | comportamento v1 (normalizer) | `V1_C3_MATERIALITY_READY` | médio: aboutness exige material revisado como nova entrada do parser; mudança de response contract toca golden fixtures congeladas |
 | 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-CL5-01/02 já reproduzidos |
 | 5 | V1-C5 egress disposition | #315 | decision contract primeiro | `V1_C5_EGRESS_DISPOSITION_READY` ou `BLOCKED_BY_EXPLICIT_HUMAN_DECISION` | **alto: `STOP_UNRESOLVED_POLICY` provável** |
@@ -31,35 +31,21 @@ que hoje afirma `passed` com arquivos sem hunk (CM-CL1-01) precisa ser reconcili
 explicitamente no PR. Espelhar qualquer mudança de `chunk.limitations` na projeção do
 planner (`payload_cost_model.py:1488,1492`).
 
-### V1-C2 (claim coverage)
-Fatos observados que tornam `STOP_OWNER_BOUNDARY` provável para a parte **estruturada**:
+### V1-C2 (#221 + AgentEscala#869) — sincronizado com #221 (body editado 2026-09-30T20:46Z)
+**Contrato de registro:** seção "Contrato funcional de V1-C2" do body de #221 (itens 1–6), em resumo:
 
-- não existe objeto claim/must-hold estruturado com id no v1;
-- `must_hold` é `list[str]` sem id e é o primeiro item descartado sob budget;
-- nenhum slot de resposta por claim; nenhum consumidor downstream;
-- a claim de #805 existia apenas no corpo do PR, que o v1 nunca transporta;
-- nenhum `must_hold` do target cobria fidelidade de par.
+1. reconciliar o formato realmente fornecido e os consumidores reais com AgentEscala#869 (`rules` aninhadas vs lista na raiz; `packs` mapa vs lista; campos extras perdidos na projeção). YAML válido não prova compatibilidade;
+2. distinguir método AOCM, contrato de produto e intenção/claims da slice; fontes com revisão/seção/estado; texto de PR sem autoridade determinística nem dispensa de policy;
+3. conteúdo pertinente (não só referências a arquivos) chega ao payload efetivo; seleção genérica no engine, sem hardcode de regra do target e sem compilador novo no target;
+4. distinguir **ausente / incompatível / não aplicável / omitido por orçamento**; `must_hold`/aux context ou contrato material removido limita a conclusão correspondente até parse/synth/gate;
+5. preservar utilidade: contexto vazio, esconder warnings ou forçar toda revisão a manual não fecham a propriedade;
+6. congelar a interface mínima antes do patch; extensões de schema/CLI com compatibilidade, fixtures e justificativa, sem campos que nenhum consumidor lê.
 
-Fechar a propriedade exigiria: novo objeto admitido (autoria target-side), extensão
-do response contract (golden fixtures congeladas), e consumo em parse/synth/gate —
-isso é nova arquitetura de claim, que #221/#357 reservam ao sucessor. Menor
-alternativa compatível já identificada, candidata a ficar **dentro** do v1:
+**Ownership:** engine genérico (loader, seleção/aplicabilidade suportada, prompt/payload, orçamento, propagação) = V1-C2 neste repositório; fontes, projeção declarativa, configuração, conformance e adoção do par = AgentEscala#869 (slices A–D). O formato compatível é decidido com a C2 **após o censo de consumidores (#869-A)**. Alterações no AgentEscala estão fora do grant desta travessia; o censo pode ser preparado aqui em leitura.
 
-1. honestidade de limitação para contratos não achatáveis (OBL-CL4-02 / CM-CL2-02);
-2. propagação ao gate das limitações que impedem avaliar obrigação (OBL-CL4-01),
-   em especial `aux_context`/`must_hold` omitido por budget;
-3. declarar como non-claim explícito que o v1 não produz claim coverage e que
-   `approve_*` do v1 não afirma satisfação de claims do PR.
+**#805:** requisito de registro preservado (claims/must-hold pertinentes do PR/contract pack; contramodelo #805 com resultado material). Orientação contextual útil ≠ per-claim coverage ≠ obrigação satisfeita. Parte incompatível com o freeze → `STOP_OWNER_BOUNDARY`/`PENDING_HUMAN_DECISION`; nenhuma non-claim fabricada encerra a exigência.
 
-A exigência de registro é o comentário de #221 de 2026-09-16 (#805), incluindo
-"extraídas do PR/contract pack" e fixture "=> material/merge-blocking". O task
-contract da travessia restringe os meios (sem NLP genérico de texto livre do PR);
-isso não dispõe da exigência. Qualquer parte não atendível dentro dos meios é
-redução funcional → `PENDING_HUMAN_DECISION`.
-
-A decisão entre "alternativa mínima e seguir" e "parar a travessia" pertence à
-slice V1-C2 após reconciliação de owner; este roteiro não a antecipa. Se for STOP, a
-travessia para ali (regra "não contornar STOP").
+*Superado:* a previsão anterior desta seção ("`STOP_OWNER_BOUNDARY` provável" com alternativa mínima de honestidade do código `contracts_context_not_relevant`) é substituída: #221 registra que trocar essa limitação por outra mais honesta, sozinho, não entrega a propriedade.
 
 ### V1-C3 (#343)
 Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O
@@ -96,11 +82,18 @@ propagation, materiality, TS1/non-vacuity, egress disposition, publication fidel
 Reconstrução `Claim → mechanism → consumer → countermodel → discriminator →
 remaining limitation` para cada entrada de `01_CLAIM_LEDGER.json`.
 
+## Decisões de freeze registradas em #221 (checkpoint 2026-09-30T20:07Z)
+
+- #232, #343 e #307 são blockers duros do freeze; #315 exige disposição explícita (fix, residual nomeado aceito, ou desabilitar/substituir a lane).
+- AgentEscala#871 (HTTP 429 sem retry / sem `Retry-After`) é bugfix target-side limitado; entra na C6 consolidada; falha persistente continua virando revisão manual.
+- Non-features do v1: `json_schema` no provider, reparo/retry semântico de saída malformada, nova estratégia de modelo/preset, nova arquitetura de agrupamento semântico, receipts/trust architecture v2, OGR/impact-context.
+- PR grande/evidência pesada: `chunk_budget_exceeded`/plano parcial não é blocker automático quando falha fechado para revisão manual. Exigência é **veracidade**, não escalabilidade.
+
 ## Fronteira após o source candidate
 
 ```text
 maintenance release (source v1 JÁ mudou desde v0.22.0: #227, #231) -> STOP_RELEASE_BOUNDARY
--> AgentEscala minimal repin       -> STOP_TARGET_REPIN_BOUNDARY
+-> repin mínimo do PAR engine+pack/config no AgentEscala (#869-D) -> STOP_TARGET_REPIN_BOUNDARY
 -> canário natural exato + publication fidelity
 -> decisão residual AgentEscala#678
 -> support matrix + disable/rollback docs
