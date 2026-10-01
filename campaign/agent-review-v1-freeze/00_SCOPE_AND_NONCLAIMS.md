@@ -188,9 +188,22 @@ A2 LegacyCompatibility + Normalization
 A3 Applicability + explicit relation resolution
 A4 Canonical cost + deterministic budget/packing
 A5 Required-context loss propagation
-
-A2/A3 também fecham seleção explícita: `selected_contract_pack` não vazio que não resolve por id exato nem compatibilidade legada qualificada -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca `not_relevant`. `NormalizedPack.contract_refs` é a união exata-deduplicada de `pack.domain_contract` (se presente) com `contract_bindings.get(pack_id, [])`.
 ```
+
+Ownership é disjunto: **A2** resolve/projeta raw compatibility para identities e
+estruturas normalizadas (`SelectionResolution`, `ContractApplicability`,
+`contract_refs`); **A3** consome somente esses outputs e avalia applicability contra
+candidate chunk files. A3 nunca refaz fuzzy/raw matching. Seleção explícita não
+resolvida -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca
+`not_relevant`. `NormalizedPack.contract_refs` =
+`dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`.
+
+Compatibilidade legada requerida em A2: comparação case-insensitive e match por
+igualdade de id, igualdade de description, substring em id ou substring em
+description, preservando todos os matches. A3 preserva o operador de `patterns`
+legado: final `*` = prefix match; demais patterns = substring; não é
+`fnmatchcase`. `semantic-context.must_hold` é normalizado por A2 e aplicado por A3
+usando scope + optional resolved contract_pack; unresolved pack falha fechado.
 
 Assim, compatibilidade legada como `calendar -> agentescala-calendar`, projeção
 dos aliases legados de applicability, a autoridade concreta
@@ -203,7 +216,10 @@ sob grant explícito de provider real, com expectativas pré-declaradas e anti-c
 Ambos os braços usam uma configuração de inferência única e pré-declarada (endpoint,
 preset, provider/model, instrução/método, opções relevantes e retry policy), registrada
 por `inference_config_id`; cada braço registra request identity/digest e somente o subject
-difere. Drift invalida o controle. Somente A+B+C + Control B podem produzir
+difere. Para sampling, usa-se seed determinístico compartilhado quando suportado pela
+rota/modelo real; caso contrário, o grant congela antes do primeiro run um protocolo
+repeated-pair com `pair_count` e `pass_criterion`, sem adaptive stopping, descarte de pares
+ou rerun até favorável. Drift de configuração/protocolo invalida o controle. Somente A+B+C + Control B podem produzir
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais anteriores
