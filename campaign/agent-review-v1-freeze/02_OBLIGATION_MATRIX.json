@@ -275,7 +275,32 @@
             "positive_controls": [
               "exact selected pack resolves",
               "legacy calendar selection resolves compatibly to agentescala-calendar in the committed legacy fixture"
-            ]
+            ],
+            "owner_split": {
+              "A2": "resolve raw selected token to exact normalized pack-id set (or unresolved) using mode-appropriate compatibility rules",
+              "A3": "consume SelectionResolution and evaluate normalized applicability/consequence; status=unresolved yields SELECTED_PACK_MISSING and non-conclusive outcome"
+            }
+          },
+          "legacy_selection_compatibility": {
+            "owner": "Gate A A2",
+            "input": "legacy selected_contract_pack token plus LEGACY_PACK_MODE pack id/description",
+            "normalization": "selected token, pack id and description are compared lowercase (case-insensitive)",
+            "retained_match_classes": [
+              "pack_id lowercase == selected lowercase",
+              "description lowercase == selected lowercase",
+              "selected lowercase is substring of pack_id lowercase",
+              "selected lowercase is substring of description lowercase"
+            ],
+            "multiplicity": "all legacy packs satisfying the retained predicate resolve into resolved_pack_ids; A2 does not arbitrarily pick one when multiple match",
+            "controls": [
+              "case-insensitive exact id",
+              "case-insensitive exact description",
+              "substring id: calendar -> agentescala-calendar",
+              "substring id: aiops -> agentescala-aiops",
+              "substring description",
+              "multiple-match input returns the complete matching exact-id set"
+            ],
+            "non_claim": "MAPPING_PACK_MODE does not inherit fuzzy/substring matching; it remains exact-id + fnmatchcase path applicability"
           }
         },
         "field_census": {
@@ -333,12 +358,13 @@
           "legacy compatibility must remain covered by executable tests"
         ],
         "executable_owners": {
-          "A1": "RawSourceAdmission",
-          "A2": "LegacyCompatibility + Normalization",
-          "A3": "Applicability + explicit relation resolution",
-          "A4": "Canonical cost + deterministic budget/packing",
-          "A5": "Required-context loss propagation"
-        }
+          "A1": "RawSourceAdmission only: YAML/source admission, ambiguity/duplicate-key rejection, supported raw fixture grammar.",
+          "A2": "LegacyCompatibility + Normalization only: raw legacy selector resolution; raw legacy rule/pack aliases -> normalized identities, ContractApplicability and contract_refs; no chunk applicability decision.",
+          "A3": "Applicability + explicit relation evaluation only: consume A2 normalized output; evaluate exact resolved pack IDs, normalized pack paths, ContractApplicability and contract refs against candidate chunk files; no fuzzy/raw matching.",
+          "A4": "Canonical cost + deterministic budget/packing only.",
+          "A5": "Required-context loss propagation only."
+        },
+        "a2_a3_handoff": "A2 emits normalized exact identities plus SelectionResolution {requested_token, resolved_pack_ids, status=resolved|unresolved}, NormalizedPack.contract_refs and ContractApplicability. A3 consumes only those normalized outputs. A3 MUST NOT re-run legacy substring/description matching or raw alias parsing."
       }
     },
     {
@@ -395,8 +421,8 @@
           "OPTIONAL_CONTEXT_REDUCED": "only optional detail was removed",
           "REQUIRED_CONTEXT_OMITTED": "required semantic context was removed",
           "MUST_HOLD_OMITTED": "an applicable must_hold was removed",
-          "serialized_form_owner": "successor implementation task contract chooses one deterministic serialized form per class and tests it as sole authority; examples here are history only",
-          "SELECTED_PACK_MISSING": "a non-empty explicit selected_contract_pack cannot be resolved to an admitted exact or legacy-compatible pack identity; obligation-degrading and never not_relevant"
+          "serialized_form_owner": "Gate A executable task contract chooses one deterministic serialized form for EVERY frozen semantic class, including SELECTED_PACK_MISSING, and tests it as sole authority.",
+          "SELECTED_PACK_MISSING": "a non-empty explicit selected pack token cannot be resolved by A2 to any admitted exact normalized pack identity; A3 degrades/non-concludes and never emits not_relevant"
         },
         "propagation": "smallest existing path: payload-cost projection -> SemanticChunkPlan limitation/status -> parse -> synthesize -> quality gate; no new manifest consumer unless the plan path is demonstrably inadequate",
         "positive_control": "sufficient hunk material + sufficient applicable context -> useful review remains possible; contract-aware reviews are not all turned into manual_review_required",
@@ -583,6 +609,31 @@
           "focal_discriminator": "CM-GA-A4-COST catches divergent cost authorities; CM-GA-A4-REPACK catches divergent optional-minimal/repack/candidate-recomputation behavior",
           "positive_control": "semantic requirements and positive conclusive path remain fixed while implementation details are proven in Gate A"
         }
+      },
+      "must_hold_applicability": {
+        "source": "semantic-context artifact: optional scope, change_type, contract_pack and flat must_hold list[str]",
+        "owner_split": {
+          "A2": "normalize semantic-context fields; resolve semantic-context.contract_pack using the same legacy/exact SelectionResolution authority as selected_contract_pack; preserve scope/change_type/must_hold without inventing per-claim ids",
+          "A3": "decide MustHoldApplicable(chunk) from normalized scope plus optional resolved pack constraint"
+        },
+        "scope_operator": {
+          "rule": "trim/lower scope. Empty scope or one of global|all|document applies to every chunk. Otherwise split normalized scope on non-alphanumeric separators into tokens; scope applies when normalized scope is a substring of any canonical chunk path OR any scope token is a substring of any canonical chunk path.",
+          "controls": [
+            "empty/global/all/document scope -> applies",
+            "scope backend -> applies to backend/... chunk",
+            "scope backend -> does not apply to a frontend-only chunk"
+          ]
+        },
+        "pack_constraint": {
+          "rule": "if semantic-context.contract_pack is absent, scope alone decides applicability. If present and A2 resolves it, must_hold applies only when scope applies AND at least one resolved exact pack id is in A3 ApplicablePackSet(chunk). If the explicit token cannot resolve, use SELECTED_PACK_MISSING and fail closed; do not treat must_hold as irrelevant.",
+          "controls": [
+            "scope backend + resolved calendar pack + calendar-applicable backend chunk -> must_hold required",
+            "scope backend + resolved calendar pack + backend chunk where calendar pack is not applicable -> must_hold not applicable",
+            "unresolved semantic-context contract_pack -> SELECTED_PACK_MISSING/non-conclusive"
+          ]
+        },
+        "change_type": "transported advisory metadata only in final v1; it does not filter must_hold applicability unless a future separately frozen rule promotes it",
+        "budget_consequence": "only MustHoldApplicable(chunk) items enter RequiredSemanticKernel; omitting one yields MUST_HOLD_OMITTED and non-conclusive affected chunk"
       }
     },
     {
@@ -650,7 +701,24 @@
           "matching preserves current supported exact-path OR pattern OR global behavior",
           "malformed path-bearing input never silently becomes global or irrelevant"
         ],
-        "owner": "Gate A A2/A3 executable contract"
+        "owner": "Gate A A2/A3 executable contract",
+        "owner_split": {
+          "A2": "project raw aliases into ContractApplicability and resolve legacy selection token; owns raw-to-normalized correctness",
+          "A3": "evaluate normalized ContractApplicability against canonical chunk files; owns exact-path/pattern/global applicability and normalized relation evaluation",
+          "handoff": "A2 output is the only input to A3 for legacy applicability. If A2 normalized correctly but A3 selects the wrong chunk, A3 is the failing owner; if raw aliases/selector were normalized incorrectly, A2 is the failing owner."
+        },
+        "pattern_semantics": {
+          "owner": "Gate A A3",
+          "operator": "for each normalized legacy pattern: trim whitespace; ignore empty; if pattern ends with `*`, match canonical path by prefix against pattern without final `*`; otherwise match when the normalized pattern is a substring of canonical path",
+          "non_claim": "this legacy rule-pattern operator is NOT fnmatchcase and is distinct from mapping-pack path semantics",
+          "controls": [
+            "pattern `calendar` matches a canonical path containing `calendar`",
+            "pattern `backend/api/*` matches by prefix `backend/api/`",
+            "pattern `calendar/*.py` does NOT acquire glob semantics merely because it contains `*` before the final suffix; only final `*` has prefix semantics",
+            "non-matching substring remains irrelevant"
+          ]
+        },
+        "global_semantics": "A2 projects scope/is_global; A3 treats scope case-insensitive `global` or is_global=true as global applicability; exact path intersection and legacy pattern operator remain the other admitted branches."
       }
     },
     {
@@ -661,11 +729,11 @@
       "closure_predicate": "PR #367 terminal is V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN when all semantic obligations, non-claims, compatibility classes and positive controls are explicit and every implementation-determinism question has exactly one Gate-A owner. It does not claim Gate A is implemented.",
       "owner": "#221 V1-C2",
       "gate_a_executable_contract": {
-        "A1_raw_admission": "raw-source admission, ambiguity/invalidity and supported target/legacy fixtures",
-        "A2_legacy_normalization": "legacy selected-pack compatibility and legacy field projection",
-        "A3_applicability_relations": "exact normalized applicability and explicit contract relations",
-        "A4_cost_budget_packing": "single canonical cost authority, optional-minimal context, deterministic packing/repacking and candidate recomputation",
-        "A5_loss_propagation": "required-context/source/hunk loss reaches the existing deterministic downstream gate path"
+        "A1_raw_admission": "only raw-source admission/ambiguity/grammar qualification",
+        "A2_legacy_normalization": "only legacy compatibility + raw-to-normalized projection; produces exact normalized identities, SelectionResolution, ContractApplicability and contract_refs",
+        "A3_applicability_relations": "only normalized evaluation against candidate files; no raw/fuzzy parsing; consumes A2 outputs and emits ApplicablePackSet/ApplicableContractSet/MustHoldApplicable consequences",
+        "A4_cost_budget_packing": "single cost authority, optional-minimal context, deterministic packing/repacking and candidate recomputation",
+        "A5_loss_propagation": "required-context/source/hunk loss reaches deterministic downstream gate path"
       }
     },
     {
@@ -708,6 +776,17 @@
             "record the expected subject difference separately"
           ],
           "refusal": "if provider/model/preset/router options drift between arms, Control B is invalid evidence and the runtime terminal is withheld"
+        },
+        "sampling_protocol": {
+          "requirement": "sampling attribution is predeclared before provider execution and is identical for bad/corrected arms",
+          "mode_choice": "If the resolved provider/model supports a deterministic seed accepted by the actual route, use one shared predeclared seed per pair and record it. Otherwise use a predeclared repeated-pair protocol; adaptive stopping is forbidden.",
+          "repeated_pair_protocol": {
+            "parameters": "pair_count and pass_criterion are fixed in the explicit provider-run grant BEFORE the first attempt; neither may be changed after observing outputs",
+            "pairing": "each pair contains one bad-subject arm and one corrected-subject arm under the same inference_config_id; order/cadence policy is predeclared and recorded",
+            "evidence": "record sampling_mode, supported seed when used, pair_count, pass_criterion, pair index, all admitted attempts and outcomes",
+            "anti_cherry_pick": "no early stop after a favorable pair, no dropping failed/unfavorable pairs, no rerun until pass"
+          },
+          "terminal_effect": "Control B is valid only if the declared sampling protocol is followed; otherwise evidence is invalid and V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY is withheld"
         }
       }
     },
@@ -1056,7 +1135,11 @@
         "every implementation-determinism question has exactly one executable Gate-A owner",
         "no implementation-specific result is falsely claimed as already decided",
         "explicit selected-pack resolution has a fail-closed SELECTED_PACK_MISSING outcome",
-        "Control B has one predeclared inference configuration shared by both arms"
+        "Control B has one predeclared inference configuration shared by both arms",
+        "A2 raw-to-normalized compatibility ownership and A3 normalized applicability ownership are disjoint with an explicit handoff invariant",
+        "legacy selector and legacy rule-pattern compatibility operators are frozen as requirements",
+        "must_hold applicability from semantic-context scope/pack to chunks is frozen with positive/negative controls",
+        "Control B sampling attribution uses shared supported seed or predeclared repeated-pair protocol"
       ],
       "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
       "runtime_requires": [
@@ -1077,13 +1160,31 @@
         {
           "id": "AgentEscala#871",
           "purpose": "thin-wrapper transport reliability: bounded HTTP 429 / Retry-After retry; persistent failure remains fail-closed/manual_review_required",
-          "evidence_contract": [
-            "target repository and issue identity",
-            "merged/qualified exact target commit",
-            "acceptance tests green",
-            "bounded retry semantics preserved",
-            "failure after bounded retries remains manual_review_required"
-          ]
+          "terminal_exits": {
+            "FIXED": {
+              "owner": "AgentEscala#871 implementation/qualification",
+              "evidence": [
+                "target repository and issue identity",
+                "merged/qualified exact target commit",
+                "acceptance tests green",
+                "bounded retry semantics preserved",
+                "failure after bounded retries remains manual_review_required"
+              ]
+            },
+            "RISK_ACCEPTED": {
+              "owner": "explicit human repository-owner grant",
+              "grant_requirement": "a dedicated explicit acceptance recorded on #871/freeze checkpoint; silence or issue-open state is not acceptance",
+              "evidence": [
+                "exact unfixed target SHA",
+                "operational evidence that 429 remains fail-closed and produces coverage missing/manual_review_required rather than false review",
+                "named residual: 429 may still lose coverage because rate_limited is not retried / Retry-After not honored",
+                "release/support/rollback documentation carries the accepted residual",
+                "final freeze record cites the acceptance grant and exact evidence"
+              ],
+              "non_claim": "RISK_ACCEPTED does not claim #871 reliability fixed"
+            }
+          },
+          "closure": "exactly one of FIXED or RISK_ACCEPTED must be satisfied; the two exits are mutually exclusive evidence paths"
         },
         "final maintenance release",
         "consumer repin to exact compatible engine+target config pair",
