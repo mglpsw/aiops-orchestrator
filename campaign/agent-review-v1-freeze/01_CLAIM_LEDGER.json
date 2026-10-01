@@ -142,7 +142,9 @@
         "Gate A A2 legacy selector compatibility covers the full retained predicate: case-insensitive id equality, description equality, substring-in-id, substring-in-description, complete multiple-match set; controls include calendar->agentescala-calendar and aiops->agentescala-aiops.",
         "Gate A A3 legacy rule-pattern controls preserve current operator: trailing `*` prefix match; otherwise substring match; distinct from fnmatchcase pack paths.",
         "Gate A must_hold controls bind semantic-context scope/optional contract_pack to chunks: A2 normalizes/resolves; A3 evaluates scope + ApplicablePackSet; unresolved pack -> SELECTED_PACK_MISSING.",
-        "Control B sampling attribution: supported shared deterministic seed per pair OR predeclared repeated-pair protocol with immutable pair_count/pass_criterion; all sampling identities and pair outcomes recorded."
+        "Control B sampling attribution: supported shared deterministic seed per pair OR predeclared repeated-pair protocol with immutable pair_count/pass_criterion; all sampling identities and pair outcomes recorded.",
+        "Gate A A3 legacy semantic-group fallback retains the current _relevance_keywords map and id+description substring matching only for legacy-mode items; mapping/domain mode is not promoted by keywords.",
+        "semantic-context.change_type is optional advisory metadata: it does not filter must_hold; loss-only -> OPTIONAL_CONTEXT_REDUCED with applicable must_hold preserved."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -197,7 +199,8 @@
           "A3": "Applicability + relations only: evaluate A2 outputs against candidate chunk files; owns exact/path/pattern/global/pack/contract/must_hold applicability and unresolved-selection consequence; never re-runs fuzzy/raw matching",
           "A4": "Canonical cost + deterministic budget/packing only",
           "A5": "Required-context loss propagation only",
-          "handoff": "A2 output is the only legacy compatibility input to A3; normalization defect -> A2, wrong normalized applicability -> A3."
+          "handoff": "A2 output is the only legacy compatibility input to A3; normalization defect -> A2, wrong normalized applicability -> A3.",
+          "A3_legacy_semantic_group": "legacy-only compatibility: preserve current _relevance_keywords semantic-group keyword map and substring over lowercase id+description; mapping/domain mode does not use this fallback."
         },
         "gate_b": "AgentEscala#869 target projection/config qualification.",
         "gate_c": "exact AgentReview candidate SHA + exact AgentEscala target/config SHA conformance.",
@@ -248,6 +251,10 @@
             "A2": "project inline domain_contract + contract_bindings.get(pack_id, []) into normalized contract_refs",
             "A3": "resolve/evaluate normalized contract_refs against admitted contracts and candidate applicability"
           }
+        },
+        "must_hold": {
+          "applicability": "A2 normalizes semantic-context scope/change_type/contract_pack/must_hold and resolves contract_pack; A3 applies scope plus resolved pack constraint.",
+          "change_type": "optional advisory metadata only; no applicability effect; loss-only is OPTIONAL_CONTEXT_REDUCED."
         }
       },
       "consumer_history": {
