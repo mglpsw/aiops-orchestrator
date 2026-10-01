@@ -314,7 +314,8 @@
             "system": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
             "domain": "NOT_PART_OF_NORMALIZED_INTERFACE legacy source metadata"
           },
-          "unclassified_fields": 0
+          "unclassified_fields": 0,
+          "scope": "Census over the current AgentEscala contract/pack blobs and committed legacy fixtures used by this campaign. unclassified_fields=0 is evidence for this bounded corpus, not a claim of future/raw YAML grammar totality."
         },
         "raw_admission_boundary": "Raw source is admitted by the successor RawSourceAdmissionContract into a NormalizedContractSet/NormalizedPackSet, or rejected as one typed invalid/unsupported source outcome. No malformed or ambiguous raw source normalizes to empty/not_relevant.",
         "determinism": "Requirement: each admitted source must resolve to one implementation-qualified normalized interpretation. The exact executable normalization/canonicalization algorithm is Gate A authority, not proven by PR #367 prose.",
@@ -490,7 +491,7 @@
         }
       },
       "normalized_aocm_closure_matrix": {
-        "status": "CLOSED_ZERO_TBD",
+        "status": "REQUIREMENTS_CLOSED_ZERO_OWNER_TBD",
         "normalized_source_state": {
           "valid_normalized_contract_source": "applicability may be evaluated",
           "absent_source": "typed SOURCE_ABSENT; applicability undecidable where that source is required",
@@ -521,7 +522,8 @@
         "consequence": {
           "conclusive_allowed": "only valid normalized, decidable context with no required loss",
           "degraded_non_conclusive": "required source, explicit relation or required kernel cannot support the conclusion"
-        }
+        },
+        "status_meaning": "Every admitted semantic requirement/non-claim/compatibility class in this docs slice has a disposition and executable owner. This is NOT implementation qualification; Gate A/B/C + Control B remain required."
       },
       "aocm_closure_test": {
         "P1": {
