@@ -201,7 +201,8 @@ A3 também preserva o fallback legado por semantic-group (`_relevance_keywords` 
 
 Compatibilidade legada requerida em A2: comparação case-insensitive e match por
 igualdade de id, igualdade de description, substring em id ou substring em
-description, preservando todos os matches. A3 preserva o operador de `patterns`
+description, preservando todos os matches.
+Uma rule legacy admitida `{id,description}` gera um contrato normalizado próprio (`contract_id=id`, section `rules`, rule text=`description`), preservando `contract:<id>`. O token de seleção é first non-empty clean `contract_pack`, depois alias `pack`, com `contract_pack` vencendo conflito e whitespace removido. Patterns são normalizados por A2 (trim/drop-empty/sanitize/dedupe/sort) e apenas matched por A3. A3 preserva o operador de `patterns`
 legado: final `*` = prefix match; demais patterns = substring; não é
 `fnmatchcase`. `semantic-context.must_hold` é normalizado por A2 e aplicado por A3
 usando scope + optional resolved contract_pack; unresolved pack falha fechado.
@@ -240,3 +241,5 @@ A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):
 `5b94632` (#270) — único commit em `git log 2ce1f457..ab92e89 -- app/agent_review/versioning.py`. O consumer está configurado para executar `v0.22.0` (`AgentEscala@e9cc03ff:.github/workflows/agent-review.yml:18-19`, blob `7fff440c`; pin configurado, não execução observada)
 e portanto **não** contém essas correções. Uma release de manutenção será
 necessária antes do repin — ação fora deste grant (`STOP_RELEASE_BOUNDARY`).
+
+`semantic-context.contract_pack` também torna `review_packs` required antes da resolução; ausência/invalidade não pode virar not-required/not_relevant.
