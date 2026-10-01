@@ -195,22 +195,37 @@ fi
 CLEANUP_TARGET=""
 CLEANUP_IDENTITY=""
 ARM_CLEANUP=0
+CLAIM_TOKEN_FILE=""
 
 cleanup_owned_target() {
     local primary_status="$1"
+    if [ -n "${CLAIM_TOKEN_FILE:-}" ] && [ -s "$CLAIM_TOKEN_FILE" ] && [ -z "$CLEANUP_IDENTITY" ]; then
+        CLEANUP_IDENTITY="$(tr -d '[:space:]' < "$CLAIM_TOKEN_FILE" 2>/dev/null || true)"
+        CLEANUP_TARGET="$VENV_TARGET"
+        ARM_CLEANUP=1
+    fi
     if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
         if [ -z "$CLEANUP_IDENTITY" ]; then
             echo "Warning: AgentReview toolrepo cleanup skipped: directory object identity was never verified; preserving original install failure $primary_status." >&2
+            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
+                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
+            fi
             return 0
         fi
         if [ -L "$CLEANUP_TARGET" ]; then
             echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' is a symlink; preserving original install failure $primary_status." >&2
+            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
+                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
+            fi
             return 0
         fi
         local current_identity
         current_identity="$(stat -c "%d:%i" "$CLEANUP_TARGET" 2>/dev/null || true)"
         if [ "$current_identity" != "$CLEANUP_IDENTITY" ]; then
             echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' identity changed ($current_identity != $CLEANUP_IDENTITY); preserving original install failure $primary_status." >&2
+            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
+                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
+            fi
             return 0
         fi
         if [ -e "$CLEANUP_TARGET" ]; then
@@ -221,6 +236,9 @@ cleanup_owned_target() {
                 echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$CLEANUP_TARGET'; preserving original install failure $primary_status." >&2
             fi
         fi
+    fi
+    if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
+        rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
     fi
 }
 
@@ -258,12 +276,18 @@ if [ ! -d "$VENV_PARENT" ]; then
     }
 fi
 
+CLAIM_TOKEN_FILE="$(mktemp "$VENV_PARENT/.agent_review_token.XXXXXX")" || {
+    echo "Blocked: failed to create claim token file in $VENV_PARENT" >&2
+    exit 2
+}
+
 CLAIM_OUTPUT=""
 CLAIM_STATUS=0
 CLAIM_OUTPUT="$("$PYTHON_BIN" -I -S -c '
 import os, sys, subprocess
 
 target = sys.argv[1]
+token_file = sys.argv[2]
 try:
     res = subprocess.run(["mkdir", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if res.returncode != 0:
@@ -274,44 +298,25 @@ except Exception:
 try:
     fd = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
 except Exception:
-    try:
-        os.rmdir(target)
-    except Exception:
-        pass
     sys.exit(4)
 
 try:
     orig_st = os.fstat(fd)
     if orig_st.st_dev <= 0 or orig_st.st_ino <= 0:
         os.close(fd)
-        try:
-            os.rmdir(target)
-        except Exception:
-            pass
         sys.exit(4)
 except Exception:
     os.close(fd)
-    try:
-        os.rmdir(target)
-    except Exception:
-        pass
     sys.exit(4)
 
-hook = os.environ.get("AGENT_REVIEW_TEST_HOOK_BEFORE_IDENTITY_CAPTURE")
-if hook:
-    import subprocess
-    try:
-        subprocess.run(hook, shell=True, check=True)
-    except Exception:
-        pass
-
-if os.environ.get("AGENT_REVIEW_TEST_INJECT_IDENTITY_FAILURE") == "1":
+try:
+    with os.scandir(target) as it:
+        if any(it):
+            os.close(fd)
+            sys.exit(5)
+except Exception:
     os.close(fd)
-    try:
-        os.rmdir(target)
-    except Exception:
-        pass
-    sys.exit(4)
+    sys.exit(5)
 
 try:
     if os.path.islink(target):
@@ -326,11 +331,21 @@ except Exception:
     sys.exit(5)
 
 os.close(fd)
-print(f"{orig_st.st_dev}:{orig_st.st_ino}")
+ident = f"{orig_st.st_dev}:{orig_st.st_ino}"
+try:
+    with open(token_file, "w") as f:
+        f.write(ident)
+except Exception:
+    sys.exit(4)
+print(ident)
 sys.exit(0)
-' "$VENV_TARGET" 2>/dev/null)" || CLAIM_STATUS=$?
+' "$VENV_TARGET" "$CLAIM_TOKEN_FILE" 2>/dev/null)" || CLAIM_STATUS=$?
 
-if [ "$CLAIM_STATUS" -eq 2 ]; then
+if [ "$CLAIM_STATUS" -eq 130 ]; then
+    handle_int
+elif [ "$CLAIM_STATUS" -eq 143 ]; then
+    handle_term
+elif [ "$CLAIM_STATUS" -eq 2 ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
     else
@@ -348,6 +363,8 @@ fi
 CLEANUP_TARGET="$VENV_TARGET"
 CLEANUP_IDENTITY="$CLAIM_OUTPUT"
 ARM_CLEANUP=1
+rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
+CLAIM_TOKEN_FILE=""
 
 "$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step

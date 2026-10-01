@@ -1339,45 +1339,55 @@ def test_countermodel_g3_signal_status_preserved_on_cancellation(tmp_path: Path)
     assert "73" in res_term_fail.stderr
 
 
-def test_countermodel_h1_a_replacement_before_identity_capture_not_deleted(tmp_path: Path) -> None:
-    """H1-A: When a directory replacement or concurrent claim occurs before or during identity acquisition,
-    the replacement must never be recursively deleted by the cleanup trap.
+def test_countermodel_h1_a_replacement_after_fd_anchor_rejected(tmp_path: Path) -> None:
+    """H1-A: When a directory replacement occurs after fd anchor but before identity acquisition
+    finalizes, the replacement is rejected and foreign directory/sentinel state is preserved.
     """
     target_venv = tmp_path / "venv_h1a_target"
     sentinel_text = "FOREIGN_SENTINEL_H1A_DATA\n"
-
-    # Simulate an external actor / race that replaces target between creation and identity verification
-    hook_cmd = (
-        f"mv '{target_venv}' '{target_venv}_stolen' && "
-        f"mkdir '{target_venv}' && "
-        f"printf '%s' '{sentinel_text}' > '{target_venv}/foreign_sentinel.txt'"
-    )
-
     host_py = sys.executable
-    fake_py = tmp_path / "fake_py_h1a.sh"
+
+    fake_py = tmp_path / "fake_py_h1a.py"
     fake_py.write_text(
-        f"#!/bin/sh\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    if [ -n "${5:-}" ]; then\n'
-        f'        exec "{host_py}" "$@"\n'
-        "    fi\n"
-        '    echo "OK"\n'
-        "    exit 0\n"
-        "fi\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
-        "    exit 42\n"
-        "fi\n"
-        "exit 1\n",
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        target = sys.argv[5]
+        token_file = sys.argv[6]
+        orig_stat = os.stat
+        def hooked_stat(path, *args, **kwargs):
+            if str(path) == target:
+                os.rename(target, target + "_stolen")
+                os.mkdir(target)
+                p = os.path.join(target, "foreign_sentinel.txt")
+                with open(p, "w") as f:
+                    f.write({repr(sentinel_text)})
+            return orig_stat(path, *args, **kwargs)
+        os.stat = hooked_stat
+        sys.argv = ["<claim>", target, token_file]
+        exec(script)
+        sys.exit(0)
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    sys.exit(42)
+sys.exit(1)
+""",
         encoding="utf-8",
     )
     fake_py.chmod(0o755)
 
-    env = dict(
-        os.environ,
-        AGENT_REVIEW_PYTHON=str(fake_py),
-        AGENT_REVIEW_TEST_HOOK_BEFORE_IDENTITY_CAPTURE=hook_cmd,
-    )
-
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), str(target_venv)],
         capture_output=True,
@@ -1385,45 +1395,65 @@ def test_countermodel_h1_a_replacement_before_identity_capture_not_deleted(tmp_p
         check=False,
         env=env,
     )
-
-    # 1. Installer exits 2 (directory object substituted before acquisition finalized)
     assert res.returncode == 2
     assert "was substituted before acquisition finalized" in res.stderr
-
-    # 2. Replacement directory and sentinel are NOT recursively deleted
     assert target_venv.exists(), "Replacement directory must not be deleted"
     sentinel_file = target_venv / "foreign_sentinel.txt"
     assert sentinel_file.exists(), "Foreign sentinel must remain intact"
     assert sentinel_file.read_text(encoding="utf-8") == sentinel_text
+    assert Path(f"{target_venv}_stolen").exists(), "Original anchored directory was renamed away"
 
 
 def test_countermodel_h1_b_identity_capture_failure_refuses_destructive_cleanup(tmp_path: Path) -> None:
     """H1-B: When directory identity acquisition fails, ARM_CLEANUP must never authorize rm -rf
-    of an unverified pathname, and foreign/replacement state is preserved.
+    of an unverified pathname, and foreign state is preserved in real installer execution.
     """
     host_py = sys.executable
+    target_venv = tmp_path / "venv_h1b_target"
+
+    bin_dir = tmp_path / "bin_h1b"
+    bin_dir.mkdir()
+    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
+    wrapper = bin_dir / "mkdir"
+    wrapper.write_text(
+        f"""#!/bin/bash
+set -e
+target="${{@: -1}}"
+"{real_mkdir}" "$@"
+mv "$target" "${{target}}_stolen"
+"{real_mkdir}" "$target"
+echo "PROTECTED_UNVERIFIED_DATA" > "$target/protected.txt"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
     fake_py = tmp_path / "fake_py_h1b.sh"
     fake_py.write_text(
-        f"#!/bin/sh\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    if [ -n "${5:-}" ]; then\n'
-        f'        exec "{host_py}" "$@"\n'
-        "    fi\n"
-        '    echo "OK"\n'
-        "    exit 0\n"
-        "fi\n"
-        "exit 1\n",
+        f"""#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
+    if [ "$#" -eq 4 ]; then
+        echo "OK"
+        exit 0
+    fi
+    if echo "$4" | grep -q "mkdir"; then
+        "{bin_dir}/mkdir" "$5"
+        exit 4
+    fi
+    exec "{host_py}" "$@"
+fi
+exit 1
+""",
         encoding="utf-8",
     )
     fake_py.chmod(0o755)
 
-    target_venv = tmp_path / "venv_h1b_target"
     env = dict(
         os.environ,
+        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
         AGENT_REVIEW_PYTHON=str(fake_py),
-        AGENT_REVIEW_TEST_INJECT_IDENTITY_FAILURE="1",
     )
-
     res = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), str(target_venv)],
         capture_output=True,
@@ -1431,45 +1461,213 @@ def test_countermodel_h1_b_identity_capture_failure_refuses_destructive_cleanup(
         check=False,
         env=env,
     )
-
-    # 1. Installer fails closed with status 2 when identity capture fails
     assert res.returncode == 2
     assert "unable to acquire verified directory object identity" in res.stderr
+    assert target_venv.exists(), "Target with unverified identity must NOT be deleted"
+    protected_file = target_venv / "protected.txt"
+    assert protected_file.exists(), "Protected file in foreign target must be preserved"
+    assert protected_file.read_text(encoding="utf-8").strip() == "PROTECTED_UNVERIFIED_DATA"
 
-    # 2. Target must not exist (cleaned up during claim failure, never published)
-    assert not target_venv.exists()
 
-    # 3. Direct invocation of cleanup_owned_target with empty CLEANUP_IDENTITY refuses destructive cleanup
-    cleanup_test_script = f"""#!/bin/bash
+def test_countermodel_h1_c_replacement_between_mkdir_and_open_rejected(tmp_path: Path) -> None:
+    """H1-C: When a target directory is replaced between mkdir and os.open with a foreign object B
+    containing FOREIGN_PREOPEN_SENTINEL, the installer rejects claim and refuses mutation/cleanup of B.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_h1c_target"
+
+    bin_dir = tmp_path / "bin_h1c"
+    bin_dir.mkdir()
+    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
+    wrapper = bin_dir / "mkdir"
+    wrapper.write_text(
+        f"""#!/bin/bash
 set -e
-CLEANUP_TARGET="{target_venv}"
-CLEANUP_IDENTITY=""
-ARM_CLEANUP=1
+target="${{@: -1}}"
+"{real_mkdir}" "$@"
+mv "$target" "${{target}}_stolen"
+"{real_mkdir}" "$target"
+echo "FOREIGN_PREOPEN_SENTINEL" > "$target/foreign_sentinel.txt"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
 
-# Pre-create foreign directory at target
-mkdir -p "$CLEANUP_TARGET"
-echo "PROTECTED_UNVERIFIED_DATA" > "$CLEANUP_TARGET/protected.txt"
-
-cleanup_owned_target() {{
-    local primary_status="$1"
-    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
-        if [ -z "$CLEANUP_IDENTITY" ]; then
-            echo "Warning: AgentReview toolrepo cleanup skipped: directory object identity was never verified; preserving original install failure $primary_status." >&2
-            return 0
-        fi
-        rm -rf "$CLEANUP_TARGET"
+    fake_py = tmp_path / "fake_py_h1c.sh"
+    fake_py.write_text(
+        f"""#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
+    if [ "$#" -eq 4 ]; then
+        echo "OK"
+        exit 0
     fi
-}}
+    exec "{host_py}" "$@"
+fi
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then
+    echo "ERROR: venv must not be invoked on foreign target" >&2
+    exit 42
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
 
-cleanup_owned_target 99
-"""
-    res_direct = subprocess.run(
-        ["bash", "-c", cleanup_test_script],
+    env = dict(
+        os.environ,
+        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
+        AGENT_REVIEW_PYTHON=str(fake_py),
+    )
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
-    assert res_direct.returncode == 0
-    assert "directory object identity was never verified" in res_direct.stderr
-    assert (target_venv / "protected.txt").exists(), "Target with unverified identity must NOT be deleted"
-    assert (target_venv / "protected.txt").read_text(encoding="utf-8").strip() == "PROTECTED_UNVERIFIED_DATA"
+    assert res.returncode == 2
+    assert "was substituted before acquisition finalized" in res.stderr
+    assert target_venv.exists(), "Foreign target B must NOT be deleted by installer failure"
+    sentinel_file = target_venv / "foreign_sentinel.txt"
+    assert sentinel_file.exists(), "Foreign sentinel in object B must remain intact"
+    assert sentinel_file.read_text(encoding="utf-8").strip() == "FOREIGN_PREOPEN_SENTINEL"
+    assert Path(f"{target_venv}_stolen").exists(), "Original directory A was moved to target_stolen"
+
+
+def test_countermodel_h1_d_identity_acquisition_failure_preserves_foreign_empty_target(tmp_path: Path) -> None:
+    """H1-D: When identity acquisition fails on a foreign empty directory B, error paths must never
+    invoke rmdir or recursive deletion on the target pathname.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_h1d_target"
+
+    bin_dir = tmp_path / "bin_h1d"
+    bin_dir.mkdir()
+    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
+    wrapper = bin_dir / "mkdir"
+    wrapper.write_text(
+        f"""#!/bin/bash
+set -e
+target="${{@: -1}}"
+"{real_mkdir}" "$@"
+mv "$target" "${{target}}_stolen"
+"{real_mkdir}" -m 000 "$target"
+exit 0
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
+    fake_py = tmp_path / "fake_py_h1d.sh"
+    fake_py.write_text(
+        f"""#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
+    if [ "$#" -eq 4 ]; then
+        echo "OK"
+        exit 0
+    fi
+    exec "{host_py}" "$@"
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(
+        os.environ,
+        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
+        AGENT_REVIEW_PYTHON=str(fake_py),
+    )
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    try:
+        assert res.returncode == 2
+        assert "unable to acquire verified directory object identity" in res.stderr
+        assert target_venv.exists(), "Foreign empty directory B must NOT be deleted by claim failure error paths"
+        assert Path(f"{target_venv}_stolen").exists()
+    finally:
+        if target_venv.exists():
+            target_venv.chmod(0o755)
+
+
+def test_claim_phase_sigterm_exits_143_and_cleans_partial_target(tmp_path: Path) -> None:
+    """Claim-phase signal probe (SIGTERM): When SIGTERM is sent to the installer during the claim
+    phase after target creation, the installer exits 143 and removes the partial target.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_claim_sigterm"
+
+    fake_py = tmp_path / "fake_py_claim_sigterm.sh"
+    fake_py.write_text(
+        f"""#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
+    if [ "$#" -eq 4 ]; then
+        echo "OK"
+        exit 0
+    fi
+    "{host_py}" "$@"
+    kill -TERM "$$"
+    sleep 0.1
+    exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert res.returncode == 143, f"SIGTERM must exit with code 143, got {res.returncode}"
+    assert not target_venv.exists(), "Partial target must be cleaned up on SIGTERM, leaving no residual"
+
+
+def test_claim_phase_sigint_exits_130_and_cleans_partial_target(tmp_path: Path) -> None:
+    """Claim-phase signal probe (SIGINT): When SIGINT is sent to the installer during the claim
+    phase after target creation, the installer exits 130 and removes the partial target.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_claim_sigint"
+
+    fake_py = tmp_path / "fake_py_claim_sigint.sh"
+    fake_py.write_text(
+        f"""#!/bin/sh
+if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
+    if [ "$#" -eq 4 ]; then
+        echo "OK"
+        exit 0
+    fi
+    "{host_py}" "$@"
+    kill -INT "$$"
+    sleep 0.1
+    exit 0
+fi
+exit 1
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert res.returncode == 130, f"SIGINT must exit with code 130, got {res.returncode}"
+    assert not target_venv.exists(), "Partial target must be cleaned up on SIGINT, leaving no residual"
