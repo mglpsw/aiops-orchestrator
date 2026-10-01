@@ -195,7 +195,10 @@ dos aliases legados de applicability, a autoridade concreta
 `canonical_json/canonical_len`, o FFD/tie-break de packing e a recomputação de
 contexto por candidate são **obrigações do Gate A com testes executáveis**, não
 propriedades já provadas por esta PR. Gate B permanece AgentEscala#869 e Gate C é
-a conformance do par exato engine+target/config. Somente A+B+C pode produzir
+a conformance do par exato engine+target/config. Depois de A+B+C, o Control B de
+utilidade semântica (#805) é executado por `#221 V1-C2 semantic-utility evaluation`
+sob grant explícito de provider real, com expectativas pré-declaradas e anti-cherry-pick.
+Somente A+B+C + Control B podem produzir
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais anteriores
