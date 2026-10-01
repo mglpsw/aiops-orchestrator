@@ -185,7 +185,14 @@
         "gate_a": "C2ExecutableContract owns A1 raw admission; A2 legacy compatibility + normalization; A3 applicability/relations; A4 canonical cost + deterministic budget/packing; A5 required-context loss propagation.",
         "gate_b": "AgentEscala#869 target projection/config qualification.",
         "gate_c": "exact AgentReview candidate SHA + exact AgentEscala target/config SHA conformance.",
-        "implementation_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
+        "implementation_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
+        "control_B": {
+          "owner": "#221 V1-C2 semantic-utility evaluation",
+          "authorization": "separate explicit real-provider grant",
+          "execution_point": "after Gate A + Gate B + Gate C deterministic qualification and before V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
+          "terminal_effect": "required evidence; unmet predeclared utility expectation withholds the implementation terminal pending adjudication",
+          "non_claim": "passing is bounded semantic utility evidence, not exhaustive recall/completeness"
+        }
       },
       "consumer_history": {
         "superseded_value": [
