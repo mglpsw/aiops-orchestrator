@@ -1337,3 +1337,139 @@ def test_countermodel_g3_signal_status_preserved_on_cancellation(tmp_path: Path)
     assert "simulated rm failure witness" in res_term_fail.stderr
     assert "AgentReview toolrepo cleanup failed" in res_term_fail.stderr
     assert "73" in res_term_fail.stderr
+
+
+def test_countermodel_h1_a_replacement_before_identity_capture_not_deleted(tmp_path: Path) -> None:
+    """H1-A: When a directory replacement or concurrent claim occurs before or during identity acquisition,
+    the replacement must never be recursively deleted by the cleanup trap.
+    """
+    target_venv = tmp_path / "venv_h1a_target"
+    sentinel_text = "FOREIGN_SENTINEL_H1A_DATA\n"
+
+    # Simulate an external actor / race that replaces target between creation and identity verification
+    hook_cmd = (
+        f"mv '{target_venv}' '{target_venv}_stolen' && "
+        f"mkdir '{target_venv}' && "
+        f"printf '%s' '{sentinel_text}' > '{target_venv}/foreign_sentinel.txt'"
+    )
+
+    host_py = sys.executable
+    fake_py = tmp_path / "fake_py_h1a.sh"
+    fake_py.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        "    exit 42\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+        AGENT_REVIEW_TEST_HOOK_BEFORE_IDENTITY_CAPTURE=hook_cmd,
+    )
+
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Installer exits 2 (directory object substituted before acquisition finalized)
+    assert res.returncode == 2
+    assert "was substituted before acquisition finalized" in res.stderr
+
+    # 2. Replacement directory and sentinel are NOT recursively deleted
+    assert target_venv.exists(), "Replacement directory must not be deleted"
+    sentinel_file = target_venv / "foreign_sentinel.txt"
+    assert sentinel_file.exists(), "Foreign sentinel must remain intact"
+    assert sentinel_file.read_text(encoding="utf-8") == sentinel_text
+
+
+def test_countermodel_h1_b_identity_capture_failure_refuses_destructive_cleanup(tmp_path: Path) -> None:
+    """H1-B: When directory identity acquisition fails, ARM_CLEANUP must never authorize rm -rf
+    of an unverified pathname, and foreign/replacement state is preserved.
+    """
+    host_py = sys.executable
+    fake_py = tmp_path / "fake_py_h1b.sh"
+    fake_py.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    target_venv = tmp_path / "venv_h1b_target"
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+        AGENT_REVIEW_TEST_INJECT_IDENTITY_FAILURE="1",
+    )
+
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Installer fails closed with status 2 when identity capture fails
+    assert res.returncode == 2
+    assert "unable to acquire verified directory object identity" in res.stderr
+
+    # 2. Target must not exist (cleaned up during claim failure, never published)
+    assert not target_venv.exists()
+
+    # 3. Direct invocation of cleanup_owned_target with empty CLEANUP_IDENTITY refuses destructive cleanup
+    cleanup_test_script = f"""#!/bin/bash
+set -e
+CLEANUP_TARGET="{target_venv}"
+CLEANUP_IDENTITY=""
+ARM_CLEANUP=1
+
+# Pre-create foreign directory at target
+mkdir -p "$CLEANUP_TARGET"
+echo "PROTECTED_UNVERIFIED_DATA" > "$CLEANUP_TARGET/protected.txt"
+
+cleanup_owned_target() {{
+    local primary_status="$1"
+    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
+        if [ -z "$CLEANUP_IDENTITY" ]; then
+            echo "Warning: AgentReview toolrepo cleanup skipped: directory object identity was never verified; preserving original install failure $primary_status." >&2
+            return 0
+        fi
+        rm -rf "$CLEANUP_TARGET"
+    fi
+}}
+
+cleanup_owned_target 99
+"""
+    res_direct = subprocess.run(
+        ["bash", "-c", cleanup_test_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res_direct.returncode == 0
+    assert "directory object identity was never verified" in res_direct.stderr
+    assert (target_venv / "protected.txt").exists(), "Target with unverified identity must NOT be deleted"
+    assert (target_venv / "protected.txt").read_text(encoding="utf-8").strip() == "PROTECTED_UNVERIFIED_DATA"

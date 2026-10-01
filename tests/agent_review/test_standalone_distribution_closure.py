@@ -42,8 +42,20 @@ def _clean_env(standalone_root: Path, **updates: str) -> dict[str, str]:
     return env
 
 
+def _populate_standalone_manifest(dest_dir: Path) -> Path:
+    """Ensure a synthetic standalone source directory contains the canonical manifest."""
+    manifest_dest = dest_dir / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    manifest_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+        manifest_dest,
+    )
+    return manifest_dest
+
+
 def _init_git_in_standalone(standalone_dir: Path) -> str:
     """Initialize a git repo inside standalone_dir, commit all files, and return HEAD sha."""
+    _populate_standalone_manifest(standalone_dir)
     subprocess.run(["git", "init"], cwd=standalone_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "CI"], cwd=standalone_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=standalone_dir, check=True, capture_output=True)
@@ -1957,6 +1969,7 @@ def test_countermodel_p13_reject_special_files_before_target_creation(tmp_path: 
 
     fake_source = tmp_path / "fake_source_p13"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     fifo_path = fake_source / "app" / "agent_review" / "test_fifo"
     try:
         os.mkfifo(fifo_path)
@@ -1996,6 +2009,7 @@ def test_countermodel_p14_verify_explicit_source_sha_against_source(tmp_path: Pa
 
     fake_source = tmp_path / "fake_source_p14"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     (fake_source / ".source-commit").unlink()
     (fake_source / ".toolrepo-sha").unlink()
     target_c = tmp_path / "target_sha_c"
@@ -2095,6 +2109,7 @@ def test_countermodel_p16_prefer_git_head_over_local_attestation(tmp_path: Path)
     # 4. Standalone mode (non-git): conflicting, malformed, or valid attestations
     standalone_dir = tmp_path / "standalone_p16"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone_dir)
+    _populate_standalone_manifest(standalone_dir)
     # Conflicting attestations
     (standalone_dir / ".source-commit").write_text(f"{'a'*40}\n", encoding="utf-8")
     (standalone_dir / ".toolrepo-sha").write_text(f"{'b'*40}\n", encoding="utf-8")
@@ -2184,6 +2199,7 @@ def test_finding_s1_attestation_symlink_fails_closed(tmp_path: Path) -> None:
     """Finding S1: Attestation file as symlink is refused fail-closed."""
     fake_source = tmp_path / "fake_source_s1"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     valid_commit = (fake_source / ".source-commit").read_text(encoding="utf-8").strip()
 
     outside_commit = tmp_path / "outside_commit.txt"
@@ -2265,6 +2281,7 @@ def test_finding_s3_parent_git_repo_capture_refused(tmp_path: Path) -> None:
 
     nested_standalone = parent_repo / "nested_standalone"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=nested_standalone)
+    _populate_standalone_manifest(nested_standalone)
     valid_commit = (nested_standalone / ".source-commit").read_text(encoding="utf-8").strip()
 
     # The nested directory is NOT a git repo itself; its git top level would be parent_repo
@@ -2496,6 +2513,47 @@ def test_countermodel_g2_default_manifest_sources_from_git_commit_not_dirty_work
     assert res_mat_exp.returncode == 1
     assert "non_existent_package_probe" in res_mat_exp.stderr
     assert not target_explicit.exists()
+
+
+def test_countermodel_h2_a_foreign_git_repo_missing_default_manifest_fails_closed(tmp_path: Path) -> None:
+    """H2-A: A Git repository whose selected commit does not contain the default manifest fails closed and does not fall back to the host repo."""
+    foreign_repo = tmp_path / "foreign_git_repo"
+    foreign_repo.mkdir()
+    (foreign_repo / "README.md").write_text("# foreign repo without manifest\n", encoding="utf-8")
+    (foreign_repo / "app").mkdir()
+    (foreign_repo / "app" / "__init__.py").write_text("# app root\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "CI"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "foreign initial"], cwd=foreign_repo, check=True, capture_output=True)
+
+    target_dir = tmp_path / "target_h2a_out"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc:
+        validator.materialize_standalone_distribution(repo_root=foreign_repo, target_dir=target_dir, manifest=None)
+
+    assert "Failed to read default manifest" in str(exc.value)
+    assert "standalone-distribution-manifest.v1.json" in str(exc.value)
+    assert not target_dir.exists(), "Target directory must not be created when default manifest is missing"
+
+
+def test_countermodel_h2_b_non_git_source_missing_default_manifest_fails_closed(tmp_path: Path) -> None:
+    """H2-B: A non-Git source directory without its default manifest fails closed and does not fall back to the host repo."""
+    non_git_source = tmp_path / "non_git_source"
+    non_git_source.mkdir()
+    (non_git_source / ".source-commit").write_text(f"{'d'*40}\n", encoding="utf-8")
+    (non_git_source / ".toolrepo-sha").write_text(f"{'d'*40}\n", encoding="utf-8")
+    (non_git_source / "app").mkdir()
+    (non_git_source / "app" / "__init__.py").write_text("# app root\n", encoding="utf-8")
+
+    target_dir = tmp_path / "target_h2b_out"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc:
+        validator.materialize_standalone_distribution(repo_root=non_git_source, target_dir=target_dir, manifest=None)
+
+    assert "Distribution manifest not found at:" in str(exc.value)
+    assert "standalone-distribution-manifest.v1.json" in str(exc.value)
+    assert not target_dir.exists(), "Target directory must not be created when default manifest is missing"
 
 
 @pytest.mark.requires_network

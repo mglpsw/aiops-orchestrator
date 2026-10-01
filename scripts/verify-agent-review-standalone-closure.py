@@ -940,21 +940,17 @@ def materialize_standalone_distribution(
                 raise StandaloneClosureValidationError(
                     f"Default manifest from git commit {resolved_sha} must be a JSON object"
                 )
-        elif repo_resolved != REPO_ROOT.resolve() and DEFAULT_MANIFEST_PATH.is_file():
-            # Synthetic / test fixture git repo without local manifest committed
-            manifest_data = load_manifest(DEFAULT_MANIFEST_PATH)
         else:
             raise StandaloneClosureValidationError(
                 f"Failed to read default manifest '{DEFAULT_MANIFEST_RELATIVE_PATH.as_posix()}' from git commit {resolved_sha}: {proc_show.stderr.strip()}"
             )
     else:
         manifest_rel_file = repo_root / DEFAULT_MANIFEST_RELATIVE_PATH
-        if manifest_rel_file.is_file():
-            manifest_data = load_manifest(manifest_rel_file)
-        elif repo_resolved != REPO_ROOT.resolve() and DEFAULT_MANIFEST_PATH.is_file():
-            manifest_data = load_manifest(DEFAULT_MANIFEST_PATH)
-        else:
-            manifest_data = load_manifest(manifest_rel_file)
+        if not manifest_rel_file.is_file():
+            raise StandaloneClosureValidationError(
+                f"Distribution manifest not found at: {manifest_rel_file}"
+            )
+        manifest_data = load_manifest(manifest_rel_file)
 
     src_commit_file = repo_root / ".source-commit"
     toolrepo_sha_file = repo_root / ".toolrepo-sha"

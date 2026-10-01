@@ -199,13 +199,17 @@ ARM_CLEANUP=0
 cleanup_owned_target() {
     local primary_status="$1"
     if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
+        if [ -z "$CLEANUP_IDENTITY" ]; then
+            echo "Warning: AgentReview toolrepo cleanup skipped: directory object identity was never verified; preserving original install failure $primary_status." >&2
+            return 0
+        fi
         if [ -L "$CLEANUP_TARGET" ]; then
             echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' is a symlink; preserving original install failure $primary_status." >&2
             return 0
         fi
         local current_identity
         current_identity="$(stat -c "%d:%i" "$CLEANUP_TARGET" 2>/dev/null || true)"
-        if [ -n "$CLEANUP_IDENTITY" ] && [ "$current_identity" != "$CLEANUP_IDENTITY" ]; then
+        if [ "$current_identity" != "$CLEANUP_IDENTITY" ]; then
             echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' identity changed ($current_identity != $CLEANUP_IDENTITY); preserving original install failure $primary_status." >&2
             return 0
         fi
@@ -254,17 +258,95 @@ if [ ! -d "$VENV_PARENT" ]; then
     }
 fi
 
-if ! mkdir "$VENV_TARGET" 2>/dev/null; then
+CLAIM_OUTPUT=""
+CLAIM_STATUS=0
+CLAIM_OUTPUT="$("$PYTHON_BIN" -I -S -c '
+import os, sys, subprocess
+
+target = sys.argv[1]
+try:
+    res = subprocess.run(["mkdir", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode != 0:
+        sys.exit(2)
+except Exception:
+    sys.exit(3)
+
+try:
+    fd = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+except Exception:
+    try:
+        os.rmdir(target)
+    except Exception:
+        pass
+    sys.exit(4)
+
+try:
+    orig_st = os.fstat(fd)
+    if orig_st.st_dev <= 0 or orig_st.st_ino <= 0:
+        os.close(fd)
+        try:
+            os.rmdir(target)
+        except Exception:
+            pass
+        sys.exit(4)
+except Exception:
+    os.close(fd)
+    try:
+        os.rmdir(target)
+    except Exception:
+        pass
+    sys.exit(4)
+
+hook = os.environ.get("AGENT_REVIEW_TEST_HOOK_BEFORE_IDENTITY_CAPTURE")
+if hook:
+    import subprocess
+    try:
+        subprocess.run(hook, shell=True, check=True)
+    except Exception:
+        pass
+
+if os.environ.get("AGENT_REVIEW_TEST_INJECT_IDENTITY_FAILURE") == "1":
+    os.close(fd)
+    try:
+        os.rmdir(target)
+    except Exception:
+        pass
+    sys.exit(4)
+
+try:
+    if os.path.islink(target):
+        os.close(fd)
+        sys.exit(5)
+    cur_st = os.stat(target)
+    if (cur_st.st_dev, cur_st.st_ino) != (orig_st.st_dev, orig_st.st_ino):
+        os.close(fd)
+        sys.exit(5)
+except Exception:
+    os.close(fd)
+    sys.exit(5)
+
+os.close(fd)
+print(f"{orig_st.st_dev}:{orig_st.st_ino}")
+sys.exit(0)
+' "$VENV_TARGET" 2>/dev/null)" || CLAIM_STATUS=$?
+
+if [ "$CLAIM_STATUS" -eq 2 ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
     else
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
     fi
     exit 2
+elif [ "$CLAIM_STATUS" -eq 5 ]; then
+    echo "Blocked: directory object identity for '$VENV_TARGET' was substituted before acquisition finalized." >&2
+    exit 2
+elif [ "$CLAIM_STATUS" -ne 0 ] || [ -z "$CLAIM_OUTPUT" ]; then
+    echo "Blocked: unable to acquire verified directory object identity for '$VENV_TARGET' (claim status $CLAIM_STATUS)." >&2
+    exit 2
 fi
 
 CLEANUP_TARGET="$VENV_TARGET"
-CLEANUP_IDENTITY="$(stat -c "%d:%i" "$VENV_TARGET" 2>/dev/null || true)"
+CLEANUP_IDENTITY="$CLAIM_OUTPUT"
 ARM_CLEANUP=1
 
 "$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
