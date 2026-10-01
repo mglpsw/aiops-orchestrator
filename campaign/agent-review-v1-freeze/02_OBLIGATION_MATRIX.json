@@ -90,7 +90,7 @@
         "pertinent change with the correct contract content in the payload",
         "non-pertinent change with no spurious obligation"
       ],
-      "closure_predicate": "PR #367 closes when every semantic requirement/non-claim/compatibility class has a named countermodel or positive control and exactly one executable owner. Runtime closure requires Gate A code/tests plus Gate B AgentEscala#869 and Gate C exact-pair conformance.",
+      "closure_predicate": "PR #367 closes when every semantic requirement/non-claim/compatibility class has a named countermodel AND every mandatory positive control has an exact registered PC-* id in CL-2's structured positive_controls registry, with exactly one executable owner. Runtime closure still requires Gate A code/tests + Gate B #869 + Gate C exact pair + Control B.",
       "owner": "#221 V1-C2 + AgentEscala#869",
       "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858 (contracts_context and flatteners); app/agent_review/repo_profile.py:72-77",
       "superseded_raw_serialization_grammar": {
@@ -281,7 +281,7 @@
             "pack_id": "REQUIRED_PACK_CONTEXT_IDENTITY"
           },
           "ordering": "packs ascending exact pack_id; paths and contract_refs sorted after exact deduplication",
-          "applicability": "ApplicablePackSet(chunk) is the exact-id union of: (a) every id in SelectionResolution.resolved_pack_ids when status=resolved; (b) MAPPING_PACK_MODE packs whose paths fnmatchcase-match canonical chunk paths; (c) LEGACY_PACK_MODE include-all via target_profile:review_packs; (d) legacy packs explicitly referenced by contract:<id> when pack.id equals the referenced id; (e) legacy semantic-group fallback matches. MAPPING_PACK_MODE never uses semantic-group fallback. Exact-dedupe and canonically order pack ids.",
+          "applicability": "ApplicablePackSet(chunk) is computed by A3 over PackCandidate records: (a) all SelectionResolution.resolved_pack_ids; (b) MAPPING_PACK_MODE candidates whose normalized paths fnmatchcase-match canonical chunk paths; (c) LEGACY_PACK_MODE candidates under target_profile:review_packs include-all; (d) LEGACY_PACK_MODE candidates matched by direct legacy contract:<id> context reference; (e) LEGACY_PACK_MODE candidates matched by normalized semantic-group fallback. Exact-dedupe/order pack ids.",
           "context": "ApplicableNormalizedPackContext exists for every applicable NormalizedPack because pack_id itself is required pack context. description and review_preset are optional explanatory/routing context; their removal never erases the applicable-pack fact. A pack without contract_refs contributes no contract but is never not_relevant merely for lacking a relation.",
           "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant",
           "applicability_context_invariant": "ApplicablePackSet is determined before payload budgeting. For every applicable pack, pack_id is required context and cannot be dropped as optional detail. `not_relevant` requires ApplicablePackSet empty AND ApplicableContractSet empty after valid evaluation.",
@@ -432,6 +432,30 @@
           },
           "handoff": "A3 receives both SelectionResolution (general pack selection) and PackConstraintResolution (must-hold constraint) as separate objects. Neither overwrites the other.",
           "conflict_control": "file-diff general token calendar + semantic-context constraint security -> SelectionResolution(calendar) and PackConstraintResolution(security) coexist; general ApplicablePackSet and must-hold constraint remain distinct."
+        },
+        "candidate_handoff": {
+          "owner": "Gate A A2 -> A3",
+          "pack_candidate": "PackCandidate { pack: NormalizedPack, source_mode: LEGACY_PACK_MODE|MAPPING_PACK_MODE }",
+          "contract_candidate": "ContractCandidate { contract: NormalizedContract, source_mode: LEGACY_FLAT_MODE|DOMAIN_MAPPING_MODE|TOP_LEVEL_LIST_MODE }",
+          "role": "source_mode is required pre-budget applicability metadata. A3 consumes it to gate legacy-only include-all/semantic-group/direct-reference compatibility. It is removed after applicability/relation evaluation and is NOT model payload context, NOT optional payload metadata, and not charged by payload budget.",
+          "invariants": [
+            "legacy semantic-group fallback applies only when candidate.source_mode is a legacy mode",
+            "mapping/domain/top-level-list candidates never receive legacy semantic-group promotion",
+            "A3 never inspects raw YAML mode or raw selector aliases"
+          ]
+        },
+        "legacy_direct_context_reference": {
+          "owner": "Gate A A3",
+          "token": "each normalized direct `contract:<id>` reference carried by the chunk",
+          "semantics": "legacy compatibility reference resolves independently across BOTH namespaces: exact NormalizedContract.contract_id and exact LEGACY_PACK_MODE PackCandidate.pack.pack_id. Add every contract match to ApplicableContractSet and every legacy-pack match to ApplicablePackSet. A pack-only match is valid and MUST NOT trigger a missing-contract limitation.",
+          "missing": "Only when the token resolves to neither an admitted contract nor an admitted legacy pack does the historical semantic class SELECTED_CONTRACT_MISSING apply; the affected review is non-conclusive and never not_relevant.",
+          "controls": [
+            "token matching contract only -> contract applicable, no missing",
+            "token matching legacy pack only -> pack applicable, no missing",
+            "token matching both -> both applicable",
+            "token matching neither -> SELECTED_CONTRACT_MISSING",
+            "mapping pack exact id alone is not selected by this legacy compatibility branch unless another frozen mapping applicability branch applies"
+          ]
         }
       },
       "requirements_freeze_2026_10_01": {
@@ -448,11 +472,11 @@
         "executable_owners": {
           "A1": "RawSourceAdmission only: YAML/source admission, ambiguity/duplicate-key rejection, supported raw fixture grammar.",
           "A2": "LegacyCompatibility + Normalization only: raw legacy selector resolution; raw legacy rule/pack aliases -> normalized identities, ContractApplicability and contract_refs; no chunk applicability decision.",
-          "A3": "Applicability + explicit relation evaluation only: consume A2 normalized output; evaluate exact resolved pack IDs, normalized pack paths, ContractApplicability and contract refs against candidate chunk files; no fuzzy/raw matching.",
+          "A3": "Applicability + explicit relation evaluation only: consume A2 normalized candidates/resolutions; evaluate exact resolved pack IDs, normalized pack paths, ContractApplicability, direct refs, semantic-group legacy fallback and contract refs against candidate chunk files. A3 never parses raw selector aliases or re-runs the A2 legacy selector matcher.",
           "A4": "Canonical cost + deterministic budget/packing only.",
           "A5": "Required-context loss propagation only."
         },
-        "a2_a3_handoff": "A2 emits normalized exact identities plus SelectionResolution {requested_token?, resolved_pack_ids, status=not_requested|resolved|unresolved}, NormalizedPack.contract_refs and ContractApplicability. A3 consumes only those normalized outputs. not_requested means no general selector and is non-degrading; resolved carries the COMPLETE exact-id set and A3 evaluates every id; unresolved yields SELECTED_PACK_MISSING. A3 MUST NOT re-run legacy substring/description matching or raw alias parsing."
+        "a2_a3_handoff": "A2 emits PackCandidate {pack: NormalizedPack, source_mode: LEGACY_PACK_MODE|MAPPING_PACK_MODE}, ContractCandidate {contract: NormalizedContract, source_mode: LEGACY_FLAT_MODE|DOMAIN_MAPPING_MODE|TOP_LEVEL_LIST_MODE}, SelectionResolution {requested_token?, resolved_pack_ids, status=not_requested|resolved|unresolved}, PackConstraintResolution, normalized SemanticContextScope, contract_refs and ContractApplicability. A3 consumes only these normalized outputs. source_mode is REQUIRED_PREBUDGET_APPLICABILITY_METADATA consumed by A3 and is not model payload/budget context. A3 MUST NOT re-run raw selector alias parsing or A2 legacy selector matching; A3 MAY and MUST execute the separately frozen normalized legacy semantic-group fallback when source_mode is legacy."
       }
     },
     {
@@ -713,15 +737,16 @@
       "must_hold_applicability": {
         "source": "semantic-context artifact: optional scope, change_type, contract_pack and flat must_hold list[str]",
         "owner_split": {
-          "A2": "normalize semantic-context scope/change_type/must_hold and emit the DISTINCT PackConstraintResolution from semantic-context.contract_pack using the same selector-matching algorithm as appropriate for the source mode; never reuse or overwrite general SelectionResolution.",
-          "A3": "consume normalized scope plus PackConstraintResolution only; decide MustHoldApplicable(chunk) and never read raw semantic-context.contract_pack."
+          "A2": "normalize semantic-context scope/change_type/must_hold and emit DISTINCT PackConstraintResolution. Scope normalization is entirely A2-owned: trim/lower raw scope; classify empty/global/all/document as global=true; otherwise emit normalized_scope_text plus alphanumeric token list. A2 resolves semantic-context.contract_pack and never passes raw scope/token to A3.",
+          "A3": "consume SemanticContextScope + PackConstraintResolution only; decide MustHoldApplicable(chunk) by comparing already-normalized scope_text/tokens to canonical chunk paths and by pack-set intersection. A3 performs no trim/lower/tokenization and never reads raw semantic-context."
         },
         "scope_operator": {
-          "rule": "trim/lower scope. Empty scope or one of global|all|document applies to every chunk. Otherwise split normalized scope on non-alphanumeric separators into tokens; scope applies when normalized scope is a substring of any canonical chunk path OR any scope token is a substring of any canonical chunk path.",
+          "owner": "Gate A A3",
+          "rule": "Use only A2-produced SemanticContextScope. If global=true -> applies. Else compare normalized_scope_text/tokens by substring to lowercased canonical chunk paths. No trimming/lower/tokenization in A3.",
           "controls": [
-            "empty/global/all/document scope -> applies",
-            "scope backend -> applies to backend/... chunk",
-            "scope backend -> does not apply to a frontend-only chunk"
+            "normalized backend scope applies to backend/... chunk",
+            "normalized backend scope does not apply to frontend-only chunk",
+            "global=true applies to every chunk"
           ]
         },
         "pack_constraint": {
@@ -735,7 +760,18 @@
           "required_source": "non-empty semantic-context.contract_pack makes the review_packs source RequiredForChunk before resolution; absent/invalid review-packs therefore degrades and cannot be reinterpreted as not_required/not_relevant."
         },
         "change_type": "OPTIONAL_ADVISORY_METADATA. It does not filter MustHoldApplicable in final v1. When transported to the model, loss of only change_type is OPTIONAL_CONTEXT_REDUCED and may remain conclusive; Gate A optional-minimal context may omit it. It is never part of the required semantic kernel unless a later separately frozen rule promotes it.",
-        "budget_consequence": "only MustHoldApplicable(chunk) items enter RequiredSemanticKernel; omitting one yields MUST_HOLD_OMITTED and non-conclusive affected chunk"
+        "budget_consequence": "only MustHoldApplicable(chunk) items enter RequiredSemanticKernel; omitting one yields MUST_HOLD_OMITTED and non-conclusive affected chunk",
+        "normalized_scope": {
+          "shape": "SemanticContextScope { global: bool, normalized_scope_text?: string, tokens: [lowercase alphanumeric string] }",
+          "owner": "Gate A A2",
+          "projection": "raw scope absent/blank or case-insensitive global|all|document -> global=true, no text/tokens required. Otherwise global=false; normalized_scope_text=trim(raw).lower(); tokens=non-empty lowercase alphanumeric tokens split on non-alphanumeric separators.",
+          "handoff": "A3 receives this structure only. For global=true scope applies. Otherwise scope applies when normalized_scope_text is substring of a canonical chunk path lowercased OR any token is substring of that path.",
+          "controls": [
+            "` Backend / API ` -> global=false, normalized_scope_text=`backend / api`, tokens=[backend,api]",
+            "` GLOBAL ` -> global=true",
+            "A3 receives no raw whitespace/mixed-case scope"
+          ]
+        }
       }
     },
     {
@@ -815,9 +851,9 @@
           "malformed path-bearing input never silently becomes global or irrelevant"
         ],
         "owner_split": {
-          "A2": "raw legacy aliases/selector/bindings -> normalized ContractApplicability, SelectionResolution and contract_refs; owns projection correctness",
-          "A3": "evaluate normalized structures against canonical candidate chunk files; owns exact-path/pattern/global/pack/contract applicability and consequences",
-          "handoff": "A3 receives only A2 normalized output; A3 never parses raw aliases or re-runs legacy fuzzy selector matching"
+          "A2": "raw legacy aliases/selectors/bindings/pattern cleanup/source mode -> normalized ContractApplicability, SelectionResolution, candidate source_mode and contract_refs; owns raw-to-normalized correctness",
+          "A3": "evaluate normalized candidates against canonical chunk files; owns exact-path/pattern/global/direct-ref/semantic-group/pack/contract applicability. A3 never re-runs RAW selector matching, but does execute the frozen normalized legacy semantic-group fallback.",
+          "handoff": "A3 receives only A2-normalized candidates/resolutions/applicability metadata; raw selector matching belongs only to A2. Normalized legacy semantic-group substring matching belongs only to A3."
         },
         "pattern_semantics": {
           "owner": "Gate A A3",
@@ -921,8 +957,8 @@
       "owner": "#221 V1-C2",
       "gate_a_executable_contract": {
         "A1_raw_admission": "only raw-source admission/ambiguity/grammar qualification",
-        "A2_legacy_normalization": "only legacy compatibility + raw-to-normalized projection; produces exact normalized identities, SelectionResolution, ContractApplicability and contract_refs",
-        "A3_applicability_relations": "only normalized evaluation against candidate files; no raw/fuzzy parsing; consumes A2 outputs and emits ApplicablePackSet/ApplicableContractSet/MustHoldApplicable consequences",
+        "A2_legacy_normalization": "raw-source compatibility + normalization only; emits PackCandidate/ContractCandidate source_mode, SelectionResolution, PackConstraintResolution, SemanticContextScope, ContractApplicability and contract_refs",
+        "A3_applicability_relations": "normalized evaluation only; consumes A2 outputs; performs normalized legacy semantic-group fallback when source_mode permits; never parses raw aliases/selector input",
         "A4_cost_budget_packing": "single cost authority, optional-minimal context, deterministic packing/repacking and candidate recomputation",
         "A5_loss_propagation": "required-context/source/hunk loss reaches deterministic downstream gate path"
       }
@@ -1401,6 +1437,34 @@
           },
           "closure": "exactly one of FIXED or RISK_ACCEPTED must be satisfied; the two exits are mutually exclusive evidence paths",
           "evidence_rule": "Evidence is exit-specific. FIXED requires merged/qualified commit + green acceptance tests + bounded retry semantics. RISK_ACCEPTED instead requires explicit human acceptance grant + exact unfixed SHA + operational fail-closed evidence + named residual + support/rollback docs. No FIXED-only artifact is required on RISK_ACCEPTED."
+        },
+        {
+          "id": "AgentEscala#678",
+          "purpose": "external target-side scoped-token residual; issue CURRENT state says all other controls satisfied and only SCOPED_TOKEN_PROVISIONING_NOT_INDEPENDENTLY_ATTESTED remains",
+          "terminal_exits": {
+            "ATTESTED": {
+              "owner": "AgentEscala#678 security qualification",
+              "evidence": [
+                "exact AgentEscala target/workflow SHA",
+                "independent server-side attestation that AGENT_REVIEW_ROUTER_TOKEN has inference-scoped capability appropriate to the canonical CT104 review route",
+                "no operational fallback to broad AGENT_ROUTER_API_TOKEN/equivalent",
+                "publisher remains semantic-recomputation-free and CT102 remains outside review tooling"
+              ]
+            },
+            "RISK_ACCEPTED": {
+              "owner": "explicit human repository-owner grant",
+              "grant_requirement": "dedicated explicit acceptance recorded on #678/freeze checkpoint; silence/open issue is not acceptance",
+              "evidence": [
+                "exact target/workflow SHA",
+                "named residual SCOPED_TOKEN_PROVISIONING_NOT_INDEPENDENTLY_ATTESTED",
+                "evidence that named scoped secret is used with no broad-token fallback while server-side capability remains unattested",
+                "release/support/rollback documentation carries the accepted residual",
+                "final freeze record cites the acceptance grant and exact evidence"
+              ],
+              "non_claim": "RISK_ACCEPTED does not prove the token is independently inference-scoped"
+            }
+          },
+          "closure": "exactly one of ATTESTED or RISK_ACCEPTED must be satisfied before V1_FINAL_FREEZE"
         },
         "final maintenance release",
         "consumer repin to exact compatible engine+target config pair",
