@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1012,40 +1014,51 @@ def test_countermodel_f1_atomic_ownership_race_refuses_without_deleting_concurre
     the atomic creation boundary, the current installer must detect the claim collision, refuse
     fail-closed without arming cleanup, and preserve the concurrent target and its sentinel byte-identical.
     """
-    system_mkdir = shutil.which("mkdir")
-    assert system_mkdir is not None
-
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-
     target_venv = tmp_path / "concurrent_target_venv"
     assert not target_venv.exists(), "Target must be absent before invocation"
 
     sentinel_text = "OTHER_INSTALLER_OWNS_THIS\n"
+    host_py = sys.executable
 
-    # Wrapper for mkdir:
-    # 1. Delegates normally with -p for parent creation.
-    # 2. When called for target_venv, simulates concurrent actor winning the race:
-    #    creates real target dir + writes sentinel, then exits non-zero.
-    fake_mkdir = fake_bin / "mkdir"
-    fake_mkdir.write_text(
-        f"#!/bin/sh\n"
-        f'if [ "$1" = "-p" ]; then\n'
-        f'    exec "{system_mkdir}" "$@"\n'
-        f"fi\n"
-        f'target="$1"\n'
-        f'"{system_mkdir}" "$target"\n'
-        f'printf "%s" "{sentinel_text}" > "$target/sentinel.txt"\n'
-        f"exit 1\n",
+    fake_py = tmp_path / "fake_py_f1.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        script = sys.argv[4]
+        private_dir = sys.argv[5]
+        target = sys.argv[6]
+        token_file = sys.argv[7]
+        # Simulate concurrent actor winning the race before publication:
+        os.mkdir(target)
+        with open(os.path.join(target, "sentinel.txt"), "w") as f:
+            f.write({repr(sentinel_text)})
+        sys.argv = ["<claim>", private_dir, target, token_file]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    sys.exit(42)
+sys.exit(1)
+""",
         encoding="utf-8",
     )
-    fake_mkdir.chmod(0o755)
+    fake_py.chmod(0o755)
 
-    fake_py = _make_fake_python311(tmp_path)
     env = dict(
         os.environ,
         AGENT_REVIEW_PYTHON=str(fake_py),
-        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
     )
 
     result = subprocess.run(
@@ -1362,10 +1375,11 @@ if sys.argv[1:4] == ["-I", "-S", "-c"]:
         sys.argv = ["<norm>", target_raw]
         exec(script)
         sys.exit(0)
-    if len(sys.argv) == 7:
+    if len(sys.argv) == 8:
         script = sys.argv[4]
-        target = sys.argv[5]
-        token_file = sys.argv[6]
+        private_dir = sys.argv[5]
+        target = sys.argv[6]
+        token_file = sys.argv[7]
         orig_stat = os.stat
         def hooked_stat(path, *args, **kwargs):
             if str(path) == target:
@@ -1376,7 +1390,7 @@ if sys.argv[1:4] == ["-I", "-S", "-c"]:
                     f.write({repr(sentinel_text)})
             return orig_stat(path, *args, **kwargs)
         os.stat = hooked_stat
-        sys.argv = ["<claim>", target, token_file]
+        sys.argv = ["<claim>", private_dir, target, token_file]
         exec(script)
         sys.exit(0)
 if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
@@ -1411,39 +1425,30 @@ def test_countermodel_h1_b_identity_capture_failure_refuses_destructive_cleanup(
     host_py = sys.executable
     target_venv = tmp_path / "venv_h1b_target"
 
-    bin_dir = tmp_path / "bin_h1b"
-    bin_dir.mkdir()
-    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
-    wrapper = bin_dir / "mkdir"
-    wrapper.write_text(
-        f"""#!/bin/bash
-set -e
-target="${{@: -1}}"
-"{real_mkdir}" "$@"
-mv "$target" "${{target}}_stolen"
-"{real_mkdir}" "$target"
-echo "PROTECTED_UNVERIFIED_DATA" > "$target/protected.txt"
-exit 0
-""",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
-
-    fake_py = tmp_path / "fake_py_h1b.sh"
+    fake_py = tmp_path / "fake_py_h1b.py"
     fake_py.write_text(
-        f"""#!/bin/sh
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
-    if [ "$#" -eq 4 ]; then
-        echo "OK"
-        exit 0
-    fi
-    if echo "$4" | grep -q "mkdir"; then
-        "{bin_dir}/mkdir" "$5"
-        exit 4
-    fi
-    exec "{host_py}" "$@"
-fi
-exit 1
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        target = sys.argv[6]
+        os.mkdir(target)
+        with open(os.path.join(target, "protected.txt"), "w") as f:
+            f.write("PROTECTED_UNVERIFIED_DATA\\n")
+        sys.exit(4)
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    sys.exit(42)
+sys.exit(1)
 """,
         encoding="utf-8",
     )
@@ -1451,7 +1456,6 @@ exit 1
 
     env = dict(
         os.environ,
-        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
         AGENT_REVIEW_PYTHON=str(fake_py),
     )
     res = subprocess.run(
@@ -1470,45 +1474,42 @@ exit 1
 
 
 def test_countermodel_h1_c_replacement_between_mkdir_and_open_rejected(tmp_path: Path) -> None:
-    """H1-C: When a target directory is replaced between mkdir and os.open with a foreign object B
+    """H1-C: When a target directory is replaced before publication with a foreign object B
     containing FOREIGN_PREOPEN_SENTINEL, the installer rejects claim and refuses mutation/cleanup of B.
     """
     host_py = sys.executable
     target_venv = tmp_path / "venv_h1c_target"
 
-    bin_dir = tmp_path / "bin_h1c"
-    bin_dir.mkdir()
-    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
-    wrapper = bin_dir / "mkdir"
-    wrapper.write_text(
-        f"""#!/bin/bash
-set -e
-target="${{@: -1}}"
-"{real_mkdir}" "$@"
-mv "$target" "${{target}}_stolen"
-"{real_mkdir}" "$target"
-echo "FOREIGN_PREOPEN_SENTINEL" > "$target/foreign_sentinel.txt"
-exit 0
-""",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
-
-    fake_py = tmp_path / "fake_py_h1c.sh"
+    fake_py = tmp_path / "fake_py_h1c.py"
     fake_py.write_text(
-        f"""#!/bin/sh
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
-    if [ "$#" -eq 4 ]; then
-        echo "OK"
-        exit 0
-    fi
-    exec "{host_py}" "$@"
-fi
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then
-    echo "ERROR: venv must not be invoked on foreign target" >&2
-    exit 42
-fi
-exit 1
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        script = sys.argv[4]
+        private_dir = sys.argv[5]
+        target = sys.argv[6]
+        token_file = sys.argv[7]
+        os.mkdir(target)
+        with open(os.path.join(target, "foreign_sentinel.txt"), "w") as f:
+            f.write("FOREIGN_PREOPEN_SENTINEL\\n")
+        sys.argv = ["<claim>", private_dir, target, token_file]
+        exec(script)
+        sys.exit(0)
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    print("ERROR: venv must not be invoked on foreign target", file=sys.stderr)
+    sys.exit(42)
+sys.exit(1)
 """,
         encoding="utf-8",
     )
@@ -1516,7 +1517,6 @@ exit 1
 
     env = dict(
         os.environ,
-        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
         AGENT_REVIEW_PYTHON=str(fake_py),
     )
     res = subprocess.run(
@@ -1527,12 +1527,11 @@ exit 1
         env=env,
     )
     assert res.returncode == 2
-    assert "was substituted before acquisition finalized" in res.stderr
+    assert "AgentReview toolrepo venv target must be absent" in res.stderr
     assert target_venv.exists(), "Foreign target B must NOT be deleted by installer failure"
     sentinel_file = target_venv / "foreign_sentinel.txt"
     assert sentinel_file.exists(), "Foreign sentinel in object B must remain intact"
     assert sentinel_file.read_text(encoding="utf-8").strip() == "FOREIGN_PREOPEN_SENTINEL"
-    assert Path(f"{target_venv}_stolen").exists(), "Original directory A was moved to target_stolen"
 
 
 def test_countermodel_h1_d_identity_acquisition_failure_preserves_foreign_empty_target(tmp_path: Path) -> None:
@@ -1542,34 +1541,28 @@ def test_countermodel_h1_d_identity_acquisition_failure_preserves_foreign_empty_
     host_py = sys.executable
     target_venv = tmp_path / "venv_h1d_target"
 
-    bin_dir = tmp_path / "bin_h1d"
-    bin_dir.mkdir()
-    real_mkdir = subprocess.run(["which", "mkdir"], capture_output=True, text=True).stdout.strip()
-    wrapper = bin_dir / "mkdir"
-    wrapper.write_text(
-        f"""#!/bin/bash
-set -e
-target="${{@: -1}}"
-"{real_mkdir}" "$@"
-mv "$target" "${{target}}_stolen"
-"{real_mkdir}" -m 000 "$target"
-exit 0
-""",
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
-
-    fake_py = tmp_path / "fake_py_h1d.sh"
+    fake_py = tmp_path / "fake_py_h1d.py"
     fake_py.write_text(
-        f"""#!/bin/sh
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
-    if [ "$#" -eq 4 ]; then
-        echo "OK"
-        exit 0
-    fi
-    exec "{host_py}" "$@"
-fi
-exit 1
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        target = sys.argv[6]
+        os.mkdir(target, 0o000)
+        sys.exit(4)
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    sys.exit(42)
+sys.exit(1)
 """,
         encoding="utf-8",
     )
@@ -1577,7 +1570,6 @@ exit 1
 
     env = dict(
         os.environ,
-        PATH=f"{bin_dir}:{os.environ.get('PATH', '')}",
         AGENT_REVIEW_PYTHON=str(fake_py),
     )
     res = subprocess.run(
@@ -1591,33 +1583,103 @@ exit 1
         assert res.returncode == 2
         assert "unable to acquire verified directory object identity" in res.stderr
         assert target_venv.exists(), "Foreign empty directory B must NOT be deleted by claim failure error paths"
-        assert Path(f"{target_venv}_stolen").exists()
     finally:
         if target_venv.exists():
             target_venv.chmod(0o755)
 
 
+def test_countermodel_h1_e_empty_replacement_between_create_and_open_not_claimed(tmp_path: Path) -> None:
+    """H1-E: When a foreign empty directory B is substituted at target before publication,
+    the no-replace publication fails (EEXIST), B is never claimed or mutated by python -m venv,
+    B is never deleted, and the installer exits fail-closed.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_h1e_target"
+
+    witness_file = tmp_path / "venv_invoked_witness.txt"
+    fake_py = tmp_path / "fake_py_h1e.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        script = sys.argv[4]
+        private_dir = sys.argv[5]
+        target = sys.argv[6]
+        token_file = sys.argv[7]
+        # Adversary creates EMPTY directory B at target before publication:
+        os.mkdir(target)
+        sys.argv = ["<claim>", private_dir, target, token_file]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    with open("{witness_file}", "w") as f:
+        f.write("WITNESS_INVOKED")
+    print("FATAL: venv invoked on foreign empty target", file=sys.stderr)
+    sys.exit(42)
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+    )
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert res.returncode == 2
+    assert "AgentReview toolrepo venv target must be absent" in res.stderr
+    assert not witness_file.exists(), "python -m venv must NEVER be invoked on foreign empty directory B"
+    assert target_venv.exists(), "Foreign empty directory B must NOT be deleted by installer"
+    remaining = list(tmp_path.glob(".agent_review_claim.*"))
+    assert len(remaining) == 0, f"Residual private claim dirs must be cleaned up: {remaining}"
+
+
 def test_claim_phase_sigterm_exits_143_and_cleans_partial_target(tmp_path: Path) -> None:
-    """Claim-phase signal probe (SIGTERM): When SIGTERM is sent to the installer during the claim
-    phase after target creation, the installer exits 143 and removes the partial target.
+    """Claim-phase signal probe (SIGTERM): When SIGTERM is received during the claim
+    phase, the installer exits 143 and removes owned claim state.
     """
     host_py = sys.executable
     target_venv = tmp_path / "venv_claim_sigterm"
 
-    fake_py = tmp_path / "fake_py_claim_sigterm.sh"
+    fake_py = tmp_path / "fake_py_claim_sigterm.py"
     fake_py.write_text(
-        f"""#!/bin/sh
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
-    if [ "$#" -eq 4 ]; then
-        echo "OK"
-        exit 0
-    fi
-    "{host_py}" "$@"
-    kill -TERM "$$"
-    sleep 0.1
-    exit 0
-fi
-exit 1
+        f"""#!{host_py}
+import sys, os, signal
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+sys.exit(1)
 """,
         encoding="utf-8",
     )
@@ -1633,29 +1695,37 @@ exit 1
     )
     assert res.returncode == 143, f"SIGTERM must exit with code 143, got {res.returncode}"
     assert not target_venv.exists(), "Partial target must be cleaned up on SIGTERM, leaving no residual"
+    remaining = list(tmp_path.glob(".agent_review_claim.*"))
+    assert len(remaining) == 0, f"Owned claim state must be cleaned up on SIGTERM: {remaining}"
 
 
 def test_claim_phase_sigint_exits_130_and_cleans_partial_target(tmp_path: Path) -> None:
-    """Claim-phase signal probe (SIGINT): When SIGINT is sent to the installer during the claim
-    phase after target creation, the installer exits 130 and removes the partial target.
+    """Claim-phase signal probe (SIGINT): When SIGINT is received during the claim
+    phase, the installer exits 130 and removes owned claim state.
     """
     host_py = sys.executable
     target_venv = tmp_path / "venv_claim_sigint"
 
-    fake_py = tmp_path / "fake_py_claim_sigint.sh"
+    fake_py = tmp_path / "fake_py_claim_sigint.py"
     fake_py.write_text(
-        f"""#!/bin/sh
-if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then
-    if [ "$#" -eq 4 ]; then
-        echo "OK"
-        exit 0
-    fi
-    "{host_py}" "$@"
-    kill -INT "$$"
-    sleep 0.1
-    exit 0
-fi
-exit 1
+        f"""#!{host_py}
+import sys, os, signal
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+
+sys.exit(1)
 """,
         encoding="utf-8",
     )
@@ -1671,3 +1741,77 @@ exit 1
     )
     assert res.returncode == 130, f"SIGINT must exit with code 130, got {res.returncode}"
     assert not target_venv.exists(), "Partial target must be cleaned up on SIGINT, leaving no residual"
+    remaining = list(tmp_path.glob(".agent_review_claim.*"))
+    assert len(remaining) == 0, f"Owned claim state must be cleaned up on SIGINT: {remaining}"
+
+
+def test_claim_phase_real_parent_sigterm_exits_143_and_cleans_claim_state(tmp_path: Path) -> None:
+    """Real parent claim-phase signal test: launch real installer, claim helper reaches
+    deterministic barrier after owned claim state exists and remains blocked, test process
+    sends os.kill(installer_bash_pid, SIGTERM). Verifies installer exits 143 immediately via
+    wait trap interruption, cleans owned private claim directory, never deletes foreign paths,
+    and subsequent retry is not blocked by owned residual.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_parent_sigterm"
+    foreign_path = tmp_path / "foreign_data.txt"
+    foreign_path.write_text("FOREIGN_DATA_KEEP_INTACT\n", encoding="utf-8")
+    barrier = tmp_path / "claim_barrier.txt"
+
+    fake_py = tmp_path / "fake_py_parent_sigterm.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os, time
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        target_raw = sys.argv[5]
+        sys.argv = ["<norm>", target_raw]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 8:
+        # Claim helper: private claim dir exists and is owned
+        with open("{barrier}", "w") as f:
+            f.write("BARRIER_REACHED")
+        while True:
+            time.sleep(0.05)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    p = subprocess.Popen(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    for _ in range(50):
+        if barrier.exists():
+            break
+        time.sleep(0.1)
+    assert barrier.exists(), "Claim helper did not reach deterministic barrier"
+
+    # Send SIGTERM to the parent installer bash process directly
+    os.kill(p.pid, signal.SIGTERM)
+
+    try:
+        stdout, stderr = p.communicate(timeout=3)
+        assert p.returncode == 143, f"Installer must exit 143 on SIGTERM, got {p.returncode}; stderr: {stderr}"
+        assert not target_venv.exists(), "Target venv must not exist after signal"
+        assert foreign_path.exists(), "Foreign path must never be deleted"
+        assert foreign_path.read_text(encoding="utf-8").strip() == "FOREIGN_DATA_KEEP_INTACT"
+        remaining = list(tmp_path.glob(".agent_review_claim.*"))
+        assert len(remaining) == 0, f"Owned temporary claim directory was not cleaned: {remaining}"
+    except subprocess.TimeoutExpired:
+        p.kill()
+        assert False, "Installer hung and did not handle parent SIGTERM within timeout"

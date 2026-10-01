@@ -196,9 +196,15 @@ CLEANUP_TARGET=""
 CLEANUP_IDENTITY=""
 ARM_CLEANUP=0
 CLAIM_TOKEN_FILE=""
+PRIVATE_CLAIM_DIR=""
+CLAIM_PID=""
 
 cleanup_owned_target() {
     local primary_status="$1"
+    if [ -n "${PRIVATE_CLAIM_DIR:-}" ] && [ -d "$PRIVATE_CLAIM_DIR" ]; then
+        rmdir "$PRIVATE_CLAIM_DIR" 2>/dev/null || rm -rf "$PRIVATE_CLAIM_DIR" 2>/dev/null || true
+        PRIVATE_CLAIM_DIR=""
+    fi
     if [ -n "${CLAIM_TOKEN_FILE:-}" ] && [ -s "$CLAIM_TOKEN_FILE" ] && [ -z "$CLEANUP_IDENTITY" ]; then
         CLEANUP_IDENTITY="$(tr -d '[:space:]' < "$CLAIM_TOKEN_FILE" 2>/dev/null || true)"
         CLEANUP_TARGET="$VENV_TARGET"
@@ -245,6 +251,11 @@ cleanup_owned_target() {
 handle_exit() {
     local original_status=$?
     trap - EXIT INT TERM
+    if [ -n "${CLAIM_PID:-}" ]; then
+        kill -TERM "$CLAIM_PID" 2>/dev/null || true
+        wait "$CLAIM_PID" 2>/dev/null || true
+        CLAIM_PID=""
+    fi
     if [ "$original_status" -eq 0 ]; then
         original_status=1
     fi
@@ -254,12 +265,22 @@ handle_exit() {
 
 handle_int() {
     trap - EXIT INT TERM
+    if [ -n "${CLAIM_PID:-}" ]; then
+        kill -INT "$CLAIM_PID" 2>/dev/null || true
+        wait "$CLAIM_PID" 2>/dev/null || true
+        CLAIM_PID=""
+    fi
     cleanup_owned_target 130
     exit 130
 }
 
 handle_term() {
     trap - EXIT INT TERM
+    if [ -n "${CLAIM_PID:-}" ]; then
+        kill -TERM "$CLAIM_PID" 2>/dev/null || true
+        wait "$CLAIM_PID" 2>/dev/null || true
+        CLAIM_PID=""
+    fi
     cleanup_owned_target 143
     exit 143
 }
@@ -281,22 +302,60 @@ CLAIM_TOKEN_FILE="$(mktemp "$VENV_PARENT/.agent_review_token.XXXXXX")" || {
     exit 2
 }
 
-CLAIM_OUTPUT=""
+PRIVATE_CLAIM_DIR="$(mktemp -d "$VENV_PARENT/.agent_review_claim.XXXXXX")" || {
+    echo "Blocked: failed to create private claim directory in $VENV_PARENT" >&2
+    exit 2
+}
+chmod 755 "$PRIVATE_CLAIM_DIR" 2>/dev/null || true
+
 CLAIM_STATUS=0
-CLAIM_OUTPUT="$("$PYTHON_BIN" -I -S -c '
-import os, sys, subprocess
+"$PYTHON_BIN" -I -S -c '
+import os, sys, errno, ctypes, platform, signal
 
-target = sys.argv[1]
-token_file = sys.argv[2]
-try:
-    res = subprocess.run(["mkdir", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if res.returncode != 0:
-        sys.exit(2)
-except Exception:
-    sys.exit(3)
+private_dir = sys.argv[1]
+target = sys.argv[2]
+token_file = sys.argv[3]
+
+def on_term(s, f):
+    sys.exit(143)
+
+def on_int(s, f):
+    sys.exit(130)
+
+signal.signal(signal.SIGTERM, on_term)
+signal.signal(signal.SIGINT, on_int)
+
+def rename_noreplace(src, dst):
+    libc = ctypes.CDLL(None, use_errno=True)
+    AT_FDCWD = -100
+    RENAME_NOREPLACE = 1
+    src_bytes = os.fsencode(src)
+    dst_bytes = os.fsencode(dst)
+    if hasattr(libc, "renameat2"):
+        rc = libc.renameat2(
+            ctypes.c_int(AT_FDCWD),
+            src_bytes,
+            ctypes.c_int(AT_FDCWD),
+            dst_bytes,
+            ctypes.c_uint(RENAME_NOREPLACE)
+        )
+    else:
+        mach = platform.machine()
+        sys_renameat2 = 316 if mach in ("x86_64", "AMD64") else 276
+        rc = libc.syscall(
+            ctypes.c_long(sys_renameat2),
+            ctypes.c_int(AT_FDCWD),
+            src_bytes,
+            ctypes.c_int(AT_FDCWD),
+            dst_bytes,
+            ctypes.c_uint(RENAME_NOREPLACE)
+        )
+    if rc != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
 
 try:
-    fd = os.open(target, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fd = os.open(private_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
 except Exception:
     sys.exit(4)
 
@@ -310,13 +369,15 @@ except Exception:
     sys.exit(4)
 
 try:
-    with os.scandir(target) as it:
-        if any(it):
-            os.close(fd)
-            sys.exit(5)
+    rename_noreplace(private_dir, target)
+except OSError as e:
+    os.close(fd)
+    if e.errno == errno.EEXIST:
+        sys.exit(2)
+    sys.exit(3)
 except Exception:
     os.close(fd)
-    sys.exit(5)
+    sys.exit(3)
 
 try:
     if os.path.islink(target):
@@ -337,9 +398,12 @@ try:
         f.write(ident)
 except Exception:
     sys.exit(4)
-print(ident)
+
 sys.exit(0)
-' "$VENV_TARGET" "$CLAIM_TOKEN_FILE" 2>/dev/null)" || CLAIM_STATUS=$?
+' "$PRIVATE_CLAIM_DIR" "$VENV_TARGET" "$CLAIM_TOKEN_FILE" 2>/dev/null &
+CLAIM_PID=$!
+wait "$CLAIM_PID" || CLAIM_STATUS=$?
+CLAIM_PID=""
 
 if [ "$CLAIM_STATUS" -eq 130 ]; then
     handle_int
@@ -355,13 +419,19 @@ elif [ "$CLAIM_STATUS" -eq 2 ]; then
 elif [ "$CLAIM_STATUS" -eq 5 ]; then
     echo "Blocked: directory object identity for '$VENV_TARGET' was substituted before acquisition finalized." >&2
     exit 2
-elif [ "$CLAIM_STATUS" -ne 0 ] || [ -z "$CLAIM_OUTPUT" ]; then
+elif [ "$CLAIM_STATUS" -ne 0 ]; then
     echo "Blocked: unable to acquire verified directory object identity for '$VENV_TARGET' (claim status $CLAIM_STATUS)." >&2
     exit 2
 fi
 
+PRIVATE_CLAIM_DIR=""
+CLEANUP_IDENTITY="$(tr -d '[:space:]' < "$CLAIM_TOKEN_FILE" 2>/dev/null || true)"
+if [ -z "$CLEANUP_IDENTITY" ]; then
+    echo "Blocked: unable to read verified directory object identity for '$VENV_TARGET'." >&2
+    exit 2
+fi
+
 CLEANUP_TARGET="$VENV_TARGET"
-CLEANUP_IDENTITY="$CLAIM_OUTPUT"
 ARM_CLEANUP=1
 rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
 CLAIM_TOKEN_FILE=""
