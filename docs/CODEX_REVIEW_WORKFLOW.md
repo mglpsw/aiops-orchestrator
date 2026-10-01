@@ -152,6 +152,40 @@ part of this slice's acceptance criteria.
 - the ChatGPT Workspace Agent;
 - auto-merge, auto-deploy, or automated remediation.
 
+## Engineering lifecycle barrier after Ready
+
+The GitHub shadow review remains advisory to the AgentReview quality gate and
+is not a required CI check. Separately, the repository's protected PR
+finalization procedure has a post-Ready observation barrier: a PR cannot be
+presented for a human integration decision until the Codex review associated
+with the current HEAD and the Ready cycle has reached a terminal result and
+all material findings have an explicit disposition.
+
+The local, read-only guard is
+`scripts/github_codex_post_ready_guard.py`. It consumes GitHub lifecycle,
+review, comment, thread, and check evidence; binds the observation to the
+expected repository, PR, base, HEAD, Ready event, reviewer identity, and
+required checks; and returns a non-positive state for missing, stale,
+ambiguous, unavailable, or finding-bearing evidence. It never performs
+Ready, merge, thread resolution, or policy changes. A positive result is
+`READY_FOR_HUMAN_INTEGRATION_DECISION` and explicitly carries
+`merge_authorized: false`.
+
+The guard is an engineering-flow control, not runtime behavior, a provider
+call, a new trust broker, or an automatic adjudicator of findings. The
+workflow remains:
+
+```text
+Draft preparation → Ready → observe the current Codex cycle
+→ consume findings → correct/requalify if needed
+→ final TOCTOU → human integration decision
+```
+
+The offline regression controls live in
+`tests/test_post_ready_codex_guard.py`; they include the #369 incident shape,
+stale and post-merge reviews, incomplete API evidence, unresolved findings,
+the positive observational path, and a causal mutation.
+
 ## References
 
 - AGENTS.md: https://developers.openai.com/codex/guides/agents-md

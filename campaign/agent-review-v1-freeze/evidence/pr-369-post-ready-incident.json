@@ -1,0 +1,23 @@
+{
+  "artifact_type": "NON_NORMATIVE_POST_READY_INCIDENT_RECORD",
+  "status": "historical_reference_only",
+  "repository": "mglpsw/aiops-orchestrator",
+  "pr": 369,
+  "source_head": "661422837a3099bb8d989907d42314e26e410aa7",
+  "merge_commit": "ea6a6584b7a4735a753e9a2b61f8f96cb4e3494f",
+  "merge_tree": "3caca2b2471045b74e4feaa70773986e93ac85b0",
+  "merged_at": "2026-10-01T16:16:49Z",
+  "codex_review": {
+    "review_id": 5382257522,
+    "reviewed_head": "661422837a3099bb8d989907d42314e26e410aa7",
+    "submitted_at": "2026-10-01T16:21:19Z",
+    "summary_comment_id": 5935569021,
+    "trigger": "Draft marked ready",
+    "finding_ids": [4157801041, 4157801052, 4157801058, 4157801069, 4157801077, 4157801088]
+  },
+  "observations": [
+    "The Codex review was submitted after the recorded merge timestamp.",
+    "The six findings are preserved by discussion ID and are corrected by the successor PR rather than rewritten here."
+  ],
+  "inference_boundary": "This record documents the observed integration/review ordering; it does not invent unobserved API snapshots or claim a historical pre-merge state."
+}

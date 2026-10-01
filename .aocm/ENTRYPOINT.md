@@ -7,6 +7,7 @@ Este repositório adotou o **AOCM-MPACK 0.1.0-preview.1** como seu método local
 - Entrada do agente no pacote: [`.aocm/vendor/agents/ENTRYPOINT.md`](vendor/agents/ENTRYPOINT.md)
 - Método núcleo: [`.aocm/vendor/method/CORE.md`](vendor/method/CORE.md)
 - Ciclo de PR: [`.aocm/vendor/method/PR_LIFECYCLE.md`](vendor/method/PR_LIFECYCLE.md)
+- Barreira Codex pós-Ready do lifecycle local: [`docs/CODEX_REVIEW_WORKFLOW.md`](../docs/CODEX_REVIEW_WORKFLOW.md)
 
 ## Diretrizes de Uso
 
