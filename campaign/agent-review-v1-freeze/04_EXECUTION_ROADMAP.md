@@ -87,6 +87,7 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 14. fonte ausente (CM-CL2-03 A/B): mesmo slot ausente + `RequiredForChunk=true` → limitação tipada degradante e gate não conclusivo; slot ausente + `RequiredForChunk=false` → estado ausente tipado, mas controle positivo conclusivo; nunca `contracts_context_not_relevant`;
 15. gramática de domínio: metadados `version/schema_version/updated/system/domain`, `LEGACY_FLAT_MODE` com `rules` válido, `DOMAIN_MAPPING_MODE` mapping e `list[str]`, mixed-mode, regras/seção malformadas e scalar/container não suportado; cada RED é shape-level, cada GREEN preserva fixture legado;
 16. totalidade de review-packs: `packs` ausente/vazio/lista/mapping, item/campo de paths/domain contract malformado, bindings ausentes/válidos/malformados/órfãos e binding para contrato ausente. RED focal observa seleção/limitação; GREEN observa pack aplicável exato e pack irrelevante sem contrato espúrio.
+17. seleção explícita de pack não resolvida: `selected_contract_pack` não vazio sem match exato/legacy-compatible → `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca `not_relevant`; controles positivos cobrem match exato e `calendar -> agentescala-calendar` legado.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
@@ -120,8 +121,8 @@ da semântica normalizada. Não há `ClaimV1`, estado per-claim, recursão semâ
 arbitrária, mapa residual ou autoridade independente para metadata crua.
 
 Aplicabilidade é `selected pack id` exato união
-`fnmatchcase(canonical target-relative path, pattern)`. Referências efetivas são
-`domain_contract` união `additional_contract_refs`, deduplicadas. Relação ausente não
+`fnmatchcase(canonical target-relative path, pattern)`. Referências efetivas normalizadas são a união exata-deduplicada de
+`pack.domain_contract` (quando presente) com `contract_bindings.get(pack_id, [])`. Relação ausente não
 introduz contrato; referência explícita que não resolve é não conclusiva.
 
 O núcleo requerido é identidade de contrato/seção, `TextItem.text`, `RuleItem.rule`,
@@ -132,9 +133,10 @@ truncado nunca contam. O planner reduz opcionais, mantém kernel+hunks, repacota
 se um singleton não couber, marca o arquivo não coberto/não conclusivo. Perda
 opcional pode ser conclusiva; perda requerida, de `must_hold` ou de hunk é degradada.
 
-`not_relevant` só é possível após avaliação válida com `ApplicableContractSet` e
-`ApplicableNormalizedPackContext` ambos vazios; pack aplicável sem relação e sem
-contexto pode ser irrelevante. Os P1–P9
+`not_relevant` só é possível após avaliação válida com `ApplicablePackSet` e
+`ApplicableContractSet` ambos vazios e sem seleção explícita não resolvida. Todo pack
+aplicável mantém `pack_id` como contexto requerido, mesmo sem relação, description ou
+review_preset; portanto um pack aplicável nunca vira irrelevante por perda de contexto opcional. Os P1–P9
 e CM-NORM/CM-ABS/CM-HUNK/CM-PACK em `02`/`03` são os controles obrigatórios desta
 decisão; Gate A continua sendo a única autoridade para gramática bruta e grafias
 serializadas de reason codes.
@@ -189,8 +191,10 @@ A5 Required-context loss propagation
 atuais/legados. **A2** preserva a compatibilidade legada, inclusive
 `contract_pack=calendar -> agentescala-calendar`, e projeta os aliases legados de
 regra (`scope/is_global/file_path/path/files/paths/source_files/related_files/patterns`)
-em uma representação finita. **A3** consome identities normalizadas exatas e relações
-explícitas. **A4** usa a autoridade v1 `canonical_json/canonical_len` ou prova uma
+em uma representação finita. Uma seleção explícita não vazia que não resolva por id
+exato nem compatibilidade legada produz `SELECTED_PACK_MISSING`, é degradante e nunca
+`not_relevant`. **A3** consome identities normalizadas exatas e relações explícitas;
+`contract_refs = dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`. **A4** usa a autoridade v1 `canonical_json/canonical_len` ou prova uma
 substituição equivalente, qualifica um optional-minimal context único, recompõe
 applicability/kernel/custo por candidate e preserva ou substitui explicitamente o
 FFD/tie-break existente. **A5** prova que perda requerida/source/hunk chega ao gate.
@@ -199,7 +203,12 @@ Gate B continua sendo AgentEscala#869 (target projection/config). Gate C é a
 conformance do **par exato** engine SHA + target/config SHA. Depois de A+B+C, o
 **Control B** de utilidade semântica (#805) é executado sob grant explícito de
 provider real, com owner `#221 V1-C2 semantic-utility evaluation`, expectativas
-pré-declaradas e anti-cherry-pick. Somente A+B+C + Control B podem conceder
+pré-declaradas e anti-cherry-pick. Os dois braços e todas as tentativas admitidas usam
+uma única configuração de inferência pré-declarada (endpoint Router, preset,
+provider/model resolvidos, instrução/método, opções de request/geração e retry policy),
+registrada por `inference_config_id`; cada braço registra sua request identity/digest e
+somente o subject pode diferir. Drift de configuração invalida o controle. Somente
+A+B+C + Control B podem conceder
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais `V1_C2_CONTRACT_INTERFACE_DECIDED` e
