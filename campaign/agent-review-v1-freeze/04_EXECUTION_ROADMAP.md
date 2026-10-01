@@ -196,8 +196,11 @@ applicability/kernel/custo por candidate e preserva ou substitui explicitamente 
 FFD/tie-break existente. **A5** prova que perda requerida/source/hunk chega ao gate.
 
 Gate B continua sendo AgentEscala#869 (target projection/config). Gate C é a
-conformance do **par exato** engine SHA + target/config SHA. Somente A+B+C pode
-conceder `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
+conformance do **par exato** engine SHA + target/config SHA. Depois de A+B+C, o
+**Control B** de utilidade semântica (#805) é executado sob grant explícito de
+provider real, com owner `#221 V1-C2 semantic-utility evaluation`, expectativas
+pré-declaradas e anti-cherry-pick. Somente A+B+C + Control B podem conceder
+`V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais `V1_C2_CONTRACT_INTERFACE_DECIDED` e
 `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED` são históricos supersedidos.
