@@ -92,6 +92,8 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 18. compatibilidade completa de selector legado (A2): comparação case-insensitive; match por igualdade de id, igualdade de description, substring em id ou substring em description; todos os matches exatos resolvidos são preservados. Controles incluem `calendar -> agentescala-calendar`, `aiops -> agentescala-aiops`, description alias e múltiplos matches.
 19. legacy rule pattern semantics (A3): trim; vazio ignora; final `*` = prefix match removendo só o `*`; demais patterns = substring match. Não usar `fnmatchcase` para esse operador legado.
 20. semantic-context must_hold applicability: A2 normaliza scope/change_type/contract_pack/must_hold e resolve pack token; A3 aplica scope (empty/global/all/document global; otherwise substring/tokens sobre canonical paths) e, quando contract_pack existe, exige interseção com ApplicablePackSet. Unresolved pack -> SELECTED_PACK_MISSING.
+21. fallback legado por semantic-group (A3): preservar `_relevance_keywords` atual e substring sobre id+description somente para itens legacy; mapping/domain mode não usa keyword como autoridade quando relações explícitas existem.
+22. `semantic-context.change_type` é advisory opcional: não filtra must_hold; loss-only -> `OPTIONAL_CONTEXT_REDUCED`, mantendo must_hold aplicável requerido.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
@@ -295,10 +297,12 @@ freeze final:
 - canário controlado;
 - prova de rollback + support/limitation documentation.
 
-Para #871, a evidência mínima de fechamento é: issue/repo identity, exact target
-commit qualificado/mergeado, testes de aceite verdes, retry bounded preservado e
-falha após retries ainda manual. Não se cria claim semântica do engine para um bug de
-transporte do wrapper.
+Para #871 a evidência é **exit-specific**: FIXED exige issue/repo identity + exact
+target commit mergeado/qualificado + acceptance tests verdes + retry bounded/
+Retry-After + falha persistente manual; RISK_ACCEPTED exige grant humano explícito
++ exact unfixed SHA + evidência operacional fail-closed + residual nomeado +
+release/support/rollback docs. Nenhum artefato exclusivo de FIXED é exigido no exit
+RISK_ACCEPTED. Não se cria claim semântica do engine para um bug de transporte do wrapper.
 
 
 ## Fronteira após o source candidate
