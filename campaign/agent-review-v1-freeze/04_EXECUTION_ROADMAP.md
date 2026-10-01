@@ -97,6 +97,12 @@ Para cada novo predicado/reason: mecanismo ausente → RED focal; presente → G
 
 ### V1-C2 — interface semântica normalizada (histórico supersedido; requisitos preservados)
 
+**Status desta seção:** NON-NORMATIVE HISTORY. As formas/algoritmos descritos abaixo são
+registro da convergência e requisitos de entrada do Gate A; não são autoridade para
+afirmar que normalização, serialization/cost ou packing já foram implementados ou
+qualificados. A autoridade documental corrente está na seção de requirements freeze
+mais abaixo.
+
 Historicamente, `V1_C2_CONTRACT_INTERFACE_DECIDED` foi substituído por
 `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`; ambos estão agora supersedidos pelo
 terminal corrente `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`.
