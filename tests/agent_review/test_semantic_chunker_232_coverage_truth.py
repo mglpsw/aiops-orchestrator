@@ -3,8 +3,12 @@
 A changed file is reported as covered only when an observable textual hunk
 for it was admitted into a chunk. #231/C8 closed this for `must_review`
 files; these tests extend the same property to every tier and prove that the
-resulting non-complete coverage reaches the quality gate, not only the plan
-(campaign/agent-review-v1-freeze, OBL-CL1-01, CM-CL1-01/02/03).
+resulting non-complete coverage reaches the quality gate, not only the plan.
+The historical contract index is retained at
+`campaign/agent-review-v1-freeze/evidence/v1-c1-coverage-truth-index.json`
+and points to immutable source commit
+`d3f5946c4d0513def9f7c2018b63703a53df1cc7` (OBL-CL1-01,
+CM-CL1-01/02/03).
 """
 
 from __future__ import annotations

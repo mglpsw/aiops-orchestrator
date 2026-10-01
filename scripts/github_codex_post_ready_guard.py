@@ -237,7 +237,7 @@ class GitHubReadOnlyClient:
                 "POST",
                 "/graphql",
                 {
-                    "query": "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$number) { reviewThreads(first:100) { nodes { isResolved isOutdated comments(first:50) { nodes { databaseId body author { login } } } } } } } }",
+                    "query": "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$number) { reviewThreads(first:100) { pageInfo { hasNextPage } nodes { isResolved isOutdated comments(first:50) { nodes { databaseId body author { login } } } } } } } }",
                     "variables": {"owner": owner, "name": name, "number": pr_number},
                 },
             )
@@ -256,9 +256,13 @@ class GitHubReadOnlyClient:
                 "material": True,
                 "disposition": None,
             })
+        if graphql.get("errors"):
+            errors.append("GitHub GraphQL returned review-thread errors")
         threads = (((graphql.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("reviewThreads")
         if not isinstance(threads, dict) or not isinstance(threads.get("nodes"), list):
             errors.append("review-thread evidence is unavailable")
+        elif (threads.get("pageInfo") or {}).get("hasNextPage") is True:
+            errors.append("review-thread pagination is incomplete")
         else:
             for thread in threads["nodes"]:
                 thread_comments = (thread.get("comments") or {}).get("nodes", [])

@@ -8,11 +8,35 @@
 | 2 | Gate A | executable qualification owner | differential evidence against baseline `6bbd2f949989da3e90e1d9c527e37059c0b628ff` |
 | 3 | Gate B | AgentEscala issue #869 owner | #869 handoff evidence at its exact reviewed subject |
 | 4 | Gate C | exact-pair qualification owner | qualification evidence for the exact required pair only |
-| 5 | Control B | #805 control owner | bounded semantic-utility evidence, separately granted |
-| 6 | C6 source | C6 source owner | candidate source identity; not final freeze |
-| 7 | External freeze decision | release/freeze authority | separately granted final decision |
+| 5 | Control A | #805 control owner | bounded deterministic transport/gate regression terminal and evidence |
+| 6 | Control B | #805 control owner | bounded semantic-utility evidence, separately granted |
+| 7 | C6 source | C6 source owner | candidate source identity; not final freeze |
+| 8 | External freeze decision | release/freeze authority | separately granted final decision |
 
 No row substitutes for another. A terminal records the named row's state only; it is not authorization to mutate the next row or to declare final freeze.
+
+## Gate C exact pair contract
+
+Gate C qualifies one ordered pair. The pair is recoverable before either future
+member exists, but neither member's future SHA is invented here:
+
+| Member | Repository / source owner | Exact subject required | Material evidence required |
+| --- | --- | --- | --- |
+| Engine member | `mglpsw/aiops-orchestrator` / Gate A owner | the exact engine commit qualified by Gate A | Gate A receipt bound to the engine repository, commit, legacy baseline, and differential observations |
+| Target member | `mglpsw/AgentEscala` / issue #869 owner | the exact target projection/configuration subject accepted by Gate B | target commit or immutable source identities for the projection, review-pack/domain-contract inputs, and material configuration |
+
+The Gate C subject is the tuple `(engine exact commit, target exact subject, material source/config identities)`. A different engine commit, target subject,
+or source/config identity is a different pair and cannot inherit this pair's
+qualification. Missing identity prevents Gate C qualification; it does not
+select a substitute.
+
+## Control A handoff
+
+Control A is the distinct #805 deterministic transport/gate regression control.
+Its terminal and evidence are owned by the #805 owner and are recorded as a
+separate bounded result. The existing #221 C2 task-contract decision is the
+provenance for the control's purpose, not execution evidence. Gate A, Gate B,
+Gate C, and Control B do not silently satisfy Control A.
 
 ## External freeze prerequisite matrix
 

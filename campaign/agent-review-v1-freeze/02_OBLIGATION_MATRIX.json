@@ -10,10 +10,56 @@
     "legacy_differential_baseline": "6bbd2f949989da3e90e1d9c527e37059c0b628ff"
   },
   "interpretation": {
-    "legacy_baseline": "The legacy behavior is an extensional and differential baseline. Gate A compares defined observations against the fixed baseline; this matrix does not prescribe its internal mechanism.",
-    "mapping_mode": "New semantics are admitted only through explicit mapping packs and review contract_bindings. A semantic relation that cannot be established explicitly is unresolved.",
+    "legacy_baseline": "The legacy behavior is an extensional and differential baseline over the same admitted legacy input domain. Gate A compares defined observations against the fixed baseline; this matrix does not prescribe its internal mechanism.",
+    "legacy_observables": [
+      "selected packs",
+      "applicable contracts",
+      "must_hold applicability",
+      "emitted advisory context",
+      "limitation class",
+      "covered/not-covered consequence"
+    ],
+    "mapping_mode": "New semantics are admitted only through the bounded mapping_binding_contract below. A semantic relation that cannot be established explicitly is unresolved.",
     "source_states": ["present_valid", "absent", "invalid"],
     "gating_boundary": "Gate A is executable differential qualification; Gate B is the AgentEscala issue #869 handoff; Gate C is qualification of the exact required pair. Control B is bounded semantic utility and is not exhaustive claim coverage."
+  },
+  "mapping_binding_contract": {
+    "authority_split": {
+      "target_source": "AgentEscala owns the domain-contract and review-pack configuration and its projection.",
+      "generic_engine": "AgentReview owns only generic admission, selection, explicit relation resolution, transport, budgeting, and limitation propagation.",
+      "no_hardcoding": "Repository names, target contract names, descriptions, keywords, and NLP are not authoritative relations."
+    },
+    "mapping_pack_input": {
+      "source_role": "The target review-packs.yaml is the source of pack declarations.",
+      "new_supported_shape": "packs is a mapping from a non-empty pack identity to a mapping value. A value may contain paths as list[str], domain_contract as a non-empty string, and recommended_review_preset as a string when present.",
+      "legacy_shape": "The legacy flat packs form remains an admitted legacy input for differential comparison; it is not a new mapping relation.",
+      "identity": "The mapping key is the pack identity. Duplicate, empty, or malformed identities are invalid source input.",
+      "absence": "An absent packs field is an empty set only when contract_bindings is absent or empty.",
+      "malformation": "A non-supported non-empty shape is invalid or unsupported and never not_relevant."
+    },
+    "contract_binding_input": {
+      "source_role": "The target review-packs.yaml contract_bindings field is target-owned declarative input.",
+      "supported_shape": "A mapping from a non-empty pack identity to a list of non-empty contract identities.",
+      "absence": "An absent field means an empty binding set and preserves compatibility with existing legacy fixtures.",
+      "malformation": "A non-mapping, non-list value, empty identity, or orphan binding is invalid source input and cannot silently become an empty set.",
+      "relation": "EffectiveContractRefs(pack_id) is the exact union of an admitted domain_contract, when present, and contract_bindings[pack_id]. The identities are deduplicated without fuzzy recovery."
+    },
+    "contract_input": {
+      "source_role": "The target domain-contracts.yaml is the source of contract content.",
+      "supported_forms": [
+        "legacy flat top-level rules list",
+        "bounded domain mapping whose non-reserved top-level key is the contract identity",
+        "bounded named list[str] section whose name is the section identity"
+      ],
+      "identity": "A contract or section identity comes from the admitted source shape; the engine does not fabricate claim_id values.",
+      "authority": "Admitted content is advisory contract context, not deterministic ClaimV1 authority or OGR."
+    },
+    "resolution": {
+      "valid_relation": "A pack-to-contract relation is established only when the exact identity is admitted by the contract input.",
+      "unresolved_relation": "A binding or domain_contract that does not resolve is a typed degrading, non-conclusive outcome.",
+      "applicability": "Applicable context is established before not_relevant; absent, invalid, unsupported, or unresolved required input is not not_relevant.",
+      "future_detail_boundary": "Parser, normalization, cost, packing, and executable fixture mechanics belong to Gate A's implementation contract under these requirements, not to a second authority."
+    }
   },
   "invariants": [
     {"invariant_id": "INV-C2-01", "statement": "An unresolved explicit semantic relation MUST fail closed."},
@@ -51,7 +97,7 @@
       "legacy_or_mapping_mode": "Explicit mapping mode for new semantics; legacy is compared extensionally only.",
       "evidence_required_later": "Mapping and binding fixtures with resolved and unresolved controls.",
       "nonclaims": ["implicit_relation_recovery", "legacy_internal_algorithm_specification"],
-      "control_refs": ["CM-CL2-02", "PC-CL2-02"]
+      "control_refs": ["CM-C2-MAP-01", "PC-C2-MAP-01"]
     },
     {
       "obligation_id": "OBL-CL2-03",
@@ -96,7 +142,7 @@
       "legacy_or_mapping_mode": "New semantic preservation contract; Gate A compares observations differentially where applicable.",
       "evidence_required_later": "Required and optional loss controls with the resulting conclusion and gate disposition.",
       "nonclaims": ["silent_required_loss", "optional_and_required_loss_equivalence"],
-      "control_refs": ["CM-CL2-05", "PC-CL2-05"]
+      "control_refs": ["CM-CL2-05", "PC-CL2-05", "CM-C2-LOSS-OPTIONAL-01", "PC-C2-LOSS-OPTIONAL-01"]
     },
     {
       "obligation_id": "OBL-CL2-06",
