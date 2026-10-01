@@ -217,8 +217,11 @@
               "calendar_10_22_independent -> contract_id calendar_10_22_independent, description preserved, section rules, rule text from description",
               "no_auto_contract_fix remains a distinct normalized contract",
               "explicit contract:calendar_10_22_independent selects exactly that normalized contract",
-              "semantic-group fallback may inspect normalized contract_id + description; no duplicate id qualifier exists"
-            ]
+              "semantic-group fallback may inspect normalized contract_id + description; no duplicate id qualifier exists",
+              "duplicate raw ids that clean to the same contract_id -> SOURCE_INVALID_OR_UNSUPPORTED",
+              "two distinct unique legacy ids remain two distinct normalized contracts"
+            ],
+            "uniqueness": "Within one admitted LEGACY_FLAT_MODE source, cleaned rule.id values MUST be unique. Duplicate cleaned ids make the source SOURCE_INVALID_OR_UNSUPPORTED before normalization; Gate A MUST NOT retain both, deduplicate silently, or pick one."
           }
         },
         "normalized_section": {
@@ -278,7 +281,7 @@
             "pack_id": "REQUIRED_PACK_CONTEXT_IDENTITY"
           },
           "ordering": "packs ascending exact pack_id; paths and contract_refs sorted after exact deduplication",
-          "applicability": "ApplicablePackSet(chunk) = exact selected pack id UNION packs whose paths match canonical target-relative paths with fnmatchcase",
+          "applicability": "ApplicablePackSet(chunk) is the exact-id union of: (a) every id in SelectionResolution.resolved_pack_ids when status=resolved; (b) MAPPING_PACK_MODE packs whose paths fnmatchcase-match canonical chunk paths; (c) LEGACY_PACK_MODE include-all via target_profile:review_packs; (d) legacy packs explicitly referenced by contract:<id> when pack.id equals the referenced id; (e) legacy semantic-group fallback matches. MAPPING_PACK_MODE never uses semantic-group fallback. Exact-dedupe and canonically order pack ids.",
           "context": "ApplicableNormalizedPackContext exists for every applicable NormalizedPack because pack_id itself is required pack context. description and review_preset are optional explanatory/routing context; their removal never erases the applicable-pack fact. A pack without contract_refs contributes no contract but is never not_relevant merely for lacking a relation.",
           "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant",
           "applicability_context_invariant": "ApplicablePackSet is determined before payload budgeting. For every applicable pack, pack_id is required context and cannot be dropped as optional detail. `not_relevant` requires ApplicablePackSet empty AND ApplicableContractSet empty after valid evaluation.",
@@ -288,11 +291,18 @@
             "unresolved": "if a non-empty explicit selected_contract_pack resolves to no admitted pack, emit semantic class SELECTED_PACK_MISSING, mark applicability unresolved/obligation-degrading, and forbid not_relevant/clean conclusive approval",
             "positive_controls": [
               "exact selected pack resolves",
-              "legacy calendar selection resolves compatibly to agentescala-calendar in the committed legacy fixture"
+              "legacy calendar selection resolves compatibly to agentescala-calendar in the committed legacy fixture",
+              "no selector token -> status=not_requested, empty resolved set, no degradation"
             ],
             "owner_split": {
-              "A2": "resolve raw selected token to the complete exact normalized pack-id set (or unresolved) using mode-appropriate compatibility rules",
-              "A3": "consume the complete SelectionResolution.resolved_pack_ids set and evaluate every resolved pack for normalized applicability/consequence; status=unresolved yields SELECTED_PACK_MISSING"
+              "A2": "always emit SelectionResolution. If no general selection exists emit status=not_requested; otherwise resolve raw token to the complete exact normalized pack-id set and emit resolved|unresolved.",
+              "A3": "consume SelectionResolution: not_requested adds no selected-pack applicability; resolved evaluates EVERY resolved_pack_id; unresolved -> SELECTED_PACK_MISSING/non-conclusive."
+            },
+            "shape": "SelectionResolution { requested_token?: non-empty string, resolved_pack_ids: [exact pack_id], status: not_requested|resolved|unresolved }",
+            "states": {
+              "not_requested": "no general selected-pack token after source precedence/cleaning; requested_token absent, resolved_pack_ids=[]; non-degrading",
+              "resolved": "requested_token present and one or more exact normalized pack ids resolved; resolved_pack_ids is the COMPLETE set of matches",
+              "unresolved": "requested_token present and no pack resolved; resolved_pack_ids=[]; A3 emits SELECTED_PACK_MISSING and non-conclusive consequence"
             }
           },
           "legacy_selection_compatibility": {
@@ -331,6 +341,13 @@
                 "file-diff calendar + semantic-context security -> general pack selection calendar; must_hold constraint security"
               ]
             }
+          },
+          "applicability_branches": {
+            "selected_resolution": "all SelectionResolution.resolved_pack_ids",
+            "mapping_paths": "mapping packs whose paths match canonical chunk paths with fnmatchcase",
+            "legacy_include_all": "all admitted legacy packs when target_profile:review_packs sentinel present",
+            "legacy_explicit_reference": "legacy pack whose exact pack_id equals a referenced contract:<id> token, preserving current v1 compatibility",
+            "legacy_semantic_group": "legacy-only _relevance_keywords substring match over pack_id + description"
           }
         },
         "field_census": {
@@ -406,12 +423,15 @@
         "CM-CL4-02",
         "CM-CL4-03 (aux_context/must_hold omitted_due_to_budget dropped before the gate)",
         "CM-CL2-03 (source slot absent: A domain-contracts, B review-packs; required and not-required branches both falsify the old not_relevant behaviour)",
-        "CM-PACK-03: non-empty selected_contract_pack resolves to no exact/legacy-compatible pack; must yield SELECTED_PACK_MISSING and non-conclusive outcome, never not_relevant"
+        "CM-PACK-03: non-empty selected_contract_pack resolves to no exact/legacy-compatible pack; must yield SELECTED_PACK_MISSING and non-conclusive outcome, never not_relevant",
+        "CM-CL2-04: target_profile:review_packs sentinel present while review-packs source absent/invalid -> source required, typed SOURCE_ABSENT/SOURCE_INVALID_OR_UNSUPPORTED, non-conclusive; never optional absence",
+        "CM-PACK-04: applicable pack has explicit contract_refs containing a contract id absent from normalized contract set -> SELECTED_CONTRACT_MISSING, non-conclusive; distinct from no_relation/not_relevant"
       ],
       "positive_controls": [
         "sufficient context -> conclusive review unchanged",
         "applicable pack with review_preset: dropping only review_preset emits OPTIONAL_CONTEXT_REDUCED while required pack_id remains and conclusive review stays possible",
-        "semantic-context with must_hold + change_type: dropping only change_type emits OPTIONAL_CONTEXT_REDUCED while applicable must_hold remains required and conclusive review stays possible"
+        "semantic-context with must_hold + change_type: dropping only change_type emits OPTIONAL_CONTEXT_REDUCED while applicable must_hold remains required and conclusive review stays possible",
+        "CM-PACK-04 resolving control: same applicable pack ref with target contract present -> relation resolves, pack+contract context preserved, no SELECTED_CONTRACT_MISSING"
       ],
       "closure_predicate": "PR #367 freezes the semantic consequence classes and required positive controls; Gate A freezes and proves their exact executable serialization, reduction, candidate-cost, partition/repack and propagation behavior.",
       "owner": "#221 V1-C2",
@@ -480,7 +500,7 @@
         "scope": "means a known source slot is absent; it does not assert that absence alone is obligation-degrading",
         "required_for_chunk": {
           "domain_contracts": "true iff the chunk has an admitted explicit contract dependency OR an applicable/selected pack yields EffectiveContractRefs != empty",
-          "review_packs": "true iff selected_contract_pack is non-empty OR semantic-context.contract_pack is non-empty OR applicability in mapping mode depends on a pack/path relation. Either explicit pack token makes review_packs required even if the other selector is absent.",
+          "review_packs": "true iff any of: general selected-pack token is non-empty; semantic-context.contract_pack is non-empty; target_profile:review_packs include-all sentinel is present; or mapping-mode applicability for this chunk depends on a pack/path relation.",
           "absent_or_invalid_when_required": "obligation-degrading -> affected chunk non-conclusive -> visible at gate",
           "absent_when_not_required": "typed absent state remains; no invented not_relevant and no blanket manual downgrade"
         },
@@ -563,8 +583,8 @@
           "undecidable": "required source absent, invalid or unsupported"
         },
         "relation": {
-          "explicit_ref_resolves": "effective normalized reference is available",
-          "explicit_ref_missing": "SELECTED_CONTRACT_MISSING and non-conclusive affected review (existing pack relation target missing)",
+          "explicit_ref_resolves": "focal positive counterpart: referenced normalized contract exists; explicit pack→contract relation is preserved in payload",
+          "explicit_ref_missing": "CM-PACK-04 / SELECTED_CONTRACT_MISSING and non-conclusive affected review; never collapse to no_relation/not_relevant",
           "no_relation": "no contract is introduced by that pack relation",
           "explicit_pack_missing": "SELECTED_PACK_MISSING and non-conclusive affected review (explicit selected pack identity itself unresolved)"
         },
@@ -1275,7 +1295,12 @@
         "Control B sampling attribution uses shared supported seed or predeclared repeated-pair protocol",
         "finite ProvenanceV1 source_kind/source_path/source_state is required/budgeted payload context",
         "legacy include-all sentinels target_profile:domain_contracts and target_profile:review_packs are frozen compatibility inputs",
-        "Control B pass criterion is directional: bad subject triggers predeclared material signal and corrected counterpart does not"
+        "Control B pass criterion is directional: bad subject triggers predeclared material signal and corrected counterpart does not",
+        "legacy cleaned contract ids are unique; duplicates fail closed before normalization",
+        "SelectionResolution has explicit not_requested|resolved|unresolved states and carries the complete resolved id set",
+        "ApplicablePackSet canonical equation includes selected set, mapping paths, legacy include-all, legacy explicit-ref and legacy semantic-group branches",
+        "target_profile:review_packs include-all sentinel makes review_packs required for the chunk",
+        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 plus resolving positive control"
       ],
       "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
       "runtime_requires": [
