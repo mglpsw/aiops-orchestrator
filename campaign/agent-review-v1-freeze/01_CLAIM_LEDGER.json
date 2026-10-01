@@ -237,11 +237,17 @@
           "requirement": "non-empty explicit selected_contract_pack must resolve to an admitted exact or legacy-compatible pack identity",
           "failure_class": "SELECTED_PACK_MISSING",
           "consequence": "obligation-degrading/non-conclusive; never not_relevant",
-          "owner": "Gate A A2/A3 executable contract"
+          "owner_split": {
+            "A2": "resolve raw selected token to SelectionResolution exact normalized pack ids",
+            "A3": "consume SelectionResolution; unresolved -> SELECTED_PACK_MISSING consequence"
+          }
         },
         "contract_bindings_projection": {
           "requirement": "NormalizedPack.contract_refs is the exact-deduplicated union of inline pack.domain_contract (if present) and contract_bindings.get(pack_id, [])",
-          "owner": "Gate A A2/A3 executable contract"
+          "owner_split": {
+            "A2": "project inline domain_contract + contract_bindings.get(pack_id, []) into normalized contract_refs",
+            "A3": "resolve/evaluate normalized contract_refs against admitted contracts and candidate applicability"
+          }
         }
       },
       "consumer_history": {
