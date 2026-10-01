@@ -348,6 +348,15 @@
             "legacy_include_all": "all admitted legacy packs when target_profile:review_packs sentinel present",
             "legacy_explicit_reference": "legacy pack whose exact pack_id equals a referenced contract:<id> token, preserving current v1 compatibility",
             "legacy_semantic_group": "legacy-only _relevance_keywords substring match over pack_id + description"
+          },
+          "legacy_pack_identity_uniqueness": {
+            "owner": "Gate A A2",
+            "invariant": "Within one admitted LEGACY_PACK_MODE source, cleaned pack ids MUST be unique.",
+            "failure": "duplicate cleaned ids -> SOURCE_INVALID_OR_UNSUPPORTED before normalization; never retain both, merge context, silently dedupe or pick one.",
+            "controls": [
+              "duplicate raw legacy pack ids cleaning to same pack_id -> source invalid",
+              "distinct cleaned legacy pack ids preserve independent description/review_preset/context"
+            ]
           }
         },
         "field_census": {
@@ -391,7 +400,27 @@
         },
         "raw_admission_boundary": "Raw source is admitted by the successor RawSourceAdmissionContract into a NormalizedContractSet/NormalizedPackSet, or rejected as one typed invalid/unsupported source outcome. No malformed or ambiguous raw source normalizes to empty/not_relevant.",
         "determinism": "Requirement: each admitted source must resolve to one implementation-qualified normalized interpretation. The exact executable normalization/canonicalization algorithm is Gate A authority, not proven by PR #367 prose.",
-        "authority_boundary": "Finite normalized concepts remain requirements vocabulary. Exact legacy alias resolution, raw-field projection, byte/text cost serialization and partition/repack behavior are NOT claimed qualified by this docs PR; Gate A code/tests are the truth-maker."
+        "authority_boundary": "Finite normalized concepts remain requirements vocabulary. Exact legacy alias resolution, raw-field projection, byte/text cost serialization and partition/repack behavior are NOT claimed qualified by this docs PR; Gate A code/tests are the truth-maker.",
+        "applicable_contract_set": {
+          "owner": "Gate A A3",
+          "equation": "ApplicableContractSet(chunk) is the exact-id union of all normalized contracts selected by: (a) contract_refs of every ApplicablePackSet member; (b) direct exact contract:<id> references; (c) legacy include-all sentinel target_profile:domain_contracts; (d) normalized ContractApplicability exact-path/pattern/global matches; (e) legacy semantic-group fallback matches. Missing ids named by explicit refs/pack relations do NOT disappear from the relation: they emit SELECTED_CONTRACT_MISSING and make the affected review non-conclusive.",
+          "branches": {
+            "applicable_pack_refs": "for every applicable pack, union every contract_refs id that resolves",
+            "direct_explicit_refs": "exact normalized contract ids named by contract:<id>",
+            "legacy_include_all": "all admitted legacy normalized contracts when target_profile:domain_contracts sentinel is present",
+            "normalized_applicability": "legacy normalized contracts whose ContractApplicability matches candidate canonical files by exact path, legacy pattern or global",
+            "legacy_semantic_group": "legacy-only _relevance_keywords fallback over contract_id + description"
+          },
+          "controls": [
+            "pack relation resolves -> contract enters ApplicableContractSet",
+            "direct contract:<id> resolves -> exact contract enters",
+            "domain include-all sentinel -> all admitted legacy contracts enter",
+            "path/pattern/global applicable legacy contract enters",
+            "legacy semantic-group match enters",
+            "missing explicit/pack-ref target -> SELECTED_CONTRACT_MISSING, never empty/no_relation/not_relevant"
+          ],
+          "non_claim": "DOMAIN_MAPPING_MODE contracts are not promoted by semantic-group keywords."
+        }
       },
       "requirements_freeze_2026_10_01": {
         "terminal": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
@@ -411,7 +440,7 @@
           "A4": "Canonical cost + deterministic budget/packing only.",
           "A5": "Required-context loss propagation only."
         },
-        "a2_a3_handoff": "A2 emits normalized exact identities plus SelectionResolution {requested_token, resolved_pack_ids, status=resolved|unresolved}, NormalizedPack.contract_refs and ContractApplicability. A3 consumes only those normalized outputs. A3 MUST NOT re-run legacy substring/description matching or raw alias parsing."
+        "a2_a3_handoff": "A2 emits normalized exact identities plus SelectionResolution {requested_token?, resolved_pack_ids, status=not_requested|resolved|unresolved}, NormalizedPack.contract_refs and ContractApplicability. A3 consumes only those normalized outputs. not_requested means no general selector and is non-degrading; resolved carries the COMPLETE exact-id set and A3 evaluates every id; unresolved yields SELECTED_PACK_MISSING. A3 MUST NOT re-run legacy substring/description matching or raw alias parsing."
       }
     },
     {
@@ -533,7 +562,7 @@
           "NormalizedPack.contract_refs are BOTH pre-budget relation inputs and required advisory payload context for every applicable pack; their loss -> REQUIRED_CONTEXT_OMITTED because the pack→contract relation must remain explicit to the consumer."
         ]
       },
-      "not_relevant_rule": "not_relevant is possible only after valid evaluation when ApplicablePackSet is empty AND ApplicableContractSet is empty AND there is no unresolved explicit selected_contract_pack. Any applicable pack contributes required pack_id context; SELECTED_PACK_MISSING, typed absent/invalid/unsupported states never coexist with not_relevant.",
+      "not_relevant_rule": "not_relevant is possible only after valid evaluation when canonical ApplicablePackSet(chunk) is empty AND canonical ApplicableContractSet(chunk) is empty AND SelectionResolution is not unresolved. Any applicable pack contributes required pack_id context; missing selected pack/contract relations, typed absent/invalid/unsupported states never coexist with not_relevant.",
       "superseded_raw_interface_totality_matrix": {
         "status": "SUPERSEDED_AS_TOTAL_RAW_GRAMMAR",
         "reason": "This raw YAML enumeration is retained as successor parser qualification history, not as a closed semantic proof.",
@@ -1300,7 +1329,10 @@
         "SelectionResolution has explicit not_requested|resolved|unresolved states and carries the complete resolved id set",
         "ApplicablePackSet canonical equation includes selected set, mapping paths, legacy include-all, legacy explicit-ref and legacy semantic-group branches",
         "target_profile:review_packs include-all sentinel makes review_packs required for the chunk",
-        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 plus resolving positive control"
+        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 plus resolving positive control",
+        "legacy cleaned pack ids are unique; duplicates fail closed before normalization",
+        "canonical A2→A3 SelectionResolution handoff includes not_requested|resolved|unresolved",
+        "ApplicableContractSet canonical union includes applicable-pack refs, direct refs, legacy include-all, normalized applicability and legacy semantic-group branches"
       ],
       "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
       "runtime_requires": [
