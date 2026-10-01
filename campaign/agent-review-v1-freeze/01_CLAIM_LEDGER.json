@@ -65,9 +65,9 @@
       "proposition": "A file is reported as covered only when the material needed to review it (an observable textual hunk) was admitted into a chunk payload; PathPresent != MaterialReviewed.",
       "owner": "#232",
       "producer": [
-        "app/agent_review/semantic_chunker.py:208-220 (hunk_unavailable_must_review; must_review tier only)",
-        "app/agent_review/semantic_chunker.py:426 (per-chunk coverage hard-coded 'complete')",
-        "app/agent_review/semantic_chunker.py:697-747 (_plan_status)",
+        "app/agent_review/semantic_chunker.py at d3f5946c4d0513def9f7c2018b63703a53df1cc7: hunk availability applies to every tier; hunk-less file is excluded from packing and files_covered and included in files_not_covered",
+        "app/agent_review/semantic_chunker.py at d3f5946c: must_review -> must_review_hunk_unavailable:<path>; non-must-review -> hunk_unavailable_count:<N>; plan becomes degraded/non-complete and propagates",
+        "app/agent_review/semantic_chunker.py:_plan_status (current producer; the former must_review-only mechanism is history, not current behavior)",
         "app/agent_review/payload_cost_model.py:199-214 (block_has_observable_textual_hunk)"
       ],
       "consumer": [
@@ -109,6 +109,10 @@
         {
           "at": "PR #367 revision (post-Ready Codex finding 4150077451)",
           "status": "live_status corrected from 'supported' to 'supported_on_master_unreleased': the published consumer (v0.22.0) does not contain the mechanism; 'supported' requires the mechanism on the real consumer path (status vocabulary)"
+        },
+        {
+          "at": "PR #367 finalization (Codex finding 4150315892)",
+          "status": "current mechanism record rebound to d3f5946c4d0513def9f7c2018b63703a53df1cc7; prior must_review-only description retained as history only"
         }
       ]
     },
@@ -127,7 +131,7 @@
         "structured per-claim consumer: NONE -- explicit final-v1 non-claim, deferred to #353/#357 (see structured_per_claim_coverage)"
       ],
       "required_evidence": [
-        "RED->GREEN families 1-15 of 04 V1-C2 (incl. 14 absent context / CM-CL2-03 and 15 top-level shape discriminator; supported shapes consumed; deterministic applicability; typed limitations; required-context floor; positive control; target and legacy compatibility; no v2 regression)",
+        "RED->GREEN families 1-16 of 04 V1-C2 (14 source-state/requiredness, 15 domain grammar, 16 review-pack totality; supported shapes consumed; deterministic applicability; typed limitations; required semantic kernel; positive control; target and legacy compatibility; no v2 regression)",
         "payload CONTENT observed at the most focal intermediate state available, not only the final verdict",
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
         "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07"
@@ -135,7 +139,7 @@
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
         "contracts shape not parseable by v1 flatteners",
-        "a contract source expected/configured by the effective target profile is absent (contracts_context_absent:*)"
+        "a known contract source slot is absent and RequiredForChunk requires it (contracts_context_absent:*)"
       ],
       "live_status": "not_supported",
       "countermodels": [

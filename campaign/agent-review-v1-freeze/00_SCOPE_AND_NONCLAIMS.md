@@ -160,6 +160,16 @@ do claim budget pelo owner**, não entrega da capacidade. Claim final:
 O requisito #805 **não** é apagado: permanece como dois controles (determinístico de
 transporte/gate e avaliação semântica limitada), ver `02` OBL-CL2-07.
 
+**Fechamento de interface da PR #367:** o domínio C2 é uma interface de contexto
+advisory limitada, não uma implementação nem um schema novo. Os dois slots conhecidos
+são `.aiops/domain-contracts.yaml` e `.aiops/review-packs.yaml`; cada um tem estado
+`present_valid | absent | invalid`, independente de `RequiredForChunk`. Ausência é
+sempre tipada e só degrada quando o predicado explícito a requer. A gramática completa,
+o núcleo semântico requerido, as consequências de orçamento e a matriz de totalidade
+estão em `02` OBL-CL2-02/03; nenhum estado admitido fica para implementação decidir.
+Em particular, `absent` ou `invalid` nunca é simultaneamente `not_relevant`, mesmo
+quando o chunk não requer aquela fonte.
+
 ## 7. Fato de release já estabelecido
 
 A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):

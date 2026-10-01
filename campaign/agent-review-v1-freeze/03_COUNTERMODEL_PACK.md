@@ -20,7 +20,7 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 
 ## CL-1 — Coverage truth (#232)
 
-### CM-CL1-01 — arquivo não-`must_review` sem hunk textual declarado coberto
+### CM-CL1-01 — histórico: arquivo não-`must_review` sem hunk textual declarado coberto
 - **Entrada:** arquivo `should_review`/`may_summarize` cujo bloco de diff não tem cabeçalho `@@` (binário, `Binary files … differ`).
 - **Caminho:** `semantic_chunker.py:208-220` exclui só `required_files`; o arquivo é empacotado; chunk `coverage="complete"` (`:426`); `files_covered` inclui o arquivo; `chunk_payload_builder.py:180` emite `chunk_diff_hunk_missing:<p>` **apenas** em payload/manifest, que não são entrada de parse/synthesize/gate.
 - **Resultado falso:** plan `complete`; gate `passed`; arquivo contado como coberto.
@@ -36,6 +36,8 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 ### Anti-countermodel (não quebrar): fixtures sem diff
 - 12 testes de `test_semantic_chunker.py` (fixture `_intake()` sem `full-diff`), `test_aiops_review_plan_chunks_cli.py::test_plan_chunks_cli_generates_semantic_chunk_plan` e o e2e acima quebram se a exclusão for generalizada sem ajustar fixtures (tentativa revertida em #231). Esses fixtures devem receber hunks sintéticos onde o teste **não** é sobre disponibilidade de hunk; `"não testamos hunks" != "hunks nunca importam"`.
 - Acoplamento: a projeção do planner fixa `"declared_coverage": "complete"`/`"chunk_plan_limitations": []` (`payload_cost_model.py:1488,1492`); qualquer mudança em `chunk.limitations` precisa ser espelhada ou o guard do builder dispara.
+
+**Mecanismo atual (não o histórico):** desde `d3f5946c4d0513def9f7c2018b63703a53df1cc7`, disponibilidade de hunk vale para toda tier: arquivo sem hunk sai de packing e de `files_covered`, entra em `files_not_covered`; `must_review` recebe `must_review_hunk_unavailable:<path>`, os demais compõem `hunk_unavailable_count:<N>`, e o plano fica degraded/non-complete até o gate. `supported_on_master_unreleased` não afirma adoção pelo consumer pinado.
 
 ---
 
@@ -60,14 +62,20 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 - *Histórico superado:* a versão anterior deste item dizia "formas lidas no `develop` vivo; efeito inferido". Mantida aqui só como registro; a qualificação acima não herda dela.
 - **Discriminador exigido:** documento de contrato não vazio e não achatável deve produzir limitação distinta de "não relevante".
 
-### CM-CL2-03 — fonte de contrato esperada ausente rotulada como "não relevante"
-- **Entrada:** o perfil efetivo do target espera/configura a fonte de contrato, mas o arquivo está ausente.
+### CM-CL2-03 — fonte conhecida ausente rotulada como "não relevante"
+- **Entrada:** um dos slots conhecidos está ausente; requiredness é calculada separadamente por `RequiredForChunk`, nunca por um campo novo de perfil.
   - **A.** `.aiops/domain-contracts.yaml` ausente.
   - **B.** `.aiops/review-packs.yaml` ausente.
 - **Caminho atual (`OBSERVED_CODE`):** `repo_profile._load_optional_yaml` retorna `None` sem limitação quando o arquivo não existe (`app/agent_review/repo_profile.py:95-102`); `contracts_context` então achata essa fonte para vazio; quando a outra fonte também não produz item aplicável, emite `contracts_context_not_relevant:<chunk>` (`payload_cost_model.py:435-436`); quando a outra fonte produz item, a ausência fica silenciosa. Os fixtures RED neutralizam a outra fonte. Evidência: `OBSERVED_CODE` (exige RED antes do patch).
-- **Resultado falso (ambas as variantes):** ausência indistinguível de não aplicabilidade; nenhuma limitação degradante chega ao gate.
-- **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`; quando a ausência impede avaliar obrigação aplicável/requerida, limitação degradante visível no gate (OBL-CL2-03, família RED/GREEN 14).
+- **Resultado falso (ambas as variantes):** ausência indistinguível de não aplicabilidade; ou o implementador degrada toda ausência, destruindo o controle positivo.
+- **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`. Par focal A/B: ausência + `RequiredForChunk=true` é degradante e não conclusiva; o mesmo slot ausente + `RequiredForChunk=false` permanece tipado, mas o controle positivo pode ser conclusivo. Não se cria `TargetProfile` field (OBL-CL2-03, família 14).
 - **Origem:** achado pós-Ready do Codex 4150077445 na PR #367, adjudicado válido pelo owner.
+
+### Família 16 — totalidade de `review-packs` (sucessora RED/GREEN)
+- **RED estrutural:** `packs: {foo: "bar"}`, `paths` não-lista/não-string, `domain_contract` vazio/não-string, entrada legacy sem `id`, `contract_bindings` malformado ou chave órfã. Cada um deve emitir `contracts_context_unsupported_shape:review_packs:<pack-or-index>` e jamais pode ser descartado como `not_relevant`.
+- **GREEN de modo:** `packs` lista legacy válida e `packs` mapping válido preservam seus itens admitidos; `packs` ausente só é conjunto vazio quando `contract_bindings` também é ausente/vazio.
+- **RED de relação:** binding estruturalmente válido para identidade de contrato ausente produz `selected_contract_domain_missing:<pack>:<contract>`, não erro estrutural.
+- **Controle positivo:** pack mapping aplicável seleciona exatamente sua relação de contrato; pack irrelevante não injeta contrato espúrio. O discriminador é a seleção/limitação de pack, não um fracasso incidental do gate.
 
 ---
 
