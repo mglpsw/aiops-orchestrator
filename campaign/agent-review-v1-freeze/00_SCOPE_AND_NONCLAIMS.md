@@ -197,6 +197,7 @@ candidate chunk files. A3 nunca refaz fuzzy/raw matching. Seleção explícita n
 resolvida -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca
 `not_relevant`. `NormalizedPack.contract_refs` =
 `dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`.
+A3 também preserva o fallback legado por semantic-group (`_relevance_keywords` + substring em id/description) somente para itens legacy; mapping/domain mode não usa keyword como autoridade. `semantic-context.change_type` permanece advisory opcional e não filtra must_hold.
 
 Compatibilidade legada requerida em A2: comparação case-insensitive e match por
 igualdade de id, igualdade de description, substring em id ou substring em
