@@ -453,3 +453,21 @@ Any explicit/pack relation to a missing contract -> `SELECTED_CONTRACT_MISSING` 
 
 ### SelectionResolution no-selector control
 No general selector -> `SelectionResolution {status=not_requested, requested_token absent, resolved_pack_ids=[]}`; non-degrading.
+
+
+### PackConstraintResolution — semantic-context contract pack
+A2 emits a **separate** `PackConstraintResolution {requested_token?, resolved_pack_ids, status=not_requested|resolved|unresolved}` from `semantic-context.contract_pack`.
+It never overwrites general `SelectionResolution` from file-diff-context.
+A3 uses it only to constrain `MustHoldApplicable(chunk)`.
+Conflict control: general calendar + semantic constraint security coexist independently.
+
+### CM-CL2-05 — domain include-all source missing
+`target_profile:domain_contracts` present + domain-contracts source absent/invalid -> source required, typed failure, non-conclusive; never optional absence.
+
+### CM-CONTRACT-01 — direct contract target missing
+Direct `contract:<id>` names absent normalized contract -> `SELECTED_CONTRACT_MISSING`, non-conclusive, never empty/not_relevant.
+Positive counterpart: target contract exists -> exact id enters `ApplicableContractSet`.
+
+### CM-CL2-06 — direct legacy pack-reference source missing
+Any direct `contract:<id>` requires review-packs source as well, because current legacy compatibility may select a pack with the same id.
+Absent/invalid review-packs -> typed failure/non-conclusive; never optional absence.
