@@ -1,230 +1,313 @@
+"""Synthetic transport fixtures, never captured historical GitHub responses."""
 from __future__ import annotations
 
+import io
+import json
+import unittest
 from copy import deepcopy
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
-from scripts.github_codex_post_ready_guard import _is_codex_summary, evaluate_evidence
-
+from scripts import github_codex_post_ready_guard as guard
 
 HEAD = "661422837a3099bb8d989907d42314e26e410aa7"
 BASE = "6bbd2f949989da3e90e1d9c527e37059c0b628ff"
+OLD = "d3f5946c4d0513def9f7c2018b63703a53df1cc7"
 REPO = "mglpsw/aiops-orchestrator"
+BOT = {"login": "chatgpt-codex-connector[bot]"}
+CHECKS = ("Validate repository", "AgentReview release gates")
 
 
-def _evidence(*, draft: bool = False, merged: bool = False, review_head: str = HEAD, findings=None, ready=True):
-    return {
-        "pr": {
-            "repo": REPO,
-            "number": 369,
-            "state": "open",
-            "draft": draft,
-            "merged": merged,
-            "head_sha": HEAD,
-            "base_sha": BASE,
-        },
-        "ready_events": ([{"event": "ready_for_review", "created_at": "2026-10-01T16:16:00Z"}] if ready else []),
-        "reviews": [{
-            "id": 5382257522,
-            "author_login": "chatgpt-codex-connector",
-            "state": "COMMENTED",
-            "commit_id": review_head,
-            "submitted_at": "2026-10-01T16:21:19Z",
-            "body": "",
-        }],
-        "summaries": [{
-            "id": 5935569021,
-            "author_login": "chatgpt-codex-connector",
-            "body": "Codex Review Summary\n✅ Completed\nCommit `6614228`\nReview trigger: Draft marked ready",
-            "created_at": "2026-10-01T16:16:41Z",
-        }],
-        "findings": findings or [],
-        "checks": [
-            {
-                "name": "Validate repository",
-                "status": "completed",
-                "conclusion": "success",
-                "head_sha": HEAD,
-                "app_slug": "github-actions",
-                "run_id": 1,
-            },
-            {
-                "name": "AgentReview release gates",
-                "status": "completed",
-                "conclusion": "success",
-                "head_sha": HEAD,
-                "app_slug": "github-actions",
-                "run_id": 2,
-            },
-        ],
-        "collection_errors": [],
-    }
+def summary(ref=HEAD[:7], completed="2026-10-01T16:21:23Z", trigger="Draft marked ready"):
+    return ("## Codex Review Summary\n"
+            "| Review | Status | Commit | Review trigger |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 📝 **Code Review** | ✅ **Completed** "
+            f'<relative-time datetime="{completed}">{completed}</relative-time> | '
+            + chr(96) + ref + chr(96) + f" | {trigger} |\n")
 
 
-def _evaluate(evidence):
-    return evaluate_evidence(
-        evidence,
-        expected_repo=REPO,
-        expected_pr=369,
-        expected_head=HEAD,
-        expected_base=BASE,
-        required_checks=("Validate repository", "AgentReview release gates"),
-        trusted_adjudicators=("mglpsw",),
-        trusted_check_producers=("github-actions",),
-    )
+def disposition(finding, author="mglpsw", state="FIXED", subject=HEAD):
+    return {"id": 71, "user": {"login": author}, "created_at": "2026-10-01T16:21:30Z",
+            "updated_at": "2026-10-01T16:21:30Z",
+            "body": f"Guard-Disposition: {finding} {state}\nSubject-Head: {subject}\n"
+                    f"Repair-Commit: {HEAD}\nEvidence: causal regression test passes on repair HEAD"}
 
 
-def test_ci_green_and_ready_without_terminal_codex_review_is_blocked():
-    evidence = _evidence()
-    evidence["reviews"] = []
-    evidence["summaries"] = []
+class FakeGitHub(guard.GitHubReadOnlyClient):
+    """Exercise production pagination/normalization/binding using an offline transport."""
 
-    assert _evaluate(evidence).state == "HELD_PENDING_CODEX"
+    def __init__(self):
+        super().__init__("synthetic-test-token")
+        self.pr = {"number": 370, "state": "open", "draft": False, "merged": False,
+                   "head": {"sha": HEAD}, "base": {"sha": BASE, "repo": {"full_name": REPO}}}
+        self.reviews = [{"id": 41, "user": BOT, "state": "COMMENTED", "body": "",
+                         "commit_id": HEAD, "submitted_at": "2026-10-01T16:21:19Z"}]
+        self.inline = []
+        self.comments = [{"id": 51, "user": BOT, "body": summary(), "created_at": "2026-10-01T16:16:41Z",
+                          "updated_at": "2026-10-01T16:21:24Z"}]
+        self.timeline = [{"id": 31, "event": "ready_for_review", "created_at": "2026-10-01T16:16:00Z"}]
+        self.checks = [{"id": index + 1, "name": name, "status": "completed", "conclusion": "success",
+                        "head_sha": HEAD, "app": {"slug": "github-actions"}} for index, name in enumerate(CHECKS)]
+        self.resolved = HEAD
+        self.blobs = {OLD: "a" * 40, HEAD: "b" * 40}
+        self.paths = []
+        self.drift = False
+        self.pr_reads = 0
 
+    def _request(self, method, path, payload=None):
+        self.paths.append(path)
+        parsed = urlsplit(path)
+        route = parsed.path
+        params = parse_qs(parsed.query)
+        if route.endswith("/pulls/370"):
+            self.pr_reads += 1
+            result = deepcopy(self.pr)
+            if self.drift and self.pr_reads > 1:
+                result["head"]["sha"] = OLD
+            return result
+        if "/contents/" in route:
+            return {"type": "file", "sha": self.blobs[params["ref"][0]]}
+        if "/compare/" in route:
+            return {"status": "identical" if route.endswith(HEAD + "..." + HEAD) else "ahead"}
+        if route.endswith("/check-runs"):
+            page = int(params["page"][0])
+            return {"total_count": len(self.checks), "check_runs": deepcopy(self.checks[(page-1)*100:page*100])}
+        if "/commits/" in route:
+            return {"sha": self.resolved}
+        collection = None
+        if route.endswith("/pulls/370/reviews"):
+            collection = self.reviews
+        elif route.endswith("/pulls/370/comments"):
+            collection = self.inline
+        elif route.endswith("/issues/370/comments"):
+            collection = self.comments
+        elif route.endswith("/events"):
+            collection = self.timeline
+        if collection is None:
+            raise AssertionError(f"unexpected request: {path}")
+        page = int(params["page"][0])
+        return deepcopy(collection[(page-1)*100:page*100])
 
-def test_terminal_review_with_material_finding_is_blocked_until_disposition():
-    evidence = _evidence(findings=[{"id": 4157801069, "review_id": 5382257522, "material": True}])
-
-    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
-
-
-def test_older_review_cannot_qualify_new_head():
-    evidence = _evidence(review_head="d3f5946c4d0513def9f7c2018b63703a53df1cc")
-
-    assert _evaluate(evidence).state == "HELD_PENDING_CODEX"
-
-
-def test_post_merge_review_does_not_satisfy_pre_merge_gate():
-    evidence = _evidence(merged=True)
-
-    assert _evaluate(evidence).state == "HELD_STALE"
-
-
-def test_incomplete_api_collection_is_not_success():
-    evidence = _evidence()
-    evidence["collection_errors"] = ["review-thread evidence is unavailable"]
-
-    assert _evaluate(evidence).state == "HELD_CODEX_UNAVAILABLE"
-
-
-def test_positive_path_is_observational_only():
-    result = _evaluate(_evidence())
-
-    assert result.state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
-    assert result.merge_authorized is False
-
-
-def test_adjudicated_material_finding_can_satisfy_observation():
-    evidence = _evidence(findings=[{
-        "id": 4157801069,
-        "review_id": 5382257522,
-        "material": True,
-        "disposition": "FIXED",
-        "disposition_author": "mglpsw",
-    }])
-
-    assert _evaluate(evidence).state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
-
-
-def test_resolved_thread_without_correction_is_still_material():
-    evidence = _evidence(findings=[{
-        "id": 4157801069,
-        "review_id": 5382257522,
-        "material": True,
-        "thread_resolved": True,
-    }])
-
-    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
-
-
-def test_causal_mutation_removing_terminal_review_check_is_detected():
-    evidence = _evidence()
-    mutant = deepcopy(evidence)
-    mutant["reviews"] = []
-
-    assert _evaluate(evidence).state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
-    assert _evaluate(mutant).state == "HELD_PENDING_CODEX"
+    def predecessor(self, body=False):
+        self.reviews.insert(0, {"id": 40, "user": BOT, "state": "COMMENTED",
+                               "commit_id": OLD, "submitted_at": "2026-10-01T16:00:00Z",
+                               "body": "A material general finding" if body else ""})
+        if not body:
+            self.inline = [{"id": 61, "user": BOT, "body": "material finding",
+                            "path": "scripts/example.py", "pull_request_review_id": 40,
+                            "commit_id": HEAD}]  # GitHub may relocate the comment; review owns original SHA.
 
 
-def test_ready_event_is_required_for_review_binding():
-    assert _evaluate(_evidence(ready=False)).state == "HELD_STALE"
+def evaluate(evidence):
+    return guard.evaluate_evidence(evidence, expected_repo=REPO, expected_pr=370,
+                                   expected_head=HEAD, expected_base=BASE,
+                                   required_checks=CHECKS, trusted_adjudicators=("mglpsw",))
 
 
-def test_latest_ready_cycle_invalidates_an_older_terminal_review():
-    evidence = _evidence()
-    evidence["ready_events"].append({"event": "ready_for_review", "created_at": "2026-10-01T16:25:00Z"})
+class PostReadyGuardTests(unittest.TestCase):
+    def test_live_path_positive_and_no_merge_authority(self):
+        result = evaluate(FakeGitHub().collect(REPO, 370))
+        self.assertEqual(result.state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        self.assertFalse(result.merge_authorized)
 
-    assert _evaluate(evidence).state == "HELD_STALE"
+    def test_offline_fixture_cannot_promote_even_with_forged_live_flags(self):
+        evidence = FakeGitHub().collect(REPO, 370).data
+        evidence.update(collection_mode="live", live_authenticated=True)
+        self.assertEqual(evaluate(evidence).state, "HELD_CODEX_UNAVAILABLE")
+        # Causal control: bypassing the provenance guard exposes the old escape.
+        policy = dict(expected_repo=REPO, expected_pr=370, expected_head=HEAD, expected_base=BASE,
+                      required_checks=CHECKS, trusted_adjudicators=("mglpsw",),
+                      trusted_check_producers=("github-actions",))
+        self.assertEqual(guard._evaluate_live(evidence, **policy).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
 
+    def test_evidence_json_cli_is_always_non_positive(self):
+        evidence = FakeGitHub().collect(REPO, 370).data
+        args = ["--repo", REPO, "--pr", "370", "--expected-head", HEAD, "--expected-base", BASE,
+                "--required-check", CHECKS[0], "--required-check", CHECKS[1], "--evidence-json", "fixture.json"]
+        with patch.object(guard.Path, "read_text", return_value=json.dumps(evidence)), patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(guard.main(args), 2)
+            self.assertNotEqual(json.loads(output.getvalue())["state"], "READY_FOR_HUMAN_INTEGRATION_DECISION")
 
-def test_draft_state_is_pending_even_with_a_review_shape():
-    assert _evaluate(_evidence(draft=True)).state == "HELD_PENDING_CODEX"
+    def test_old_summary_same_short_prefix_does_not_bind_new_head(self):
+        client = FakeGitHub()
+        client.resolved = HEAD[:7] + "0" * 33
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
 
+    def test_earlier_cycle_summary_cannot_mix_with_new_review(self):
+        client = FakeGitHub()
+        client.comments[0]["body"] = summary(completed="2026-10-01T16:10:00Z")
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
 
-def test_empty_required_check_policy_is_not_success():
-    assert evaluate_evidence(
-        _evidence(),
-        expected_repo=REPO,
-        expected_pr=369,
-        expected_head=HEAD,
-        expected_base=BASE,
-        required_checks=(),
-        trusted_check_producers=("github-actions",),
-    ).state == "HELD_PENDING_REQUIRED_CI"
+    def test_later_manual_request_invalidates_old_terminal_row(self):
+        client = FakeGitHub()
+        client.comments[0]["body"] = summary(trigger="Manual request")
+        client.comments.append({"id": 52, "user": {"login": "mglpsw"}, "body": "@codex review",
+                                "created_at": "2026-10-01T16:25:00Z", "updated_at": "2026-10-01T16:25:00Z"})
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
 
+    def test_manual_request_supersedes_completed_ready_trigger(self):
+        client = FakeGitHub()
+        client.comments.append({"id": 52, "user": {"login": "mglpsw"}, "body": "@codex review",
+                                "created_at": "2026-10-01T16:25:00Z", "updated_at": "2026-10-01T16:25:00Z"})
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
 
-def test_untrusted_disposition_author_does_not_adjudicate_finding():
-    evidence = _evidence(findings=[{
-        "id": 4157801069,
-        "review_id": 5382257522,
-        "material": True,
-        "disposition": "DISMISSED",
-        "disposition_author": "random-contributor",
-    }])
+    def test_ambiguous_terminal_reviews_cannot_bind_summary(self):
+        client = FakeGitHub()
+        client.reviews.append(dict(client.reviews[0], id=42))
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
 
-    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
+    def test_known_boilerplate_only_is_not_material_but_hidden_finding_is(self):
+        client = FakeGitHub()
+        client.reviews[0]["body"] = guard.CODEX_BOILERPLATE
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        client.reviews[0]["body"] += "<details><summary>Finding</summary>Material defect</details>"
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_WITH_MATERIAL_FINDINGS")
 
+    def test_missing_authentication_or_transport_failure_is_unavailable(self):
+        client = FakeGitHub()
+        client.token = ""
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
+        client.token = "synthetic-test-token"
+        with patch.object(client, "_request", side_effect=RuntimeError("unauthorized")):
+            self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
-def test_manual_review_summary_is_bound_after_ready():
-    evidence = _evidence()
-    evidence["summaries"][0]["body"] = "Codex Review Summary\n✅ Completed\nCommit `6614228`\nReview trigger: Manual request"
+    def test_raw_malformed_collections_are_unavailable(self):
+        for channel in ("reviews", "inline", "comments", "timeline", "checks"):
+            for member in (None, {}):
+                client = FakeGitHub()
+                setattr(client, channel, [member])
+                with self.subTest(channel=channel, member=member):
+                    self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
-    assert _evaluate(evidence).state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
+    def test_duplicate_check_run_identity_is_unavailable(self):
+        client = FakeGitHub()
+        client.checks[1]["id"] = client.checks[0]["id"]
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
+    def test_check_run_later_page_is_collected(self):
+        client = FakeGitHub()
+        client.checks = [dict(client.checks[0], id=i+100, name=f"unrelated-{i}") for i in range(100)] + client.checks
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        self.assertTrue(any("check-runs?per_page=100&page=2" in path for path in client.paths))
 
-def test_malformed_collection_is_unavailable():
-    evidence = _evidence()
-    evidence["ready_events"] = None
+    def test_check_completeness_mismatch_is_unavailable(self):
+        client = FakeGitHub()
+        original = client._request
+        def truncated(method, path, payload=None):
+            result = original(method, path, payload)
+            if "/check-runs?" in path:
+                result["total_count"] += 1
+            return result
+        client._request = truncated
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
-    assert _evaluate(evidence).state == "HELD_CODEX_UNAVAILABLE"
+    def test_ready_event_null_member_is_structured_unavailable(self):
+        live = FakeGitHub().collect(REPO, 370)
+        live.data["ready_events"] = [None]
+        self.assertEqual(evaluate(live).state, "HELD_CODEX_UNAVAILABLE")
 
+    def test_all_collection_null_or_non_object_members_are_unavailable(self):
+        for key in guard.EVIDENCE_COLLECTIONS:
+            for malformed in (None, [None], [{}]):
+                live = FakeGitHub().collect(REPO, 370)
+                live.data[key] = malformed
+                with self.subTest(collection=key, value=malformed):
+                    self.assertEqual(evaluate(live).state, "HELD_CODEX_UNAVAILABLE")
 
-def test_non_inline_review_body_is_a_material_finding():
-    evidence = _evidence()
-    evidence["reviews"][0]["body"] = "### 💡 Codex Review\n\nA material issue requires correction."
-    evidence["findings"] = [{
-        "id": "review-body-5382257522",
-        "review_id": 5382257522,
-        "material": True,
-    }]
+    def test_raw_null_nested_user_or_app_is_structured_unavailable(self):
+        for channel in ("reviews", "comments", "checks"):
+            client = FakeGitHub()
+            getattr(client, channel)[0]["app" if channel == "checks" else "user"] = None
+            self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
-    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
+    def test_body_only_finding_has_stable_id_and_authenticated_channel(self):
+        client = FakeGitHub()
+        client.reviews[0]["body"] = "A material general finding"
+        first = client.collect(REPO, 370)
+        finding_id = first.data["findings"][0]["id"]
+        self.assertTrue(finding_id.startswith("review-body:41:"))
+        self.assertEqual(evaluate(first).state, "HELD_WITH_MATERIAL_FINDINGS")
+        client.comments.append(disposition(finding_id, state="DISMISSED"))
+        self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state,
+                         "READY_FOR_HUMAN_INTEGRATION_DECISION")
 
+    def test_untrusted_or_quoted_body_disposition_is_not_accepted(self):
+        for untrusted in (True, False):
+            client = FakeGitHub()
+            client.predecessor(body=True)
+            finding = client.collect(REPO, 370).data["findings"][0]["id"]
+            comment = disposition(finding, author="random-user" if untrusted else "mglpsw", state="DISMISSED")
+            if not untrusted:
+                comment["body"] = "> " + comment["body"]
+            client.comments.append(comment)
+            self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state,
+                             "HELD_WITH_MATERIAL_FINDINGS")
 
-def test_check_from_wrong_head_or_producer_is_not_success():
-    evidence = _evidence()
-    evidence["checks"][0]["head_sha"] = "d3f5946c4d0513def9f7c2018b63703a53df1cc"
+    def test_predecessor_identical_bytes_remain_blocking(self):
+        client = FakeGitHub()
+        client.predecessor()
+        client.blobs[HEAD] = client.blobs[OLD]
+        result = evaluate(client.collect(REPO, 370))
+        self.assertEqual(result.state, "HELD_WITH_MATERIAL_FINDINGS")
+        self.assertEqual(result.evidence["open_findings"][0]["applicability"], "byte_identical")
 
-    assert _evaluate(evidence).state == "HELD_PENDING_REQUIRED_CI"
+    def test_predecessor_changed_bytes_alone_do_not_prove_repair(self):
+        client = FakeGitHub()
+        client.predecessor()
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_WITH_MATERIAL_FINDINGS")
 
+    def test_causal_repair_with_authorized_evidence_and_new_review_closes_predecessor(self):
+        client = FakeGitHub()
+        client.predecessor()
+        client.comments.append(disposition("61"))
+        result = evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",)))
+        self.assertEqual(result.state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        client.blobs[HEAD] = client.blobs[OLD]  # removing the causal byte change restores the blocker
+        self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state,
+                         "HELD_WITH_MATERIAL_FINDINGS")
 
-def test_connector_bot_summary_and_manual_trigger_are_recognized():
-    assert _is_codex_summary({
-        "author_login": "chatgpt-codex-connector[bot]",
-        "body": "Codex Review Summary\nStatus | ✅ **Completed**\nCommit `6614228`\nReview trigger: Manual request",
-    }, HEAD)
+    def test_repair_without_new_exact_head_review_is_pending(self):
+        client = FakeGitHub()
+        client.predecessor()
+        client.reviews.pop()
+        client.comments.append(disposition("61"))
+        self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state, "HELD_PENDING_CODEX")
 
+    def test_collection_race_is_unavailable(self):
+        client = FakeGitHub()
+        client.drift = True
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
 
-def test_incomplete_summary_is_not_terminal():
-    assert not _is_codex_summary({
-        "author_login": "chatgpt-codex-connector[bot]",
-        "body": "Codex Review Summary\nReview not completed due to an internal error\nCommit `6614228`\nReview trigger: Manual request",
-    }, HEAD)
+    def test_running_summary_is_pending(self):
+        client = FakeGitHub()
+        client.comments[0]["body"] = summary().replace("✅ **Completed**", "🔄 **Running**")
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
+
+    def test_ci_green_without_terminal_review_is_pending(self):
+        client = FakeGitHub()
+        client.reviews = []
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_CODEX")
+
+    def test_merged_or_draft_lifecycle_never_ready(self):
+        for field, value, expected in (("merged", True, "HELD_STALE"), ("draft", True, "HELD_PENDING_CODEX")):
+            client = FakeGitHub()
+            client.pr[field] = value
+            self.assertEqual(evaluate(client.collect(REPO, 370)).state, expected)
+
+    def test_later_ready_cycle_invalidates_previous_review(self):
+        client = FakeGitHub()
+        client.timeline.append({"id": 32, "event": "ready_for_review", "created_at": "2026-10-01T16:25:00Z"})
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_STALE")
+
+    def test_checks_wrong_producer_or_duplicate_are_not_ready(self):
+        client = FakeGitHub()
+        client.checks[0]["app"]["slug"] = "untrusted-app"
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_REQUIRED_CI")
+
+    def test_old_disposition_subject_does_not_close_current_finding(self):
+        client = FakeGitHub()
+        client.predecessor()
+        client.comments.append(disposition("61", subject=OLD))
+        self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state,
+                         "HELD_WITH_MATERIAL_FINDINGS")

@@ -189,6 +189,33 @@ collection-time identity change remain held states. The summary may be from
 the Ready trigger or the documented manual `@codex review` trigger, but its
 terminal result still has to be after the latest Ready cycle.
 
+`--evidence-json` is offline diagnostic input and can never establish live
+readiness, even if it contains clean checks or self-declared live flags.
+Only authenticated collection with final revalidation can yield the positive
+terminal. The connector's abbreviated commit is resolved by GitHub to a full
+SHA (never compared as a prefix), and its completion row is correlated with
+one exact-head review after the latest Ready/manual trigger. Collection
+includes all check-run pages and rejects malformed or incomplete members.
+
+Inline findings retain their comment ID. Body-only findings use
+`review-body:<review-id>:<sha256-of-normalized-residual-body>`. An explicitly
+trusted adjudicator may post the following entire, unquoted issue comment
+or inline reply; thread resolution alone is not a disposition:
+
+```text
+Guard-Disposition: <finding-id> FIXED|DISMISSED|SUPERSEDED
+Subject-Head: <full-current-HEAD>
+Repair-Commit: <full-repair-commit>
+Evidence: <causal repair and regression evidence or justified adjudication>
+```
+
+The repair must be an ancestor of the subject. An inline `FIXED` disposition
+also requires the affected file's blob to differ from its finding-time blob
+at both repair and current HEAD. Changed bytes alone never prove a repair:
+predecessor findings remain blocking without authorized disposition, even
+after a newer clean review. Unknown applicability stays held. This bounded
+byte-identity/adjudication rule is not semantic-equivalence automation.
+
 The offline regression controls live in
 `tests/test_post_ready_codex_guard.py`; they include the #369 incident shape,
 stale and post-merge reviews, incomplete API evidence, unresolved findings,
