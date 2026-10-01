@@ -229,15 +229,18 @@ A5 Required-context loss propagation
 por comparação lowercase (id==token, description==token, token substring id ou
 description), preserva todos os matches, projeta aliases de regra para
 `ContractApplicability`, projeta `contract_bindings.get(pack_id, [])` em `contract_refs`
-e produz `SelectionResolution {requested_token,resolved_pack_ids,status}`. **A3** possui
-somente avaliação normalizada: consome outputs A2, avalia exact paths, operador legado
-de patterns (final `*` prefix; demais substring), global, ApplicablePackSet,
-ApplicableContractSet, must_hold scope/pack e consequências como
-`SELECTED_PACK_MISSING`; A3 nunca reexecuta fuzzy/raw matching. O handoff A2→A3 é a
-fronteira causal de ownership. **A4** usa a autoridade v1 `canonical_json/canonical_len`
+e produz `SelectionResolution`, `PackConstraintResolution`, `SemanticContextScope` e
+candidates com `source_mode`. **A3** possui somente avaliação normalizada: consome
+esses outputs, avalia exact paths, patterns, global, direct legacy refs,
+ApplicablePackSet/ApplicableContractSet, must_hold e semantic-group fallback quando
+`source_mode` é legado. A3 nunca reexecuta **raw selector alias/id/description matching**.
+O handoff A2→A3 é a fronteira causal de ownership; `source_mode` é metadata requerida
+pre-budget para aplicabilidade e não é payload do modelo. **A4** usa a autoridade v1 `canonical_json/canonical_len`
 ou prova substituição equivalente, qualifica optional-minimal context único, recompõe
 applicability/kernel/custo por candidate e preserva/substitui explicitamente FFD/tie-break.
 **A5** prova que perda requerida/source/hunk chega ao gate.
+
+Direct legacy `contract:<id>` é uma **dual-namespace compatibility reference** em A3: resolve independentemente contra `NormalizedContract.contract_id` e `LEGACY_PACK_MODE pack_id`. Contract-only, pack-only ou ambos são válidos; somente zero matches em ambos os namespaces produz `SELECTED_CONTRACT_MISSING`/non-conclusive.
 
 Gate B continua sendo AgentEscala#869 (target projection/config). Gate C é a
 conformance do **par exato** engine SHA + target/config SHA. Depois de A+B+C, o
@@ -311,6 +314,7 @@ Os seguintes itens são **externos à reconstrução de claims C6**, mas bloquei
 freeze final:
 
 - **AgentEscala#869:** target contract/projection/config e conformance do par exato;
+- **AgentEscala#678:** residual externo `SCOPED_TOKEN_PROVISIONING_NOT_INDEPENDENTLY_ATTESTED`; fecha por exatamente um exit: **ATTESTED** (attestation server-side independente da capability inference-scoped do `AGENT_REVIEW_ROUTER_TOKEN`, exact target/workflow SHA e ausência de fallback broad-token) **OU RISK_ACCEPTED** (grant humano explícito dedicado, exact target/workflow SHA, residual nomeado + evidência de segredo scoped/no broad fallback + release/support/rollback docs). Issue aberta ou silêncio não são aceitação; RISK_ACCEPTED não prova escopo server-side.
 - **AgentEscala#871:** exatamente um exit explícito fecha o prerequisite:
   **FIXED** (exact target commit mergeado/qualificado + testes verdes + retry bounded/
   `Retry-After` + falha persistente manual) **OU RISK_ACCEPTED** (grant humano explícito
@@ -336,7 +340,7 @@ RISK_ACCEPTED. Não se cria claim semântica do engine para um bug de transporte
 maintenance release (source v1 JÁ mudou desde v0.22.0: #227, #231) -> STOP_RELEASE_BOUNDARY
 -> repin mínimo do PAR engine+pack/config no AgentEscala (#869-D) -> STOP_TARGET_REPIN_BOUNDARY
 -> canário natural exato + publication fidelity
--> decisão residual AgentEscala#678
+-> disposição terminal AgentEscala#678: ATTESTED ou RISK_ACCEPTED explícito
 -> support matrix + disable/rollback docs
 -> V1_FINAL_FREEZE
 ```
