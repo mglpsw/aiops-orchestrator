@@ -90,7 +90,7 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 16. totalidade de review-packs: `packs` ausente/vazio/lista/mapping, item/campo de paths/domain contract malformado, bindings ausentes/válidos/malformados/órfãos e binding para contrato ausente. RED focal observa seleção/limitação; GREEN observa pack aplicável exato e, separadamente, pack que NÃO é aplicável ao chunk sem injeção de contrato espúrio.
 17. seleção explícita de pack não resolvida: `selected_contract_pack` não vazio sem match exato/legacy-compatible → `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca `not_relevant`; controles positivos cobrem match exato e `calendar -> agentescala-calendar` legado.
 18. compatibilidade completa de selector legado (A2): comparação case-insensitive; match por igualdade de id, igualdade de description, substring em id ou substring em description; todos os matches exatos resolvidos são preservados. Controles incluem `calendar -> agentescala-calendar`, `aiops -> agentescala-aiops`, description alias e múltiplos matches.
-19. legacy rule pattern semantics: A2 normaliza patterns (trim/drop-empty/sanitize/dedupe/sort); A3 recebe somente patterns canônicos e faz final `*` = prefix match removendo só o `*`, demais patterns = substring match. Não usar `fnmatchcase` para esse operador legado.
+19. legacy rule pattern semantics: A2 normaliza patterns (trim/drop-empty/sanitize/dedupe/sort); A3 recebe somente patterns canônicos e faz final `*` = prefix match removendo só o `*`, demais patterns = substring match. A3 nunca repete trim/drop/sanitize. Não usar `fnmatchcase` para esse operador legado.
 20. semantic-context must_hold applicability: A2 normaliza scope/change_type/contract_pack/must_hold e resolve pack token; A3 aplica scope (empty/global/all/document global; otherwise substring/tokens sobre canonical paths) e, quando contract_pack existe, exige interseção com ApplicablePackSet. Unresolved pack -> SELECTED_PACK_MISSING.
 21. fallback legado por semantic-group (A3): preservar `_relevance_keywords` atual e substring sobre id+description somente para itens legacy; mapping/domain mode não usa keyword como autoridade quando relações explícitas existem.
 22. `semantic-context.change_type` é advisory opcional: não filtra must_hold; loss-only -> `OPTIONAL_CONTEXT_REDUCED`, mantendo must_hold aplicável requerido.
@@ -98,6 +98,15 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 24. selector preprocessing legado (A2): first non-empty clean `contract_pack`, depois alias `pack`; trim whitespace, `contract_pack` vence conflito; então aplicar predicate legacy congelado.
 25. pattern normalization (A2) / matching (A3): A2 trim/drop-empty/sanitize/dedupe/sort; A3 só prefix por `*` final ou substring.
 26. `review_packs` requiredness: `selected_contract_pack` OU `semantic-context.contract_pack` não vazio tornam o source required antes da resolução.
+27. reserved review-pack metadata: `version/schema_version/updated` são metadata; `packs` e `contract_bindings` são structural reserved keys.
+28. resolved legacy pack multiplicity: A2 entrega o conjunto completo `resolved_pack_ids`; A3 avalia TODOS os resolved ids, nunca escolhe um arbitrariamente.
+29. provenance payload: `ProvenanceV1 {source_kind,source_path,source_state}` é requerido e budgeted; perda -> `REQUIRED_CONTEXT_OMITTED`; revision exata fica no Gate C.
+30. include-all sentinels: `target_profile:domain_contracts` e `target_profile:review_packs` preservam current legacy include-all behavior com controles focais.
+31. selector source precedence: general selection = `file-diff-context.contract_pack`, fallback alias `file-diff-context.pack`; `semantic-context.contract_pack` é somente constraint de must_hold e não substitui o general selector.
+32. mapping/domain mode nunca recebe keyword fallback, mesmo relationless; semantic-group keywords são compatibility-only de legacy mode.
+33. applicable `NormalizedPack.contract_refs` é required advisory relation context; perda -> `REQUIRED_CONTEXT_OMITTED`.
+34. Control B directional criterion: bad arm deve atingir adverse-signal material pré-declarado e corrected arm não reproduzir o mesmo sinal; seeded pair ou K-of-N repeated pairs com K/N congelados antes do run.
+35. legacy-flat identity: cada `{id,description}` -> um `NormalizedContract(contract_id=id, description preservada, section=rules, RuleItem.rule=description)`; id não é qualifier duplicado; `contract:<id>` preservado.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
@@ -230,7 +239,7 @@ somente o subject pode diferir. Para sampling: se seed determinístico for supor
 rota/modelo real, usa-se o mesmo seed por par; senão o grant congela antes do primeiro
 run `pair_count` + `pass_criterion` de um repeated-pair protocol, sem adaptive stopping,
 descarte ou rerun até favorável. Sampling mode/seed/pair index são registrados. Drift de
-configuração ou protocolo invalida o controle. Somente A+B+C + Control B podem conceder
+configuração ou protocolo invalida o controle. O pass criterion mínimo de Control B é direcional: o bad arm deve produzir o material adverse signal pré-declarado e o corrected arm não deve reproduzi-lo; em repeated-pair, K/N são congelados antes do run. Somente A+B+C + Control B podem conceder
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais `V1_C2_CONTRACT_INTERFACE_DECIDED` e
