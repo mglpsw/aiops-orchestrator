@@ -401,3 +401,38 @@ For every pair:
 
 Seeded mode uses the same directional rule for the shared-seed pair.
 Repeated-pair mode freezes N and K before execution and passes only when at least K of N pairs are discriminating. No adaptive stopping or pair dropping.
+
+
+### CM-GA-A2-LEGACY-DUP-ID
+- **Owner:** Gate A A2.
+- Duplicate legacy rule ids after clean-text normalization are source-invalid.
+- **RED:** two admitted rules clean to the same `contract_id`; selecting `contract:<id>` becomes ambiguous.
+- **Discriminator:** `SOURCE_INVALID_OR_UNSUPPORTED`; no silent dedupe, overwrite or arbitrary winner.
+- **GREEN:** distinct cleaned ids remain distinct normalized contracts.
+
+### CM-PACK-04 — explicit contract relation target missing
+- **Owner:** Gate A A3.
+- Applicable pack carries an explicit `contract_refs` id absent from the normalized contract set.
+- **RED:** relation silently collapses to no_relation / empty contract set / `not_relevant`.
+- **Discriminator:** `SELECTED_CONTRACT_MISSING` and affected review non-conclusive.
+- **GREEN:** same pack/ref with target contract present preserves pack→contract relation and emits no missing-contract class.
+
+### CM-CL2-04 — include-all review-pack source missing
+- **Input:** chunk carries `target_profile:review_packs` sentinel, but review-packs source is absent or invalid.
+- **Requiredness:** sentinel makes review_packs required even with no explicit selected token.
+- **Expected:** typed `SOURCE_ABSENT` or `SOURCE_INVALID_OR_UNSUPPORTED`, degraded/non-conclusive; never optional absence or `not_relevant`.
+
+### SelectionResolution states
+- `not_requested`: no general selector; empty resolved set; non-degrading.
+- `resolved`: requested token + COMPLETE exact `resolved_pack_ids` set.
+- `unresolved`: requested token + empty set -> `SELECTED_PACK_MISSING`.
+- A3 evaluates **every** id in the resolved set; no arbitrary single winner.
+
+### ApplicablePackSet canonical union
+`ApplicablePackSet(chunk)` is the union of:
+1. all resolved selected pack ids;
+2. mapping packs matched by `fnmatchcase` paths;
+3. all admitted legacy packs under `target_profile:review_packs`;
+4. legacy pack exact ids referenced by `contract:<id>`;
+5. legacy semantic-group fallback matches.
+Mapping mode never receives keyword fallback.
