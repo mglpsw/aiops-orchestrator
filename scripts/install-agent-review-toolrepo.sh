@@ -219,7 +219,7 @@ ACTIVE_PGID=""
 
 cleanup_stage() {
     local primary_status="$1"
-    if [ "$COMMITTED" -eq 1 ]; then
+    if [ "$COMMITTED" -eq 1 ] || has_commit_witness; then
         return 0
     fi
     if [ -n "${PRIVATE_STAGE:-}" ] && [ -d "$PRIVATE_STAGE" ]; then
@@ -231,6 +231,25 @@ cleanup_stage() {
         fi
         PRIVATE_STAGE=""
     fi
+}
+
+has_commit_witness() {
+    if [ "$COMMITTED" -eq 1 ]; then
+        return 0
+    fi
+    if read -t 0 -u 3 2>/dev/null; then
+        local token=""
+        read -u 3 token 2>/dev/null || true
+        if [ "$token" = "COMMITTED" ]; then
+            COMMITTED=1
+            return 0
+        fi
+    fi
+    return 1
+}
+
+close_commit_witness() {
+    exec 3>&- 2>/dev/null || true
 }
 
 kill_active_group() {
@@ -250,24 +269,55 @@ handle_exit() {
     local original_status=$?
     trap - EXIT INT TERM
     kill_active_group TERM
+    if has_commit_witness; then
+        COMMITTED=1
+        original_status=0
+    fi
     if [ "$original_status" -eq 0 ] && [ "$COMMITTED" -ne 1 ]; then
         original_status=1
     fi
     cleanup_stage "$original_status"
+    close_commit_witness
     exit "$original_status"
 }
 
 handle_int() {
     trap - EXIT INT TERM
     kill_active_group INT
+    if has_commit_witness; then
+        COMMITTED=1
+        cleanup_stage 0
+        echo "Signal observed after transaction commit; installation already committed." >&2
+        echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
+        echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
+        if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
+            echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
+        fi
+        close_commit_witness
+        exit 0
+    fi
     cleanup_stage 130
+    close_commit_witness
     exit 130
 }
 
 handle_term() {
     trap - EXIT INT TERM
     kill_active_group TERM
+    if has_commit_witness; then
+        COMMITTED=1
+        cleanup_stage 0
+        echo "Signal observed after transaction commit; installation already committed." >&2
+        echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
+        echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
+        if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
+            echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
+        fi
+        close_commit_witness
+        exit 0
+    fi
     cleanup_stage 143
+    close_commit_witness
     exit 143
 }
 
@@ -300,6 +350,21 @@ PRIVATE_STAGE="$(mktemp -d "$VENV_PARENT/.agent_review_stage.XXXXXX")" || {
 }
 chmod 755 "$PRIVATE_STAGE" 2>/dev/null || true
 
+COMMIT_WITNESS_FIFO="$PRIVATE_STAGE/.commit_witness.fifo"
+mkfifo -m 600 "$COMMIT_WITNESS_FIFO" || {
+    echo "Blocked: failed to create commit witness fifo in $PRIVATE_STAGE" >&2
+    exit 2
+}
+exec 3<>"$COMMIT_WITNESS_FIFO" || {
+    echo "Blocked: failed to open commit witness descriptor" >&2
+    exit 2
+}
+if command -v unlink >/dev/null 2>&1; then
+    unlink "$COMMIT_WITNESS_FIFO"
+else
+    /bin/rm -f "$COMMIT_WITNESS_FIFO" 2>/dev/null || rm -f "$COMMIT_WITNESS_FIFO"
+fi
+
 # Step 1: Create venv in private staging directory
 run_tracked_step "$PYTHON_BIN" -I -S -m venv "$PRIVATE_STAGE"
 
@@ -309,7 +374,7 @@ run_tracked_step env PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -
 # Step 3: RelocationClosureV1 and atomic NO_REPLACE publication
 PUBLISH_STATUS=0
 run_tracked_step "$PYTHON_BIN" -I -S -c '
-import os, sys, errno, ctypes, platform, shutil
+import os, sys, errno, ctypes, platform, shutil, signal
 
 stage_dir = sys.argv[1]
 final_dir = sys.argv[2]
@@ -420,15 +485,23 @@ if os.path.isdir(bin_dir):
                 sys.exit(2)
 
 # Atomic publication: point of no return / commit linearization point
+old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT, signal.SIGTERM])
 try:
     rename_noreplace(stage_dir, final_dir)
+    try:
+        os.write(3, b"COMMITTED\n")
+    except OSError:
+        pass
 except OSError as e:
+    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     if e.errno == errno.EEXIST:
         sys.exit(10)
     sys.exit(3)
 except Exception:
+    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     sys.exit(3)
 
+signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 sys.exit(0)
 ' "$PRIVATE_STAGE" "$VENV_TARGET" || PUBLISH_STATUS=$?
 
@@ -443,9 +516,11 @@ elif [ "$PUBLISH_STATUS" -ne 0 ]; then
     exit "$PUBLISH_STATUS"
 fi
 
+has_commit_witness
 COMMITTED=1
 PRIVATE_STAGE=""
 trap - EXIT INT TERM
+close_commit_witness
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 

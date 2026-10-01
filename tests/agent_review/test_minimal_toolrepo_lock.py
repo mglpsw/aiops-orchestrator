@@ -1698,3 +1698,244 @@ def test_relocation_closure_v1_rejects_unnormalizable_binary_reference(tmp_path:
     assert res.returncode == 2
     assert "Blocked: opaque/binary file contains un-normalizable staging path" in res.stderr
     assert not final_venv.exists(), "Final target must NEVER be created on relocation failure"
+
+
+def test_countermodel_k1_signal_after_publish_before_parent_commit_observation(tmp_path: Path) -> None:
+    """K1-B / Causal Countermodel: When renameat2 commits the environment to VENV_TARGET and writes
+    the commit witness, but a signal (SIGTERM) arrives at the parent installer before parent assigns
+    COMMITTED=1, transaction outcome linearization ensures CommitWins: the parent installer observes
+    the commit witness on inherited descriptor 3, adjudicates committed success (exit 0), preserves
+    the committed target, and leaves zero ambiguous or stranded cancellation state.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_k1_post_commit"
+    barrier = tmp_path / "barrier_post_commit.txt"
+
+    fake_py = tmp_path / "fake_py_k1.sh"
+    fake_py.write_text(
+        f"#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [[ "$4" == *"rename_noreplace"* ]]; then\n'
+        f'        exec "{host_py}" -I -S -c \x27\n'
+        "import os, sys, errno, ctypes, platform, shutil, time, signal\n"
+        "stage_dir = sys.argv[1]\n"
+        "final_dir = sys.argv[2]\n"
+        "barrier_file = sys.argv[3]\n"
+        "def rename_noreplace(src, dst):\n"
+        "    libc = ctypes.CDLL(None, use_errno=True)\n"
+        "    AT_FDCWD = -100\n"
+        "    RENAME_NOREPLACE = 1\n"
+        "    src_bytes = os.fsencode(src)\n"
+        "    dst_bytes = os.fsencode(dst)\n"
+        '    if hasattr(libc, "renameat2"):\n'
+        "        rc = libc.renameat2(ctypes.c_int(AT_FDCWD), src_bytes, ctypes.c_int(AT_FDCWD), dst_bytes, ctypes.c_uint(RENAME_NOREPLACE))\n"
+        "    else:\n"
+        "        mach = platform.machine()\n"
+        '        sys_renameat2 = 316 if mach in ("x86_64", "AMD64") else 276\n'
+        "        rc = libc.syscall(ctypes.c_long(sys_renameat2), ctypes.c_int(AT_FDCWD), src_bytes, ctypes.c_int(AT_FDCWD), dst_bytes, ctypes.c_uint(RENAME_NOREPLACE))\n"
+        "    if rc != 0:\n"
+        "        err = ctypes.get_errno()\n"
+        "        raise OSError(err, os.strerror(err))\n"
+        "old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT, signal.SIGTERM])\n"
+        "try:\n"
+        "    rename_noreplace(stage_dir, final_dir)\n"
+        "    try:\n"
+        '        os.write(3, b"COMMITTED\\n")\n'
+        "    except OSError:\n"
+        "        pass\n"
+        "finally:\n"
+        "    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)\n"
+        'with open(barrier_file, "w") as f:\n'
+        '    f.write("RENAME_SUCCESS")\n'
+        "time.sleep(30)\n"
+        "sys.exit(0)\n"
+        '\x27 "$5" "$6" "' + str(barrier) + '"\n'
+        "    fi\n"
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    stage="$5"\n'
+        '    mkdir -p "$stage/bin"\n'
+        '    touch "$stage/pyvenv.cfg"\n'
+        '    cat << "EOF" > "$stage/bin/python3"\n'
+        "#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
+        "    exit 0\n"
+        "fi\n"
+        'exec python3 "$@"\n'
+        "EOF\n"
+        '    chmod 755 "$stage/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        f'exec "{host_py}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    p = subprocess.Popen(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    for _ in range(50):
+        if barrier.exists():
+            break
+        time.sleep(0.05)
+    assert barrier.exists(), "Barrier after rename was not reached"
+
+    # Pre-signal verification: filesystem commit has already occurred
+    assert target_venv.exists(), "Target venv must exist on disk after renameat2"
+    assert (target_venv / "pyvenv.cfg").exists(), "Target venv must contain committed environment artifacts"
+
+    # Send SIGTERM to the parent installer process
+    os.kill(p.pid, signal.SIGTERM)
+    stdout, stderr = p.communicate(timeout=5)
+
+    # Outcome verification: CommitWins
+    assert p.returncode == 0, f"Installer must report committed outcome (exit 0), got {p.returncode}; stderr: {stderr}"
+    assert "Signal observed after transaction commit; installation already committed." in stderr
+    assert target_venv.exists(), "Committed target venv must be preserved"
+
+    # Verify subsequent retry is cleanly refused with code 2, proving no stranded or corrupt state
+    retry_res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert retry_res.returncode == 2
+    assert "refusing to reuse or mutate an existing path" in retry_res.stderr
+
+
+def test_countermodel_k1_cancellation_before_commit_aborts(tmp_path: Path) -> None:
+    """K1-A: When a signal (SIGTERM) arrives before the atomic commit point (during publication step
+    before renameat2), CancellationWins: active worker group is terminated/reaped, commit witness is
+    absent, private staging directory is cleaned up, VENV_TARGET does not exist, and installer exits 143.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_k1_cancellation_before_commit"
+    barrier = tmp_path / "barrier_pre_commit.txt"
+
+    fake_py = tmp_path / "fake_py_k1_pre.sh"
+    fake_py.write_text(
+        f"#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [[ "$4" == *"rename_noreplace"* ]]; then\n'
+        f'        exec "{host_py}" -I -S -c \x27\n'
+        "import os, sys, time\n"
+        "barrier_file = sys.argv[3]\n"
+        'with open(barrier_file, "w") as f:\n'
+        '    f.write("BEFORE_RENAME")\n'
+        "time.sleep(30)\n"
+        "sys.exit(0)\n"
+        '\x27 "$5" "$6" "' + str(barrier) + '"\n'
+        "    fi\n"
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    stage="$5"\n'
+        '    mkdir -p "$stage/bin"\n'
+        '    cat << "EOF" > "$stage/bin/python3"\n'
+        "#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
+        "    exit 0\n"
+        "fi\n"
+        'exec python3 "$@"\n'
+        "EOF\n"
+        '    chmod 755 "$stage/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        f'exec "{host_py}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    p = subprocess.Popen(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    for _ in range(50):
+        if barrier.exists():
+            break
+        time.sleep(0.05)
+    assert barrier.exists(), "Barrier before rename was not reached"
+
+    # Send SIGTERM before commit occurs
+    os.kill(p.pid, signal.SIGTERM)
+    stdout, stderr = p.communicate(timeout=5)
+
+    # CancellationWins: exit 143, target absent, staging cleaned
+    assert p.returncode == 143, f"Installer must exit 143 on cancellation before commit, got {p.returncode}; stderr: {stderr}"
+    assert not target_venv.exists(), "Target venv must not exist"
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0, "Private staging directory must be cleaned"
+
+
+def test_countermodel_k1_competition_eexist_remains_abort(tmp_path: Path) -> None:
+    """K1-C: When a competitor creates VENV_TARGET concurrently before renameat2, rename_noreplace
+    fails with EEXIST, no commit witness is written, private staging is cleaned up, competitor's
+    target and files remain byte-identical, and installer exits with canonical refusal code 2.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_k1_competition"
+
+    fake_py = tmp_path / "fake_py_k1_comp.sh"
+    fake_py.write_text(
+        f"#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    stage="$5"\n'
+        '    mkdir -p "$stage/bin"\n'
+        '    cat << "EOF" > "$stage/bin/python3"\n'
+        "#!/bin/bash\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
+        '    mkdir -p "' + str(target_venv) + '"\n'
+        '    echo "COMPETITOR_DATA_BYTE_IDENTICAL" > "' + str(target_venv) + '/competitor.txt"\n'
+        "    exit 0\n"
+        "fi\n"
+        'exec python3 "$@"\n'
+        "EOF\n"
+        '    chmod 755 "$stage/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        f'exec "{host_py}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 2
+    assert "refusing to reuse or mutate an existing path" in res.stderr
+    assert target_venv.exists()
+    comp_file = target_venv / "competitor.txt"
+    assert comp_file.exists()
+    assert comp_file.read_text(encoding="utf-8") == "COMPETITOR_DATA_BYTE_IDENTICAL\n"
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
