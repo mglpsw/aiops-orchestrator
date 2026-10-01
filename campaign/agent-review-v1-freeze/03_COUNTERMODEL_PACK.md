@@ -16,6 +16,16 @@ Classes de evidência usadas:
 
 Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer patch.
 
+## Rescope AOCM (PR #367, 2026-10-01)
+
+`RawSerializationGrammarTotality != NormalizedSemanticInterfaceTotality`. A tabela
+de formas YAML abaixo é preservada como observação e insumo para o parser sucessor,
+mas está `SUPERSEDED_AS_TOTAL_RAW_GRAMMAR`: não é mais prova normativa de que toda
+serialização foi decidida nesta PR. O que fecha aqui é a semântica após admissão:
+ambiguidade ou forma não suportada falha fechada antes da normalização; uma fonte
+admitida tem exatamente uma projeção normalizada; e duas implementações conformes não
+podem divergir em identidade, seção, relação, aplicabilidade, kernel ou gate.
+
 ---
 
 ## CL-1 — Coverage truth (#232)
@@ -71,11 +81,29 @@ Todo countermodel sem `REPRODUCED` precisa de RED na sua slice antes de qualquer
 - **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`. Par focal A/B: ausência + `RequiredForChunk=true` é degradante e não conclusiva; o mesmo slot ausente + `RequiredForChunk=false` permanece tipado, mas o controle positivo pode ser conclusivo. Não se cria `TargetProfile` field (OBL-CL2-03, família 14).
 - **Origem:** achado pós-Ready do Codex 4150077445 na PR #367, adjudicado válido pelo owner.
 
-### Família 16 — totalidade de `review-packs` (sucessora RED/GREEN)
-- **RED estrutural:** `packs: {foo: "bar"}`, `paths` não-lista/não-string, `domain_contract` vazio/não-string, entrada legacy sem `id`, `contract_bindings` malformado ou chave órfã. Cada um deve emitir `contracts_context_unsupported_shape:review_packs:<pack-or-index>` e jamais pode ser descartado como `not_relevant`.
-- **GREEN de modo:** `packs` lista legacy válida e `packs` mapping válido preservam seus itens admitidos; `packs` ausente só é conjunto vazio quando `contract_bindings` também é ausente/vazio.
-- **RED de relação:** binding estruturalmente válido para identidade de contrato ausente produz `selected_contract_domain_missing:<pack>:<contract>`, não erro estrutural.
-- **Controle positivo:** pack mapping aplicável seleciona exatamente sua relação de contrato; pack irrelevante não injeta contrato espúrio. O discriminador é a seleção/limitação de pack, não um fracasso incidental do gate.
+### Gate A sucessor — RawSourceAdmissionContract
+
+Antes de qualquer patch runtime, o sucessor congela e testa o contrato de admissão
+bruta para: os blobs atuais AgentEscala de domain-contracts e review-packs; ambos os
+fixtures legados commitados; controle negativo de chave duplicada; raiz malformada;
+e packs/bindings malformados. O contrato exige:
+
+```text
+fixture admitido -> exatamente uma NormalizedProjection
+fixture rejeitado -> um resultado tipado invalid/unsupported
+                  -> nunca empty/not_relevant silencioso
+```
+
+Chaves duplicadas são o controle obrigatório da classe `ambiguous raw serialization`:
+ela é inválida antes da normalização, não um novo campo semântico. A tarefa sucessora
+escolhe uma única forma serializada determinística para cada classe de reason code;
+esta campanha só congela as classes `SOURCE_ABSENT`,
+`SOURCE_INVALID_OR_UNSUPPORTED`, `SELECTED_CONTRACT_MISSING`,
+`OPTIONAL_CONTEXT_REDUCED`, `REQUIRED_CONTEXT_OMITTED` e `MUST_HOLD_OMITTED`.
+
+O controle positivo normalizado é: um pack aplicável seleciona exatamente sua relação
+de contrato; um pack sem relação não injeta contrato espúrio. A ausência de relação,
+referência explícita ausente e fonte inválida permanecem semanticamente distintos.
 
 ---
 

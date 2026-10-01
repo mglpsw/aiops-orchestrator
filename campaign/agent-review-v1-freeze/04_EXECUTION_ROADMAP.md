@@ -14,7 +14,7 @@ modificar; `git diff --name-only` fora dela é parada (`02` → `slice_gates.v1_
 |---|---|---|---|---|---|
 | 0 | V1-C0 contract freeze | #221 | docs/contrato; sem comportamento | `V1_C0_CONTRACT_READY` | baixo |
 | 1 | V1-C1 coverage truth | #232 | comportamento v1 (planner + propagação) | `V1_C1_COVERAGE_TRUTH_READY` | médio: decisão de semântica "complete" (tier solicitado vs revisão textual) deve sair do texto de #232, não ser inventada |
-| 2 | V1-C2 contexto de contratos/packs + honestidade de limitação | #221 + AgentEscala#869 | slice de contrato (esta sincronização) + slice de implementação sucessora (engine genérico) | contrato: `V1_C2_CONTRACT_INTERFACE_DECIDED`; implementação: `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY` | médio: stop conditions explícitas (ver seção V1-C2); per-claim #805 adiada pelo owner |
+| 2 | V1-C2 contexto de contratos/packs + honestidade de limitação | #221 + AgentEscala#869 | slice de contrato (esta sincronização) + slice de implementação sucessora (engine genérico) | contrato: `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`; implementação: `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY` | médio: Gate A congela admissão bruta; per-claim #805 adiada pelo owner |
 | 3 | V1-C3 materiality | #343 | comportamento v1 (normalizer) | `V1_C3_MATERIALITY_READY` | médio: aboutness exige material revisado como nova entrada do parser; mudança de response contract toca golden fixtures congeladas |
 | 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-CL5-01/02 já reproduzidos |
 | 5 | V1-C5 egress disposition | #315 | decision contract primeiro | `V1_C5_EGRESS_DISPOSITION_READY` ou `BLOCKED_BY_EXPLICIT_HUMAN_DECISION` | **alto: `STOP_UNRESOLVED_POLICY` provável** |
@@ -31,7 +31,12 @@ que hoje afirma `passed` com arquivos sem hunk (CM-CL1-01) precisa ser reconcili
 explicitamente no PR. Espelhar qualquer mudança de `chunk.limitations` na projeção do
 planner (`payload_cost_model.py:1488,1492`).
 
-### V1-C2 (#221 + AgentEscala#869) — sincronizado com #221 (body editado 2026-09-30T20:46Z)
+### V1-C2 — registro histórico supersedido (#221 + AgentEscala#869)
+
+O registro abaixo preserva a decisão anterior e os contraexemplos que levaram à
+correção. Ele está `SUPERSEDED_AS_TOTAL_RAW_GRAMMAR`: não é autoridade normativa
+para enumerar YAML, metadados ou cantos de parser. A autoridade atual é a seção
+**V1-C2 — interface semântica normalizada (AOCM rescope)** abaixo.
 **Contrato de registro:** seção "Contrato funcional de V1-C2" do body de #221 (itens 1–6), em resumo:
 
 1. reconciliar o formato realmente fornecido e os consumidores reais com AgentEscala#869 (`rules` aninhadas vs lista na raiz; `packs` mapa vs lista; campos extras perdidos na projeção). YAML válido não prova compatibilidade;
@@ -88,6 +93,58 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 Para cada novo predicado/reason: mecanismo ausente → RED focal; presente → GREEN focal; controle positivo GREEN. Usar o estado intermediário mais focal disponível, não só o veredito final.
 
 **Stop conditions:** `STOP_OWNER_BOUNDARY` (exige ClaimV1/máquina per-claim), `STOP_TARGET_COMPATIBILITY` (única saída é reescrever packs/contratos do AgentEscala), `STOP_CONTRACT_CONFLICT` (autoridade de regra ambígua ou adotado vs proposto sem resolução), `STOP_SCHEMA_EXPANSION` (novo schema/versão pública quando a propagação plan-level resolveria), `STOP_V2_COUPLING` (copiar/modificar Assured/OGR por conveniência), `STOP_POSITIVE_CONTROL` (honestidade só tornando toda revisão afetada manual), `STOP_SUBJECT_DRIFT`. Não contornar STOP enfraquecendo a claim.
+
+### V1-C2 — interface semântica normalizada (AOCM rescope, normativa para PR #367)
+
+O terminal anterior `V1_C2_CONTRACT_INTERFACE_DECIDED` permanece histórico e é
+substituído por `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`.
+
+```text
+Raw Target Source
+-> Source Admission/Parsing
+-> Normalized V1 Contract Context
+-> Applicability + Explicit Relations
+-> RequiredSemanticKernel + Budget
+-> Payload -> Deterministic Loss Propagation -> Parse -> Synth -> Quality Gate
+```
+
+Esta PR decide a partir de `NormalizedContract { contract_id, sections,
+semantic_metadata }` e `NormalizedPack { pack_id, paths, domain_contract,
+additional_contract_refs, review_metadata }`. Identidade admitida vira
+`contract_id`; seção é preservada; texto de rule/list[str] é advisory; primitivos
+operativos limitados e valores semânticos não explicativos são preservados. Não há
+ClaimV1, estado per-claim, recursão semântica arbitrária ou autoridade independente
+para metadados crus como `schema_version`.
+
+Aplicabilidade é `selected pack id` exato união
+`fnmatchcase(canonical target-relative path, pattern)`. Referências efetivas são
+`domain_contract` união `additional_contract_refs`, deduplicadas. Relação ausente não
+introduz contrato; referência explícita que não resolve é não conclusiva.
+
+O núcleo requerido é identidade de contrato/seção, rule, cada `list[str]`,
+qualificador primitivo operativo e valor primitivo semântico não explicativo, e
+`must_hold`. `description`, `rationale` e `notes` são opcionais. Perda opcional pode
+ser conclusiva; perda requerida ou de `must_hold` é degradada/não conclusiva no gate.
+
+Proveniência V1 mínima: `source_kind` (`domain_contracts|review_packs`),
+`source_path` canônico relativo ao target, `source_state`
+(`present_valid|absent|invalid`) e identidade normalizada de contrato/seção quando
+aplicável. SHA/revisão exata fica na qualificação Gate C, não no payload V1.
+
+#### Gate A — RawSourceAdmissionContract (sucessor, não autorizado nesta PR)
+
+Antes de patch runtime, congelar a gramática delimitada contra blobs atuais
+AgentEscala, ambos os fixtures legados commitados, chaves duplicadas, raiz malformada
+e packs/bindings malformados. Cada fixture admitido deve ter uma e só uma projeção
+normalizada; cada rejeitado deve produzir resultado tipado invalid/unsupported, nunca
+vazio/não relevante silencioso. Serialização ambígua (inclusive chave duplicada) é
+inválida antes da normalização. A tarefa sucessora escolhe e testa uma única forma
+serializada para as classes: `SOURCE_ABSENT`, `SOURCE_INVALID_OR_UNSUPPORTED`,
+`SELECTED_CONTRACT_MISSING`, `OPTIONAL_CONTEXT_REDUCED`,
+`REQUIRED_CONTEXT_OMITTED`, `MUST_HOLD_OMITTED`.
+
+Gate A qualifica parser/admissão; AgentEscala#869 é Gate B; o par exato é Gate C.
+Nenhum deles é concedido por esta PR.
 
 ### V1-C3 (#343)
 Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O

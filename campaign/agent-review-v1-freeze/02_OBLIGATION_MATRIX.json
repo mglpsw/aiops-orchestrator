@@ -81,7 +81,7 @@
       "obligation_id": "OBL-CL2-02",
       "claim": "CL-2",
       "domain": "context.consumption",
-      "proposition": "Pertinent target contract/AOCM content in the supported interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target); the supported interface was decided by the owner on 2026-09-30 (owner_decision_interface); the AgentEscala#869-A census confirms target-side consumers.",
+      "proposition": "Pertinent target contract/AOCM content in a successfully normalized interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target). This PR freezes normalized semantics, not exhaustive raw serialization grammar; AgentEscala#869-A census confirms target-side consumers.",
       "countermodels": [
         "CM-CL2-02 (target shapes flatten to [] at AgentEscala@e9cc03ff)",
         "pertinent change whose contract content never reaches the payload"
@@ -90,10 +90,12 @@
         "pertinent change with the correct contract content in the payload",
         "non-pertinent change with no spurious obligation"
       ],
-      "closure_predicate": "deterministic tests observe the payload CONTENT (not file presence, YAML validity or contract_id) for the frozen interface; the pair toolrepo SHA + target config/pack revision is qualified by #869-C",
+      "closure_predicate": "deterministic tests observe normalized payload CONTENT, applicability and explicit relations (not file presence, YAML spelling or parser-library behavior); the pair toolrepo SHA + target config/pack revision is qualified by #869-C",
       "owner": "#221 V1-C2 + AgentEscala#869",
       "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858 (contracts_context and flatteners); app/agent_review/repo_profile.py:72-77",
-      "owner_decision_interface": {
+      "superseded_raw_serialization_grammar": {
+        "status": "SUPERSEDED_AS_TOTAL_RAW_GRAMMAR",
+        "reason": "Repeated independent counterexamples demonstrated that serialization-level enumeration was not a closed subject. This retained record is historical parser-task input, not normative proof for PR #367.",
         "source": "owner adjudication 2026-09-30 (recorded on PR #367)",
         "contracts": {
           "admitted_shapes": [
@@ -187,6 +189,27 @@
           },
           "path_semantics_history": "earlier wording 'fnmatch.fnmatchcase ... -- same as the target' superseded by #221 comment 5920913247: the target uses fnmatch.fnmatch; identity holds only on POSIX"
         }
+      },
+      "normalized_semantic_interface": {
+        "status": "NORMATIVE_FOR_PR_367",
+        "normalized_contract": {
+          "shape": "NormalizedContract { contract_id: string, sections: { section_id: { items: [...] } }, semantic_metadata: {...} }",
+          "invariants": [
+            "admitted named identity maps to contract_id",
+            "section identity is preserved",
+            "rule text and list[str] are advisory content",
+            "bounded operative primitive fields and non-explanatory primitive semantic values are preserved",
+            "no ClaimV1, per-claim state, arbitrary recursive semantic interpretation, or independent authority for raw version/schema_version/updated/system/domain metadata"
+          ]
+        },
+        "normalized_pack": {
+          "shape": "NormalizedPack { pack_id: string, paths: [string], domain_contract: optional string, additional_contract_refs: [string], review_metadata: bounded optional metadata }",
+          "applicability": "selected pack id EXACT UNION fnmatchcase(canonical target-relative path, pattern)",
+          "effective_refs": "domain_contract UNION additional_contract_refs, exact identities deduplicated",
+          "no_relation": "a pack without an explicit relation contributes no contract through that relation"
+        },
+        "raw_admission_boundary": "Raw source is admitted by the successor RawSourceAdmissionContract into a NormalizedContractSet/NormalizedPackSet, or rejected as one typed invalid/unsupported source outcome. No malformed or ambiguous raw source normalizes to empty/not_relevant.",
+        "determinism": "RawAdmitted(X) implies exactly one NormalizedProjection(X); the same admitted source cannot produce different normalized ids, sections, relations or required semantic kernel."
       }
     },
     {
@@ -223,15 +246,14 @@
           "a chunk that lost required semantic context contributing to a clean conclusive approval",
           "preserving a contract while removing all reviewable source material"
         ],
-        "reason_code_distinctions_mandatory": {
-          "contracts_context_reduced": "only optional/non-obligation-bearing detail removed",
-          "required_contract_context_omitted_due_to_budget": "information required to evaluate the affected chunk removed",
-          "must_hold_omitted_due_to_budget": "an applicable must-hold removed",
-          "contracts_context_unsupported_shape": "a non-empty contract artifact was not interpretable",
-          "selected_contract_domain_missing:<pack>:<domain>": "an applicable pack refers to a missing/unavailable domain contract",
-          "contracts_context_absent:domain_contracts": "the known `.aiops/domain-contracts.yaml` source slot is absent",
-          "contracts_context_absent:review_packs": "the known `.aiops/review-packs.yaml` source slot is absent",
-          "note": "names may be reconciled with existing reason-code conventions; the distinctions are mandatory; the absent-context codes are exact (both may be present when both sources are absent)"
+        "reason_code_classes_frozen": {
+          "SOURCE_ABSENT": "known source slot absent",
+          "SOURCE_INVALID_OR_UNSUPPORTED": "raw source rejected before normalization",
+          "SELECTED_CONTRACT_MISSING": "an explicit normalized relation cannot resolve",
+          "OPTIONAL_CONTEXT_REDUCED": "only optional detail was removed",
+          "REQUIRED_CONTEXT_OMITTED": "required semantic context was removed",
+          "MUST_HOLD_OMITTED": "an applicable must_hold was removed",
+          "serialized_form_owner": "successor implementation task contract chooses one deterministic serialized form per class and tests it as sole authority; examples here are history only"
         },
         "propagation": "smallest existing path: payload-cost projection -> SemanticChunkPlan limitation/status -> parse -> synthesize -> quality gate; no new manifest consumer unless the plan path is demonstrably inadequate",
         "positive_control": "sufficient hunk material + sufficient applicable context -> useful review remains possible; contract-aware reviews are not all turned into manual_review_required"
@@ -240,7 +262,7 @@
         "domain_contracts": ".aiops/domain-contracts.yaml",
         "review_packs": ".aiops/review-packs.yaml",
         "source_state": ["present_valid", "absent", "invalid"],
-        "rule": "Every known slot is independently classified. `absent` emits its exact typed code; source state does not assert source requiredness and no TargetProfile field is added."
+        "rule": "Every known slot is independently classified. `absent` produces the SOURCE_ABSENT class; source state does not assert source requiredness and no TargetProfile field is added."
       },
       "absent_context": {
         "source": "owner adjudication 2026-09-30 of the post-Ready Codex review 5372851950 on PR #367",
@@ -259,10 +281,12 @@
         "applies_to": "each APPLICABLE contract",
         "required": ["contract identity", "section identity", "every admitted list[str] item", "every rule string", "every applicable must_hold", "each present rule-object invariant", "each present rule-object field", "each present rule-object expected_value", "domain-level admitted non-explanatory primitive scalar such as canonical_authority or display_authority"],
         "optional_explanatory": ["description", "rationale", "notes"],
-        "budget_outcomes": "only optional loss -> contracts_context_reduced and review may remain conclusive; required item loss -> required_contract_context_omitted_due_to_budget and affected chunk non-conclusive; must_hold loss -> must_hold_omitted_due_to_budget and affected chunk non-conclusive"
+        "budget_outcomes": "only optional loss -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive; required item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive"
       },
-      "not_relevant_rule": "contracts_context_not_relevant:<chunk> only when BOTH known source slots are present_valid and sufficient to evaluate applicability, admitted parsing succeeds, applicability is evaluated, and zero admitted contracts apply. A typed absent or invalid state never coexists with not_relevant, including when RequiredForChunk is false.",
-      "interface_totality_matrix": {
+      "not_relevant_rule": "not_relevant is possible only after sufficient successfully normalized sources permit applicability evaluation and zero normalized contracts apply. A typed absent, invalid or unsupported state never coexists with not_relevant, including when RequiredForChunk is false.",
+      "superseded_raw_interface_totality_matrix": {
+        "status": "SUPERSEDED_AS_TOTAL_RAW_GRAMMAR",
+        "reason": "This raw YAML enumeration is retained as successor parser qualification history, not as a closed semantic proof.",
         "domain_source": {
           "absent": "not admitted content; typed absent; applicability undecidable until RequiredForChunk; degrading iff required; clean approval iff not required",
           "invalid_yaml": "not admitted; unsupported shape; applicability undecidable; degrading iff required; no clean approval iff required",
@@ -295,24 +319,52 @@
           "must_hold_loss": "must_hold_omitted_due_to_budget; decidable; degrading; clean approval impossible for affected chunk",
           "indivisible_semantic_floor_overflow": "typed required-context limitation; decidable; degrading; clean approval impossible for affected chunk"
         }
+      },
+      "normalized_aocm_closure_matrix": {
+        "status": "CLOSED_ZERO_TBD",
+        "normalized_source_state": {
+          "valid_normalized_contract_source": "applicability may be evaluated",
+          "absent_source": "typed SOURCE_ABSENT; applicability undecidable where that source is required",
+          "invalid_or_unsupported_raw_source": "typed SOURCE_INVALID_OR_UNSUPPORTED before normalization; never empty/not_relevant"
+        },
+        "normalized_applicability": {
+          "applicable": "selected explicit id or fnmatchcase path relation yields a normalized pack/contract",
+          "non_applicable": "successful normalization and evaluation yields zero applicable contracts",
+          "undecidable": "required source absent, invalid or unsupported"
+        },
+        "relation": {
+          "explicit_ref_resolves": "effective normalized reference is available",
+          "explicit_ref_missing": "SELECTED_CONTRACT_MISSING and non-conclusive affected review",
+          "no_relation": "no contract is introduced by that pack relation"
+        },
+        "budget": {
+          "full_kernel": "conclusive allowed",
+          "optional_only_reduction": "OPTIONAL_CONTEXT_REDUCED; conclusive allowed",
+          "required_semantic_loss": "REQUIRED_CONTEXT_OMITTED; degraded/non-conclusive",
+          "must_hold_loss": "MUST_HOLD_OMITTED; degraded/non-conclusive"
+        },
+        "consequence": {
+          "conclusive_allowed": "only valid normalized, decidable context with no required loss",
+          "degraded_non_conclusive": "required source, explicit relation or required kernel cannot support the conclusion"
+        }
       }
     },
     {
       "obligation_id": "OBL-CL2-04",
       "claim": "CL-2",
       "domain": "context.source_layering",
-      "proposition": "The engine keeps AOCM method, product contract and slice intent/claims as distinct layers in what it transports; it carries source identity (path/revision/section/state) where the target provides it; PR text never substitutes, overrides or waives policy.",
+      "proposition": "The engine keeps AOCM method, product contract and slice intent/claims as distinct layers. Its minimum normalized provenance is source_kind (domain_contracts|review_packs), canonical target-relative source_path, source_state (present_valid|absent|invalid), and normalized contract/section identity where applicable; PR text never substitutes, overrides or waives policy.",
       "countermodels": [
         "stale or mixed source presented as current contract",
         "PR text attempting to replace or waive a policy"
       ],
       "positive_controls": [
-        "current adopted contract transported with its source identity"
+        "current normalized contract transported with bounded provenance"
       ],
-      "closure_predicate": "deterministic tests on payload content for each countermodel and control",
+      "closure_predicate": "deterministic tests on normalized payload content and bounded provenance for each countermodel and control; exact repository SHA/revision remains Gate C qualification evidence, not V1 payload",
       "target_side": "recording rule sources and state (adopted/proposed/observed/historical) belongs to AgentEscala#869-A",
       "owner": "#221 V1-C2 (engine) + AgentEscala#869-A (source state)",
-      "interface_note": "source identity is carried only where a named consumer reads it (OBL-CL2-06); the V1-C2 interface freeze decides which source fields are transported",
+      "interface_note": "V1 carries no arbitrary revision field. Exact repository SHA/target revision are Gate C conformance evidence unless a future runtime consumer is named; source identity is carried only where a named consumer reads it (OBL-CL2-06)",
       "aocm_boundary": {
         "source": "owner adjudication 2026-09-30 (recorded on PR #367)",
         "rule": "AOCM remains target-owned method guidance; no AgentEscala/AOCM semantics hardcoded in the engine; AgentEscala#869 owns bounded projection/source selection; V1-C2 owns the generic ability to admit, select, transport, budget honestly and surface material loss",

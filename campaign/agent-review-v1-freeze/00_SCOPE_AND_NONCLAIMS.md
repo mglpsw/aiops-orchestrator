@@ -11,7 +11,7 @@
 
 **Namespaces:** claims do ledger são `CL-0…CL-7`; obrigações `OBL-CLn-xx`;
 countermodels `CM-CLn-xx`; positive controls `PC-CLn`. Os nomes `V1-C0…V1-C6`
-designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_CONTRACT_INTERFACE_DECIDED`). Claim
+designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`). Claim
 `CL-n` e slice `V1-Cn` não são a mesma coisa.
 
 Este artefato **não altera comportamento** e **não concede autoridade**. Ele fixa o
@@ -66,7 +66,7 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 |---|---|---|---|
 | CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | por design + observado em 2026-09-30: `develop` do consumer sem branch protection e único ruleset `disabled` (nenhum required check); observação datada |
 | CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | `supported_on_master_unreleased`: integrado e qualificado em `master` a partir de `d3f5946c` (V1-C1, PR #366; CM-CL1-01/02/03 mortos); **não liberado** — o consumer publicado usa `v0.22.0`, então isto não é evidência do comportamento atual do consumer |
-| CL-2 | O v1 pode ser **contract-aware** e orientado por obrigações no contexto advisory: contratos de domínio e packs do target, nas formas admitidas, são consumidos com aplicabilidade determinística, e a perda de contexto **requerido** chega ao gate. Per-claim coverage estruturada é **non-claim explícita** do v1 final. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado** (CM-CL2-02 reproduzido); interface decidida pelo owner em 2026-09-30 (`V1_C2_CONTRACT_INTERFACE_DECIDED`); per-claim: `NOT_SUPPORTED_BY_FINAL_V1` / `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357) |
+| CL-2 | O v1 pode ser **contract-aware** e orientado por obrigações no contexto advisory: um contexto semântico normalizado de contratos e packs tem aplicabilidade determinística, e perda de contexto **requerido** chega ao gate. A admissão de serialização bruta é Gate A sucessor; per-claim coverage estruturada é **non-claim explícita** do v1 final. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado no runtime** (CM-CL2-02 reproduzido); interface semântica normalizada decidida nesta PR (`V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`); per-claim: `NOT_SUPPORTED_BY_FINAL_V1` / `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357) |
 | CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-CL3-*) |
 | CL-4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só limitações de nível plan (via `plan.status`/`files_not_covered`) e de resultado alcançam o gate; limitações de payload/brief são descartadas antes dele |
 | CL-5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-CL5-01, CM-CL5-02) |
@@ -160,15 +160,21 @@ do claim budget pelo owner**, não entrega da capacidade. Claim final:
 O requisito #805 **não** é apagado: permanece como dois controles (determinístico de
 transporte/gate e avaliação semântica limitada), ver `02` OBL-CL2-07.
 
-**Fechamento de interface da PR #367:** o domínio C2 é uma interface de contexto
-advisory limitada, não uma implementação nem um schema novo. Os dois slots conhecidos
-são `.aiops/domain-contracts.yaml` e `.aiops/review-packs.yaml`; cada um tem estado
-`present_valid | absent | invalid`, independente de `RequiredForChunk`. Ausência é
-sempre tipada e só degrada quando o predicado explícito a requer. A gramática completa,
-o núcleo semântico requerido, as consequências de orçamento e a matriz de totalidade
-estão em `02` OBL-CL2-02/03; nenhum estado admitido fica para implementação decidir.
-Em particular, `absent` ou `invalid` nunca é simultaneamente `not_relevant`, mesmo
-quando o chunk não requer aquela fonte.
+**Rescope AOCM da PR #367 (2026-10-01):** `RawSerializationGrammarTotality !=
+NormalizedSemanticInterfaceTotality`. O domínio C2 fecha a interface de contexto
+advisory **normalizada**, não uma implementação, parser ou schema novo. A tabela de
+totalidade YAML anterior está preservada em `02` como
+`SUPERSEDED_AS_TOTAL_RAW_GRAMMAR`: contraexemplos independentes demonstraram que a
+enumeração de serialização não era um sujeito fechado.
+
+O que esta PR decide é: `NormalizedContract`, `NormalizedPack`, aplicabilidade por
+id explícito ou `fnmatchcase`, relações explícitas, núcleo semântico requerido,
+perda por orçamento e sua consequência no gate. Os slots conhecidos continuam com
+estado `present_valid | absent | invalid`, independente de `RequiredForChunk`.
+`absent` ou `invalid` nunca é `not_relevant`; serialização ambígua ou não suportada
+falha fechada **antes** da normalização. A gramática concreta, compatibilidade de
+fixtures e controles de chaves duplicadas pertencem ao `RawSourceAdmissionContract`
+do Gate A sucessor.
 
 ## 7. Fato de release já estabelecido
 
