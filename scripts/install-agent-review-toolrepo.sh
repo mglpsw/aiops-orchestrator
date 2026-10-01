@@ -192,7 +192,39 @@ if [ -z "$VENV_TARGET" ]; then
     exit 2
 fi
 
-if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
+CLEANUP_TARGET=""
+ARM_CLEANUP=0
+
+cleanup_partial_venv() {
+    local original_status=$?
+    trap - EXIT INT TERM
+    if [ "$original_status" -eq 0 ]; then
+        original_status=1
+    fi
+    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
+        if [ -e "$CLEANUP_TARGET" ] || [ -L "$CLEANUP_TARGET" ]; then
+            if rm -rf "$CLEANUP_TARGET"; then
+                :
+            else
+                local cleanup_status=$?
+                echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$CLEANUP_TARGET'; preserving original install failure $original_status." >&2
+            fi
+        fi
+    fi
+    exit "$original_status"
+}
+
+trap cleanup_partial_venv EXIT INT TERM
+
+VENV_PARENT="$(dirname "$VENV_TARGET")"
+if [ ! -d "$VENV_PARENT" ]; then
+    mkdir -p "$VENV_PARENT" || {
+        echo "Blocked: failed to create parent directory for target: $VENV_PARENT" >&2
+        exit 2
+    }
+fi
+
+if ! mkdir "$VENV_TARGET" 2>/dev/null; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
     else
@@ -203,22 +235,6 @@ fi
 
 CLEANUP_TARGET="$VENV_TARGET"
 ARM_CLEANUP=1
-
-cleanup_partial_venv() {
-    local status=$?
-    trap - EXIT INT TERM
-    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
-        if [ -e "$CLEANUP_TARGET" ] || [ -L "$CLEANUP_TARGET" ]; then
-            rm -rf "$CLEANUP_TARGET"
-        fi
-    fi
-    if [ "$status" -eq 0 ]; then
-        status=1
-    fi
-    exit "$status"
-}
-
-trap cleanup_partial_venv EXIT INT TERM
 
 "$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step

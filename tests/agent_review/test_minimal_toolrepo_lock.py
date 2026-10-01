@@ -1005,3 +1005,144 @@ def test_countermodel_p2_b_failed_fresh_install_cleans_partial_venv_on_venv_fail
 
     # 2. Incomplete target created during this invocation is removed
     assert not target_venv.exists(), f"Target {target_venv} must be removed after venv failure"
+
+
+def test_countermodel_f1_atomic_ownership_race_refuses_without_deleting_concurrent_target(tmp_path: Path) -> None:
+    """F1: When another concurrent actor creates VENV_TARGET and writes a sentinel exactly at
+    the atomic creation boundary, the current installer must detect the claim collision, refuse
+    fail-closed without arming cleanup, and preserve the concurrent target and its sentinel byte-identical.
+    """
+    system_mkdir = shutil.which("mkdir")
+    assert system_mkdir is not None
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    target_venv = tmp_path / "concurrent_target_venv"
+    assert not target_venv.exists(), "Target must be absent before invocation"
+
+    sentinel_text = "OTHER_INSTALLER_OWNS_THIS\n"
+
+    # Wrapper for mkdir:
+    # 1. Delegates normally with -p for parent creation.
+    # 2. When called for target_venv, simulates concurrent actor winning the race:
+    #    creates real target dir + writes sentinel, then exits non-zero.
+    fake_mkdir = fake_bin / "mkdir"
+    fake_mkdir.write_text(
+        f"#!/bin/sh\n"
+        f'if [ "$1" = "-p" ]; then\n'
+        f'    exec "{system_mkdir}" "$@"\n'
+        f"fi\n"
+        f'target="$1"\n'
+        f'"{system_mkdir}" "$target"\n'
+        f'printf "%s" "{sentinel_text}" > "$target/sentinel.txt"\n'
+        f"exit 1\n",
+        encoding="utf-8",
+    )
+    fake_mkdir.chmod(0o755)
+
+    fake_py = _make_fake_python311(tmp_path)
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+    )
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Installer exits nonzero/fail-closed
+    assert result.returncode == 2
+    assert "AgentReview toolrepo venv target must be absent" in result.stderr
+    assert str(target_venv) in result.stderr
+
+    # 2. Target was NOT deleted by the installer's cleanup trap
+    assert target_venv.exists(), "Concurrent target must NOT be deleted by installer"
+
+    # 3. Sentinel remains byte-identical
+    sentinel_file = target_venv / "sentinel.txt"
+    assert sentinel_file.exists(), "Sentinel file must remain intact"
+    assert sentinel_file.read_text(encoding="utf-8") == sentinel_text
+
+
+def test_countermodel_f2_cleanup_failure_does_not_mask_primary_install_failure(tmp_path: Path) -> None:
+    """F2: When downstream installation fails with primary error code 66 and the subsequent
+    cleanup trap rm -rf also fails with exit code 73, the installer must report the cleanup
+    failure code (73) and preserve the primary install failure exit code (66) without masking it.
+    """
+    fake_py = tmp_path / "fake_py_pip_fail.sh"
+    host_py = sys.executable
+
+    fake_py.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    mkdir -p "$target/bin"\n'
+        '    cat << "EOF" > "$target/bin/python3"\n'
+        "#!/bin/sh\n"
+        'echo "deliberate downstream pip failure witness" >&2\n'
+        "exit 66\n"
+        "EOF\n"
+        '    chmod +x "$target/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    # Controlled rm via PATH that fails with exit code 73
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        'echo "simulated rm failure witness" >&2\n'
+        "exit 73\n",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+
+    target_venv = tmp_path / "venv_fresh_fail_cleanup_rm"
+    assert not target_venv.exists(), "Target must be absent before invocation"
+
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+    )
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Installer exits with primary install failure code (66), NOT cleanup error (73)
+    assert result.returncode == 66
+    assert result.returncode != 73
+
+    # 2. Stderr contains primary failure witness
+    assert "deliberate downstream pip failure witness" in result.stderr
+
+    # 3. Stderr reports cleanup failure with cleanup code 73 visible
+    assert "AgentReview toolrepo cleanup failed" in result.stderr
+    assert "73" in result.stderr
+    assert "66" in result.stderr
+
+    # 4. Target may remain because cleanup failed
+    assert target_venv.exists()
