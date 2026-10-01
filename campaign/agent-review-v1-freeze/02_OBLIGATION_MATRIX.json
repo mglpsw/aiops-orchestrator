@@ -352,7 +352,8 @@
         "CM-PACK-03: non-empty selected_contract_pack resolves to no exact/legacy-compatible pack; must yield SELECTED_PACK_MISSING and non-conclusive outcome, never not_relevant"
       ],
       "positive_controls": [
-        "sufficient context -> conclusive review unchanged"
+        "sufficient context -> conclusive review unchanged",
+        "applicable pack with review_preset: dropping only review_preset emits OPTIONAL_CONTEXT_REDUCED while required pack_id remains and conclusive review stays possible"
       ],
       "closure_predicate": "PR #367 freezes the semantic consequence classes and required positive controls; Gate A freezes and proves their exact executable serialization, reduction, candidate-cost, partition/repack and propagation behavior.",
       "owner": "#221 V1-C2",
@@ -551,7 +552,7 @@
           "mechanism": "ApplicablePackSet is independently observable and every applicable pack contributes required pack_id context",
           "countermodel": "CM-PACK-01",
           "focal_discriminator": "applicable pack with no contract relation and no optional description/preset is still pack context and cannot be not_relevant",
-          "positive_control": "resolving contract ref yields pack+contract; pack-only case retains required pack identity"
+          "positive_control": "a resolving ref yields pack+contract; pack-only case retains required pack identity; removing only optional review_preset yields OPTIONAL_CONTEXT_REDUCED without erasing pack applicability"
         },
         "P6": {
           "mechanism": "not_relevant requires ApplicablePackSet empty + ApplicableContractSet empty + no unresolved explicit selection",
