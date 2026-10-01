@@ -193,7 +193,8 @@ A5 Required-context loss propagation
 Ownership é disjunto: **A2** resolve/projeta raw compatibility para identities e
 estruturas normalizadas (`SelectionResolution`, `ContractApplicability`,
 `contract_refs`); **A3** consome somente esses outputs e avalia applicability contra
-candidate chunk files. A3 nunca refaz fuzzy/raw matching. Seleção explícita não
+candidate chunk files.
+`SelectionResolution` possui três estados: `not_requested|resolved|unresolved`; o estado `resolved` carrega o conjunto COMPLETO `resolved_pack_ids`, e A3 avalia todos eles. IDs legados duplicados após clean-text falham fechado antes da normalização. A3 nunca refaz fuzzy/raw matching. Seleção explícita não
 resolvida -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca
 `not_relevant`. `NormalizedPack.contract_refs` =
 `dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`.
@@ -207,7 +208,7 @@ legado: final `*` = prefix match; demais patterns = substring; não é
 `fnmatchcase`. `semantic-context.must_hold` é normalizado por A2 e aplicado por A3
 usando scope + optional resolved contract_pack; unresolved pack falha fechado.
 
-`ProvenanceV1 {source_kind,source_path,source_state}` e `NormalizedPack.contract_refs` são contexto requerido/budgeted; perda material retém o terminal. `target_profile:domain_contracts`/`target_profile:review_packs` preservam include-all legado. Mapping/domain mode nunca recebe keyword fallback.
+`ProvenanceV1 {source_kind,source_path,source_state}` e `NormalizedPack.contract_refs` são contexto requerido/budgeted; `target_profile:review_packs` torna a fonte review-packs RequiredForChunk; relação explícita para contrato ausente é CM-PACK-04/SELECTED_CONTRACT_MISSING; perda material retém o terminal. `target_profile:domain_contracts`/`target_profile:review_packs` preservam include-all legado. Mapping/domain mode nunca recebe keyword fallback.
 
 Assim, compatibilidade legada como `calendar -> agentescala-calendar`, projeção
 dos aliases legados de applicability, a autoridade concreta
