@@ -11,7 +11,7 @@
 
 **Namespaces:** claims do ledger são `CL-0…CL-7`; obrigações `OBL-CLn-xx`;
 countermodels `CM-CLn-xx`; positive controls `PC-CLn`. Os nomes `V1-C0…V1-C6`
-designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`). Claim
+designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`). Claim
 `CL-n` e slice `V1-Cn` não são a mesma coisa.
 
 Este artefato **não altera comportamento** e **não concede autoridade**. Ele fixa o
@@ -66,7 +66,7 @@ Resumo; o ledger completo com producer/consumer/evidência está em
 |---|---|---|---|
 | CL-0 | AgentReview v1 é engine de revisão **advisory**; não concede autoridade de merge. | #221 | por design + observado em 2026-09-30: `develop` do consumer sem branch protection e único ruleset `disabled` (nenhum required check); observação datada |
 | CL-1 | Coverage positiva significa que o material necessário foi realmente admitido (`PathPresent != MaterialReviewed`). | #232 | `supported_on_master_unreleased`: integrado e qualificado em `master` a partir de `d3f5946c` (V1-C1, PR #366; CM-CL1-01/02/03 mortos); **não liberado** — o consumer publicado usa `v0.22.0`, então isto não é evidência do comportamento atual do consumer |
-| CL-2 | O v1 pode ser **contract-aware** e orientado por obrigações no contexto advisory: um contexto semântico normalizado de contratos e packs tem aplicabilidade determinística, e perda de contexto **requerido** chega ao gate. A admissão de serialização bruta é Gate A sucessor; per-claim coverage estruturada é **non-claim explícita** do v1 final. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado no runtime** (CM-CL2-02 reproduzido); interface semântica normalizada decidida nesta PR (`V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`); per-claim: `NOT_SUPPORTED_BY_FINAL_V1` / `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357) |
+| CL-2 | O v1 pode ser **contract-aware** e orientado por obrigações no contexto advisory: um contexto semântico normalizado de contratos e packs tem aplicabilidade determinística, e perda de contexto **requerido** chega ao gate. A admissão de serialização bruta é Gate A sucessor; per-claim coverage estruturada é **non-claim explícita** do v1 final. | #221 V1-C2 + AgentEscala#869 (fontes/projeção) | **não sustentado no runtime** (CM-CL2-02 reproduzido); requisitos/invariantes e owner boundaries congelados nesta PR (`V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`), com determinismo executável pertencendo ao Gate A; per-claim: `NOT_SUPPORTED_BY_FINAL_V1` / `EXPLICIT_NON_CLAIM_DEFERRED_TO_SUCCESSOR` (#353/#357) |
 | CL-3 | Finding confirmado exige mudança observada + relação aplicável + evidência concreta + consequência negativa + aboutness no subject exato. | #343 | **não sustentado** (CM-CL3-*) |
 | CL-4 | Limitação que impede avaliar obrigação degrada coverage/confiança dessa obrigação. | #221 (#805) / #232 / #307 | **parcial**: só limitações de nível plan (via `plan.status`/`files_not_covered`) e de resultado alcançam o gate; limitações de payload/brief são descartadas antes dele |
 | CL-5 | Resultado bloqueante só surge de blocker adequadamente sustentado; resultado sobrevivente não homologa cobertura que não recebeu. | #307 | **não sustentado** (CM-CL5-01, CM-CL5-02) |
@@ -160,31 +160,49 @@ do claim budget pelo owner**, não entrega da capacidade. Claim final:
 O requisito #805 **não** é apagado: permanece como dois controles (determinístico de
 transporte/gate e avaliação semântica limitada), ver `02` OBL-CL2-07.
 
-**Rescope AOCM da PR #367 (2026-10-01):** `RawSerializationGrammarTotality !=
-NormalizedSemanticInterfaceTotality`. O domínio C2 fecha a interface de contexto
-advisory **normalizada**, não uma implementação, parser ou schema novo. A tabela de
-totalidade YAML anterior está preservada em `02` como
-`SUPERSEDED_AS_TOTAL_RAW_GRAMMAR`: contraexemplos independentes demonstraram que a
-enumeração de serialização não era um sujeito fechado.
+**Rescope AOCM final da PR #367 (2026-10-01):** as revisões exact-head
+demonstraram duas fronteiras sucessivas: `RawSerializationTotality` não fecha por
+documentação e `NormalizedImplementationTotality` tampouco deve ser fingida por
+prosa. O terminal corrente é, portanto,
+`V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`.
 
-O que esta PR decide é: `NormalizedContract`, `NormalizedPack`, aplicabilidade por
-id explícito ou `fnmatchcase`, relações explícitas, núcleo semântico requerido,
-perda por orçamento e sua consequência no gate. Os slots conhecidos continuam com
-estado `present_valid | absent | invalid`, independente de `RequiredForChunk`.
-`absent` ou `invalid` nunca é `not_relevant`; serialização ambígua ou não suportada
-falha fechada **antes** da normalização. A gramática concreta, compatibilidade de
-fixtures e controles de chaves duplicadas pertencem ao `RawSourceAdmissionContract`
-do Gate A sucessor.
+Esta PR congela **o que** o V1-C2 deve preservar/provar: identidade e conteúdo
+semântico advisory, relações explícitas, source state, honestidade de ausência/
+incompatibilidade, RequiredSemanticKernel, hunk completo/intacto como piso de
+cobertura, perda requerida chegando ao gate, compatibilidade legada e positive
+controls. Ela também congela os non-claims: sem ClaimV1, sem per-claim coverage,
+sem recursão YAML genérica e sem autoridade determinística de texto de PR.
 
-A interface decidida é finita: `JsonScalar` e `SemanticValue`; `TextItem` ou
-`RuleItem`; seções, contratos e packs com campos enumerados e ordenação canônica.
-O censo classifica cada campo do corpus e dos fixtures legados; não há mapa semântico
-residual. Um hunk só conta como material mínimo quando seu bloco de diff unificado
-está completo e intacto, e `not_relevant` exige simultaneamente contrato aplicável e
-contexto de pack aplicável vazios (um pack sem relação nem contexto pode ser
-irrelevante). Os testes AOCM P1–P9 em `02` e os
-contraexemplos correspondentes em `03` são a prova de fechamento desta decisão, não
-uma autorização para implementar Gate A, alterar runtime ou qualificar o par alvo.
+```text
+RequirementsFrozen
+!=
+ExecutableContractQualified
+```
+
+O **Gate A — C2ExecutableContract** é o único owner executável dos detalhes que
+a documentação não pode qualificar sozinha:
+
+```text
+A1 RawSourceAdmission
+A2 LegacyCompatibility + Normalization
+A3 Applicability + explicit relation resolution
+A4 Canonical cost + deterministic budget/packing
+A5 Required-context loss propagation
+```
+
+Assim, compatibilidade legada como `calendar -> agentescala-calendar`, projeção
+dos aliases legados de applicability, a autoridade concreta
+`canonical_json/canonical_len`, o FFD/tie-break de packing e a recomputação de
+contexto por candidate são **obrigações do Gate A com testes executáveis**, não
+propriedades já provadas por esta PR. Gate B permanece AgentEscala#869 e Gate C é
+a conformance do par exato engine+target/config. Somente A+B+C pode produzir
+`V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
+
+Os terminais anteriores
+`V1_C2_CONTRACT_INTERFACE_DECIDED` e
+`V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED` permanecem como histórico
+supersedido e evidência do processo de convergência.
+
 
 ## 7. Fato de release já estabelecido
 
