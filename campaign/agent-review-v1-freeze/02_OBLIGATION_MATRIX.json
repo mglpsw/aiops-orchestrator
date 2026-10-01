@@ -248,7 +248,7 @@
             "paths": "PRESERVED_REQUIRED APPLICABILITY; exact-deduplicate then ascending lexicographic order",
             "contract_refs": "PRESERVED_REQUIRED CONTRACT_RELATION; raw domain_contract plus additional_contract_refs, exact-deduplicate then ascending lexicographic order",
             "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT",
-            "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT projected as review_preset",
+            "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT projected as review_preset; if removed by budget it is OPTIONAL_CONTEXT_REDUCED, while required pack_id remains.",
             "critical": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
             "allow_external_review": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
             "require_full_diff": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
@@ -258,14 +258,16 @@
           "semantic_roles": {
             "paths": "APPLICABILITY",
             "contract_refs": "CONTRACT_RELATION",
-            "description": "REVIEW_CONTEXT",
-            "review_preset": "REVIEW_CONTEXT",
-            "non_normalized_target_workflow_metadata": "IGNORED_BY_V1"
+            "description": "OPTIONAL_EXPLANATORY_REVIEW_CONTEXT",
+            "review_preset": "OPTIONAL_REVIEW_CONTEXT",
+            "non_normalized_target_workflow_metadata": "IGNORED_BY_V1",
+            "pack_id": "REQUIRED_PACK_CONTEXT_IDENTITY"
           },
           "ordering": "packs ascending exact pack_id; paths and contract_refs sorted after exact deduplication",
           "applicability": "ApplicablePackSet(chunk) = exact selected pack id UNION packs whose paths match canonical target-relative paths with fnmatchcase",
-          "context": "ApplicableNormalizedPackContext is an applicable normalized pack with description or review_preset. It contributes pack identity plus present review context even when contract_refs is empty.",
-          "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant"
+          "context": "ApplicableNormalizedPackContext exists for every applicable NormalizedPack because pack_id itself is required pack context. description and review_preset are optional explanatory/routing context; their removal never erases the applicable-pack fact. A pack without contract_refs contributes no contract but is never not_relevant merely for lacking a relation.",
+          "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant",
+          "applicability_context_invariant": "ApplicablePackSet is determined before payload budgeting. For every applicable pack, pack_id is required context and cannot be dropped as optional detail. `not_relevant` requires ApplicablePackSet empty AND ApplicableContractSet empty after valid evaluation."
         },
         "field_census": {
           "contracts": {
@@ -416,7 +418,7 @@
         "never": "an absent source is never re-labelled contracts_context_not_relevant"
       },
       "required_semantic_kernel": {
-        "applies_to": "each APPLICABLE contract",
+        "applies_to": "each APPLICABLE contract and each APPLICABLE pack",
         "required": [
           "NormalizedContract.contract_id",
           "NormalizedSection.section_id",
@@ -424,16 +426,21 @@
           "RuleItem.rule",
           "every RuleItem.qualifier",
           "every NormalizedContract.semantic_value",
-          "every applicable must_hold"
+          "every applicable must_hold",
+          "every applicable NormalizedPack.pack_id"
         ],
         "optional_explanatory": [
           "NormalizedContract.description",
           "RuleItem.rationale",
-          "NormalizedPack.description"
+          "NormalizedPack.description",
+          "NormalizedPack.review_preset"
         ],
-        "budget_outcomes": "only optional loss -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive; required item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive"
+        "budget_outcomes": "only optional loss (including NormalizedPack.description/review_preset) -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive because applicable pack_id remains required; required contract/pack identity or semantic item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive",
+        "prebudget_selection_fields": [
+          "NormalizedPack.paths and contract_refs are deterministic applicability/relation inputs consumed before payload reduction; budget reduction may not change which packs/contracts are applicable."
+        ]
       },
-      "not_relevant_rule": "not_relevant is possible only after source states permit applicability evaluation AND ApplicableContractSet(chunk) is empty AND ApplicableNormalizedPackContext is empty. An applicable pack with neither contract_refs nor REVIEW_CONTEXT may be irrelevant; a typed absent, invalid or unsupported state never coexists with not_relevant, including when RequiredForChunk is false. ContractRelationAbsent != PackContextIrrelevant.",
+      "not_relevant_rule": "not_relevant is possible only after valid evaluation when ApplicablePackSet is empty AND ApplicableContractSet is empty. An applicable pack is pack context by required pack_id even if it has no contract_refs, description or review_preset. Typed absent/invalid/unsupported states never coexist with not_relevant.",
       "superseded_raw_interface_totality_matrix": {
         "status": "SUPERSEDED_AS_TOTAL_RAW_GRAMMAR",
         "reason": "This raw YAML enumeration is retained as successor parser qualification history, not as a closed semantic proof.",
@@ -528,16 +535,16 @@
           "positive_control": "description and recommended_review_preset project as declared context"
         },
         "P5": {
-          "mechanism": "ApplicablePackSet, ApplicableContractSet and ApplicableNormalizedPackContext are separately evaluated",
+          "mechanism": "ApplicablePackSet and ApplicableContractSet are independently evaluated; applicable pack_id is required pack context",
           "countermodel": "CM-PACK-01",
-          "focal_discriminator": "applicable pack context with no contract relation is not not_relevant",
-          "positive_control": "a pack with a resolving reference yields both pack and contract evidence"
+          "focal_discriminator": "an applicable pack with zero contract_refs and no optional description/preset is still not not_relevant",
+          "positive_control": "a resolving ref yields pack+contract context; pack-only case retains required pack identity"
         },
         "P6": {
-          "mechanism": "not_relevant predicate requires ApplicableContractSet and ApplicableNormalizedPackContext empty after valid evaluation",
+          "mechanism": "not_relevant requires ApplicablePackSet empty AND ApplicableContractSet empty",
           "countermodel": "CM-PACK-02",
-          "focal_discriminator": "only the valid zero-contract/zero-context case can yield not_relevant",
-          "positive_control": "an applicable pack without relation or REVIEW_CONTEXT remains irrelevant"
+          "focal_discriminator": "any applicable pack blocks not_relevant regardless of optional review context",
+          "positive_control": "zero applicable packs and zero applicable contracts after valid evaluation yields not_relevant"
         },
         "P7": {
           "mechanism": "semantic reason classes separate source state from serialization",
@@ -552,9 +559,12 @@
           "positive_control": "full intact hunk plus full required kernel remains conclusive-capable"
         },
         "P9": {
-          "mechanism": "requirements owner boundary + Gate-A A4 executable authority",
-          "countermodel": "same requirements with two unqualified cost/packing implementations producing different partitions",
-          "focal_discriminator": "PR #367 routes exact cost/partition determinism to one executable Gate-A owner; Gate A must make the implementation deterministic before runtime readiness",
+          "mechanism": "requirements owner boundary + Gate-A A4 executable authority exercised by the dedicated cost and repack countermodels",
+          "countermodel": [
+            "CM-GA-A4-COST",
+            "CM-GA-A4-REPACK"
+          ],
+          "focal_discriminator": "CM-GA-A4-COST catches divergent cost authorities; CM-GA-A4-REPACK catches divergent optional-minimal/repack/candidate-recomputation behavior",
           "positive_control": "semantic requirements and positive conclusive path remain fixed while implementation details are proven in Gate A"
         }
       }
@@ -653,8 +663,17 @@
         "the v1 publisher stays advisory and is not branch-protection authority",
         "control B is not proof of semantic recall"
       ],
-      "owner": "#221 V1-C2 (A); B executed under its own grant (real provider)",
-      "source": "owner adjudication 2026-09-30 (recorded on PR #367)"
+      "owner": "#221 V1-C2 owns controls A and B; Control B execution requires a separate explicit real-provider grant but authorization is not ownership.",
+      "source": "owner adjudication 2026-09-30 (recorded on PR #367)",
+      "control_B_execution_contract": {
+        "task_owner": "#221 V1-C2 semantic-utility evaluation",
+        "authorization_precondition": "explicit real-provider execution grant",
+        "execution_point": "after deterministic Gate A + Gate B + Gate C qualification and before granting V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
+        "subject": "predetermined bad #805-style subject vs corrected counterpart with the same applicable context",
+        "anti_cherry_pick": "expectations fixed before execution; every admitted attempt recorded; no rerun until favorable",
+        "terminal_effect": "required evidence: if the predetermined utility expectation is not met, withhold V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY and adjudicate; do not reinterpret failure as proof of exhaustive recall",
+        "non_claim": "passing Control B proves bounded semantic utility for the declared pair only, not recall/completeness"
+      }
     },
     {
       "obligation_id": "OBL-CL4-02",
@@ -1005,7 +1024,8 @@
       "runtime_requires": [
         "Gate A C2ExecutableContract",
         "Gate B AgentEscala#869",
-        "Gate C exact engine-target pair"
+        "Gate C exact engine-target pair",
+        "Control B bounded semantic-utility evaluation under its separate explicit provider grant"
       ]
     },
     "external_final_freeze_prerequisites": {
