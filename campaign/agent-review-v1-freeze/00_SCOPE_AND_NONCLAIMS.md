@@ -194,7 +194,7 @@ Ownership é disjunto: **A2** resolve/projeta raw compatibility para identities 
 estruturas normalizadas (`SelectionResolution`, `ContractApplicability`,
 `contract_refs`); **A3** consome somente esses outputs e avalia applicability contra
 candidate chunk files.
-`SelectionResolution` possui três estados: `not_requested|resolved|unresolved`; o estado `resolved` carrega o conjunto COMPLETO `resolved_pack_ids`, e A3 avalia todos eles. IDs legados duplicados após clean-text falham fechado antes da normalização. A3 nunca refaz fuzzy/raw matching. Seleção explícita não
+`SelectionResolution` possui três estados: `not_requested|resolved|unresolved`; o estado `resolved` carrega o conjunto COMPLETO `resolved_pack_ids`, e A3 avalia todos eles. IDs legados duplicados após clean-text falham fechado antes da normalização. IDs de packs legados também devem ser únicos após clean-text; duplicidade falha fechado. `ApplicableContractSet` é a união de refs dos packs aplicáveis, direct `contract:<id>`, include-all legado `target_profile:domain_contracts`, ContractApplicability e semantic-group fallback legado. A3 nunca refaz fuzzy/raw matching. Seleção explícita não
 resolvida -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca
 `not_relevant`. `NormalizedPack.contract_refs` =
 `dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`.
