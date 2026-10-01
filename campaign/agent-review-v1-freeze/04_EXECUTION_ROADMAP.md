@@ -108,23 +108,35 @@ Raw Target Source
 -> Payload -> Deterministic Loss Propagation -> Parse -> Synth -> Quality Gate
 ```
 
-Esta PR decide a partir de `NormalizedContract { contract_id, sections,
-semantic_metadata }` e `NormalizedPack { pack_id, paths, domain_contract,
-additional_contract_refs, review_metadata }`. Identidade admitida vira
-`contract_id`; seção é preservada; texto de rule/list[str] é advisory; primitivos
-operativos limitados e valores semânticos não explicativos são preservados. Não há
-ClaimV1, estado per-claim, recursão semântica arbitrária ou autoridade independente
-para metadados crus como `schema_version`.
+Esta PR decide uma álgebra finita: `JsonScalar`; `SemanticValue {key,value}`;
+`TextItem {kind,text}` ou `RuleItem {kind,rule,qualifiers,rationale?}`;
+`NormalizedSection {section_id,items}`; `NormalizedContract {contract_id,
+description?,semantic_values,sections}`; e `NormalizedPack {pack_id,paths,
+contract_refs,description?,review_preset?}`. Contratos, seções, valores, packs e
+referências têm ordenação canônica; itens preservam a ordem-fonte. O censo de `02`
+classifica cada campo observado e legado, inclusive os metadados que não participam
+da semântica normalizada. Não há `ClaimV1`, estado per-claim, recursão semântica
+arbitrária, mapa residual ou autoridade independente para metadata crua.
 
 Aplicabilidade é `selected pack id` exato união
 `fnmatchcase(canonical target-relative path, pattern)`. Referências efetivas são
 `domain_contract` união `additional_contract_refs`, deduplicadas. Relação ausente não
 introduz contrato; referência explícita que não resolve é não conclusiva.
 
-O núcleo requerido é identidade de contrato/seção, rule, cada `list[str]`,
-qualificador primitivo operativo e valor primitivo semântico não explicativo, e
-`must_hold`. `description`, `rationale` e `notes` são opcionais. Perda opcional pode
-ser conclusiva; perda requerida ou de `must_hold` é degradada/não conclusiva no gate.
+O núcleo requerido é identidade de contrato/seção, `TextItem.text`, `RuleItem.rule`,
+todo qualificador, todo valor semântico e `must_hold` aplicável. `description`,
+`rationale` e contexto explicativo de pack são opcionais. Material mínimo de hunk é
+o bloco completo e intacto de diff unificado por arquivo; amostra, cabeçalho ou hunk
+truncado nunca contam. O planner reduz opcionais, mantém kernel+hunks, repacota e,
+se um singleton não couber, marca o arquivo não coberto/não conclusivo. Perda
+opcional pode ser conclusiva; perda requerida, de `must_hold` ou de hunk é degradada.
+
+`not_relevant` só é possível após avaliação válida com `ApplicableContractSet` e
+`ApplicableNormalizedPackContext` ambos vazios; pack aplicável sem relação e sem
+contexto pode ser irrelevante. Os P1–P9
+e CM-NORM/CM-ABS/CM-HUNK/CM-PACK em `02`/`03` são os controles obrigatórios desta
+decisão; Gate A continua sendo a única autoridade para gramática bruta e grafias
+serializadas de reason codes.
 
 Proveniência V1 mínima: `source_kind` (`domain_contracts|review_packs`),
 `source_path` canônico relativo ao target, `source_state`

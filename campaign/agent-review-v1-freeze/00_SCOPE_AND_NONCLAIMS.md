@@ -176,6 +176,16 @@ falha fechada **antes** da normalização. A gramática concreta, compatibilidad
 fixtures e controles de chaves duplicadas pertencem ao `RawSourceAdmissionContract`
 do Gate A sucessor.
 
+A interface decidida é finita: `JsonScalar` e `SemanticValue`; `TextItem` ou
+`RuleItem`; seções, contratos e packs com campos enumerados e ordenação canônica.
+O censo classifica cada campo do corpus e dos fixtures legados; não há mapa semântico
+residual. Um hunk só conta como material mínimo quando seu bloco de diff unificado
+está completo e intacto, e `not_relevant` exige simultaneamente contrato aplicável e
+contexto de pack aplicável vazios (um pack sem relação nem contexto pode ser
+irrelevante). Os testes AOCM P1–P9 em `02` e os
+contraexemplos correspondentes em `03` são a prova de fechamento desta decisão, não
+uma autorização para implementar Gate A, alterar runtime ou qualificar o par alvo.
+
 ## 7. Fato de release já estabelecido
 
 A fonte v1 **já mudou** desde `v0.22.0` (independentemente desta campanha):

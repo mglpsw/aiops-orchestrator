@@ -192,24 +192,72 @@
       },
       "normalized_semantic_interface": {
         "status": "NORMATIVE_FOR_PR_367",
+        "scope": "Finite normalized semantics only. Raw-field admission, YAML grammar, duplicate-key detection, parser choice and serialized reason-code spelling are Gate A RawSourceAdmissionContract concerns.",
+        "json_scalar": "JsonScalar := string | boolean | integer | finite number | null. A SemanticValue never contains a mapping or list.",
+        "semantic_value": {
+          "shape": "SemanticValue { key: non-empty string, value: JsonScalar }",
+          "ordering": "ascending lexicographic exact key",
+          "duplicate_key": "invalid before normalization; an admitted raw source cannot yield duplicate normalized keys"
+        },
+        "normalized_item": {
+          "tagged_union": [
+            "TextItem { kind: text, text: non-empty string }",
+            "RuleItem { kind: rule, rule: non-empty string, qualifiers: [SemanticValue], rationale?: string }"
+          ],
+          "raw_projection": "admitted raw rule.rule -> RuleItem.rule; raw rationale -> optional RuleItem.rationale; every other admitted primitive raw rule field -> RuleItem.qualifiers. LEGACY_FLAT_MODE rule {id, description} projects description -> RuleItem.rule and id -> qualifier SemanticValue {key: id, value: raw id}; this context-specific legacy adapter is finite and preserves both fields. qualifiers are sorted by key and required when present.",
+          "ordering": "item order within a section preserves admitted source order; TextItem and RuleItem are never sorted"
+        },
+        "normalized_section": {
+          "shape": "NormalizedSection { section_id: non-empty string, items: [NormalizedItem] }",
+          "ordering": "sections ascending lexicographic exact section_id; items source order"
+        },
         "normalized_contract": {
-          "shape": "NormalizedContract { contract_id: string, sections: { section_id: { items: [...] } }, semantic_metadata: {...} }",
-          "invariants": [
-            "admitted named identity maps to contract_id",
-            "section identity is preserved",
-            "rule text and list[str] are advisory content",
-            "bounded operative primitive fields and non-explanatory primitive semantic values are preserved",
-            "no ClaimV1, per-claim state, arbitrary recursive semantic interpretation, or independent authority for raw version/schema_version/updated/system/domain metadata"
-          ]
+          "shape": "NormalizedContract { contract_id: non-empty string, description?: string, semantic_values: [SemanticValue], sections: [NormalizedSection] }",
+          "required": ["contract_id", "semantic_values", "sections"],
+          "optional": ["description"],
+          "projection": "admitted named identity -> contract_id; raw domain-level primitive scalar except description -> semantic_values; named list[str] -> ordered TextItems; admitted list[rule-object] -> ordered RuleItems. A top-level list[str] contract response_model_rules has contract_id=response_model_rules, semantic_values=[], section_id=rules and ordered TextItems.",
+          "ordering": "contracts ascending lexicographic exact contract_id; semantic_values ascending key; sections ascending section_id; items source order",
+          "invariants": ["no ClaimV1", "no per-claim state", "no recursive semantic structure", "no arbitrary normalized map", "raw version/schema_version/updated/system/domain has no independent normalized authority"]
         },
         "normalized_pack": {
-          "shape": "NormalizedPack { pack_id: string, paths: [string], domain_contract: optional string, additional_contract_refs: [string], review_metadata: bounded optional metadata }",
-          "applicability": "selected pack id EXACT UNION fnmatchcase(canonical target-relative path, pattern)",
-          "effective_refs": "domain_contract UNION additional_contract_refs, exact identities deduplicated",
-          "no_relation": "a pack without an explicit relation contributes no contract through that relation"
+          "shape": "NormalizedPack { pack_id: non-empty string, paths: [string], contract_refs: [non-empty string], description?: string, review_preset?: non-empty string }",
+          "required": ["pack_id", "paths", "contract_refs"],
+          "optional": ["description", "review_preset"],
+          "raw_projection": "MAPPING_PACK_MODE key -> pack_id; paths absent -> []; domain_contract plus additional_contract_refs -> contract_refs; description -> description; recommended_review_preset -> review_preset. LEGACY_PACK_MODE item.id -> pack_id, item.description -> description, item.recommended_review_preset -> review_preset, and omitted paths/relations -> [].",
+          "field_roles": {
+            "pack_id": "PRESERVED_REQUIRED identity",
+            "paths": "PRESERVED_REQUIRED APPLICABILITY; exact-deduplicate then ascending lexicographic order",
+            "contract_refs": "PRESERVED_REQUIRED CONTRACT_RELATION; raw domain_contract plus additional_contract_refs, exact-deduplicate then ascending lexicographic order",
+            "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT",
+            "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT projected as review_preset",
+            "critical": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
+            "allow_external_review": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
+            "require_full_diff": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
+            "require_final_files_when_available": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata",
+            "notes": "NOT_PART_OF_NORMALIZED_INTERFACE target/workflow metadata"
+          },
+          "semantic_roles": {
+            "paths": "APPLICABILITY",
+            "contract_refs": "CONTRACT_RELATION",
+            "description": "REVIEW_CONTEXT",
+            "review_preset": "REVIEW_CONTEXT",
+            "non_normalized_target_workflow_metadata": "IGNORED_BY_V1"
+          },
+          "ordering": "packs ascending exact pack_id; paths and contract_refs sorted after exact deduplication",
+          "applicability": "ApplicablePackSet(chunk) = exact selected pack id UNION packs whose paths match canonical target-relative paths with fnmatchcase",
+          "context": "ApplicableNormalizedPackContext is an applicable normalized pack with description or review_preset. It contributes pack identity plus present review context even when contract_refs is empty.",
+          "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant"
+        },
+        "field_census": {
+          "contracts": {"description": "EXPLANATORY_OPTIONAL", "canonical_authority": "PRESERVED_REQUIRED SemanticValue", "display_authority": "PRESERVED_REQUIRED SemanticValue", "top_level_response_model_rules": "PRESERVED_REQUIRED ordered TextItem section"},
+          "sections": {"list[str]": "PRESERVED_REQUIRED ordered TextItems", "list[rule-object]": "PRESERVED_REQUIRED ordered RuleItems"},
+          "rule_objects": {"rule": "PRESERVED_REQUIRED", "invariant": "PRESERVED_REQUIRED SemanticValue qualifier", "field": "PRESERVED_REQUIRED SemanticValue qualifier", "expected_value": "PRESERVED_REQUIRED SemanticValue qualifier", "rationale": "EXPLANATORY_OPTIONAL", "legacy_id": "PRESERVED_REQUIRED as qualifier key id in LEGACY_FLAT_MODE", "legacy_description": "PRESERVED_REQUIRED as RuleItem.rule in LEGACY_FLAT_MODE"},
+          "packs": {"mapping_key_or_legacy_id": "PRESERVED_REQUIRED as pack_id", "paths": "PRESERVED_REQUIRED APPLICABILITY", "domain_contract": "PRESERVED_REQUIRED projection input to contract_refs", "additional_contract_refs": "PRESERVED_REQUIRED projection input to contract_refs", "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT", "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT", "critical_allow_external_review_require_full_diff_require_final_files_when_available_notes": "NOT_PART_OF_NORMALIZED_INTERFACE"},
+          "source_metadata": {"version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "schema_version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "updated": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "system": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "domain": "NOT_PART_OF_NORMALIZED_INTERFACE legacy source metadata"},
+          "unclassified_fields": 0
         },
         "raw_admission_boundary": "Raw source is admitted by the successor RawSourceAdmissionContract into a NormalizedContractSet/NormalizedPackSet, or rejected as one typed invalid/unsupported source outcome. No malformed or ambiguous raw source normalizes to empty/not_relevant.",
-        "determinism": "RawAdmitted(X) implies exactly one NormalizedProjection(X); the same admitted source cannot produce different normalized ids, sections, relations or required semantic kernel."
+        "determinism": "SameNormalizedSemanticInput -> byte-equivalent canonical normalized value after canonical JSON serialization of sorted contract ids, sorted section ids, sorted SemanticValue keys, sorted pack ids, sorted paths/contract_refs and source-order items. Raw map insertion order is not authority."
       }
     },
     {
@@ -232,13 +280,18 @@
       "owner_decision_budget_floor": {
         "source": "owner adjudication 2026-09-30 (recorded on PR #367)",
         "invariant": "RequiredSemanticContext + MinimumReviewableHunkMaterial = NonSilentReviewFloor",
+        "minimum_reviewable_hunk_material": {
+          "definition": "For every candidate file counted covered: its complete diff_by_file block associated with that canonical path, containing one or more unified-diff @@ headers and every context/add/remove line of those hunks, intact.",
+          "existing_v1_mechanism": "payload_cost_model.block_has_observable_textual_hunk recognizes a unified-diff @@ header; project_min_hunk_preserving_chars constructs chunk_hunks_full and measures the minimal non-hunk state before chunk_payload_builder is allowed to shrink chunk_hunks; semantic_chunker marks a singleton exceeding that projection payload_oversize or must_review_payload_oversize and files_not_covered.",
+          "not_sufficient": ["header only", "changed-line sample", "truncation stub", "prefix/suffix", "partial hunk"],
+          "indivisibility": "A truncated/reduced chunk_hunks value never satisfies MinimumReviewableHunkMaterial and cannot make its file covered for this C2 floor."
+        },
         "planner_procedure": [
-          "establish applicable required semantic context",
-          "establish minimum reviewable hunk material",
-          "fit both",
-          "if they do not fit, reduce/split chunk membership",
-          "retry",
-          "if an indivisible unit still cannot fit: report partial/degraded/non-conclusive coverage with a typed limitation visible at the quality gate"
+          "minimize optional context",
+          "keep the required normalized semantic kernel",
+          "keep every admitted hunk fully intact",
+          "split/repack file membership and retry",
+          "if a singleton still cannot fit: file is not covered; emit existing payload_oversize or must_review_payload_oversize outcome; affected review is non-conclusive"
         ],
         "not_allowed": [
           "forcing every contract document to be unbounded/non-truncatable",
@@ -279,11 +332,11 @@
       },
       "required_semantic_kernel": {
         "applies_to": "each APPLICABLE contract",
-        "required": ["contract identity", "section identity", "every admitted list[str] item", "every rule string", "every applicable must_hold", "each present rule-object invariant", "each present rule-object field", "each present rule-object expected_value", "domain-level admitted non-explanatory primitive scalar such as canonical_authority or display_authority"],
-        "optional_explanatory": ["description", "rationale", "notes"],
+        "required": ["NormalizedContract.contract_id", "NormalizedSection.section_id", "TextItem.text", "RuleItem.rule", "every RuleItem.qualifier", "every NormalizedContract.semantic_value", "every applicable must_hold"],
+        "optional_explanatory": ["NormalizedContract.description", "RuleItem.rationale", "NormalizedPack.description"],
         "budget_outcomes": "only optional loss -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive; required item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive"
       },
-      "not_relevant_rule": "not_relevant is possible only after sufficient successfully normalized sources permit applicability evaluation and zero normalized contracts apply. A typed absent, invalid or unsupported state never coexists with not_relevant, including when RequiredForChunk is false.",
+      "not_relevant_rule": "not_relevant is possible only after source states permit applicability evaluation AND ApplicableContractSet(chunk) is empty AND ApplicableNormalizedPackContext is empty. An applicable pack with neither contract_refs nor REVIEW_CONTEXT may be irrelevant; a typed absent, invalid or unsupported state never coexists with not_relevant, including when RequiredForChunk is false. ContractRelationAbsent != PackContextIrrelevant.",
       "superseded_raw_interface_totality_matrix": {
         "status": "SUPERSEDED_AS_TOTAL_RAW_GRAMMAR",
         "reason": "This raw YAML enumeration is retained as successor parser qualification history, not as a closed semantic proof.",
@@ -328,14 +381,18 @@
           "invalid_or_unsupported_raw_source": "typed SOURCE_INVALID_OR_UNSUPPORTED before normalization; never empty/not_relevant"
         },
         "normalized_applicability": {
-          "applicable": "selected explicit id or fnmatchcase path relation yields a normalized pack/contract",
-          "non_applicable": "successful normalization and evaluation yields zero applicable contracts",
+          "applicable": "selected explicit id or fnmatchcase path relation yields a normalized pack and/or contract",
+          "non_applicable": "successful normalization and evaluation yields zero ApplicableContractSet and zero ApplicableNormalizedPackContext; an applicable pack without either relation or REVIEW_CONTEXT does not itself prevent not_relevant",
           "undecidable": "required source absent, invalid or unsupported"
         },
         "relation": {
           "explicit_ref_resolves": "effective normalized reference is available",
           "explicit_ref_missing": "SELECTED_CONTRACT_MISSING and non-conclusive affected review",
           "no_relation": "no contract is introduced by that pack relation"
+        },
+        "pack_context": {
+          "present": "an applicable normalized pack with description or review_preset is material context even without contract_refs",
+          "absent": "only an empty ApplicableNormalizedPackContext can participate in not_relevant"
         },
         "budget": {
           "full_kernel": "conclusive allowed",
@@ -347,6 +404,17 @@
           "conclusive_allowed": "only valid normalized, decidable context with no required loss",
           "degraded_non_conclusive": "required source, explicit relation or required kernel cannot support the conclusion"
         }
+      },
+      "aocm_closure_test": {
+        "P1": {"mechanism": "NormalizedContract finite fields and canonical serializer reject any unmapped semantic field", "countermodel": "CM-NORM-01", "focal_discriminator": "an extra admitted scalar has no declared projection and is rejected rather than placed in a map", "positive_control": "declared contract scalar becomes sorted SemanticValue"},
+        "P2": {"mechanism": "NormalizedItem tagged union admits only TextItem or RuleItem", "countermodel": "CM-NORM-02", "focal_discriminator": "equivalent raw map insertion orders serialize identically while source item order remains intact", "positive_control": "ordered text and rule lists retain their source sequence"},
+        "P3": {"mechanism": "finite raw-to-RuleItem projection roles plus required normalized kernel", "countermodel": "CM-NORM-03", "focal_discriminator": "a rule-object field without the declared rule/rationale/primitive-qualifier role is rejected by Gate A; dropping a projected rule, qualifier or semantic value emits REQUIRED_CONTEXT_OMITTED", "positive_control": "legacy {id,description} and declared rule fields project with their stated roles; rationale-only loss emits OPTIONAL_CONTEXT_REDUCED"},
+        "P4": {"mechanism": "NormalizedPack finite fields plus field census", "countermodel": "CM-NORM-04", "focal_discriminator": "undeclared pack metadata cannot silently become normalized context", "positive_control": "description and recommended_review_preset project as declared context"},
+        "P5": {"mechanism": "ApplicablePackSet, ApplicableContractSet and ApplicableNormalizedPackContext are separately evaluated", "countermodel": "CM-PACK-01", "focal_discriminator": "applicable pack context with no contract relation is not not_relevant", "positive_control": "a pack with a resolving reference yields both pack and contract evidence"},
+        "P6": {"mechanism": "not_relevant predicate requires ApplicableContractSet and ApplicableNormalizedPackContext empty after valid evaluation", "countermodel": "CM-PACK-02", "focal_discriminator": "only the valid zero-contract/zero-context case can yield not_relevant", "positive_control": "an applicable pack without relation or REVIEW_CONTEXT remains irrelevant"},
+        "P7": {"mechanism": "semantic reason classes separate source state from serialization", "countermodel": "CM-ABS-01", "focal_discriminator": "a future serialized spelling still maps to SOURCE_ABSENT and does not alter consequence", "positive_control": "absent known slot remains typed without inventing not_relevant"},
+        "P8": {"mechanism": "MinimumReviewableHunkMaterial and planner preflight preserve complete unified-diff blocks", "countermodel": "CM-HUNK-01 and CM-HUNK-02", "focal_discriminator": "a truncated hunk or a full hunk lacking required kernel is non-conclusive", "positive_control": "full intact hunk plus full required kernel remains conclusive-capable"},
+        "P9": {"mechanism": "deterministic canonical ordering and bounded planner procedure", "countermodel": "CM-NORM-02", "focal_discriminator": "same normalized input and budget produces byte-equivalent plan/outcome", "positive_control": "optional-only reduction remains deterministically conclusive-capable"}
       }
     },
     {

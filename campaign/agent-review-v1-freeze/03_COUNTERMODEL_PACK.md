@@ -78,7 +78,7 @@ podem divergir em identidade, seção, relação, aplicabilidade, kernel ou gate
   - **B.** `.aiops/review-packs.yaml` ausente.
 - **Caminho atual (`OBSERVED_CODE`):** `repo_profile._load_optional_yaml` retorna `None` sem limitação quando o arquivo não existe (`app/agent_review/repo_profile.py:95-102`); `contracts_context` então achata essa fonte para vazio; quando a outra fonte também não produz item aplicável, emite `contracts_context_not_relevant:<chunk>` (`payload_cost_model.py:435-436`); quando a outra fonte produz item, a ausência fica silenciosa. Os fixtures RED neutralizam a outra fonte. Evidência: `OBSERVED_CODE` (exige RED antes do patch).
 - **Resultado falso (ambas as variantes):** ausência indistinguível de não aplicabilidade; ou o implementador degrada toda ausência, destruindo o controle positivo.
-- **Discriminador exigido:** A → `contracts_context_absent:domain_contracts`; B → `contracts_context_absent:review_packs`; nunca `contracts_context_not_relevant`. Par focal A/B: ausência + `RequiredForChunk=true` é degradante e não conclusiva; o mesmo slot ausente + `RequiredForChunk=false` permanece tipado, mas o controle positivo pode ser conclusivo. Não se cria `TargetProfile` field (OBL-CL2-03, família 14).
+- **Discriminador exigido:** A e B produzem a classe semântica `SOURCE_ABSENT`, com `source_kind` respectivamente `domain_contracts` e `review_packs`; nunca `not_relevant`. A forma serializada exata é autoridade do Gate A sucessor, não desta campanha. Par focal A/B: ausência + `RequiredForChunk=true` é degradante e não conclusiva; o mesmo slot ausente + `RequiredForChunk=false` permanece tipado, mas o controle positivo pode ser conclusivo. Não se cria `TargetProfile` field (OBL-CL2-03, família 14).
 - **Origem:** achado pós-Ready do Codex 4150077445 na PR #367, adjudicado válido pelo owner.
 
 ### Gate A sucessor — RawSourceAdmissionContract
@@ -104,6 +104,31 @@ esta campanha só congela as classes `SOURCE_ABSENT`,
 O controle positivo normalizado é: um pack aplicável seleciona exatamente sua relação
 de contrato; um pack sem relação não injeta contrato espúrio. A ausência de relação,
 referência explícita ausente e fonte inválida permanecem semanticamente distintos.
+
+### Fechamento AOCM P1–P9 — contraexemplos normativos da interface normalizada
+
+| Id | Mecanismo e contramodelo focal | Discriminador | Controle positivo |
+|---|---|---|---|
+| P1 / CM-NORM-01 | schema finito de `NormalizedContract` | scalar admitido sem campo declarado é rejeitado, nunca posto em mapa residual | scalar declarado vira `SemanticValue` ordenado |
+| P2 / CM-NORM-02 | união `TextItem`/`RuleItem` e serialização canônica | duas ordens de inserção de map têm bytes iguais; ordem de itens-fonte não muda | lista de textos/regras mantém a sequência-fonte |
+| P3 / CM-NORM-03 | papéis finitos raw→`RuleItem` + kernel mecânico | campo de rule-object sem papel declarado é rejeitado no Gate A; perda de campo projetado requerido gera `REQUIRED_CONTEXT_OMITTED` | `{id,description}` legado e campos `rule` declarados projetam nos papéis especificados; perda apenas de rationale gera `OPTIONAL_CONTEXT_REDUCED` |
+| P4 / CM-NORM-04 | schema e censo finitos de `NormalizedPack` | metadata fora dos campos declarados não vira contexto normalizado silencioso | description/preset declarados são projetados |
+| P5 / CM-PACK-01 | observabilidade separada de pack, contrato e contexto | pack aplicável com contexto, mas sem relação, não é `not_relevant` | ref resolvida produz evidência de pack e contrato |
+| P6 / CM-PACK-02 | predicado de contratos+contexto de `not_relevant` | só contrato aplicável e contexto de pack aplicável ambos vazios permitem `not_relevant` | pack aplicável sem relação nem contexto continua irrelevante |
+| P7 / CM-ABS-01 | classes semânticas separadas da serialização | nova grafia futura não muda a classe `SOURCE_ABSENT` nem consequência | slot ausente fica tipado sem inventar irrelevância |
+| P8 / CM-HUNK-01 e CM-HUNK-02 | piso de hunk completo + kernel | hunk truncado, ou hunk completo sem kernel, é não conclusivo | hunk integral com kernel integral pode ser conclusivo |
+| P9 / CM-NORM-02 | ordenação canônica e planner limitado | mesma entrada/budget gera plano e resultado byte-equivalentes | redução só opcional é determinística e ainda pode ser conclusiva |
+
+`CM-HUNK-01` é um arquivo cuja única evidência é contexto completo, mas cujo hunk
+fica abaixo do piso; `CM-HUNK-02` mantém hunk integral, porém perde contexto requerido.
+Ambos provam que nem presença de hunk nem contexto isoladamente satisfazem o piso.
+
+Controles positivos obrigatórios do corpus: contrato real `calendar`; lista de topo
+`response_model_rules`; seção mista de `auth_admin`; pack aplicável com
+`domain_contract`; pack aplicável sem relação de contrato mas com `REVIEW_CONTEXT`;
+pack irrelevante; fixture legado A `tests/agent_review/fixtures/agentescala_e2e`; e
+fixture legado B `tests/agent_review/fixtures/agentescala_minimal`. Eles devem demonstrar que o
+fechamento finito não torna toda revisão não conclusiva.
 
 ---
 

@@ -119,7 +119,7 @@
     {
       "claim_id": "CL-2",
       "title": "Contract-aware advisory context and honest required-context loss",
-      "proposition": "AgentReview v1 may be contract-aware and obligation-guided in its advisory context, and it reports when material required context was unavailable. A successfully admitted source has exactly one normalized contract/pack projection, deterministic applicability, and required semantic-context loss reaches the quality gate. This claim does NOT assert exhaustive raw serialization grammar, parser behavior, exhaustive per-claim coverage, or satisfaction of all applicable obligations.",
+      "proposition": "AgentReview v1 may be contract-aware and obligation-guided in its advisory context, and it reports when material required context was unavailable. A successfully admitted source has exactly one finite normalized contract/pack projection with canonical ordering, deterministic applicability and a mechanical required kernel; required semantic-context or minimum-reviewable-hunk loss reaches the quality gate. This claim does NOT assert exhaustive raw serialization grammar, parser behavior, exhaustive per-claim coverage, or satisfaction of all applicable obligations.",
       "owner": "#221 V1-C2 (engine generic) + AgentEscala#869 (target sources/projection/config/conformance); #221 body 2026-09-30T20:46Z",
       "producer": [
         "context loading/selection: app/agent_review/repo_profile.py:72-77; app/agent_review/payload_cost_model.py:388-443 (contracts_context), :789-811 (_flatten_contract_rules), :843-858 (_flatten_review_packs), :1330-1336 (semantic_context.must_hold); app/agent_review/chunk_payload_builder.py:503-508 (shrink ladder; aux_context dropped first)",
@@ -131,7 +131,8 @@
         "structured per-claim consumer: NONE -- explicit final-v1 non-claim, deferred to #353/#357 (see structured_per_claim_coverage)"
       ],
       "required_evidence": [
-        "normalized projection, applicability, semantic-kernel budget and gate-loss controls; two conforming implementations cannot disagree after successful normalization",
+        "finite normalized schema, complete field census, canonical ordering, applicability/pack-context observability, semantic-kernel and hunk-floor budget controls; two conforming implementations cannot disagree after successful normalization",
+        "AOCM P1-P9 focal countermodels and positive controls in OBL-CL2-03 / CM-NORM, CM-ABS, CM-HUNK and CM-PACK",
         "successor Gate A RawSourceAdmissionContract qualification: current AgentEscala blobs, both committed legacy fixtures, duplicate-key, malformed-root and malformed pack/binding negative controls",
         "payload CONTENT observed at the most focal intermediate state available, not only the final verdict",
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
@@ -140,7 +141,7 @@
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
         "raw source rejected by the successor admission contract (typed invalid/unsupported, never silent empty/not_relevant)",
-        "a known contract source slot is absent and RequiredForChunk requires it (contracts_context_absent:*)"
+        "a known contract source slot is absent and RequiredForChunk requires it (semantic class SOURCE_ABSENT; serialization deferred to Gate A)"
       ],
       "live_status": "not_supported",
       "countermodels": [
@@ -177,7 +178,8 @@
         "superseded_terminal": "V1_C2_CONTRACT_INTERFACE_DECIDED",
         "reason": "RawSerializationGrammarTotality was not closed; this PR claims NormalizedSemanticInterfaceTotality only.",
         "raw_parser_contract": "deferred to successor Gate A",
-        "invariant": "RawAdmitted(X) implies exactly one NormalizedProjection(X); ambiguous or unsupported raw input is typed invalid/unsupported before normalization."
+        "invariant": "RawAdmitted(X) implies exactly one finite NormalizedProjection(X); ambiguous or unsupported raw input is typed invalid/unsupported before normalization.",
+        "closure": "P1-P9 bind finite fields, canonical ordering, requiredness, pack context, absence-class authority, full hunk material and deterministic budget outcomes; no arbitrary normalized map remains."
       },
       "consumer_history": {
         "superseded_value": [
