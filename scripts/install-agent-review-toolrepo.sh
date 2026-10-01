@@ -192,103 +192,6 @@ if [ -z "$VENV_TARGET" ]; then
     exit 2
 fi
 
-CLEANUP_TARGET=""
-CLEANUP_IDENTITY=""
-ARM_CLEANUP=0
-CLAIM_TOKEN_FILE=""
-PRIVATE_CLAIM_DIR=""
-CLAIM_PID=""
-
-cleanup_owned_target() {
-    local primary_status="$1"
-    if [ -n "${PRIVATE_CLAIM_DIR:-}" ] && [ -d "$PRIVATE_CLAIM_DIR" ]; then
-        rmdir "$PRIVATE_CLAIM_DIR" 2>/dev/null || rm -rf "$PRIVATE_CLAIM_DIR" 2>/dev/null || true
-        PRIVATE_CLAIM_DIR=""
-    fi
-    if [ -n "${CLAIM_TOKEN_FILE:-}" ] && [ -s "$CLAIM_TOKEN_FILE" ] && [ -z "$CLEANUP_IDENTITY" ]; then
-        CLEANUP_IDENTITY="$(tr -d '[:space:]' < "$CLAIM_TOKEN_FILE" 2>/dev/null || true)"
-        CLEANUP_TARGET="$VENV_TARGET"
-        ARM_CLEANUP=1
-    fi
-    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
-        if [ -z "$CLEANUP_IDENTITY" ]; then
-            echo "Warning: AgentReview toolrepo cleanup skipped: directory object identity was never verified; preserving original install failure $primary_status." >&2
-            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
-                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
-            fi
-            return 0
-        fi
-        if [ -L "$CLEANUP_TARGET" ]; then
-            echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' is a symlink; preserving original install failure $primary_status." >&2
-            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
-                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
-            fi
-            return 0
-        fi
-        local current_identity
-        current_identity="$(stat -c "%d:%i" "$CLEANUP_TARGET" 2>/dev/null || true)"
-        if [ "$current_identity" != "$CLEANUP_IDENTITY" ]; then
-            echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' identity changed ($current_identity != $CLEANUP_IDENTITY); preserving original install failure $primary_status." >&2
-            if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
-                rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
-            fi
-            return 0
-        fi
-        if [ -e "$CLEANUP_TARGET" ]; then
-            if rm -rf "$CLEANUP_TARGET"; then
-                :
-            else
-                local cleanup_status=$?
-                echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$CLEANUP_TARGET'; preserving original install failure $primary_status." >&2
-            fi
-        fi
-    fi
-    if [ -n "${CLAIM_TOKEN_FILE:-}" ]; then
-        rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
-    fi
-}
-
-handle_exit() {
-    local original_status=$?
-    trap - EXIT INT TERM
-    if [ -n "${CLAIM_PID:-}" ]; then
-        kill -TERM "$CLAIM_PID" 2>/dev/null || true
-        wait "$CLAIM_PID" 2>/dev/null || true
-        CLAIM_PID=""
-    fi
-    if [ "$original_status" -eq 0 ]; then
-        original_status=1
-    fi
-    cleanup_owned_target "$original_status"
-    exit "$original_status"
-}
-
-handle_int() {
-    trap - EXIT INT TERM
-    if [ -n "${CLAIM_PID:-}" ]; then
-        kill -INT "$CLAIM_PID" 2>/dev/null || true
-        wait "$CLAIM_PID" 2>/dev/null || true
-        CLAIM_PID=""
-    fi
-    cleanup_owned_target 130
-    exit 130
-}
-
-handle_term() {
-    trap - EXIT INT TERM
-    if [ -n "${CLAIM_PID:-}" ]; then
-        kill -TERM "$CLAIM_PID" 2>/dev/null || true
-        wait "$CLAIM_PID" 2>/dev/null || true
-        CLAIM_PID=""
-    fi
-    cleanup_owned_target 143
-    exit 143
-}
-
-trap handle_exit EXIT
-trap handle_int INT
-trap handle_term TERM
-
 VENV_PARENT="$(dirname "$VENV_TARGET")"
 if [ ! -d "$VENV_PARENT" ]; then
     mkdir -p "$VENV_PARENT" || {
@@ -297,33 +200,119 @@ if [ ! -d "$VENV_PARENT" ]; then
     }
 fi
 
-CLAIM_TOKEN_FILE="$(mktemp "$VENV_PARENT/.agent_review_token.XXXXXX")" || {
-    echo "Blocked: failed to create claim token file in $VENV_PARENT" >&2
+if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
+    if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
+    else
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
+    fi
     exit 2
+fi
+
+# Enable monitor mode for process group isolation and signal tracking
+set -m
+
+PRIVATE_STAGE=""
+COMMITTED=0
+ACTIVE_PID=""
+ACTIVE_PGID=""
+
+cleanup_stage() {
+    local primary_status="$1"
+    if [ "$COMMITTED" -eq 1 ]; then
+        return 0
+    fi
+    if [ -n "${PRIVATE_STAGE:-}" ] && [ -d "$PRIVATE_STAGE" ]; then
+        if rm -rf "$PRIVATE_STAGE"; then
+            :
+        else
+            local cleanup_status=$?
+            echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$PRIVATE_STAGE'; preserving original install failure $primary_status." >&2
+        fi
+        PRIVATE_STAGE=""
+    fi
 }
 
-PRIVATE_CLAIM_DIR="$(mktemp -d "$VENV_PARENT/.agent_review_claim.XXXXXX")" || {
-    echo "Blocked: failed to create private claim directory in $VENV_PARENT" >&2
+kill_active_group() {
+    local sig="$1"
+    if [ -n "${ACTIVE_PID:-}" ]; then
+        if [ -n "${ACTIVE_PGID:-}" ]; then
+            kill -"$sig" -"$ACTIVE_PGID" 2>/dev/null || true
+        fi
+        kill -"$sig" "$ACTIVE_PID" 2>/dev/null || true
+        wait "$ACTIVE_PID" 2>/dev/null || true
+        ACTIVE_PID=""
+        ACTIVE_PGID=""
+    fi
+}
+
+handle_exit() {
+    local original_status=$?
+    trap - EXIT INT TERM
+    kill_active_group TERM
+    if [ "$original_status" -eq 0 ] && [ "$COMMITTED" -ne 1 ]; then
+        original_status=1
+    fi
+    cleanup_stage "$original_status"
+    exit "$original_status"
+}
+
+handle_int() {
+    trap - EXIT INT TERM
+    kill_active_group INT
+    cleanup_stage 130
+    exit 130
+}
+
+handle_term() {
+    trap - EXIT INT TERM
+    kill_active_group TERM
+    cleanup_stage 143
+    exit 143
+}
+
+trap handle_exit EXIT
+trap handle_int INT
+trap handle_term TERM
+
+run_tracked_step() {
+    "$@" &
+    ACTIVE_PID=$!
+    ACTIVE_PGID="$(ps -o pgid= -p "$ACTIVE_PID" 2>/dev/null | tr -d ' ' || true)"
+    if [ -z "$ACTIVE_PGID" ]; then
+        ACTIVE_PGID="$ACTIVE_PID"
+    fi
+    local step_status=0
+    wait "$ACTIVE_PID" || step_status=$?
+    ACTIVE_PID=""
+    ACTIVE_PGID=""
+    if [ "$step_status" -eq 130 ]; then
+        handle_int
+    elif [ "$step_status" -eq 143 ]; then
+        handle_term
+    fi
+    return "$step_status"
+}
+
+PRIVATE_STAGE="$(mktemp -d "$VENV_PARENT/.agent_review_stage.XXXXXX")" || {
+    echo "Blocked: failed to create private staging directory in $VENV_PARENT" >&2
     exit 2
 }
-chmod 755 "$PRIVATE_CLAIM_DIR" 2>/dev/null || true
+chmod 755 "$PRIVATE_STAGE" 2>/dev/null || true
 
-CLAIM_STATUS=0
-"$PYTHON_BIN" -I -S -c '
-import os, sys, errno, ctypes, platform, signal
+# Step 1: Create venv in private staging directory
+run_tracked_step "$PYTHON_BIN" -I -S -m venv "$PRIVATE_STAGE"
 
-private_dir = sys.argv[1]
-target = sys.argv[2]
-token_file = sys.argv[3]
+# Step 2: Install pinned dependencies into private staging venv
+run_tracked_step env PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
 
-def on_term(s, f):
-    sys.exit(143)
+# Step 3: RelocationClosureV1 and atomic NO_REPLACE publication
+PUBLISH_STATUS=0
+run_tracked_step "$PYTHON_BIN" -I -S -c '
+import os, sys, errno, ctypes, platform, shutil
 
-def on_int(s, f):
-    sys.exit(130)
-
-signal.signal(signal.SIGTERM, on_term)
-signal.signal(signal.SIGINT, on_int)
+stage_dir = sys.argv[1]
+final_dir = sys.argv[2]
 
 def rename_noreplace(src, dst):
     libc = ctypes.CDLL(None, use_errno=True)
@@ -354,100 +343,113 @@ def rename_noreplace(src, dst):
         err = ctypes.get_errno()
         raise OSError(err, os.strerror(err))
 
-try:
-    fd = os.open(private_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-except Exception:
-    sys.exit(4)
+# R1: Remove disposable __pycache__ and *.pyc
+for root, dirs, files in os.walk(stage_dir, topdown=False):
+    for f in files:
+        if f.endswith(".pyc"):
+            try:
+                os.unlink(os.path.join(root, f))
+            except OSError:
+                pass
+    for d in dirs:
+        if d == "__pycache__":
+            shutil.rmtree(os.path.join(root, d), ignore_errors=True)
 
-try:
-    orig_st = os.fstat(fd)
-    if orig_st.st_dev <= 0 or orig_st.st_ino <= 0:
-        os.close(fd)
-        sys.exit(4)
-except Exception:
-    os.close(fd)
-    sys.exit(4)
+# R2: Normalize textual files containing stage path
+stage_bytes = os.fsencode(stage_dir)
+final_bytes = os.fsencode(final_dir)
 
+for root, dirs, files in os.walk(stage_dir):
+    for f in files:
+        p = os.path.join(root, f)
+        if os.path.islink(p):
+            continue
+        try:
+            with open(p, "rb") as fp:
+                data = fp.read()
+        except OSError:
+            continue
+        if stage_bytes in data:
+            if b"\x00" in data:
+                print(f"Blocked: opaque/binary file contains un-normalizable staging path: {p}", file=sys.stderr)
+                sys.exit(2)
+            new_data = data.replace(stage_bytes, final_bytes)
+            try:
+                with open(p, "wb") as fp:
+                    fp.write(new_data)
+            except OSError:
+                sys.exit(2)
+
+# R3: Fail closed on remaining staging references
+for root, dirs, files in os.walk(stage_dir):
+    for f in files:
+        p = os.path.join(root, f)
+        if os.path.islink(p):
+            try:
+                target_link = os.readlink(p)
+                if stage_dir in target_link:
+                    print(f"Blocked: symlink {p} targets staging path {target_link}", file=sys.stderr)
+                    sys.exit(2)
+            except OSError:
+                pass
+            continue
+        try:
+            with open(p, "rb") as fp:
+                content = fp.read()
+        except OSError:
+            continue
+        if stage_bytes in content:
+            print(f"Blocked: staging path reference remains in {p}", file=sys.stderr)
+            sys.exit(2)
+
+# R4: Executable/shebang census
+bin_dir = os.path.join(stage_dir, "bin")
+if os.path.isdir(bin_dir):
+    for f in os.listdir(bin_dir):
+        p = os.path.join(bin_dir, f)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "rb") as fp:
+                first_line = fp.readline()
+        except OSError:
+            continue
+        if first_line.startswith(b"#!"):
+            if stage_bytes in first_line:
+                print(f"Blocked: shebang in {p} refers to staging path", file=sys.stderr)
+                sys.exit(2)
+
+# Atomic publication: point of no return / commit linearization point
 try:
-    rename_noreplace(private_dir, target)
+    rename_noreplace(stage_dir, final_dir)
 except OSError as e:
-    os.close(fd)
     if e.errno == errno.EEXIST:
-        sys.exit(2)
+        sys.exit(10)
     sys.exit(3)
 except Exception:
-    os.close(fd)
     sys.exit(3)
-
-try:
-    if os.path.islink(target):
-        os.close(fd)
-        sys.exit(5)
-    cur_st = os.stat(target)
-    if (cur_st.st_dev, cur_st.st_ino) != (orig_st.st_dev, orig_st.st_ino):
-        os.close(fd)
-        sys.exit(5)
-except Exception:
-    os.close(fd)
-    sys.exit(5)
-
-os.close(fd)
-ident = f"{orig_st.st_dev}:{orig_st.st_ino}"
-try:
-    with open(token_file, "w") as f:
-        f.write(ident)
-except Exception:
-    sys.exit(4)
 
 sys.exit(0)
-' "$PRIVATE_CLAIM_DIR" "$VENV_TARGET" "$CLAIM_TOKEN_FILE" 2>/dev/null &
-CLAIM_PID=$!
-wait "$CLAIM_PID" || CLAIM_STATUS=$?
-CLAIM_PID=""
+' "$PRIVATE_STAGE" "$VENV_TARGET" || PUBLISH_STATUS=$?
 
-if [ "$CLAIM_STATUS" -eq 130 ]; then
-    handle_int
-elif [ "$CLAIM_STATUS" -eq 143 ]; then
-    handle_term
-elif [ "$CLAIM_STATUS" -eq 2 ]; then
+if [ "$PUBLISH_STATUS" -eq 10 ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
     else
         echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
     fi
     exit 2
-elif [ "$CLAIM_STATUS" -eq 5 ]; then
-    echo "Blocked: directory object identity for '$VENV_TARGET' was substituted before acquisition finalized." >&2
-    exit 2
-elif [ "$CLAIM_STATUS" -ne 0 ]; then
-    echo "Blocked: unable to acquire verified directory object identity for '$VENV_TARGET' (claim status $CLAIM_STATUS)." >&2
-    exit 2
+elif [ "$PUBLISH_STATUS" -ne 0 ]; then
+    exit "$PUBLISH_STATUS"
 fi
 
-PRIVATE_CLAIM_DIR=""
-CLEANUP_IDENTITY="$(tr -d '[:space:]' < "$CLAIM_TOKEN_FILE" 2>/dev/null || true)"
-if [ -z "$CLEANUP_IDENTITY" ]; then
-    echo "Blocked: unable to read verified directory object identity for '$VENV_TARGET'." >&2
-    exit 2
-fi
-
-CLEANUP_TARGET="$VENV_TARGET"
-ARM_CLEANUP=1
-rm -f "$CLAIM_TOKEN_FILE" 2>/dev/null || true
-CLAIM_TOKEN_FILE=""
-
-"$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
-# Deliberately does NOT run `pip install --upgrade pip` first: that step
-# would fetch whatever pip version happens to be latest at install time,
-# an unpinned, unverified download that undermines reproducibility between
-# two installs of the same lock file. The venv's own bundled pip (from
-# Python's ensurepip) already supports --require-hashes.
-PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
-
-ARM_CLEANUP=0
+COMMITTED=1
+PRIVATE_STAGE=""
 trap - EXIT INT TERM
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
+
+
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
 if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
