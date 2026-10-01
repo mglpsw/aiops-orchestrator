@@ -98,7 +98,7 @@ Chaves duplicadas são o controle obrigatório da classe `ambiguous raw serializ
 ela é inválida antes da normalização, não um novo campo semântico. A tarefa sucessora
 escolhe uma única forma serializada determinística para cada classe de reason code;
 esta campanha só congela as classes `SOURCE_ABSENT`,
-`SOURCE_INVALID_OR_UNSUPPORTED`, `SELECTED_CONTRACT_MISSING`,
+`SOURCE_INVALID_OR_UNSUPPORTED`, `SELECTED_PACK_MISSING`, `SELECTED_CONTRACT_MISSING`,
 `OPTIONAL_CONTEXT_REDUCED`, `REQUIRED_CONTEXT_OMITTED` e `MUST_HOLD_OMITTED`.
 
 O controle positivo normalizado é: um pack aplicável seleciona exatamente sua relação
@@ -255,13 +255,34 @@ RequirementsFrozen != ExecutableContractQualified
 
 
 
+### CM-GA-A2-LEGACY-SELECTOR-SURFACE
+
+- **Owner:** Gate A A2.
+- **Semântica retida:** token selecionado, `pack_id` e `description` são comparados em lowercase. Um pack legado resolve quando: id == token; description == token; token é substring de id; ou token é substring de description. Todos os packs que satisfazem a regra entram em `resolved_pack_ids`; A2 não escolhe arbitrariamente um único match.
+- **Controles positivos:** igualdade case-insensitive por id; igualdade case-insensitive por description; substring de id (`calendar -> agentescala-calendar`, `aiops -> agentescala-aiops`); substring de description; múltiplos matches retornam o conjunto exato completo.
+- **Non-claim:** MAPPING_PACK_MODE continua exact-id + `fnmatchcase` paths; fuzzy/substring é somente compatibility adapter legado.
+
+### CM-GA-A3-LEGACY-PATTERN
+
+- **Owner:** Gate A A3, consumindo patterns já normalizados por A2.
+- **Operador retido:** trim; vazio ignora; pattern terminado em `*` faz prefix match removendo apenas o `*` final; qualquer outro pattern faz substring match sobre o canonical chunk path. Não é `fnmatchcase`.
+- **Controles:** `calendar` casa path que contém `calendar`; `backend/api/*` casa por prefixo `backend/api/`; pattern sem match permanece não aplicável; nenhum glob adicional é inferido.
+
 ### CM-PACK-03 — explicit selected pack unresolved
 
 - **Entrada:** `selected_contract_pack` não vazio, mas nenhum pack admitido resolve por id exato ou pela compatibilidade legada qualificada no Gate A A2.
 - **Resultado proibido:** `ApplicablePackSet=[]` + `ApplicableContractSet=[]` sendo reinterpretados como `not_relevant`/conclusivo.
 - **Discriminador:** classe semântica `SELECTED_PACK_MISSING`; applicability fica não resolvida, o review afetado é degradado/não conclusivo e `not_relevant` é proibido.
 - **Controle positivo:** seleção exata válida resolve; no fixture legado, `calendar` resolve compativelmente para `agentescala-calendar`.
-- **Owner executável:** Gate A A2/A3.
+- **Owner executável:** A2 resolve o token raw para `SelectionResolution {requested_token,resolved_pack_ids,status}`; A3 consome somente esse resultado e aplica a consequência `SELECTED_PACK_MISSING` quando `status=unresolved`. A3 nunca reexecuta fuzzy/substring matching.
+
+### CM-MUST-HOLD-01 — semantic-context applicability
+
+- **A2:** normaliza `semantic-context.scope`, `change_type`, `contract_pack` e `must_hold`; resolve `contract_pack` pela mesma autoridade de seleção legada/exata e não inventa ids por must-hold.
+- **A3:** `MustHoldApplicable(chunk)` usa scope + constraint de pack. Scope vazio ou `global|all|document` aplica globalmente; caso contrário lower/trim e tokens alfanuméricos casam por substring contra canonical chunk paths. Se `contract_pack` existe, pelo menos um exact resolved pack id precisa estar em `ApplicablePackSet(chunk)`.
+- **RED:** scope backend + calendar resolvido, mas chunk frontend-only ou sem calendar-applicable pack recebe must_hold indevidamente.
+- **GREEN:** backend/calendar chunk recebe must_hold; frontend-only não recebe; `contract_pack` não resolvido gera `SELECTED_PACK_MISSING` e não é reinterpretado como irrelevante.
+- **change_type:** apenas metadata advisory nesta V1; não filtra applicability.
 
 ### Control B — semantic utility evaluation (#805)
 
@@ -282,6 +303,16 @@ pré-declarada**: endpoint do Agent Router, preset, provider/model resolvidos,
 instrução/método, opções de geração/request e retry policy. Cada tentativa registra
 `inference_config_id` compartilhado, endpoint/preset/provider/model/options e a
 request identity/digest de cada braço; somente o subject revisado pode diferir.
-Drift de configuração invalida Control B e retém o terminal. Falhar a expectativa
-pré-declarada retém o terminal C2 para adjudicação; passar prova somente utilidade
-semântica limitada do par exato, nunca recall/completude exaustiva.
+Drift de configuração invalida Control B e retém o terminal. Para sampling estocástico,
+antes do primeiro run congela-se `sampling_mode`: se seed determinístico for suportado
+pela rota/modelo real, ambos os braços do par usam o mesmo seed e o registram; se não,
+usa-se protocolo repeated-pair com `pair_count` e `pass_criterion` pré-declarados no
+grant, sem adaptive stopping, descarte de pares ou rerun até resultado favorável. Toda
+tentativa registra pair index/sampling identity. Falhar a expectativa pré-declarada
+retém o terminal C2; passar prova apenas utilidade semântica limitada, nunca recall.
+
+### PC-PACK-PRESET-OPTIONAL
+
+Pack aplicável com `review_preset` mantém `pack_id` requerido. Remover somente
+`review_preset` -> `OPTIONAL_CONTEXT_REDUCED`; applicability não muda e conclusão
+limpa continua possível se todo o restante do piso estiver presente.
