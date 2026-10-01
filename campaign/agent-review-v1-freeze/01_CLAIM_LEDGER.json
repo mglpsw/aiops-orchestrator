@@ -119,7 +119,7 @@
     {
       "claim_id": "CL-2",
       "title": "Contract-aware advisory context and honest required-context loss",
-      "proposition": "AgentReview v1 may be contract-aware and obligation-guided in its advisory context, and it reports when material required context was unavailable. A successfully admitted source has exactly one finite normalized contract/pack projection with canonical ordering, deterministic applicability and a mechanical required kernel; required semantic-context or minimum-reviewable-hunk loss reaches the quality gate. This claim does NOT assert exhaustive raw serialization grammar, parser behavior, exhaustive per-claim coverage, or satisfaction of all applicable obligations.",
+      "proposition": "AgentReview v1 final freezes the semantic requirements and safety invariants for contract-aware advisory context and honest required-context loss. Exact raw admission, legacy compatibility resolution, normalization, canonical cost serialization, packing/repacking and loss propagation become authoritative only in the executable Gate-A task contract and its code/tests. The runtime remains not_supported until Gate A + Gate B (AgentEscala#869) + Gate C (exact pair) qualify it. V1 does NOT certify exhaustive per-claim coverage or satisfaction of all applicable obligations.",
       "owner": "#221 V1-C2 (engine generic) + AgentEscala#869 (target sources/projection/config/conformance); #221 body 2026-09-30T20:46Z",
       "producer": [
         "context loading/selection: app/agent_review/repo_profile.py:72-77; app/agent_review/payload_cost_model.py:388-443 (contracts_context), :789-811 (_flatten_contract_rules), :843-858 (_flatten_review_packs), :1330-1336 (semantic_context.must_hold); app/agent_review/chunk_payload_builder.py:503-508 (shrink ladder; aux_context dropped first)",
@@ -131,9 +131,9 @@
         "structured per-claim consumer: NONE -- explicit final-v1 non-claim, deferred to #353/#357 (see structured_per_claim_coverage)"
       ],
       "required_evidence": [
-        "finite normalized schema, complete field census, canonical ordering, applicability/pack-context observability, semantic-kernel and hunk-floor budget controls; two conforming implementations cannot disagree after successful normalization",
-        "AOCM P1-P9 focal countermodels and positive controls in OBL-CL2-03 / CM-NORM, CM-ABS, CM-HUNK and CM-PACK",
-        "successor Gate A RawSourceAdmissionContract qualification: current AgentEscala blobs, both committed legacy fixtures, duplicate-key, malformed-root and malformed pack/binding negative controls",
+        "PR #367 requirements freeze: semantic obligations, non-claims, compatibility classes, positive controls and countermodel families are explicit; every implementation-determinism question has exactly one executable Gate-A owner.",
+        "Gate A / C2ExecutableContract qualification: A1 RawSourceAdmission; A2 LegacyCompatibility + Normalization; A3 Applicability + explicit relation resolution; A4 canonical cost + deterministic budget/packing; A5 required-context loss propagation.",
+        "Gate A compatibility controls include committed legacy fixtures (including selected `calendar` resolving compatibly to legacy pack `agentescala-calendar`), current AgentEscala target shapes, legacy rule applicability aliases, malformed/ambiguous negatives and one authoritative cost/packing path.",
         "payload CONTENT observed at the most focal intermediate state available, not only the final verdict",
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
         "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07"
@@ -152,9 +152,10 @@
       "limitations": [
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
         "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement.",
-        "no per-claim consumer exists in v1 (ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state, schemas.py:298-305): explicit final-v1 non-claim deferred to #353/#357"
+        "no per-claim consumer exists in v1 (ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state, schemas.py:298-305): explicit final-v1 non-claim deferred to #353/#357",
+        "RequirementsFrozen != ExecutableContractQualified: PR #367 does not claim that prose alone defines byte-identical normalization, legacy alias resolution, canonical cost, partitioning or shrink/repack algorithms; those are Gate-A executable obligations."
       ],
-      "risk": "Per-claim part resolved by owner decision (deferred). Remaining STOP exposure for the implementation slice: STOP_OWNER_BOUNDARY (ClaimV1 needed), STOP_TARGET_COMPATIBILITY, STOP_CONTRACT_CONFLICT, STOP_SCHEMA_EXPANSION, STOP_V2_COUPLING, STOP_POSITIVE_CONTROL, STOP_SUBJECT_DRIFT (see 04 V1-C2).",
+      "risk": "Per-claim part resolved by owner decision (deferred). Implementation risk is bounded by Gate A (A1-A5), Gate B (#869), Gate C exact-pair conformance and the existing STOP_OWNER_BOUNDARY / STOP_TARGET_COMPATIBILITY / STOP_SCHEMA_EXPANSION / STOP_V2_COUPLING / STOP_POSITIVE_CONTROL / STOP_SUBJECT_DRIFT conditions.",
       "slice": "V1-C2",
       "owner_requirement_of_record": "#221 comment 2026-09-16: declared claims/relevant must-holds extracted from PR/contract pack; #805 fixture => material/merge-blocking; contracts_context_not_relevant impossible when the claim depends on the selected contract pack; material limitations degrade confidence/coverage — per-claim part DEFERRED_FROM_V1_FREEZE by owner decision 2026-09-30; #805 kept as controls A/B",
       "synced_from": "#221 body 'Contrato funcional de V1-C2' items 1-6 and AgentEscala#869 (OPEN, PLANNED)",
@@ -171,15 +172,20 @@
       },
       "narrowing_status": "RESOLVED by owner decision 2026-09-30 (explicit narrowing; not a waiver of #805, which is kept as controls A/B)",
       "terminal": {
-        "contract_slice": "V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED",
+        "contract_slice": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
         "implementation_slice": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
       },
       "rescope_2026_10_01": {
-        "superseded_terminal": "V1_C2_CONTRACT_INTERFACE_DECIDED",
-        "reason": "RawSerializationGrammarTotality was not closed; this PR claims NormalizedSemanticInterfaceTotality only.",
-        "raw_parser_contract": "deferred to successor Gate A",
-        "invariant": "RawAdmitted(X) implies exactly one finite NormalizedProjection(X); ambiguous or unsupported raw input is typed invalid/unsupported before normalization.",
-        "closure": "P1-P9 bind finite fields, canonical ordering, requiredness, pack context, absence-class authority, full hunk material and deterministic budget outcomes; no arbitrary normalized map remains."
+        "superseded_terminals": [
+          "V1_C2_CONTRACT_INTERFACE_DECIDED",
+          "V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED"
+        ],
+        "reason": "Exact-head review demonstrated that documentation can freeze semantic requirements and owner boundaries, but does not itself qualify executable parser/normalizer/cost/packing behavior. RequirementsFrozen != ExecutableContractQualified.",
+        "current_terminal": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
+        "gate_a": "C2ExecutableContract owns A1 raw admission; A2 legacy compatibility + normalization; A3 applicability/relations; A4 canonical cost + deterministic budget/packing; A5 required-context loss propagation.",
+        "gate_b": "AgentEscala#869 target projection/config qualification.",
+        "gate_c": "exact AgentReview candidate SHA + exact AgentEscala target/config SHA conformance.",
+        "implementation_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
       },
       "consumer_history": {
         "superseded_value": [
