@@ -138,7 +138,7 @@
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
         "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07",
         "Gate A focal negative control: unresolved explicit selected pack -> SELECTED_PACK_MISSING, non-conclusive, never not_relevant",
-        "Control B attribution: one predeclared inference_config_id shared by both arms; endpoint/preset/provider/model/options and per-arm request identity/digest recorded",
+        "Control B attribution: one predeclared inference_config_id shared by both arms; endpoint/preset/provider/model/options and per-arm request identity/digest recorded; sampling uses shared supported seed or predeclared repeated-pair pair_count/pass_criterion with no adaptive stopping",
         "Gate A A2 legacy selector compatibility covers the full retained predicate: case-insensitive id equality, description equality, substring-in-id, substring-in-description, complete multiple-match set; controls include calendar->agentescala-calendar and aiops->agentescala-aiops.",
         "Gate A A3 legacy rule-pattern controls preserve current operator: trailing `*` prefix match; otherwise substring match; distinct from fnmatchcase pack paths.",
         "Gate A must_hold controls bind semantic-context scope/optional contract_pack to chunks: A2 normalizes/resolves; A3 evaluates scope + ApplicablePackSet; unresolved pack -> SELECTED_PACK_MISSING.",
