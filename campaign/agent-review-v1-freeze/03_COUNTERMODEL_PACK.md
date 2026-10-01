@@ -105,7 +105,7 @@ O controle positivo normalizado é: um pack aplicável seleciona exatamente sua 
 de contrato; um pack sem relação não injeta contrato espúrio. A ausência de relação,
 referência explícita ausente e fonte inválida permanecem semanticamente distintos.
 
-### Fechamento AOCM P1–P9 — contraexemplos normativos da interface normalizada
+### Histórico P1–P9 — requisitos preservados; autoridade executável movida ao Gate A
 
 | Id | Mecanismo e contramodelo focal | Discriminador | Controle positivo |
 |---|---|---|---|
@@ -216,3 +216,37 @@ PC-CL5 clean all reviewed: parse=complete synth=complete/approved gate=passed/ap
 ## CL-7 — Publication fidelity
 
 Sem countermodel ativo no engine. Evidência `HISTORICAL` (AgentEscala #803). Limitação: o digest é produzido e verificado sobre o mesmo artefato CT104 — prova não-alteração entre producer e publisher, não atestação independente do resultado semântico.
+
+
+## Requirements freeze pós-review exact-head da PR #367
+
+As revisões do exact head `ad9403f065a836298defdf51bf9e6122fea7cdd1`
+demonstraram que a campanha não deve prometer que prosa determina bytes/chunks.
+O terminal atual é `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN` e os seguintes
+contraexemplos passam a ser **famílias obrigatórias do Gate A executável**:
+
+- **CM-GA-A2-LEGACY-PACK:** o input legado seleciona `contract_pack=calendar` e o
+  fixture commitado possui `pack_id=agentescala-calendar`. Gate A A2 deve preservar
+  a compatibilidade atual e entregar ao estágio normalizado um pack identity exato;
+  fuzzy matching não vira semântica do mapping mode.
+- **CM-GA-A2-LEGACY-APPLICABILITY:** os aliases legados `scope`, `is_global`,
+  `file_path`, `path`, `files`, `paths`, `source_files`, `related_files` e
+  `patterns` não podem desaparecer. A2/A3 deve projetá-los em um único conceito
+  finito `ContractApplicability` preservando exact-path OR pattern OR global.
+- **CM-GA-A4-COST:** duas representações de custo não podem decidir packing de forma
+  diferente. A4 deve usar a autoridade v1 `canonical_json/canonical_len` ou provar
+  uma substituição equivalente no domínio suportado; a unidade atual é comprimento
+  do texto JSON canônico Python, não "bytes" genéricos.
+- **CM-GA-A4-REPACK:** contexto opcional não possui ordem arbitrária de remoção. A4
+  qualifica um único optional-minimal context, recompõe applicability/kernel/custo
+  para cada candidate file set e preserva ou substitui explicitamente o FFD/tie-break
+  existente. Singleton oversize permanece não coberto.
+
+Essas famílias não são consideradas mortas por esta PR documental. Elas ficam
+**ROUTED_TO_EXECUTABLE_GATE_A** e só fecham quando código/testes do successor as
+qualificarem. O positive control permanece: contexto requerido + hunks intactos que
+cabem no budget continuam capazes de revisão conclusiva.
+
+```text
+RequirementsFrozen != ExecutableContractQualified
+```
