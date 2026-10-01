@@ -273,7 +273,7 @@ RequirementsFrozen != ExecutableContractQualified
 ### CM-GA-A3-LEGACY-PATTERN
 
 - **Owner:** Gate A A3, consumindo patterns já normalizados por A2.
-- **Operador retido:** trim; vazio ignora; pattern terminado em `*` faz prefix match removendo apenas o `*` final; qualquer outro pattern faz substring match sobre o canonical chunk path. Não é `fnmatchcase`.
+- **Operador retido em A3:** patterns já chegam canônicos/non-empty de A2. Se pattern termina em `*`, A3 faz prefix match removendo apenas o `*` final; qualquer outro pattern faz substring match sobre canonical chunk path. A3 NÃO trim/drop/sanitize; não é `fnmatchcase`.
 - **Controles:** `calendar` casa path que contém `calendar`; `backend/api/*` casa por prefixo `backend/api/`; pattern sem match permanece não aplicável; nenhum glob adicional é inferido.
 
 ### CM-PACK-03 — explicit selected pack unresolved
@@ -282,7 +282,7 @@ RequirementsFrozen != ExecutableContractQualified
 - **Resultado proibido:** `ApplicablePackSet=[]` + `ApplicableContractSet=[]` sendo reinterpretados como `not_relevant`/conclusivo.
 - **Discriminador:** classe semântica `SELECTED_PACK_MISSING`; applicability fica não resolvida, o review afetado é degradado/não conclusivo e `not_relevant` é proibido.
 - **Controle positivo:** seleção exata válida resolve; no fixture legado, `calendar` resolve compativelmente para `agentescala-calendar`.
-- **Owner executável:** A2 resolve o token raw para `SelectionResolution {requested_token,resolved_pack_ids,status}`; A3 consome somente esse resultado e aplica a consequência `SELECTED_PACK_MISSING` quando `status=unresolved`. A3 nunca reexecuta fuzzy/substring matching.
+- **Owner executável:** A2 resolve o token raw para `SelectionResolution {requested_token,resolved_pack_ids,status}`; A3 consome somente esse resultado e aplica `SELECTED_PACK_MISSING` quando `status=unresolved`. A3 nunca reexecuta o **raw legacy selector matcher** (id/description equality/substring); o semantic-group fallback normalizado permanece A3-owned e só roda quando `source_mode` é legado.
 
 ### CM-MUST-HOLD-01 — semantic-context applicability
 
@@ -374,9 +374,9 @@ Se `semantic-context.contract_pack` é não vazio, `review_packs` é `RequiredFo
 ### CM-GA-A3-SEMANTIC-GROUP
 
 - **Owner:** Gate A A3.
-- Retain `_relevance_keywords` only for LEGACY_FLAT_MODE contracts and LEGACY_PACK_MODE packs.
+- Retain `_relevance_keywords` only for `ContractCandidate.source_mode=LEGACY_FLAT_MODE` and `PackCandidate.source_mode=LEGACY_PACK_MODE`.
 - Legacy contract operand = lowercase `contract_id + " " + description`; legacy pack operand = lowercase `pack_id + " " + description`.
-- MAPPING_PACK_MODE and DOMAIN_MAPPING_MODE NEVER gain applicability from semantic-group keywords.
+- `PackCandidate.source_mode=MAPPING_PACK_MODE` and contract candidates from DOMAIN_MAPPING_MODE/TOP_LEVEL_LIST_MODE NEVER gain applicability from semantic-group keywords.
 
 ### CM-GA-A3-INCLUDE-ALL
 
@@ -429,13 +429,13 @@ Repeated-pair mode freezes N and K before execution and passes only when at leas
 - A3 evaluates **every** id in the resolved set; no arbitrary single winner.
 
 ### ApplicablePackSet canonical union
-`ApplicablePackSet(chunk)` is the union of:
-1. all resolved selected pack ids;
-2. mapping packs matched by `fnmatchcase` paths;
-3. all admitted legacy packs under `target_profile:review_packs`;
-4. legacy pack exact ids referenced by `contract:<id>`;
-5. legacy semantic-group fallback matches.
-Mapping mode never receives keyword fallback.
+A3 evaluates `PackCandidate {pack,source_mode}`. `ApplicablePackSet(chunk)` is the union of:
+1. all ids in resolved `SelectionResolution.resolved_pack_ids`;
+2. `MAPPING_PACK_MODE` candidates whose normalized paths match by `fnmatchcase`;
+3. all `LEGACY_PACK_MODE` candidates under `target_profile:review_packs`;
+4. `LEGACY_PACK_MODE` candidates whose exact pack_id matches a direct legacy `contract:<id>` context token;
+5. `LEGACY_PACK_MODE` semantic-group fallback matches.
+`source_mode` is required pre-budget applicability metadata consumed by A3 and is not model payload context. Mapping mode never receives keyword fallback.
 
 
 ### CM-GA-A2-LEGACY-PACK-DUP-ID
@@ -443,13 +443,13 @@ Mapping mode never receives keyword fallback.
 - No silent merge/dedupe/winner; distinct ids remain distinct normalized packs.
 
 ### ApplicableContractSet canonical union
-A3 forms the exact-id union of:
-1. contract_refs from every ApplicablePackSet member;
-2. direct exact `contract:<id>` refs;
-3. all admitted legacy contracts under `target_profile:domain_contracts`;
-4. legacy contracts matched by normalized ContractApplicability (exact path / legacy pattern / global);
-5. legacy semantic-group fallback.
-Any explicit/pack relation to a missing contract -> `SELECTED_CONTRACT_MISSING` (CM-PACK-04), never empty/not_relevant.
+A3 evaluates `ContractCandidate {contract,source_mode}` and forms the exact-id union of:
+1. resolved `contract_refs` from every ApplicablePackSet member;
+2. direct legacy `contract:<id>` tokens that exactly match an admitted NormalizedContract.contract_id;
+3. all `LEGACY_FLAT_MODE` contracts under `target_profile:domain_contracts`;
+4. legacy contracts matched by normalized ContractApplicability (exact path / canonical legacy pattern / global);
+5. `LEGACY_FLAT_MODE` semantic-group fallback.
+A direct legacy `contract:<id>` token is a **dual-namespace compatibility reference**: it may match a contract, a LEGACY_PACK_MODE pack, or both. Pack-only match is valid and MUST NOT emit missing-contract failure. Only zero matches across BOTH namespaces yields the historical missing-reference consequence `SELECTED_CONTRACT_MISSING`. A pack.contract_refs relation to an absent contract still yields `SELECTED_CONTRACT_MISSING` (CM-PACK-04).
 
 ### SelectionResolution no-selector control
 No general selector -> `SelectionResolution {status=not_requested, requested_token absent, resolved_pack_ids=[]}`; non-degrading.
@@ -464,10 +464,67 @@ Conflict control: general calendar + semantic constraint security coexist indepe
 ### CM-CL2-05 — domain include-all source missing
 `target_profile:domain_contracts` present + domain-contracts source absent/invalid -> source required, typed failure, non-conclusive; never optional absence.
 
-### CM-CONTRACT-01 — direct contract target missing
-Direct `contract:<id>` names absent normalized contract -> `SELECTED_CONTRACT_MISSING`, non-conclusive, never empty/not_relevant.
-Positive counterpart: target contract exists -> exact id enters `ApplicableContractSet`.
+### CM-CONTRACT-01 — direct legacy context reference unresolved
+Direct `contract:<id>` is evaluated across BOTH normalized contract ids and LEGACY_PACK_MODE pack ids.
+- contract-only match -> contract applicable, no missing class;
+- legacy-pack-only match -> pack applicable, no missing class;
+- both -> both applicable;
+- neither -> `SELECTED_CONTRACT_MISSING`, non-conclusive, never empty/not_relevant.
+Positive counterparts exercise contract-only, pack-only and both-namespace resolution.
 
 ### CM-CL2-06 — direct legacy pack-reference source missing
 Any direct `contract:<id>` requires review-packs source as well, because current legacy compatibility may select a pack with the same id.
 Absent/invalid review-packs -> typed failure/non-conclusive; never optional absence.
+
+
+### Candidate source_mode handoff
+A2 emits:
+- `PackCandidate {pack: NormalizedPack, source_mode: LEGACY_PACK_MODE|MAPPING_PACK_MODE}`
+- `ContractCandidate {contract: NormalizedContract, source_mode: LEGACY_FLAT_MODE|DOMAIN_MAPPING_MODE|TOP_LEVEL_LIST_MODE}`
+
+`source_mode` is REQUIRED_PREBUDGET_APPLICABILITY_METADATA: A3 consumes it to decide which legacy-only fallback branches exist, then it is dropped before model payload construction. It is not optional payload metadata and has no payload-budget loss class. RED: remove source_mode and make a relationless mapping pack indistinguishable from a legacy pack; GREEN: semantic-group/include-all legacy behavior applies only to legacy candidates.
+
+## Canonical CL-2 positive-control registry
+
+The structured `01_CLAIM_LEDGER.json -> CL-2.positive_controls` array is the canonical exact-ID registry. This pack mirrors it for human review:
+
+- `PC-CL2-01`
+- `PC-CL2-02`
+- `PC-CL2-03`
+- `PC-CL2-04`
+- `PC-CL2-05`
+- `PC-CL2-06`
+- `PC-CL4-02`
+- `PC-CL4-03`
+- `PC-NORM-01`
+- `PC-NORM-02`
+- `PC-NORM-03`
+- `PC-NORM-04`
+- `PC-PACK-01`
+- `PC-PACK-02`
+- `PC-PACK-03`
+- `PC-PACK-04`
+- `PC-CONTRACT-01`
+- `PC-ABS-01`
+- `PC-HUNK-01`
+- `PC-HUNK-02`
+- `PC-GA-A2-LEGACY-PACK`
+- `PC-GA-A2-LEGACY-APPLICABILITY`
+- `PC-GA-A2-LEGACY-SELECTOR-SURFACE`
+- `PC-GA-A2-SELECTOR-SOURCE-PRECEDENCE`
+- `PC-GA-A2-LEGACY-FLAT-IDENTITY`
+- `PC-GA-A2-LEGACY-DUP-ID`
+- `PC-GA-A2-LEGACY-PACK-DUP-ID`
+- `PC-GA-A3-LEGACY-PATTERN`
+- `PC-GA-A3-SEMANTIC-GROUP`
+- `PC-GA-A3-INCLUDE-ALL`
+- `PC-GA-A4-COST`
+- `PC-GA-A4-REPACK`
+- `PC-MUST-HOLD-01`
+- `PC-PROVENANCE-01`
+- `PC-PACK-PRESET-OPTIONAL`
+- `PC-CHANGE-TYPE-OPTIONAL`
+- `PC-CL2-805-A`
+- `PC-CL2-805-B`
+
+Pairing rule: for every mandatory CL-2 `CM-*`, the ordinary resolving counterpart is the exact `PC-*` id registered in `CL-2.positive_control_pairing`; named extras cover optional pack preset/change_type and #805 controls A/B. No mandatory positive control is prose-only.
