@@ -252,6 +252,15 @@ RequirementsFrozen != ExecutableContractQualified
 ```
 
 
+
+### CM-PACK-03 — explicit selected pack unresolved
+
+- **Entrada:** `selected_contract_pack` não vazio, mas nenhum pack admitido resolve por id exato ou pela compatibilidade legada qualificada no Gate A A2.
+- **Resultado proibido:** `ApplicablePackSet=[]` + `ApplicableContractSet=[]` sendo reinterpretados como `not_relevant`/conclusivo.
+- **Discriminador:** classe semântica `SELECTED_PACK_MISSING`; applicability fica não resolvida, o review afetado é degradado/não conclusivo e `not_relevant` é proibido.
+- **Controle positivo:** seleção exata válida resolve; no fixture legado, `calendar` resolve compativelmente para `agentescala-calendar`.
+- **Owner executável:** Gate A A2/A3.
+
 ### Control B — semantic utility evaluation (#805)
 
 O **owner executável** é `#221 V1-C2 semantic-utility evaluation`; o grant de
@@ -266,6 +275,11 @@ corrected counterpart + same applicable context
 ```
 
 Expectativas são congeladas antes do run, toda tentativa admitida é registrada e não
-há rerun até resposta favorável. Falhar a expectativa pré-declarada retém o terminal
-C2 para adjudicação; passar prova somente utilidade semântica limitada do par exato,
-nunca recall/completude exaustiva.
+há rerun até resposta favorável. **Ambos os braços usam a mesma configuração de inferência
+pré-declarada**: endpoint do Agent Router, preset, provider/model resolvidos,
+instrução/método, opções de geração/request e retry policy. Cada tentativa registra
+`inference_config_id` compartilhado, endpoint/preset/provider/model/options e a
+request identity/digest de cada braço; somente o subject revisado pode diferir.
+Drift de configuração invalida Control B e retém o terminal. Falhar a expectativa
+pré-declarada retém o terminal C2 para adjudicação; passar prova somente utilidade
+semântica limitada do par exato, nunca recall/completude exaustiva.
