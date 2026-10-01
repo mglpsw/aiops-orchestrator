@@ -138,7 +138,11 @@
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
         "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07",
         "Gate A focal negative control: unresolved explicit selected pack -> SELECTED_PACK_MISSING, non-conclusive, never not_relevant",
-        "Control B attribution: one predeclared inference_config_id shared by both arms; endpoint/preset/provider/model/options and per-arm request identity/digest recorded"
+        "Control B attribution: one predeclared inference_config_id shared by both arms; endpoint/preset/provider/model/options and per-arm request identity/digest recorded",
+        "Gate A A2 legacy selector compatibility covers the full retained predicate: case-insensitive id equality, description equality, substring-in-id, substring-in-description, complete multiple-match set; controls include calendar->agentescala-calendar and aiops->agentescala-aiops.",
+        "Gate A A3 legacy rule-pattern controls preserve current operator: trailing `*` prefix match; otherwise substring match; distinct from fnmatchcase pack paths.",
+        "Gate A must_hold controls bind semantic-context scope/optional contract_pack to chunks: A2 normalizes/resolves; A3 evaluates scope + ApplicablePackSet; unresolved pack -> SELECTED_PACK_MISSING.",
+        "Control B sampling attribution: supported shared deterministic seed per pair OR predeclared repeated-pair protocol with immutable pair_count/pass_criterion; all sampling identities and pair outcomes recorded."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -156,7 +160,9 @@
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
         "Task-contract restriction for this traversal (owner-confirmed 2026-09-30; record: https://github.com/mglpsw/aiops-orchestrator/pull/365#issuecomment-5914381014): free-text PR claims do not become deterministic authority and no generic PR-claim NLP is implemented. This restricts means only; it does not dispose of the #805 requirement.",
         "no per-claim consumer exists in v1 (ChunkResponse/ChunkResults/FinalReview/ReviewQualityGate carry no per-claim state, schemas.py:298-305): explicit final-v1 non-claim deferred to #353/#357",
-        "RequirementsFrozen != ExecutableContractQualified: PR #367 does not claim that prose alone defines byte-identical normalization, legacy alias resolution, canonical cost, partitioning or shrink/repack algorithms; those are Gate-A executable obligations."
+        "RequirementsFrozen != ExecutableContractQualified: PR #367 does not claim that prose alone defines byte-identical normalization, legacy alias resolution, canonical cost, partitioning or shrink/repack algorithms; those are Gate-A executable obligations.",
+        "Legacy compatibility is an executable Gate-A obligation, not a normalized mapping-mode semantic: current v1 legacy selector and pattern operators are frozen as retained behavior for A2/A3 qualification.",
+        "Control B is stochastic unless sampling identity/protocol is predeclared and recorded; configuration equality alone is insufficient attribution."
       ],
       "risk": "Per-claim part resolved by owner decision (deferred). Implementation risk is bounded by Gate A (A1-A5), Gate B (#869), Gate C exact-pair conformance and the existing STOP_OWNER_BOUNDARY / STOP_TARGET_COMPATIBILITY / STOP_SCHEMA_EXPANSION / STOP_V2_COUPLING / STOP_POSITIVE_CONTROL / STOP_SUBJECT_DRIFT conditions.",
       "slice": "V1-C2",
@@ -185,7 +191,14 @@
         ],
         "reason": "Exact-head review demonstrated that documentation can freeze semantic requirements and owner boundaries, but does not itself qualify executable parser/normalizer/cost/packing behavior. RequirementsFrozen != ExecutableContractQualified.",
         "current_terminal": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
-        "gate_a": "C2ExecutableContract owns A1 raw admission; A2 legacy compatibility + normalization; A3 applicability/relations; A4 canonical cost + deterministic budget/packing; A5 required-context loss propagation.",
+        "gate_a": {
+          "A1": "RawSourceAdmission only",
+          "A2": "LegacyCompatibility + Normalization only: raw selector/aliases/bindings/semantic-context -> exact normalized identities, SelectionResolution, ContractApplicability, contract_refs; owns projection correctness",
+          "A3": "Applicability + relations only: evaluate A2 outputs against candidate chunk files; owns exact/path/pattern/global/pack/contract/must_hold applicability and unresolved-selection consequence; never re-runs fuzzy/raw matching",
+          "A4": "Canonical cost + deterministic budget/packing only",
+          "A5": "Required-context loss propagation only",
+          "handoff": "A2 output is the only legacy compatibility input to A3; normalization defect -> A2, wrong normalized applicability -> A3."
+        },
         "gate_b": "AgentEscala#869 target projection/config qualification.",
         "gate_c": "exact AgentReview candidate SHA + exact AgentEscala target/config SHA conformance.",
         "implementation_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
@@ -213,6 +226,11 @@
               "exact engine SHA and target/config SHA"
             ],
             "failure": "configuration drift invalidates Control B evidence and withholds V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
+          },
+          "sampling": {
+            "rule": "before provider execution choose one sampling mode. If real route/model supports deterministic seed, both arms use same predeclared seed per pair; otherwise use repeated-pair protocol.",
+            "repeated_pair": "pair_count and pass_criterion fixed in explicit grant before first run; no adaptive stopping, dropped pairs, or rerun-until-favorable.",
+            "evidence": "sampling_mode, seed when used, pair_count, pass_criterion, pair index and every admitted outcome are recorded with inference_config_id/request identities."
           }
         },
         "selected_pack_resolution": {
