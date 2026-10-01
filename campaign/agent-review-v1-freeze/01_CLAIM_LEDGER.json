@@ -148,7 +148,7 @@
         "Gate A A2 legacy-flat identity control: each admitted {id,description} rule -> one NormalizedContract(contract_id=id, section=rules, RuleItem.rule=description); explicit contract:<id> preserved.",
         "Gate A A2 selector preprocessing: first non-empty cleaned contract_pack then alias pack; trim whitespace, contract_pack precedence.",
         "Gate A A2 pattern normalization (trim/drop-empty/sanitize/dedupe/sort) and A3 matching-only handoff.",
-        "review_packs RequiredForChunk when either selected_contract_pack or semantic-context.contract_pack is non-empty.",
+        "review_packs RequiredForChunk when any of: general selected-pack token is non-empty; semantic-context.contract_pack is non-empty; target_profile:review_packs sentinel is present; or mapping-mode applicability depends on pack/path relations.",
         "Legacy general selector source precedence: file-diff-context.contract_pack, then file-diff-context.pack alias; semantic-context.contract_pack remains a separate must-hold constraint.",
         "Legacy flat identity: one {id,description} rule -> one NormalizedContract(contract_id=id, description preserved, section rules, RuleItem.rule=description), no duplicate id qualifier; contract:<id> preserved.",
         "Legacy include-all controls for exact sentinels target_profile:domain_contracts and target_profile:review_packs.",
