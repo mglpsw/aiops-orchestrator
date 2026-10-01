@@ -110,14 +110,14 @@ referência explícita ausente e fonte inválida permanecem semanticamente disti
 | Id | Mecanismo e contramodelo focal | Discriminador | Controle positivo |
 |---|---|---|---|
 | P1 / CM-NORM-01 | schema finito de `NormalizedContract` | scalar admitido sem campo declarado é rejeitado, nunca posto em mapa residual | scalar declarado vira `SemanticValue` ordenado |
-| P2 / CM-NORM-02 | união `TextItem`/`RuleItem` e serialização canônica | duas ordens de inserção de map têm bytes iguais; ordem de itens-fonte não muda | lista de textos/regras mantém a sequência-fonte |
+| P2 / CM-NORM-02 | união `TextItem`/`RuleItem` como requisitos de conteúdo | nenhum campo semântico requerido pode desaparecer ou trocar de papel; ordem de itens-fonte é requisito | lista de textos/regras mantém a sequência-fonte; forma executável/canônica é qualificada no Gate A |
 | P3 / CM-NORM-03 | papéis finitos raw→`RuleItem` + kernel mecânico | campo de rule-object sem papel declarado é rejeitado no Gate A; perda de campo projetado requerido gera `REQUIRED_CONTEXT_OMITTED` | `{id,description}` legado e campos `rule` declarados projetam nos papéis especificados; perda apenas de rationale gera `OPTIONAL_CONTEXT_REDUCED` |
 | P4 / CM-NORM-04 | schema e censo finitos de `NormalizedPack` | metadata fora dos campos declarados não vira contexto normalizado silencioso | description/preset declarados são projetados |
 | P5 / CM-PACK-01 | observabilidade separada de pack, contrato e contexto | pack aplicável com contexto, mas sem relação, não é `not_relevant` | ref resolvida produz evidência de pack e contrato |
 | P6 / CM-PACK-02 | predicado de contratos+contexto de `not_relevant` | só contrato aplicável e contexto de pack aplicável ambos vazios permitem `not_relevant` | pack aplicável sem relação nem contexto continua irrelevante |
 | P7 / CM-ABS-01 | classes semânticas separadas da serialização | nova grafia futura não muda a classe `SOURCE_ABSENT` nem consequência | slot ausente fica tipado sem inventar irrelevância |
 | P8 / CM-HUNK-01 e CM-HUNK-02 | piso de hunk completo + kernel | hunk truncado, ou hunk completo sem kernel, é não conclusivo | hunk integral com kernel integral pode ser conclusivo |
-| P9 / CM-NORM-02 | ordenação canônica e planner limitado | mesma entrada/budget gera plano e resultado byte-equivalentes | redução só opcional é determinística e ainda pode ser conclusiva |
+| P9 / CM-NORM-02 | owner boundary para determinismo executável | duas implementações não qualificadas produzem custo/partições distintos; isto permanece RED até Gate A A4 | Gate A congela uma única autoridade de custo/packing mantendo o positive control de redução só opcional |
 
 `CM-HUNK-01` é um arquivo cuja única evidência é contexto completo, mas cujo hunk
 fica abaixo do piso; `CM-HUNK-02` mantém hunk integral, porém perde contexto requerido.
