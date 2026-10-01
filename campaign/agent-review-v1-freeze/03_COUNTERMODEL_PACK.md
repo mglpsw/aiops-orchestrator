@@ -262,6 +262,14 @@ RequirementsFrozen != ExecutableContractQualified
 - **Controles positivos:** igualdade case-insensitive por id; igualdade case-insensitive por description; substring de id (`calendar -> agentescala-calendar`, `aiops -> agentescala-aiops`); substring de description; múltiplos matches retornam o conjunto exato completo.
 - **Non-claim:** MAPPING_PACK_MODE continua exact-id + `fnmatchcase` paths; fuzzy/substring é somente compatibility adapter legado.
 
+### CM-GA-A3-LEGACY-SEMANTIC-GROUP
+
+- **Owner:** Gate A A3.
+- **Escopo:** somente itens normalizados oriundos de LEGACY_FLAT_MODE/LEGACY_PACK_MODE. Mapping/domain mode não ganha applicability por keyword quando relações explícitas existem.
+- **Operador retido:** `_relevance_keywords(semantic_group)` com os grupos: `primary_backend_logic={backend,service,domain,api}`; `api_schema_contract={schema,contract,api,model}`; `frontend_ui={frontend,ui,component}`; `tests={test,coverage,assert}`; `workflow_aiops={workflow,aiops,pipeline}`; `docs_changelog={docs,changelog,readme}`; `suspicious_out_of_scope={secret,prod,deploy,runtime}`. Qualquer keyword como substring de `(id + ' ' + description).lower()` torna o item aplicável por este fallback.
+- **RED:** legacy `backend-review` em `primary_backend_logic` deixa de entrar no contexto quando não há path/selector explícito.
+- **GREEN:** keyword match legado aplica; legacy sem keyword nem outra relação não aplica; mapping-mode sem exact/path relation não é promovido por keyword.
+
 ### CM-GA-A3-LEGACY-PATTERN
 
 - **Owner:** Gate A A3, consumindo patterns já normalizados por A2.
@@ -316,3 +324,9 @@ retém o terminal C2; passar prova apenas utilidade semântica limitada, nunca r
 Pack aplicável com `review_preset` mantém `pack_id` requerido. Remover somente
 `review_preset` -> `OPTIONAL_CONTEXT_REDUCED`; applicability não muda e conclusão
 limpa continua possível se todo o restante do piso estiver presente.
+
+### PC-CHANGE-TYPE-OPTIONAL
+
+`semantic-context.change_type` é metadata advisory opcional nesta V1 e não filtra
+`MustHoldApplicable`. Com must_hold aplicável preservado, remover somente
+`change_type` -> `OPTIONAL_CONTEXT_REDUCED`; a conclusão ainda pode permanecer limpa.
