@@ -204,8 +204,20 @@
             "TextItem { kind: text, text: non-empty string }",
             "RuleItem { kind: rule, rule: non-empty string, qualifiers: [SemanticValue], rationale?: string }"
           ],
-          "raw_projection": "admitted raw rule.rule -> RuleItem.rule; raw rationale -> optional RuleItem.rationale; every other admitted primitive raw rule field -> RuleItem.qualifiers. LEGACY_FLAT_MODE rule {id, description} projects description -> RuleItem.rule and id -> qualifier SemanticValue {key: id, value: raw id}; this context-specific legacy adapter is finite and preserves both fields. qualifiers are sorted by key and required when present.",
-          "ordering": "item order within a section preserves admitted source order; TextItem and RuleItem are never sorted"
+          "raw_projection": "DOMAIN_MAPPING rule.rule -> RuleItem.rule; raw rationale -> optional RuleItem.rationale; every other admitted primitive semantic rule field -> RuleItem.qualifiers. LEGACY_FLAT_MODE uses the dedicated legacy_flat_identity projection: one rule mapping -> one NormalizedContract keyed by rule.id, section_id=rules, RuleItem.rule=description; applicability fields project separately.",
+          "ordering": "item order within a section preserves admitted source order; TextItem and RuleItem are never sorted",
+          "legacy_flat_identity": {
+            "owner": "Gate A A2",
+            "admission": "each admitted LEGACY_FLAT_MODE rule must have non-empty string `id` and non-empty string `description`; idless/descriptionless rule is SOURCE_INVALID_OR_UNSUPPORTED rather than silently normalized",
+            "projection": "each legacy rule mapping becomes exactly one NormalizedContract: contract_id = cleaned rule.id; semantic_values = []; one NormalizedSection with section_id=`rules`; one RuleItem whose rule = cleaned rule.description; raw applicability fields are projected separately into ContractApplicability and are not RuleItem qualifiers",
+            "explicit_reference": "`contract:<id>` resolves against this NormalizedContract.contract_id, preserving current legacy explicit-reference semantics",
+            "multiplicity": "N admitted legacy rule mappings -> N normalized contracts; rules are never grouped under one synthetic enclosing contract",
+            "controls": [
+              "calendar_10_22_independent -> contract_id calendar_10_22_independent, section rules, rule text from description",
+              "no_auto_contract_fix remains a distinct normalized contract",
+              "explicit contract:calendar_10_22_independent selects exactly that normalized contract"
+            ]
+          }
         },
         "normalized_section": {
           "shape": "NormalizedSection { section_id: non-empty string, items: [NormalizedItem] }",
@@ -300,7 +312,19 @@
               "substring description",
               "multiple-match input returns the complete matching exact-id set"
             ],
-            "non_claim": "MAPPING_PACK_MODE does not inherit fuzzy/substring matching; it remains exact-id + fnmatchcase path applicability"
+            "non_claim": "MAPPING_PACK_MODE does not inherit fuzzy/substring matching; it remains exact-id + fnmatchcase path applicability",
+            "preprocessing": {
+              "owner": "Gate A A2",
+              "source_aliases": "resolve raw selected token by first non-empty cleaned value of `contract_pack`, then legacy alias `pack`",
+              "precedence": "when both are non-empty, `contract_pack` wins",
+              "cleaning": "apply the same clean-text semantics as current v1: accept string, strip surrounding whitespace, empty-after-strip becomes absent",
+              "controls": [
+                "`contract_pack: ' Calendar '` -> cleaned `Calendar`",
+                "missing/blank contract_pack + `pack: ' Calendar '` -> cleaned `Calendar` via alias",
+                "both present -> contract_pack value wins",
+                "blank both -> no explicit selection"
+              ]
+            }
           }
         },
         "field_census": {
@@ -450,7 +474,7 @@
         "scope": "means a known source slot is absent; it does not assert that absence alone is obligation-degrading",
         "required_for_chunk": {
           "domain_contracts": "true iff the chunk has an admitted explicit contract dependency OR an applicable/selected pack yields EffectiveContractRefs != empty",
-          "review_packs": "true iff selected_contract_pack is non-empty OR applicability in mapping mode depends on a pack/path relation",
+          "review_packs": "true iff selected_contract_pack is non-empty OR semantic-context.contract_pack is non-empty OR applicability in mapping mode depends on a pack/path relation. Either explicit pack token makes review_packs required even if the other selector is absent.",
           "absent_or_invalid_when_required": "obligation-degrading -> affected chunk non-conclusive -> visible at gate",
           "absent_when_not_required": "typed absent state remains; no invented not_relevant and no blanket manual downgrade"
         },
@@ -632,7 +656,8 @@
             "scope backend + resolved calendar pack + calendar-applicable backend chunk -> must_hold required",
             "scope backend + resolved calendar pack + backend chunk where calendar pack is not applicable -> must_hold not applicable",
             "unresolved semantic-context contract_pack -> SELECTED_PACK_MISSING/non-conclusive"
-          ]
+          ],
+          "required_source": "non-empty semantic-context.contract_pack makes the review_packs source RequiredForChunk before resolution; absent/invalid review-packs therefore degrades and cannot be reinterpreted as not_required/not_relevant."
         },
         "change_type": "OPTIONAL_ADVISORY_METADATA. It does not filter MustHoldApplicable in final v1. When transported to the model, loss of only change_type is OPTIONAL_CONTEXT_REDUCED and may remain conclusive; Gate A optional-minimal context may omit it. It is never part of the required semantic kernel unless a later separately frozen rule promotes it.",
         "budget_consequence": "only MustHoldApplicable(chunk) items enter RequiredSemanticKernel; omitting one yields MUST_HOLD_OMITTED and non-conclusive affected chunk"
@@ -710,7 +735,7 @@
         },
         "pattern_semantics": {
           "owner": "Gate A A3",
-          "operator": "for each normalized legacy pattern: trim whitespace; ignore empty; if pattern ends with `*`, match canonical path by prefix against pattern without final `*`; otherwise match when the normalized pattern is a substring of canonical path",
+          "operator": "for each canonical non-empty pattern received from A2: if pattern ends with `*`, match canonical path by prefix against pattern without final `*`; otherwise match when pattern is a substring of canonical path. A3 performs no trim/drop/sanitize.",
           "non_claim": "this legacy rule-pattern operator is NOT fnmatchcase and is distinct from mapping-pack path semantics",
           "controls": [
             "pattern `calendar` matches a canonical path containing `calendar`",
@@ -771,6 +796,17 @@
             "workflow_aiops + legacy pack id agentescala-aiops -> applicable",
             "legacy item with no keyword match and no other applicability relation -> not applicable",
             "mapping-mode pack with no exact/path applicability is NOT made applicable merely by keyword"
+          ]
+        },
+        "pattern_normalization": {
+          "owner": "Gate A A2",
+          "raw_input": "legacy `patterns` list",
+          "projection": "accept string members only; strip whitespace; drop empty-after-strip entries; sanitize/canonicalize display-path form using the existing v1 pattern normalization authority; exact-deduplicate and sort; emit canonical non-empty normalized patterns",
+          "handoff": "A3 receives canonical normalized patterns only and MUST NOT trim/drop/sanitize raw entries",
+          "malformed": "non-list raw patterns is not interpreted as pattern applicability; Gate A admission/normalization disposition is explicit and fail-closed under the raw-source contract",
+          "controls": [
+            "`['  backend/api/*  ', ' ', 'backend/api/*']` -> [`backend/api/*`] at A2 output",
+            "A3 prefix/substring matcher receives no blank or untrimmed pattern"
           ]
         }
       }
