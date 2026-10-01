@@ -198,7 +198,7 @@ candidate chunk files.
 resolvida -> `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca
 `not_relevant`. `NormalizedPack.contract_refs` =
 `dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`.
-A3 também preserva o fallback legado por semantic-group (`_relevance_keywords` + substring em id/description) somente para itens legacy; mapping/domain mode não usa keyword como autoridade. `semantic-context.change_type` permanece advisory opcional e não filtra must_hold.
+A3 também preserva o fallback legado por semantic-group (`_relevance_keywords` + substring em id/description) somente para itens legacy; mapping/domain mode não usa keyword como autoridade. `semantic-context.change_type` permanece advisory opcional e não filtra must_hold. `semantic-context.contract_pack` usa objeto separado `PackConstraintResolution` com os mesmos três estados; ele restringe must_hold e nunca sobrescreve o general selector. `target_profile:domain_contracts` torna domain-contracts required; qualquer direct `contract:<id>` torna review-packs required para compatibilidade de pack legado; direct contract target ausente -> CM-CONTRACT-01/SELECTED_CONTRACT_MISSING.
 
 Compatibilidade legada requerida em A2: comparação case-insensitive e match por
 igualdade de id, igualdade de description, substring em id ou substring em
