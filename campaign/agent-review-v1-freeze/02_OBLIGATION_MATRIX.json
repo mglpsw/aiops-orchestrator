@@ -380,7 +380,8 @@
       ],
       "positive_controls": [
         "sufficient context -> conclusive review unchanged",
-        "applicable pack with review_preset: dropping only review_preset emits OPTIONAL_CONTEXT_REDUCED while required pack_id remains and conclusive review stays possible"
+        "applicable pack with review_preset: dropping only review_preset emits OPTIONAL_CONTEXT_REDUCED while required pack_id remains and conclusive review stays possible",
+        "semantic-context with must_hold + change_type: dropping only change_type emits OPTIONAL_CONTEXT_REDUCED while applicable must_hold remains required and conclusive review stays possible"
       ],
       "closure_predicate": "PR #367 freezes the semantic consequence classes and required positive controls; Gate A freezes and proves their exact executable serialization, reduction, candidate-cost, partition/repack and propagation behavior.",
       "owner": "#221 V1-C2",
@@ -472,7 +473,8 @@
           "NormalizedContract.description",
           "RuleItem.rationale",
           "NormalizedPack.description",
-          "NormalizedPack.review_preset"
+          "NormalizedPack.review_preset",
+          "semantic-context.change_type"
         ],
         "budget_outcomes": "only optional loss (including NormalizedPack.description/review_preset) -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive because applicable pack_id remains required; required contract/pack identity or semantic item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive",
         "prebudget_selection_fields": [
@@ -632,7 +634,7 @@
             "unresolved semantic-context contract_pack -> SELECTED_PACK_MISSING/non-conclusive"
           ]
         },
-        "change_type": "transported advisory metadata only in final v1; it does not filter must_hold applicability unless a future separately frozen rule promotes it",
+        "change_type": "OPTIONAL_ADVISORY_METADATA. It does not filter MustHoldApplicable in final v1. When transported to the model, loss of only change_type is OPTIONAL_CONTEXT_REDUCED and may remain conclusive; Gate A optional-minimal context may omit it. It is never part of the required semantic kernel unless a later separately frozen rule promotes it.",
         "budget_consequence": "only MustHoldApplicable(chunk) items enter RequiredSemanticKernel; omitting one yields MUST_HOLD_OMITTED and non-conclusive affected chunk"
       }
     },
@@ -717,7 +719,60 @@
             "non-matching substring remains irrelevant"
           ]
         },
-        "global_semantics": "A2 projects scope/is_global; A3 treats scope case-insensitive `global` or is_global=true as global applicability; exact path intersection and legacy pattern operator remain the other admitted branches."
+        "global_semantics": "A2 projects scope/is_global; A3 treats scope case-insensitive `global` or is_global=true as global applicability; exact path intersection and legacy pattern operator remain the other admitted branches.",
+        "semantic_group_legacy_fallback": {
+          "owner": "Gate A A3",
+          "scope": "LEGACY_FLAT_MODE contracts and LEGACY_PACK_MODE packs only; MAPPING_PACK_MODE/domain-mapping target semantics do not use this fallback when explicit relations exist",
+          "source_operator": "preserve current v1 `_relevance_keywords(semantic_group)` + substring test over `(normalized id + ' ' + description).lower()`",
+          "keyword_map": {
+            "primary_backend_logic": [
+              "backend",
+              "service",
+              "domain",
+              "api"
+            ],
+            "api_schema_contract": [
+              "schema",
+              "contract",
+              "api",
+              "model"
+            ],
+            "frontend_ui": [
+              "frontend",
+              "ui",
+              "component"
+            ],
+            "tests": [
+              "test",
+              "coverage",
+              "assert"
+            ],
+            "workflow_aiops": [
+              "workflow",
+              "aiops",
+              "pipeline"
+            ],
+            "docs_changelog": [
+              "docs",
+              "changelog",
+              "readme"
+            ],
+            "suspicious_out_of_scope": [
+              "secret",
+              "prod",
+              "deploy",
+              "runtime"
+            ]
+          },
+          "match_rule": "a legacy normalized item is semantically-group applicable when the group has a non-empty keyword tuple and ANY keyword is a substring of lowercase normalized id+description",
+          "precedence": "explicit include-all/reference, resolved selected-pack and exact/path/pattern/global applicability remain admitted paths; semantic-group fallback is an additional legacy compatibility path, not mapping-mode authority",
+          "controls": [
+            "primary_backend_logic + legacy id/description containing backend -> applicable",
+            "workflow_aiops + legacy pack id agentescala-aiops -> applicable",
+            "legacy item with no keyword match and no other applicability relation -> not applicable",
+            "mapping-mode pack with no exact/path applicability is NOT made applicable merely by keyword"
+          ]
+        }
       }
     },
     {
@@ -1183,7 +1238,8 @@
               "non_claim": "RISK_ACCEPTED does not claim #871 reliability fixed"
             }
           },
-          "closure": "exactly one of FIXED or RISK_ACCEPTED must be satisfied; the two exits are mutually exclusive evidence paths"
+          "closure": "exactly one of FIXED or RISK_ACCEPTED must be satisfied; the two exits are mutually exclusive evidence paths",
+          "evidence_rule": "Evidence is exit-specific. FIXED requires merged/qualified commit + green acceptance tests + bounded retry semantics. RISK_ACCEPTED instead requires explicit human acceptance grant + exact unfixed SHA + operational fail-closed evidence + named residual + support/rollback docs. No FIXED-only artifact is required on RISK_ACCEPTED."
         },
         "final maintenance release",
         "consumer repin to exact compatible engine+target config pair",
