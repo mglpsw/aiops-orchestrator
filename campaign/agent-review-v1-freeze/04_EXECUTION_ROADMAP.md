@@ -36,7 +36,8 @@ planner (`payload_cost_model.py:1488,1492`).
 O registro abaixo preserva a decisão anterior e os contraexemplos que levaram à
 correção. Ele está `SUPERSEDED_AS_TOTAL_RAW_GRAMMAR`: não é autoridade normativa
 para enumerar YAML, metadados ou cantos de parser. A autoridade atual é a seção
-**V1-C2 — interface semântica normalizada (AOCM rescope)** abaixo.
+**V1-C2 — requisitos e invariantes congelados (autoridade atual)** abaixo. A seção de
+interface semântica normalizada é NON-NORMATIVE HISTORY.
 **Contrato de registro:** seção "Contrato funcional de V1-C2" do body de #221 (itens 1–6), em resumo:
 
 1. reconciliar o formato realmente fornecido e os consumidores reais com AgentEscala#869 (`rules` aninhadas vs lista na raiz; `packs` mapa vs lista; campos extras perdidos na projeção). YAML válido não prova compatibilidade;
@@ -88,6 +89,9 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 15. gramática de domínio: metadados `version/schema_version/updated/system/domain`, `LEGACY_FLAT_MODE` com `rules` válido, `DOMAIN_MAPPING_MODE` mapping e `list[str]`, mixed-mode, regras/seção malformadas e scalar/container não suportado; cada RED é shape-level, cada GREEN preserva fixture legado;
 16. totalidade de review-packs: `packs` ausente/vazio/lista/mapping, item/campo de paths/domain contract malformado, bindings ausentes/válidos/malformados/órfãos e binding para contrato ausente. RED focal observa seleção/limitação; GREEN observa pack aplicável exato e pack irrelevante sem contrato espúrio.
 17. seleção explícita de pack não resolvida: `selected_contract_pack` não vazio sem match exato/legacy-compatible → `SELECTED_PACK_MISSING`, degradante/não conclusivo, nunca `not_relevant`; controles positivos cobrem match exato e `calendar -> agentescala-calendar` legado.
+18. compatibilidade completa de selector legado (A2): comparação case-insensitive; match por igualdade de id, igualdade de description, substring em id ou substring em description; todos os matches exatos resolvidos são preservados. Controles incluem `calendar -> agentescala-calendar`, `aiops -> agentescala-aiops`, description alias e múltiplos matches.
+19. legacy rule pattern semantics (A3): trim; vazio ignora; final `*` = prefix match removendo só o `*`; demais patterns = substring match. Não usar `fnmatchcase` para esse operador legado.
+20. semantic-context must_hold applicability: A2 normaliza scope/change_type/contract_pack/must_hold e resolve pack token; A3 aplica scope (empty/global/all/document global; otherwise substring/tokens sobre canonical paths) e, quando contract_pack existe, exige interseção com ApplicablePackSet. Unresolved pack -> SELECTED_PACK_MISSING.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
@@ -160,7 +164,7 @@ e packs/bindings malformados. Cada fixture admitido deve ter uma e só uma proje
 normalizada; cada rejeitado deve produzir resultado tipado invalid/unsupported, nunca
 vazio/não relevante silencioso. Serialização ambígua (inclusive chave duplicada) é
 inválida antes da normalização. A tarefa sucessora escolhe e testa uma única forma
-serializada para as classes: `SOURCE_ABSENT`, `SOURCE_INVALID_OR_UNSUPPORTED`,
+serializada para as classes: `SOURCE_ABSENT`, `SOURCE_INVALID_OR_UNSUPPORTED`, `SELECTED_PACK_MISSING`,
 `SELECTED_CONTRACT_MISSING`, `OPTIONAL_CONTEXT_REDUCED`,
 `REQUIRED_CONTEXT_OMITTED`, `MUST_HOLD_OMITTED`.
 
@@ -193,17 +197,20 @@ A4 Canonical cost + deterministic budget/packing
 A5 Required-context loss propagation
 ```
 
-**A1** cobre fontes raw admitidas/rejeitadas, ambiguity/duplicate keys e fixtures
-atuais/legados. **A2** preserva a compatibilidade legada, inclusive
-`contract_pack=calendar -> agentescala-calendar`, e projeta os aliases legados de
-regra (`scope/is_global/file_path/path/files/paths/source_files/related_files/patterns`)
-em uma representação finita. Uma seleção explícita não vazia que não resolva por id
-exato nem compatibilidade legada produz `SELECTED_PACK_MISSING`, é degradante e nunca
-`not_relevant`. **A3** consome identities normalizadas exatas e relações explícitas;
-`contract_refs = dedupe(pack.domain_contract if present UNION contract_bindings.get(pack_id, []))`. **A4** usa a autoridade v1 `canonical_json/canonical_len` ou prova uma
-substituição equivalente, qualifica um optional-minimal context único, recompõe
-applicability/kernel/custo por candidate e preserva ou substitui explicitamente o
-FFD/tie-break existente. **A5** prova que perda requerida/source/hunk chega ao gate.
+**A1** cobre somente raw-source admission, ambiguity/duplicate keys e fixtures.
+**A2** possui somente compatibilidade + projeção raw→normalized: resolve selector legado
+por comparação lowercase (id==token, description==token, token substring id ou
+description), preserva todos os matches, projeta aliases de regra para
+`ContractApplicability`, projeta `contract_bindings.get(pack_id, [])` em `contract_refs`
+e produz `SelectionResolution {requested_token,resolved_pack_ids,status}`. **A3** possui
+somente avaliação normalizada: consome outputs A2, avalia exact paths, operador legado
+de patterns (final `*` prefix; demais substring), global, ApplicablePackSet,
+ApplicableContractSet, must_hold scope/pack e consequências como
+`SELECTED_PACK_MISSING`; A3 nunca reexecuta fuzzy/raw matching. O handoff A2→A3 é a
+fronteira causal de ownership. **A4** usa a autoridade v1 `canonical_json/canonical_len`
+ou prova substituição equivalente, qualifica optional-minimal context único, recompõe
+applicability/kernel/custo por candidate e preserva/substitui explicitamente FFD/tie-break.
+**A5** prova que perda requerida/source/hunk chega ao gate.
 
 Gate B continua sendo AgentEscala#869 (target projection/config). Gate C é a
 conformance do **par exato** engine SHA + target/config SHA. Depois de A+B+C, o
@@ -212,9 +219,12 @@ provider real, com owner `#221 V1-C2 semantic-utility evaluation`, expectativas
 pré-declaradas e anti-cherry-pick. Os dois braços e todas as tentativas admitidas usam
 uma única configuração de inferência pré-declarada (endpoint Router, preset,
 provider/model resolvidos, instrução/método, opções de request/geração e retry policy),
-registrada por `inference_config_id`; cada braço registra sua request identity/digest e
-somente o subject pode diferir. Drift de configuração invalida o controle. Somente
-A+B+C + Control B podem conceder
+registrada por `inference_config_id`; cada braço registra request identity/digest e
+somente o subject pode diferir. Para sampling: se seed determinístico for suportado pela
+rota/modelo real, usa-se o mesmo seed por par; senão o grant congela antes do primeiro
+run `pair_count` + `pass_criterion` de um repeated-pair protocol, sem adaptive stopping,
+descarte ou rerun até favorável. Sampling mode/seed/pair index são registrados. Drift de
+configuração ou protocolo invalida o controle. Somente A+B+C + Control B podem conceder
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais `V1_C2_CONTRACT_INTERFACE_DECIDED` e
@@ -263,7 +273,7 @@ remaining limitation` para cada entrada de `01_CLAIM_LEDGER.json`.
 - Non-features do v1: `json_schema` no provider, reparo/retry semântico de saída malformada, nova estratégia de modelo/preset, nova arquitetura de agrupamento semântico, receipts/trust architecture v2, OGR/impact-context.
 - PR grande/evidência pesada: `chunk_budget_exceeded`/plano parcial não é blocker automático quando falha fechado para revisão manual. Exigência é **veracidade**, não escalabilidade.
 
-**Gate terminal de freeze registrado no checkpoint de #221:** #232/#343/#307/#315 com disposições terminais e evidência exact-subject; par de contexto da C2 qualificado; AgentEscala#871 corrigida (mesmo endpoint/preset/payload) ou aceita explicitamente com evidência operacional; release final imutável e reproduzível; AgentEscala consome exatamente esse par engine+config em canário controlado; 429/504/schema-inválido/budget-excedido permanecem fail-closed sem fabricar cobertura/readiness; rollback/suporte/limitações documentados.
+**Gate terminal de freeze registrado no checkpoint de #221:** #232/#343/#307/#315 com disposições terminais e evidência exact-subject; par de contexto da C2 qualificado; AgentEscala#871 fecha por um único exit: FIXED com evidência qualificada, ou RISK_ACCEPTED sob grant humano explícito dedicado com exact unfixed SHA + residual/fail-closed/support evidence; release final imutável e reproduzível; AgentEscala consome exatamente esse par engine+config em canário controlado; 429/504/schema-inválido/budget-excedido permanecem fail-closed sem fabricar cobertura/readiness; rollback/suporte/limitações documentados.
 
 ## Pré-requisitos externos do freeze final
 
@@ -274,9 +284,12 @@ Os seguintes itens são **externos à reconstrução de claims C6**, mas bloquei
 freeze final:
 
 - **AgentEscala#869:** target contract/projection/config e conformance do par exato;
-- **AgentEscala#871:** confiabilidade do thin wrapper para HTTP 429/`Retry-After`, com
-  retry bounded, mesmos endpoint/preset/payload e falha persistente continuando
-  fail-closed/`manual_review_required`;
+- **AgentEscala#871:** exatamente um exit explícito fecha o prerequisite:
+  **FIXED** (exact target commit mergeado/qualificado + testes verdes + retry bounded/
+  `Retry-After` + falha persistente manual) **OU RISK_ACCEPTED** (grant humano explícito
+  dedicado, exact unfixed SHA, evidência operacional fail-closed, residual nomeado de
+  perda de cobertura por 429 sem retry/Retry-After e release/support/rollback docs). Silêncio
+  ou issue apenas aberta não são aceitação; RISK_ACCEPTED não afirma reliability corrigida;
 - release final de manutenção imutável/reproduzível;
 - repin do consumer para o par compatível exato;
 - canário controlado;
