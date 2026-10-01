@@ -113,11 +113,11 @@ referência explícita ausente e fonte inválida permanecem semanticamente disti
 | P2 / CM-NORM-02 | união `TextItem`/`RuleItem` como requisitos de conteúdo | nenhum campo semântico requerido pode desaparecer ou trocar de papel; ordem de itens-fonte é requisito | lista de textos/regras mantém a sequência-fonte; forma executável/canônica é qualificada no Gate A |
 | P3 / CM-NORM-03 | papéis finitos raw→`RuleItem` + kernel mecânico | campo de rule-object sem papel declarado é rejeitado no Gate A; perda de campo projetado requerido gera `REQUIRED_CONTEXT_OMITTED` | `{id,description}` legado e campos `rule` declarados projetam nos papéis especificados; perda apenas de rationale gera `OPTIONAL_CONTEXT_REDUCED` |
 | P4 / CM-NORM-04 | schema e censo finitos de `NormalizedPack` | metadata fora dos campos declarados não vira contexto normalizado silencioso | description/preset declarados são projetados |
-| P5 / CM-PACK-01 | observabilidade separada de pack, contrato e contexto | pack aplicável com contexto, mas sem relação, não é `not_relevant` | ref resolvida produz evidência de pack e contrato |
-| P6 / CM-PACK-02 | predicado de contratos+contexto de `not_relevant` | só contrato aplicável e contexto de pack aplicável ambos vazios permitem `not_relevant` | pack aplicável sem relação nem contexto continua irrelevante |
+| P5 / CM-PACK-01 | observabilidade separada de pack e contrato | qualquer pack aplicável mantém `pack_id` como contexto requerido, mesmo sem relação/description/preset; portanto não é `not_relevant` | ref resolvida produz evidência de pack e contrato; pack-only mantém identity |
+| P6 / CM-PACK-02 | predicado de `not_relevant` | somente `ApplicablePackSet == empty` E `ApplicableContractSet == empty` após avaliação válida permitem `not_relevant` | zero packs + zero contratos produz o único controle positivo de irrelevância |
 | P7 / CM-ABS-01 | classes semânticas separadas da serialização | nova grafia futura não muda a classe `SOURCE_ABSENT` nem consequência | slot ausente fica tipado sem inventar irrelevância |
 | P8 / CM-HUNK-01 e CM-HUNK-02 | piso de hunk completo + kernel | hunk truncado, ou hunk completo sem kernel, é não conclusivo | hunk integral com kernel integral pode ser conclusivo |
-| P9 / CM-NORM-02 | owner boundary para determinismo executável | duas implementações não qualificadas produzem custo/partições distintos; isto permanece RED até Gate A A4 | Gate A congela uma única autoridade de custo/packing mantendo o positive control de redução só opcional |
+| P9 / CM-GA-A4-COST + CM-GA-A4-REPACK | owner boundary para determinismo executável | custo divergente ou repack/tie-break divergente permanece RED até Gate A A4 | A4 congela uma única autoridade de custo/packing e mantém o positive control de redução só opcional |
 
 `CM-HUNK-01` é um arquivo cuja única evidência é contexto completo, mas cujo hunk
 fica abaixo do piso; `CM-HUNK-02` mantém hunk integral, porém perde contexto requerido.
@@ -125,8 +125,8 @@ Ambos provam que nem presença de hunk nem contexto isoladamente satisfazem o pi
 
 Controles positivos obrigatórios do corpus: contrato real `calendar`; lista de topo
 `response_model_rules`; seção mista de `auth_admin`; pack aplicável com
-`domain_contract`; pack aplicável sem relação de contrato mas com `REVIEW_CONTEXT`;
-pack irrelevante; fixture legado A `tests/agent_review/fixtures/agentescala_e2e`; e
+`domain_contract`; pack aplicável sem relação de contrato (o `pack_id` sozinho já é contexto requerido);
+pack verdadeiramente irrelevante apenas quando nenhum pack e nenhum contrato se aplicam; fixture legado A `tests/agent_review/fixtures/agentescala_e2e`; e
 fixture legado B `tests/agent_review/fixtures/agentescala_minimal`. Eles devem demonstrar que o
 fechamento finito não torna toda revisão não conclusiva.
 
@@ -250,3 +250,22 @@ cabem no budget continuam capazes de revisão conclusiva.
 ```text
 RequirementsFrozen != ExecutableContractQualified
 ```
+
+
+### Control B — semantic utility evaluation (#805)
+
+O **owner executável** é `#221 V1-C2 semantic-utility evaluation`; o grant de
+provider real é precondição de autorização, não substituto de ownership. O controle
+roda **depois de Gate A + Gate B + Gate C determinísticos e antes de conceder
+`V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`**.
+
+```text
+bad #805-style subject + applicable context
+vs
+corrected counterpart + same applicable context
+```
+
+Expectativas são congeladas antes do run, toda tentativa admitida é registrada e não
+há rerun até resposta favorável. Falhar a expectativa pré-declarada retém o terminal
+C2 para adjudicação; passar prova somente utilidade semântica limitada do par exato,
+nunca recall/completude exaustiva.
