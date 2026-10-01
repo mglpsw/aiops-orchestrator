@@ -136,12 +136,15 @@
         "Gate A compatibility controls include committed legacy fixtures (including selected `calendar` resolving compatibly to legacy pack `agentescala-calendar`), current AgentEscala target shapes, legacy rule applicability aliases, malformed/ambiguous negatives and one authoritative cost/packing path.",
         "payload CONTENT observed at the most focal intermediate state available, not only the final verdict",
         "required-context loss visible on a downstream-consumed surface (plan limitation/status -> parse -> synth -> gate)",
-        "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07"
+        "#805 control A (deterministic transport/gate regression) and control B (bounded semantic utility evaluation with predetermined expectations), see OBL-CL2-07",
+        "Gate A focal negative control: unresolved explicit selected pack -> SELECTED_PACK_MISSING, non-conclusive, never not_relevant",
+        "Control B attribution: one predeclared inference_config_id shared by both arms; endpoint/preset/provider/model/options and per-arm request identity/digest recorded"
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
         "raw source rejected by the successor admission contract (typed invalid/unsupported, never silent empty/not_relevant)",
-        "a known contract source slot is absent and RequiredForChunk requires it (semantic class SOURCE_ABSENT; serialization deferred to Gate A)"
+        "a known contract source slot is absent and RequiredForChunk requires it (semantic class SOURCE_ABSENT; serialization deferred to Gate A)",
+        "non-empty explicit selected_contract_pack cannot be resolved by exact or Gate-A-qualified legacy-compatible pack selection (semantic class SELECTED_PACK_MISSING)"
       ],
       "live_status": "not_supported",
       "countermodels": [
@@ -191,7 +194,36 @@
           "authorization": "separate explicit real-provider grant",
           "execution_point": "after Gate A + Gate B + Gate C deterministic qualification and before V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
           "terminal_effect": "required evidence; unmet predeclared utility expectation withholds the implementation terminal pending adjudication",
-          "non_claim": "passing is bounded semantic utility evidence, not exhaustive recall/completeness"
+          "non_claim": "passing is bounded semantic utility evidence, not exhaustive recall/completeness",
+          "inference_configuration": {
+            "invariant": "both arms and every admitted attempt use one predeclared inference configuration; only the reviewed subject differs",
+            "fixed_fields": [
+              "Agent Router endpoint",
+              "preset",
+              "resolved provider",
+              "resolved model",
+              "system/method instruction identity",
+              "generation/request options that affect inference",
+              "retry policy"
+            ],
+            "evidence": [
+              "shared inference_config_id",
+              "per-attempt endpoint/preset/provider/model/options",
+              "request identity/digest for each arm",
+              "exact engine SHA and target/config SHA"
+            ],
+            "failure": "configuration drift invalidates Control B evidence and withholds V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY"
+          }
+        },
+        "selected_pack_resolution": {
+          "requirement": "non-empty explicit selected_contract_pack must resolve to an admitted exact or legacy-compatible pack identity",
+          "failure_class": "SELECTED_PACK_MISSING",
+          "consequence": "obligation-degrading/non-conclusive; never not_relevant",
+          "owner": "Gate A A2/A3 executable contract"
+        },
+        "contract_bindings_projection": {
+          "requirement": "NormalizedPack.contract_refs is the exact-deduplicated union of inline pack.domain_contract (if present) and contract_bindings.get(pack_id, [])",
+          "owner": "Gate A A2/A3 executable contract"
         }
       },
       "consumer_history": {
