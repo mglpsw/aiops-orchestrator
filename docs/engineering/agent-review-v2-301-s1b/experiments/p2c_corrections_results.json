@@ -1,0 +1,181 @@
+{
+ "REV01_preexec_view_precedes_close_fds": {
+  "verdict": "PASS",
+  "detail": {
+   "known_reader_fd": 3,
+   "fds_visible_at_preexec": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    8,
+    10
+   ],
+   "fds_after_exec": [
+    0,
+    1,
+    2
+   ],
+   "meaning": "the known reader fd is visible at the only in-child hook of A (preexec), so that hook runs BEFORE CPython's close_fds; after exec the stable census (no range filter) shows exactly [0,1,2]"
+  }
+ },
+ "REV01_mutant_extra_inherited_detected": {
+  "verdict": "PASS",
+  "detail": {
+   "mutant": "pass_fds=(extra,)",
+   "known_reader_fd": 3,
+   "fds_after_exec": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "meaning": "the post-exec witness turns RED when a leak is introduced (it discriminates)"
+  }
+ },
+ "REV02_T1_SIGTERM_no_handler": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGTERM",
+   "handlers": false,
+   "pdeathsig": false,
+   "pidns": false,
+   "survivors": 2,
+   "reader_final": null
+  }
+ },
+ "REV02_T2_SIGTERM_with_handler": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGTERM",
+   "handlers": true,
+   "pdeathsig": false,
+   "pidns": false,
+   "survivors": 0,
+   "reader_final": {
+    "outcome": "terminated:SIGTERM",
+    "signals": [
+     15
+    ]
+   }
+  }
+ },
+ "REV02_T3_SIGKILL_with_handler": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGKILL",
+   "handlers": true,
+   "pdeathsig": false,
+   "pidns": false,
+   "survivors": 2,
+   "reader_final": null
+  }
+ },
+ "REV02_T4_SIGKILL_child_PDEATHSIG": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGKILL",
+   "handlers": false,
+   "pdeathsig": true,
+   "pidns": false,
+   "survivors": 1,
+   "reader_final": null
+  }
+ },
+ "REV02_T5_SIGKILL_reader_is_pidns_init": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGKILL",
+   "handlers": false,
+   "pdeathsig": false,
+   "pidns": true,
+   "survivors": 0,
+   "reader_final": null
+  }
+ },
+ "REV02_T6_SIGTERM_pidns_init_no_handler": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGTERM",
+   "handlers": false,
+   "pdeathsig": false,
+   "pidns": true,
+   "survivors": 0,
+   "reader_final": {
+    "outcome": "completed",
+    "signals": []
+   }
+  }
+ },
+ "REV02_T7_SIGTERM_pidns_init_with_handler": {
+  "verdict": "PASS",
+  "detail": {
+   "signal": "SIGTERM",
+   "handlers": true,
+   "pdeathsig": false,
+   "pidns": true,
+   "survivors": 0,
+   "reader_final": {
+    "outcome": "terminated:SIGTERM",
+    "signals": [
+     15
+    ]
+   }
+  }
+ },
+ "REV03_msg_peek_on_pipe": {
+  "verdict": "PASS",
+  "detail": {
+   "rc": -1,
+   "errno": "ENOTSOCK"
+  }
+ },
+ "REV03_consumption_BufferedReader.readline": {
+  "verdict": "PASS",
+  "detail": {
+   "reader": "BufferedReader.readline",
+   "header_ok": true,
+   "body_bytes_left_in_pipe": 0,
+   "expected_if_zero_prefetch": 11
+  }
+ },
+ "REV03_consumption_os.read(4096)": {
+  "verdict": "PASS",
+  "detail": {
+   "reader": "os.read(4096)",
+   "header_ok": true,
+   "body_bytes_left_in_pipe": 0,
+   "expected_if_zero_prefetch": 11
+  }
+ },
+ "REV03_consumption_os.read(1) until LF": {
+  "verdict": "PASS",
+  "detail": {
+   "reader": "os.read(1) until LF",
+   "header_ok": true,
+   "body_bytes_left_in_pipe": 11,
+   "expected_if_zero_prefetch": 11
+  }
+ },
+ "REV06_safe_directory_scope": {
+  "verdict": "PASS",
+  "detail": {
+   "git": "git version 2.43.0",
+   "discovery_without_safe_dir": [
+    128,
+    "fatal: detected dubious ownership in repository at '/tmp/s1b-p2c-r3fdv498/r.git'\nTo add an"
+   ],
+   "explicit_GIT_DIR_without_safe_dir": [
+    0,
+    "0000000000000000000000000000000000000000 missing\n"
+   ],
+   "explicit_GIT_DIR_with_star": [
+    0,
+    "0000000000000000000000000000000000000000 missing\n"
+   ],
+   "meaning": "the ownership heuristic guards repository DISCOVERY; S1-B's explicit GIT_DIR=. invocation is not subject to it on this Git version"
+  }
+ }
+}

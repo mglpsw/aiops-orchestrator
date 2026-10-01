@@ -1,0 +1,58 @@
+{
+ "git_version": "git version 2.43.0",
+ "formats": [
+  {
+   "format": "sha1",
+   "objects": 13,
+   "expected_objects": 13,
+   "kinds": [
+    "blob",
+    "commit",
+    "tag",
+    "tree"
+   ],
+   "bad_headers": [],
+   "parity_failures": [],
+   "missing_line_exact": true,
+   "rc": 0,
+   "stderr_bytes": 0,
+   "mutant_survivors": {
+    "omit_type": 0,
+    "omit_sp": 0,
+    "omit_nul": 0,
+    "header_size_not_actual": 0,
+    "body_only": 0,
+    "wrong_kind": 0
+   },
+   "producer_config": "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+   "config_has_remote_or_promisor": false
+  },
+  {
+   "format": "sha256",
+   "objects": 13,
+   "expected_objects": 13,
+   "kinds": [
+    "blob",
+    "commit",
+    "tag",
+    "tree"
+   ],
+   "bad_headers": [],
+   "parity_failures": [],
+   "missing_line_exact": true,
+   "rc": 0,
+   "stderr_bytes": 0,
+   "mutant_survivors": {
+    "omit_type": 0,
+    "omit_sp": 0,
+    "omit_nul": 0,
+    "header_size_not_actual": 0,
+    "body_only": 0,
+    "wrong_kind": 0
+   },
+   "producer_config": "[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = sha256\n",
+   "config_has_remote_or_promisor": false
+  }
+ ],
+ "verdict": "PASS"
+}

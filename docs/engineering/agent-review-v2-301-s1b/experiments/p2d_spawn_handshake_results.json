@@ -1,0 +1,1982 @@
+{
+ "rows": [
+  {
+   "id": "S-A1-normal",
+   "proposition": "spawn completes within the unit deadline; the owner pidfd is closed once and no pidfd is left open",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "completed",
+    "primary": null,
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.04,
+    "survivors": 0,
+    "owner": {},
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.019,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 1,
+    "reaped_pids": [
+     993461
+    ],
+    "signal_at_s": {
+     "993461": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-A3-setup-error",
+   "proposition": "setup failure before exec is bounded and typed",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "primary": "transport_spawn_failed",
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.027,
+    "survivors": 0,
+    "owner": {},
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 0,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": null,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.004,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-A4-exec-missing",
+   "proposition": "exec failure is bounded and typed",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "primary": "transport_spawn_failed",
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.028,
+    "survivors": 0,
+    "owner": {},
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 0,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": null,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.003,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-B1-normal",
+   "proposition": "spawn completes within the unit deadline; the owner pidfd is closed once and no pidfd is left open",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "completed",
+    "primary": null,
+    "spawn_control_regained_s": 0.002,
+    "reader_wall_s": 0.037,
+    "survivors": 0,
+    "owner": {
+     "pid": 993533,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.016,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993533
+    ],
+    "signal_at_s": {
+     "993533": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-B3-setup-error",
+   "proposition": "setup failure before exec is bounded and typed",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "primary": "transport_spawn_failed",
+    "spawn_control_regained_s": 0.001,
+    "reader_wall_s": 0.026,
+    "survivors": 0,
+    "owner": {
+     "pid": 993559,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.004,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993559
+    ],
+    "signal_at_s": {
+     "993559": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-B4-exec-missing",
+   "proposition": "exec failure is bounded and typed",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "primary": "transport_spawn_failed",
+    "spawn_control_regained_s": 0.002,
+    "reader_wall_s": 0.025,
+    "survivors": 0,
+    "owner": {
+     "pid": 993573,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 0.005,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993573
+    ],
+    "signal_at_s": {
+     "993573": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-A2-pre-exec-stall",
+   "proposition": "A: the caller regains control only when the Popen handshake ends",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_deadline",
+    "primary": "unit_deadline",
+    "spawn_control_regained_s": 3.002,
+    "reader_wall_s": 3.029,
+    "survivors": 0,
+    "owner": {},
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 3.008,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 1,
+    "reaped_pids": [
+     993587
+    ],
+    "signal_at_s": {
+     "993587": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": "demonstrates A does NOT satisfy B-RES-02 standalone: control regained after the stall, not at the 1.0s deadline"
+  },
+  {
+   "id": "S-B2-pre-exec-stall (R3B-H1)",
+   "proposition": "B: the unit deadline covers the exec handshake; SIGKILL via pidfd, then the bounded teardown reaps; zero survivors",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_deadline",
+    "primary": "unit_deadline",
+    "spawn_control_regained_s": 1.001,
+    "reader_wall_s": 1.025,
+    "survivors": 0,
+    "owner": {
+     "pid": 993852,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 1.004,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993852
+    ],
+    "signal_at_s": {
+     "993852": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "S-B2-ablation-no-handshake-deadline",
+   "proposition": "ablation: B without the handshake deadline waits for the stall",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_deadline",
+    "primary": "unit_deadline",
+    "spawn_control_regained_s": 3.002,
+    "reader_wall_s": 3.032,
+    "survivors": 0,
+    "owner": {
+     "pid": 993925,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": null,
+    "teardown_remaining": 0,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 4.0,
+    "unit_elapsed_s": 3.008,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [
+     993925
+    ],
+    "signal_at_s": {
+     "993925": 0.001
+    },
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-H2-non-completing-SIGKILL-bounded",
+   "proposition": "after the deadline, a child whose SIGKILL does not complete is reported unit_teardown_incomplete INSIDE the unit envelope fixed before fork (work 1.0s + teardown reserve 1.5s); no blocking wait",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "primary": "unit_deadline",
+    "spawn_control_regained_s": 1.001,
+    "reader_wall_s": 2.523,
+    "survivors": 0,
+    "owner": {
+     "pid": 994153,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": {
+     "until": null,
+     "nohang_hidden": 523,
+     "blocking_waits": 0,
+     "stuck_pids": [],
+     "stuck_hidden": 0
+    },
+    "teardown_remaining": 1,
+    "teardown_signalled": 1,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 2.5,
+    "unit_elapsed_s": 2.503,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {
+     "994153": 0.001
+    },
+    "remaining": [
+     994153
+    ],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": "test double: pidfd WNOHANG waits report 'still running' for 8s; qualifies the bound logic only, not real D-state or filesystem behaviour"
+  },
+  {
+   "id": "R3B-H2-ablation-blocking-reap",
+   "proposition": "ablation: a blocking waitid after the deadline hangs for as long as the SIGKILL does not complete, far outside the unit envelope",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_deadline",
+    "primary": "unit_deadline",
+    "spawn_control_regained_s": 8.0,
+    "reader_wall_s": 8.024,
+    "survivors": 0,
+    "owner": {
+     "pid": 994363,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "d_state_double": {
+     "until": null,
+     "nohang_hidden": 0,
+     "blocking_waits": 1,
+     "stuck_pids": [],
+     "stuck_hidden": 0
+    },
+    "teardown_remaining": 0,
+    "teardown_signalled": 0,
+    "pidfds_open_after": 0,
+    "owner_pidfd_closed": true,
+    "unit_envelope_s": 2.5,
+    "unit_elapsed_s": 8.003,
+    "child_sig_ign": null,
+    "child_sig_blk": null,
+    "teardown_error": null,
+    "leaked_fifos": 0,
+    "reaped_pids": [],
+    "signal_at_s": {},
+    "remaining": [],
+    "child_pids": null,
+    "teardown_fault_hits": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-G1-child-sigign-reset",
+   "proposition": "the child bootstrap resets every SIG_IGN disposition: the exec'd C program starts with SigIgn=0 (CPython ignores SIGPIPE/SIGXFSZ at start-up)",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child_sig_ign": "0000000000000000",
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-G1-ablation-no-sigign-reset",
+   "proposition": "ablation: without the reset Git inherits SIGPIPE (bit 13) and SIGXFSZ (bit 25) as ignored",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child_sig_ign": "0000000001001000",
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-F1-fork-failure-typed",
+   "proposition": "fork() failure: no child, typed transport_spawn_failed, mask restored",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "primary": "transport_spawn_failed",
+    "survivors": 0,
+    "owner": {}
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2-two-children-one-stuck",
+   "proposition": "two direct children, the first reported alive forever: both are signalled at once, the killable one is reaped, the stuck one is a survivor record \u2192 unit_teardown_incomplete",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "signal_at_s": {
+     "994994": 0.001,
+     "995001": 0.001
+    },
+    "reaped_pids": [
+     995001
+    ],
+    "remaining": [
+     994994
+    ],
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2-ablation-serial",
+   "proposition": "ablation (pre-3c serial kill+reap): the killable child is signalled only after the stuck one has consumed the budget, and is never reaped",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "signal_at_s": {
+     "995204": 0.002,
+     "995208": 2.475
+    },
+    "reaped_pids": [],
+    "remaining": [
+     995204,
+     995208
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2b-reparented-grandchild",
+   "proposition": "stuck child + setsid grandchild reparented to the reader: the rescan signals and reaps the grandchild",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "survivors": 0,
+    "reaped_pids": [
+     995364
+    ],
+    "remaining": [
+     995363
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M2b-ablation-serial",
+   "proposition": "ablation: the serial wait on the stuck child exhausts the budget; the reparented grandchild is never signalled and survives",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "survivors": 1,
+    "reaped_pids": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-scan",
+   "proposition": "teardown fails at scan: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 5] injected teardown fault at scan",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-scan-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-pidfd_open",
+   "proposition": "teardown fails at pidfd_open: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 24] injected teardown fault at pidfd_open",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-pidfd_open-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-send_signal",
+   "proposition": "teardown fails at send_signal: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "PermissionError: [Errno 1] injected teardown fault at send_signal",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-send_signal-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-candidate_close",
+   "proposition": "teardown fails at candidate_close: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 9] injected teardown fault at candidate_close",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-candidate_close-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-reap",
+   "proposition": "teardown fails at reap: typed unit_teardown_incomplete; the owner pidfd is closed exactly once; no pidfd or protocol fifo is left open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "teardown_error": "OSError: [Errno 22] injected teardown fault at reap",
+    "owner_pidfd_closed": true,
+    "pidfds_open_after": 0,
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-reap-ablation-no-owner-guard",
+   "proposition": "ablation: owner cleanup only on the success path \u2192 the owner pidfd leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "owner_pidfd_closed": null,
+    "pidfds_open_after": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-protocol-pipes-closed",
+   "proposition": "a failed handshake (child setup error) leaves no protocol fifo open",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "leaked_fifos": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M4-protocol-pipes-ablation",
+   "proposition": "ablation: without the capability guard the response pipe leaks",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "transport_spawn_failed",
+    "leaked_fifos": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "W-POS-dedicated-channel",
+   "proposition": "wakeup fds typed+admitted; not inherited; SIGTERM \u2192 wakeup \u2192 teardown",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "survivors": 0,
+    "reader_signals": [
+     15
+    ],
+    "sentinel_bytes_after_close": 0,
+    "child_fds": [
+     0,
+     1,
+     2
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W1W2-old-allowlist",
+   "proposition": "the pre-round-3 closed fd contract refuses a conforming wakeup implementation",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "reader_fd_capability_unexpected"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W3-census-refuses-inheritable-wakeup",
+   "proposition": "the typed census refuses a non-CLOEXEC wakeup endpoint",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "reader_fd_capability_unexpected"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W3a-close-loop-alone",
+   "proposition": "barrier kept: the child pre-exec close loop; the wakeup endpoints do not reach Git",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child_fds": [
+     0,
+     1,
+     2
+    ],
+    "wakeup_fds": [
+     3,
+     4
+    ],
+    "ablations": [
+     "wakeup_inheritable",
+     "no_child_signal_reset",
+     "no_census"
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W3b-cloexec-alone",
+   "proposition": "barrier kept: CLOEXEC; the wakeup endpoints do not reach Git",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child_fds": [
+     0,
+     1,
+     2
+    ],
+    "wakeup_fds": [
+     3,
+     4
+    ],
+    "ablations": [
+     "B_no_close",
+     "no_child_signal_reset",
+     "no_census"
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W3d-reset-close-alone",
+   "proposition": "barrier kept: the child-bootstrap signal reset (explicit close); the wakeup endpoints do not reach Git",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child_fds": [
+     0,
+     1,
+     2
+    ],
+    "wakeup_fds": [
+     3,
+     4
+    ],
+    "ablations": [
+     "wakeup_inheritable",
+     "B_no_close",
+     "no_census"
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W3c-all-barriers-removed",
+   "proposition": "ablation: only with ALL three barriers (and the census) removed does a wakeup endpoint reach Git",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child_fds": [
+     0,
+     1,
+     2,
+     4
+    ],
+    "wakeup_fds": [
+     3,
+     4
+    ]
+   },
+   "claim_limit": "the census refuses the non-CLOEXEC endpoint when not ablated (CM-W3)"
+  },
+  {
+   "id": "CM-W4-blocking-wakeup",
+   "proposition": "a blocking wakeup endpoint is refused",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "ValueError: the fd 4 must be in non-blocking mode"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W5-close-while-registered",
+   "proposition": "ablation: closing the write end while registered sends later wakeups into whatever reuses the number",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "sentinel_bytes_after_close": 1
+   },
+   "claim_limit": "the positive row (W-POS) shows set_wakeup_fd(-1) before close leaves the sentinel at 0 bytes"
+  },
+  {
+   "id": "CM-W6-dedicated-positive",
+   "proposition": "dedicated channel: no wakeup byte reaches the protocol",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "child_stdin_bytes": "",
+    "outcome": "terminated"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-W6-shared-with-protocol",
+   "proposition": "ablation: wakeup shared with the protocol corrupts the request channel",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child_stdin_bytes": "0f",
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3-double-signal-running",
+   "proposition": "double signal while RUNNING: one teardown, zero survivors",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "survivors": 0,
+    "reader_signals": [
+     15,
+     15
+    ],
+    "outcome": "terminated"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-R3-04-SIGTERM-blocked-normalized",
+   "proposition": "SIGTERM blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "controlled_blocked_after_normalization": [],
+    "survivors": 0,
+    "seconds_from_signal_to_reader_exit": 0.112
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-R3-04-SIGTERM-ablation-no-normalize",
+   "proposition": "ablation: SIGTERM stays pending; no wakeup; reader lingers",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "completed",
+    "controlled_blocked_after_normalization": [
+     1,
+     2,
+     15
+    ],
+    "seconds_from_signal_to_reader_exit": 2.912
+   },
+   "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
+  },
+  {
+   "id": "CM-R3-05-SIGINT-blocked-normalized",
+   "proposition": "SIGINT blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "controlled_blocked_after_normalization": [],
+    "survivors": 0,
+    "seconds_from_signal_to_reader_exit": 0.111
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-R3-05-SIGINT-ablation-no-normalize",
+   "proposition": "ablation: SIGINT stays pending; no wakeup; reader lingers",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "completed",
+    "controlled_blocked_after_normalization": [
+     1,
+     2,
+     15
+    ],
+    "seconds_from_signal_to_reader_exit": 2.913
+   },
+   "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
+  },
+  {
+   "id": "CM-R3-06-SIGHUP-blocked-normalized",
+   "proposition": "SIGHUP blocked at entry \u2192 normalized \u2192 delivered \u2192 teardown",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "controlled_blocked_after_normalization": [],
+    "survivors": 0,
+    "seconds_from_signal_to_reader_exit": 0.114
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "CM-R3-06-SIGHUP-ablation-no-normalize",
+   "proposition": "ablation: SIGHUP stays pending; no wakeup; reader lingers",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "completed",
+    "controlled_blocked_after_normalization": [
+     1,
+     2,
+     15
+    ],
+    "seconds_from_signal_to_reader_exit": 2.914
+   },
+   "claim_limit": "round 3b: bootstrap step 1 blocks all of CONTROLLED, so without step 7 the whole set stays blocked"
+  },
+  {
+   "id": "R3B-S1-SIGTERM-pending-at-entry",
+   "proposition": "SIGTERM pending at entry is delivered only after handlers + wakeup exist \u2192 controlled termination before any spawn",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "pending_at_entry": [
+     15
+    ],
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": [
+     15
+    ],
+    "reader_signal_phases": [
+     "ready"
+    ],
+    "owner": {},
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S1-SIGTERM-ablation-unblock-before-handlers",
+   "proposition": "ablation (round-3 order): the pending SIGTERM is delivered to the default/Python disposition \u2192 uncontrolled exit",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "NO_RESULT",
+    "reader_returncode": -15,
+    "stderr_tail": ""
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S2-SIGINT-pending-at-entry",
+   "proposition": "SIGINT pending at entry is delivered only after handlers + wakeup exist \u2192 controlled termination before any spawn",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "pending_at_entry": [
+     2
+    ],
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": [
+     2
+    ],
+    "reader_signal_phases": [
+     "ready"
+    ],
+    "owner": {},
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S2-SIGINT-ablation-unblock-before-handlers",
+   "proposition": "ablation (round-3 order): the pending SIGINT is delivered to the default/Python disposition \u2192 uncontrolled exit",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "NO_RESULT",
+    "reader_returncode": -2,
+    "stderr_tail": "1/signal.py\", line 71, in pthread_sigmask\n    sigs_set = _signal.pthread_sigmask(how, mask)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nKeyboardInterrupt\n"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S3-SIGHUP-pending-at-entry",
+   "proposition": "SIGHUP pending at entry is delivered only after handlers + wakeup exist \u2192 controlled termination before any spawn",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "pending_at_entry": [
+     1
+    ],
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": [
+     1
+    ],
+    "reader_signal_phases": [
+     "ready"
+    ],
+    "owner": {},
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S3-SIGHUP-ablation-unblock-before-handlers",
+   "proposition": "ablation (round-3 order): the pending SIGHUP is delivered to the default/Python disposition \u2192 uncontrolled exit",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "NO_RESULT",
+    "reader_returncode": -1,
+    "stderr_tail": ""
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S1-pidns-pending-at-entry",
+   "proposition": "reader as PID-namespace init: pending SIGTERM with handlers installed first \u2192 delivered \u2192 controlled termination",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "pending_at_entry": [
+     15
+    ],
+    "outcome": "terminated",
+    "reader_signals": [
+     15
+    ],
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S1-pidns-ablation-silent-discard",
+   "proposition": "ablation (round-3 order) as PID-namespace init: the kernel discards the SIG_DFL SIGTERM; cancellation is silently lost and work proceeds",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "pending_at_entry": [
+     15
+    ],
+    "outcome": "completed",
+    "reader_signals": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S4-child-signal-after-reset",
+   "proposition": "SIGTERM to the child in its pre-exec bootstrap (after the reset): the child dies by SIG_DFL SIGTERM; no wakeup byte in the reader, no misattributed termination",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "transport_failed",
+    "reader_signals": [],
+    "survivors": 0,
+    "child_status_before_teardown": {
+     "code": "CLD_KILLED",
+     "status": 15
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S4-ablation-no-child-reset",
+   "proposition": "ablation: the child runs the inherited reader handler and writes 0f into the reader's wakeup pipe \u2192 reader reports a termination it never received",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S4b-fork-window-blocked",
+   "proposition": "SIGTERM to the child BEFORE its reset: CONTROLLED is blocked across fork, so it stays pending until the reset and then takes SIG_DFL (the child dies by SIGTERM)",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "transport_failed",
+    "reader_signals": [],
+    "survivors": 0,
+    "child_status_before_teardown": {
+     "code": "CLD_KILLED",
+     "status": 15
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S4b-ablation-no-fork-block",
+   "proposition": "ablation: without the fork critical section the inherited handler runs in the fork\u2192reset window and writes into the reader's wakeup pipe",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S5-reader-signal-in-handshake",
+   "proposition": "the handshake select watches signal_wakeup_read: termination_requested, not unit_deadline",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": [
+     15
+    ],
+    "survivors": 0,
+    "seconds_from_signal_to_reader_exit": 0.112
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S5-ablation-handshake-ignores-wakeup",
+   "proposition": "ablation: the signal is recorded but the cause becomes unit_deadline",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "unit_deadline",
+    "reader_signals": [
+     15
+    ],
+    "seconds_from_signal_to_reader_exit": 2.61
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S8-signal-in-fork-critical",
+   "proposition": "a signal raised while CONTROLLED is blocked (after fork, before pidfd) stays pending, is delivered at mask restore and is observed by the handshake",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "unit_terminated_by_signal",
+    "reader_signals": [
+     15
+    ],
+    "reader_signal_phases": [
+     "spawn"
+    ],
+    "owner": {
+     "pending_before_restore": [
+      15
+     ],
+     "pid": 998037,
+     "pidfd_open": "ok",
+     "exited_before_handshake": false
+    },
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S8-ablation-handshake-ignores-wakeup",
+   "proposition": "ablation: the delivered signal is recorded but the cause becomes unit_deadline",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "unit_deadline",
+    "reader_signals": [
+     15
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-F1-fork-failure-mask-restored",
+   "proposition": "fork() fails inside the critical section: typed refusal, no child, CONTROLLED unblocked again",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "transport_spawn_failed",
+    "primary_detail": "BlockingIOError: [Errno 11] injected fork() failure",
+    "controlled_blocked_at_teardown": [],
+    "owner": {}
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-F1-ablation-no-restore-guard",
+   "proposition": "ablation: without the guard the mask stays blocked after the failed fork",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "transport_spawn_failed",
+    "controlled_blocked_at_teardown": [
+     1,
+     2,
+     15
+    ]
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-O1-teardown-dominates",
+   "proposition": "terminated by signal + a child whose SIGKILL does not complete: outcome unit_teardown_incomplete, primary unit_terminated_by_signal kept",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "unit_teardown_incomplete",
+    "primary": "unit_terminated_by_signal",
+    "dominant_reason": "unit_teardown_incomplete",
+    "unit_overrun_s": 0.003,
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-O1-ablation-outcome-ignores-teardown",
+   "proposition": "ablation: the teardown failure is recorded but the outcome stays 'terminated'",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "terminated",
+    "primary": "unit_terminated_by_signal"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1-baseline",
+   "proposition": "exec target sees SigBlk=0 and SigIgn=0",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1a-blocked-SIGPIPE",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [
+     13
+    ],
+    "usr1_at_entry": null
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1a-blocked-SIGPIPE-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000001000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [
+     25
+    ],
+    "usr1_at_entry": null
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000001000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored",
+   "proposition": "the constructed child state is canonical despite the entry state",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "blocked_at_entry": [],
+    "usr1_at_entry": {
+     "kernel": "SIG_IGN",
+     "python_cache": "SIG_DFL"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored-ablation-legacy-reset",
+   "proposition": "ablation (iteration-2 reset: Python cache + inherited mask): the entry state leaks into the exec target",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000200",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1d-SIGCHLD-ignored",
+   "proposition": "SIGCHLD ignored at reader entry: the exec target sees SIG_DFL",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000000000000",
+     "sig_cgt": "0000000000000400"
+    },
+    "sigchld_at_entry": {
+     "handler": "SIG_IGN",
+     "sa_nocldwait": false
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M1d-ablation-both-barriers-off",
+   "proposition": "ablation: without B-LIF-11 and without the child construction, SIGCHLD reaches the exec target ignored",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "child": {
+     "sig_blk": "0000000000000000",
+     "sig_ign": "0000000001011000",
+     "sig_cgt": "0000000000000400"
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M3-fork-failure-keeps-cancellation",
+   "proposition": "a controlled signal pending in the fork critical section survives a fork failure: primary transport_spawn_failed AND termination_request recorded",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "transport_spawn_failed",
+    "termination_request": {
+     "signals": [
+      15
+     ],
+     "wakeup_bytes_drained": 1
+    },
+    "owner": {
+     "pending_before_restore": [
+      15
+     ]
+    },
+    "controlled_blocked_at_teardown": []
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3C-M3-ablation-drop-termination",
+   "proposition": "ablation: the error path does not inspect the termination state \u2192 the cancellation disappears from the outcome",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "primary": "transport_spawn_failed",
+    "termination_request": null
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S6-signal-inside-teardown",
+   "proposition": "a signal delivered during the teardown scan does not abort teardown",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "reader_signal_phases": [
+     "teardown:scan"
+    ],
+    "survivors": 0,
+    "outcome": "completed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S6-ablation-raising-handler",
+   "proposition": "ablation: a raising handler aborts the teardown scan \u2192 survivor",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "survivors": 1,
+    "outcome": "NO_RESULT",
+    "reader_returncode": 1
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S7-double-signal-inside-teardown",
+   "proposition": "two signals during the teardown scan: teardown still completes once",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "reader_signal_phases": [
+     "teardown:scan",
+     "teardown:scan"
+    ],
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-S7-ablation-raising-handler",
+   "proposition": "ablation: a raising handler aborts on the first of the two",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "survivors": 1,
+    "outcome": "NO_RESULT"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C3-child-exits-before-pidfd",
+   "proposition": "normalized reaping state: a child that exits before pidfd_open (0.2s parent delay) stays a zombie; pidfd_open works and waitid(WNOWAIT) observes the exit",
+   "kind": "positive",
+   "verdict": "PASS",
+   "observed": {
+    "owner": {
+     "pid": 998788,
+     "pidfd_open": "ok",
+     "exited_before_handshake": true
+    },
+    "sigchld_after_normalization": {
+     "handler": "SIG_DFL",
+     "sa_nocldwait": false
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C1-normalized",
+   "proposition": "SIGCHLD=SIG_IGN inherited across execve \u2192 normalized (SIG_DFL, no SA_NOCLDWAIT, read back) \u2192 pidfd_open ok, exit status observable",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "sigchld_at_entry": {
+     "handler": "SIG_IGN",
+     "sa_nocldwait": false
+    },
+    "sigchld_after_normalization": {
+     "handler": "SIG_DFL",
+     "sa_nocldwait": false
+    },
+    "owner": {
+     "pid": 998790,
+     "pidfd_open": "ok",
+     "exited_before_handshake": true
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C1-ablation-not-normalized",
+   "proposition": "ablation: SIGCHLD=SIG_IGN inherited across execve kept \u2192 the child is auto-reaped \u2192 pidfd_open ESRCH",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "sigchld_at_entry": {
+     "handler": "SIG_IGN",
+     "sa_nocldwait": false
+    },
+    "owner": {
+     "pid": 998795,
+     "pidfd_open": "ESRCH"
+    },
+    "primary": "transport_spawn_failed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C2-normalized",
+   "proposition": "SA_NOCLDWAIT at reader entry \u2192 normalized (SIG_DFL, no SA_NOCLDWAIT, read back) \u2192 pidfd_open ok, exit status observable",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "sigchld_at_entry": {
+     "handler": "SIG_DFL",
+     "sa_nocldwait": true
+    },
+    "sigchld_after_normalization": {
+     "handler": "SIG_DFL",
+     "sa_nocldwait": false
+    },
+    "owner": {
+     "pid": 998797,
+     "pidfd_open": "ok",
+     "exited_before_handshake": true
+    }
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C2-ablation-not-normalized",
+   "proposition": "ablation: SA_NOCLDWAIT at reader entry kept \u2192 the child is auto-reaped \u2192 pidfd_open ESRCH",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "sigchld_at_entry": {
+     "handler": "SIG_DFL",
+     "sa_nocldwait": true
+    },
+    "owner": {
+     "pid": 998819,
+     "pidfd_open": "ESRCH"
+    },
+    "primary": "transport_spawn_failed"
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-C2-mutant-handler-only-normalization",
+   "proposition": "mutant: resetting only the handler keeps SA_NOCLDWAIT; the read-back refuses before any fork",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "reader_sigchld_state_not_normalized",
+    "owner": {}
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-U1-child-baseexception-exits",
+   "proposition": "child bootstrap BaseException \u2192 bounded setup report \u2192 os._exit; the parent refuses and tears down; the reader cleanup runs once, in the reader",
+   "kind": "negative",
+   "verdict": "PASS",
+   "observed": {
+    "outcome": "refused",
+    "primary": "transport_spawn_failed",
+    "primary_detail": "KeyboardInterrupt:injected BaseException in the child bootstrap",
+    "cleanup_marker_pids": [
+     998821
+    ],
+    "reader_pid": 998821,
+    "survivors": 0
+   },
+   "claim_limit": ""
+  },
+  {
+   "id": "R3B-U1-ablation-child-unwinds",
+   "proposition": "ablation: the child unwinds into the reader's control flow and runs the reader cleanup a second time, in the child",
+   "kind": "ablation",
+   "verdict": "PASS",
+   "observed": {
+    "cleanup_marker_pids": [
+     998824,
+     998823
+    ],
+    "reader_pid": 998823,
+    "primary": "transport_failed"
+   },
+   "claim_limit": ""
+  }
+ ],
+ "contracts": [
+  {
+   "id": "R3B-H1",
+   "proposition": "handshake timeout with a killable child is bounded by the unit deadline and torn down",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "S-B2-pre-exec-stall (R3B-H1)",
+   "ablation_or_mutant": "S-B2-ablation-no-handshake-deadline",
+   "observed_discriminator": "control regained ~1.0s vs >=2.9s without the handshake deadline",
+   "claim_boundary": "killable child (sleep); the stall is an injected pre-exec delay",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-H2",
+   "proposition": "no blocking wait after the handshake deadline; ownership passes to the bounded teardown",
+   "injection_confirmed": true,
+   "positive_control": "S-B2-pre-exec-stall (R3B-H1)",
+   "negative_control": "R3B-H2-non-completing-SIGKILL-bounded",
+   "ablation_or_mutant": "R3B-H2-ablation-blocking-reap",
+   "observed_discriminator": "unit elapsed <= envelope (2.5s) with unit_teardown_incomplete vs >= 7.5s with the blocking reap",
+   "claim_boundary": "test double for a non-completing SIGKILL; no real D-state process is fabricated",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-G1",
+   "proposition": "ChildBootstrapSignalMachinery: no inherited SIG_IGN reaches Git",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3B-G1-child-sigign-reset",
+   "ablation_or_mutant": "R3B-G1-ablation-no-sigign-reset",
+   "observed_discriminator": "SigIgn 0 vs 0x1001000 after exec",
+   "claim_boundary": "the exec target is grep (a CPython stand-in would re-ignore SIGPIPE/SIGXFSZ at its own start-up and mask the result); only the reader's own SIG_IGN set (CPython defaults) is exercised; a launcher-set SIG_IGN is reset by the same loop but is not injected here",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M2",
+   "proposition": "OneStuckChildCannotStarveSiblingTeardown",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M2-two-children-one-stuck",
+   "ablation_or_mutant": "R3C-M2-ablation-serial",
+   "observed_discriminator": "sibling signalled at ~0s and reaped vs signalled after the budget and left unreaped",
+   "claim_boundary": "the stuck child is a reap-layer fault double (its SIGKILL does complete in the kernel)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M2b",
+   "proposition": "rescan + signal-before-wait reaches reparented descendants despite a stuck child",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M2b-reparented-grandchild",
+   "ablation_or_mutant": "R3C-M2b-ablation-serial",
+   "observed_discriminator": "0 vs >=1 live survivor (the grandchild)",
+   "claim_boundary": "same reap-layer fault double; reparenting relies on the verified subreaper",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-scan",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-scan",
+   "ablation_or_mutant": "R3C-M4-scan-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-pidfd_open",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-pidfd_open",
+   "ablation_or_mutant": "R3C-M4-pidfd_open-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-send_signal",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-send_signal",
+   "ablation_or_mutant": "R3C-M4-send_signal-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-candidate_close",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-candidate_close",
+   "ablation_or_mutant": "R3C-M4-candidate_close-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-reap",
+   "proposition": "OwnerCapabilitiesClosedOnEveryTeardownPath",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-reap",
+   "ablation_or_mutant": "R3C-M4-reap-ablation-no-owner-guard",
+   "observed_discriminator": "owner pidfd closed / 0 pidfds vs leaked owner pidfd",
+   "claim_boundary": "faults are injected at the named call site (errno-typed OSError)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M4-capabilities",
+   "proposition": "setup-error / protocol fds of a failed handshake are finalized",
+   "injection_confirmed": true,
+   "positive_control": "S-B1-normal",
+   "negative_control": "R3C-M4-protocol-pipes-closed",
+   "ablation_or_mutant": "R3C-M4-protocol-pipes-ablation",
+   "observed_discriminator": "0 vs >=1 leaked fifo",
+   "claim_boundary": "setup failure injected in the child bootstrap",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S1",
+   "proposition": "SIGTERM pending at reader entry \u2192 handler/wakeup \u2192 controlled termination",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S1-SIGTERM-pending-at-entry",
+   "ablation_or_mutant": "R3B-S1-SIGTERM-ablation-unblock-before-handlers",
+   "observed_discriminator": "controlled 'terminated' vs uncontrolled exit (returncode -15)",
+   "claim_boundary": "plain process domain; the pending signal is created by the launcher before execve",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S2",
+   "proposition": "SIGINT pending at reader entry \u2192 handler/wakeup \u2192 controlled termination",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S2-SIGINT-pending-at-entry",
+   "ablation_or_mutant": "R3B-S2-SIGINT-ablation-unblock-before-handlers",
+   "observed_discriminator": "controlled 'terminated' vs uncontrolled exit (returncode -2)",
+   "claim_boundary": "plain process domain; the pending signal is created by the launcher before execve",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S3",
+   "proposition": "SIGHUP pending at reader entry \u2192 handler/wakeup \u2192 controlled termination",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S3-SIGHUP-pending-at-entry",
+   "ablation_or_mutant": "R3B-S3-SIGHUP-ablation-unblock-before-handlers",
+   "observed_discriminator": "controlled 'terminated' vs uncontrolled exit (returncode -1)",
+   "claim_boundary": "plain process domain; the pending signal is created by the launcher before execve",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S1-pidns",
+   "proposition": "the V1 domain (reader = pidns init) needs handlers before unblock",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S1-pidns-pending-at-entry",
+   "ablation_or_mutant": "R3B-S1-pidns-ablation-silent-discard",
+   "observed_discriminator": "terminated vs completed with no signal recorded (silent discard)",
+   "claim_boundary": "unprivileged userns + pidns; the pending signal is raised by the reader against itself at entry (fork() clears the pending set, so the launcher cannot pre-pend it through unshare --fork)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S4",
+   "proposition": "ReaderSignalMachinery != ChildBootstrapSignalMachinery (reset step)",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S4-child-signal-after-reset",
+   "ablation_or_mutant": "R3B-S4-ablation-no-child-reset",
+   "observed_discriminator": "no termination vs misattributed 'terminated' with zero reader signals",
+   "claim_boundary": "SUPPORTING/PRELIMINARY (round 3c Q3): delivery and SIG_DFL death are confirmed, but WHICH side of the reset point received the signal is not synchronised; the exact post-reset witness is a B2 obligation",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S4b",
+   "proposition": "NoChildCanRunInheritedReaderHandlerBeforeReset (fork critical section)",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S4b-fork-window-blocked",
+   "ablation_or_mutant": "R3B-S4b-ablation-no-fork-block",
+   "observed_discriminator": "no termination vs misattributed 'terminated'",
+   "claim_boundary": "the fork\u2192reset window is widened artificially (stall_before_reset); structural claim, not a timing race",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S5",
+   "proposition": "cause preservation: a controlled signal during HANDSHAKE is termination_requested",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S5-reader-signal-in-handshake",
+   "ablation_or_mutant": "R3B-S5-ablation-handshake-ignores-wakeup",
+   "observed_discriminator": "unit_terminated_by_signal vs unit_deadline",
+   "claim_boundary": "phase 'spawn' = between fork and exec confirmation",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S8",
+   "proposition": "READY_TO_FORK/FORK_CRITICAL \u2192 TERMINATION_REQUESTED is observed (at mask restore, by HANDSHAKE)",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S8-signal-in-fork-critical",
+   "ablation_or_mutant": "R3B-S8-ablation-handshake-ignores-wakeup",
+   "observed_discriminator": "unit_terminated_by_signal vs unit_deadline",
+   "claim_boundary": "the signal is raised by the reader against itself while blocked; sigpending() confirms it before restore",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-F1",
+   "proposition": "a failed fork() leaves no blocked CONTROLLED mask behind",
+   "injection_confirmed": true,
+   "positive_control": "R3B-F1-fork-failure-typed",
+   "negative_control": "R3B-F1-fork-failure-mask-restored",
+   "ablation_or_mutant": "R3B-F1-ablation-no-restore-guard",
+   "observed_discriminator": "[] vs [1, 2, 15] blocked",
+   "claim_boundary": "fork() failure is injected (EAGAIN) at the call site",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-O1",
+   "proposition": "DominantOutcome derives from teardown; primary preserved",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-O1-teardown-dominates",
+   "ablation_or_mutant": "R3B-O1-ablation-outcome-ignores-teardown",
+   "observed_discriminator": "unit_teardown_incomplete vs terminated",
+   "claim_boundary": "test double for a non-completing SIGKILL",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1a-blocked-SIGPIPE",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1a-blocked-SIGPIPE",
+   "ablation_or_mutant": "R3C-M1a-blocked-SIGPIPE-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000000001000', 'sig_ign': '0000000000000000', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1b-blocked-SIGXFSZ",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1b-blocked-SIGXFSZ",
+   "ablation_or_mutant": "R3C-M1b-blocked-SIGXFSZ-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000001000000', 'sig_ign': '0000000000000000', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1c-native-SIGUSR1-ignored",
+   "proposition": "ChildExecSignalStateIsConstructedNotInherited",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1c-native-SIGUSR1-ignored",
+   "ablation_or_mutant": "R3C-M1c-native-SIGUSR1-ignored-ablation-legacy-reset",
+   "observed_discriminator": "canonical vs {'sig_blk': '0000000000000000', 'sig_ign': '0000000000000200', 'sig_cgt': '0000000000000400'}",
+   "claim_boundary": "observed at the exec target (grep); the entry state is set by the launcher (mask) or by native code in the reader (USR1)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M1d",
+   "proposition": "SIGCHLD inherited ignored never reaches Git",
+   "injection_confirmed": true,
+   "positive_control": "R3C-M1-baseline",
+   "negative_control": "R3C-M1d-SIGCHLD-ignored",
+   "ablation_or_mutant": "R3C-M1d-ablation-both-barriers-off",
+   "observed_discriminator": "SigIgn 0 vs bit 17 set",
+   "claim_boundary": "two independent barriers (reader B-LIF-11, child construction)",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3C-M3",
+   "proposition": "ForkFailurePreservesCancellationState",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3C-M3-fork-failure-keeps-cancellation",
+   "ablation_or_mutant": "R3C-M3-ablation-drop-termination",
+   "observed_discriminator": "both dimensions vs primary only",
+   "claim_boundary": "fork() failure injected (EAGAIN); the signal is raised against the reader while CONTROLLED is blocked",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S6",
+   "proposition": "signal during TEARDOWN (inside the scan phase)",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S6-signal-inside-teardown",
+   "ablation_or_mutant": "R3B-S6-ablation-raising-handler",
+   "observed_discriminator": "0 survivors vs >0 survivors",
+   "claim_boundary": "the teardown pauses at an observable marker so the signal lands inside it",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-S7",
+   "proposition": "double signal during TEARDOWN",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-S7-double-signal-inside-teardown",
+   "ablation_or_mutant": "R3B-S7-ablation-raising-handler",
+   "observed_discriminator": "0 vs >0 survivors",
+   "claim_boundary": "two SIGTERMs 1ms apart; 2 handler invocation(s) observed (standard signals may coalesce while pending). Round 3c Q2: this does NOT establish two independently OBSERVED deliveries (send #1 \u2192 observe \u2192 send #2 \u2192 observe); that is a B2 obligation",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-C1",
+   "proposition": "B-LIF-11 kills the SIGCHLD=SIG_IGN inherited across execve countermodel",
+   "injection_confirmed": true,
+   "positive_control": "R3B-C3-child-exits-before-pidfd",
+   "negative_control": "R3B-C1-normalized",
+   "ablation_or_mutant": "R3B-C1-ablation-not-normalized",
+   "observed_discriminator": "pidfd_open ok vs ESRCH",
+   "claim_boundary": "SIG_IGN set by the launcher before execve",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-C2",
+   "proposition": "B-LIF-11 kills the SA_NOCLDWAIT at reader entry countermodel",
+   "injection_confirmed": true,
+   "positive_control": "R3B-C3-child-exits-before-pidfd",
+   "negative_control": "R3B-C2-normalized",
+   "ablation_or_mutant": "R3B-C2-ablation-not-normalized",
+   "observed_discriminator": "pidfd_open ok vs ESRCH",
+   "claim_boundary": "Linux clears sa_flags at execve, so SA_NOCLDWAIT reaches the reader only through in-process state (injected at entry here); SIG_IGN does survive execve",
+   "verdict": "PASS"
+  },
+  {
+   "id": "R3B-U1",
+   "proposition": "ForkChildFailure != ReaderControlFlow (execve or os._exit, no third exit)",
+   "injection_confirmed": true,
+   "positive_control": null,
+   "negative_control": "R3B-U1-child-baseexception-exits",
+   "ablation_or_mutant": "R3B-U1-ablation-child-unwinds",
+   "observed_discriminator": "cleanup markers [reader] vs [reader, child]",
+   "claim_boundary": "BaseException injected after the signal reset; the witness is the cleanup marker file",
+   "verdict": "PASS"
+  }
+ ],
+ "claims": {
+  "P2d_spike": {
+   "establishes": [
+    "the frozen mechanism B is realisable on the observed host and each round-3/3b/3c mechanism property is discriminated by its ablation or mutant in this disposable spike"
+   ],
+   "does_not_establish": [
+    "qualification of the B1/B2/B3 implementation branches",
+    "two independently observed signal deliveries during teardown (R3B-S7)",
+    "which side of the child reset point received the S4 signal",
+    "post-exec stall under the absolute unit deadline in the implementation",
+    "real D-state behaviour (reap-layer fault doubles only)"
+   ],
+   "future_qualification_owner": "B2 (lifecycle/signals/teardown); B3 (post-exec transport deadline)"
+  }
+ }
+}
