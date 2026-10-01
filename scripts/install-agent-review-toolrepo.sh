@@ -201,6 +201,25 @@ if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
     exit 2
 fi
 
+CLEANUP_TARGET="$VENV_TARGET"
+ARM_CLEANUP=1
+
+cleanup_partial_venv() {
+    local status=$?
+    trap - EXIT INT TERM
+    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
+        if [ -e "$CLEANUP_TARGET" ] || [ -L "$CLEANUP_TARGET" ]; then
+            rm -rf "$CLEANUP_TARGET"
+        fi
+    fi
+    if [ "$status" -eq 0 ]; then
+        status=1
+    fi
+    exit "$status"
+}
+
+trap cleanup_partial_venv EXIT INT TERM
+
 "$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
 # Deliberately does NOT run `pip install --upgrade pip` first: that step
 # would fetch whatever pip version happens to be latest at install time,
@@ -208,6 +227,9 @@ fi
 # two installs of the same lock file. The venv's own bundled pip (from
 # Python's ensurepip) already supports --require-hashes.
 PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
+
+ARM_CLEANUP=0
+trap - EXIT INT TERM
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"

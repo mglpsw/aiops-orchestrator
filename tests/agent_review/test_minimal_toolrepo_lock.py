@@ -866,3 +866,142 @@ def test_require_hashes_rejects_a_tampered_lock_file(tmp_path: Path) -> None:
     assert "annotated-types" in result.stderr
     assert "Expected sha256" in result.stderr
     assert tampered_digest in result.stderr
+
+
+def test_countermodel_p2_b_failed_fresh_install_cleans_partial_venv_on_pip_failure(tmp_path: Path) -> None:
+    """P2-B: When fresh venv creation succeeds but downstream pip installation fails,
+    the prospective target created by this invocation must be cleaned up, preserving
+    the failure exit code and leaving the path fresh for subsequent runs.
+    """
+    fake_py = tmp_path / "fake_py_pip_fail.sh"
+    host_py = sys.executable
+
+    fake_py.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    mkdir -p "$target/bin"\n'
+        '    cat << "EOF" > "$target/bin/python3"\n'
+        "#!/bin/sh\n"
+        'echo "deliberate downstream pip failure witness" >&2\n'
+        "exit 66\n"
+        "EOF\n"
+        '    chmod +x "$target/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    target_venv = tmp_path / "venv_fresh_fail_pip"
+    assert not target_venv.exists(), "Target must be absent before invocation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Preserves original nonzero failure code
+    assert result.returncode == 66
+    assert "deliberate downstream pip failure witness" in result.stderr
+
+    # 2. Incomplete target created during this invocation is removed
+    assert not target_venv.exists(), f"Target {target_venv} must be removed after pip failure"
+
+    # 3. Subsequent invocation on same path is not blocked by residual directory
+    fake_py_success = tmp_path / "fake_py_success.sh"
+    fake_py_success.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    mkdir -p "$target/bin"\n'
+        '    cat << "EOF" > "$target/bin/python3"\n'
+        "#!/bin/sh\n"
+        "exit 0\n"
+        "EOF\n"
+        '    chmod +x "$target/bin/python3"\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py_success.chmod(0o755)
+    env_success = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_success))
+
+    result_retry = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_success,
+    )
+    assert result_retry.returncode == 0
+    assert target_venv.exists()
+    assert (target_venv / "bin" / "python3").exists()
+
+
+def test_countermodel_p2_b_failed_fresh_install_cleans_partial_venv_on_venv_failure(tmp_path: Path) -> None:
+    """P2-B: When python -m venv itself partially creates target files and exits with error,
+    the cleanup trap must clean up the partial target directory and preserve the exit status.
+    """
+    fake_py = tmp_path / "fake_py_venv_fail.sh"
+    host_py = sys.executable
+
+    fake_py.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    mkdir -p "$target/incomplete_bin"\n'
+        '    echo "partial_content" > "$target/incomplete_bin/marker"\n'
+        '    echo "deliberate venv creation failure witness" >&2\n'
+        "    exit 55\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    target_venv = tmp_path / "venv_fresh_fail_midway"
+    assert not target_venv.exists(), "Target must be absent before invocation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+    # 1. Preserves original nonzero failure code
+    assert result.returncode == 55
+    assert "deliberate venv creation failure witness" in result.stderr
+
+    # 2. Incomplete target created during this invocation is removed
+    assert not target_venv.exists(), f"Target {target_venv} must be removed after venv failure"

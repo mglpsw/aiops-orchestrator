@@ -1830,6 +1830,104 @@ def test_countermodel_p11_refuse_materialize_from_dirty_boundary(tmp_path: Path)
     assert not (dest / "scratch_outside").exists()
 
 
+def test_countermodel_p2_a_cli_authority_ordering_git_materialize(tmp_path: Path) -> None:
+    """P2-A: CLI --materialize-to must not let mutable working-tree validation defeat immutable Git commit authority.
+
+    Verifies that:
+    1. Working-tree mutation with forbidden runtime import ('import fastapi') is present in working tree;
+    2. Git index marks the file with --assume-unchanged;
+    3. Live-tree validation (--check) strictly detects and rejects this invalid working tree (discriminator);
+    4. Authoritative Git commit HEAD remains valid and unchanged;
+    5. CLI --materialize-to succeeds and extracts strictly from Git commit tree, omitting the forbidden import.
+    """
+    fake_repo = tmp_path / "fake_repo_p2a"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+
+    (fake_repo / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_VALIDATOR_PATH, fake_repo / "scripts" / "verify-agent-review-standalone-closure.py")
+    (fake_repo / "config" / "agent-review").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+        fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+    )
+
+    _init_git_in_standalone(fake_repo)
+    head_sha_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=fake_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    tracked_file = fake_repo / "app" / "agent_review" / "contracts_v2.py"
+    orig_text = tracked_file.read_text(encoding="utf-8")
+    assert "import fastapi" not in orig_text
+
+    # Introduce working-tree-only forbidden runtime import
+    tracked_file.write_text(orig_text + "\nimport fastapi\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "update-index", "--assume-unchanged", "app/agent_review/contracts_v2.py"],
+        cwd=fake_repo,
+        check=True,
+    )
+
+    try:
+        # 1. Establish the live-tree mutation is real
+        assert "import fastapi" in tracked_file.read_text(encoding="utf-8")
+
+        # 2. Discriminator: Live-tree check mode must detect and reject the invalid working tree
+        cli_script = fake_repo / "scripts" / "verify-agent-review-standalone-closure.py"
+        proc_check = subprocess.run(
+            [sys.executable, str(cli_script), "--check"],
+            cwd=fake_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert proc_check.returncode == 1
+        assert "Forbidden runtime package 'fastapi' imported by app/agent_review/contracts_v2.py" in proc_check.stderr
+
+        # 3. Establish HEAD did not change and remains clean
+        head_sha_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fake_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        assert head_sha_after == head_sha_before
+        head_text = subprocess.run(
+            ["git", "show", "HEAD:app/agent_review/contracts_v2.py"],
+            cwd=fake_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "import fastapi" not in head_text
+        assert head_text == orig_text
+
+        # 4. Materialize CLI must succeed
+        target_out = tmp_path / "target_out_p2a"
+        proc_mat = subprocess.run(
+            [sys.executable, str(cli_script), "--materialize-to", str(target_out)],
+            cwd=fake_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert proc_mat.returncode == 0, f"Materialize CLI failed unexpectedly:\n{proc_mat.stderr}\n{proc_mat.stdout}"
+        assert "OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid." in proc_mat.stdout
+        assert "OK: Materialized standalone distribution to:" in proc_mat.stdout
+
+        # 5. Output bytes come from HEAD, not from the dirty working tree
+        mat_file = target_out / "app" / "agent_review" / "contracts_v2.py"
+        assert mat_file.exists()
+        mat_text = mat_file.read_text(encoding="utf-8")
+        assert "import fastapi" not in mat_text
+        assert mat_text == orig_text
+
+    finally:
+        tracked_file.write_text(orig_text, encoding="utf-8")
+        subprocess.run(
+            ["git", "update-index", "--no-assume-unchanged", "app/agent_review/contracts_v2.py"],
+            cwd=fake_repo,
+            check=True,
+        )
+
+
 def test_countermodel_f4_unrelated_non_utf8_path_ignored(tmp_path: Path) -> None:
     """F4 (PRRT_kwDOSM6MSM6nt3s-): Non-UTF-8 paths outside declared boundary do not block materialization."""
     fake_repo = tmp_path / "fake_repo_f4"

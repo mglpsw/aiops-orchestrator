@@ -1264,6 +1264,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error loading manifest {args.manifest}: {exc}", file=sys.stderr)
         return 1
 
+    if args.materialize_to:
+        try:
+            dest = materialize_standalone_distribution(
+                repo_root=REPO_ROOT,
+                target_dir=args.materialize_to,
+                manifest=manifest,
+                source_sha=args.source_sha,
+            )
+            print("OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid.")
+            print("NOTE: Executable isolation evidence is certified by Layer E test suite.")
+            print(f"OK: Materialized standalone distribution to: {dest}")
+        except Exception as exc:
+            print(f"FAILED to materialize distribution: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     errors = validate_manifest(manifest, repo_root=REPO_ROOT)
     if errors:
         print(f"FAILED: Distribution closure validation found {len(errors)} error(s):", file=sys.stderr)
@@ -1273,20 +1289,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print("OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid.")
     print("NOTE: Executable isolation evidence is certified by Layer E test suite.")
-
-    if args.materialize_to:
-        try:
-            dest = materialize_standalone_distribution(
-                repo_root=REPO_ROOT,
-                target_dir=args.materialize_to,
-                manifest=manifest,
-                source_sha=args.source_sha,
-            )
-            print(f"OK: Materialized standalone distribution to: {dest}")
-        except Exception as exc:
-            print(f"FAILED to materialize distribution: {exc}", file=sys.stderr)
-            return 1
-
     return 0
 
 
