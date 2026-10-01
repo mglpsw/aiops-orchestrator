@@ -81,7 +81,7 @@
       "obligation_id": "OBL-CL2-02",
       "claim": "CL-2",
       "domain": "context.consumption",
-      "proposition": "Pertinent target contract/AOCM content in a successfully normalized interface reaches the effective chunk payload via generic engine loading and selection (no hardcode of AgentEscala rules or names in the engine, no new compiler in the target). This PR freezes normalized semantics, not exhaustive raw serialization grammar; AgentEscala#869-A census confirms target-side consumers.",
+      "proposition": "Pertinent target contract/pack content must be preserved and delivered as advisory context without hardcoding AgentEscala semantics. PR #367 freezes WHAT must be preserved, selected, related and fail-closed; executable raw admission, legacy compatibility resolution, normalization and exact selection mechanics are qualified only by Gate A / C2ExecutableContract.",
       "countermodels": [
         "CM-CL2-02 (target shapes flatten to [] at AgentEscala@e9cc03ff)",
         "pertinent change whose contract content never reaches the payload"
@@ -90,7 +90,7 @@
         "pertinent change with the correct contract content in the payload",
         "non-pertinent change with no spurious obligation"
       ],
-      "closure_predicate": "deterministic tests observe normalized payload CONTENT, applicability and explicit relations (not file presence, YAML spelling or parser-library behavior); the pair toolrepo SHA + target config/pack revision is qualified by #869-C",
+      "closure_predicate": "PR #367 closes when every semantic requirement/non-claim/compatibility class has a named countermodel or positive control and exactly one executable owner. Runtime closure requires Gate A code/tests plus Gate B AgentEscala#869 and Gate C exact-pair conformance.",
       "owner": "#221 V1-C2 + AgentEscala#869",
       "mechanism_site": "app/agent_review/payload_cost_model.py:388-443,789-858 (contracts_context and flatteners); app/agent_review/repo_profile.py:72-77",
       "superseded_raw_serialization_grammar": {
@@ -113,7 +113,7 @@
           },
           "top_level_discriminator": {
             "source": "owner adjudication 2026-09-30 of the post-Ready Codex review 5372851950 on PR #367",
-          "reserved_metadata_keys": [
+            "reserved_metadata_keys": [
               "version",
               "schema_version",
               "updated",
@@ -191,7 +191,7 @@
         }
       },
       "normalized_semantic_interface": {
-        "status": "NORMATIVE_FOR_PR_367",
+        "status": "REQUIREMENTS_MODEL_FOR_GATE_A_NOT_EXECUTABLE_AUTHORITY",
         "scope": "Finite normalized semantics only. Raw-field admission, YAML grammar, duplicate-key detection, parser choice and serialized reason-code spelling are Gate A RawSourceAdmissionContract concerns.",
         "json_scalar": "JsonScalar := string | boolean | integer | finite number | null. A SemanticValue never contains a mapping or list.",
         "semantic_value": {
@@ -213,16 +213,35 @@
         },
         "normalized_contract": {
           "shape": "NormalizedContract { contract_id: non-empty string, description?: string, semantic_values: [SemanticValue], sections: [NormalizedSection] }",
-          "required": ["contract_id", "semantic_values", "sections"],
-          "optional": ["description"],
+          "required": [
+            "contract_id",
+            "semantic_values",
+            "sections"
+          ],
+          "optional": [
+            "description"
+          ],
           "projection": "admitted named identity -> contract_id; raw domain-level primitive scalar except description -> semantic_values; named list[str] -> ordered TextItems; admitted list[rule-object] -> ordered RuleItems. A top-level list[str] contract response_model_rules has contract_id=response_model_rules, semantic_values=[], section_id=rules and ordered TextItems.",
           "ordering": "contracts ascending lexicographic exact contract_id; semantic_values ascending key; sections ascending section_id; items source order",
-          "invariants": ["no ClaimV1", "no per-claim state", "no recursive semantic structure", "no arbitrary normalized map", "raw version/schema_version/updated/system/domain has no independent normalized authority"]
+          "invariants": [
+            "no ClaimV1",
+            "no per-claim state",
+            "no recursive semantic structure",
+            "no arbitrary normalized map",
+            "raw version/schema_version/updated/system/domain has no independent normalized authority"
+          ]
         },
         "normalized_pack": {
           "shape": "NormalizedPack { pack_id: non-empty string, paths: [string], contract_refs: [non-empty string], description?: string, review_preset?: non-empty string }",
-          "required": ["pack_id", "paths", "contract_refs"],
-          "optional": ["description", "review_preset"],
+          "required": [
+            "pack_id",
+            "paths",
+            "contract_refs"
+          ],
+          "optional": [
+            "description",
+            "review_preset"
+          ],
           "raw_projection": "MAPPING_PACK_MODE key -> pack_id; paths absent -> []; domain_contract plus additional_contract_refs -> contract_refs; description -> description; recommended_review_preset -> review_preset. LEGACY_PACK_MODE item.id -> pack_id, item.description -> description, item.recommended_review_preset -> review_preset, and omitted paths/relations -> [].",
           "field_roles": {
             "pack_id": "PRESERVED_REQUIRED identity",
@@ -249,15 +268,65 @@
           "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant"
         },
         "field_census": {
-          "contracts": {"description": "EXPLANATORY_OPTIONAL", "canonical_authority": "PRESERVED_REQUIRED SemanticValue", "display_authority": "PRESERVED_REQUIRED SemanticValue", "top_level_response_model_rules": "PRESERVED_REQUIRED ordered TextItem section"},
-          "sections": {"list[str]": "PRESERVED_REQUIRED ordered TextItems", "list[rule-object]": "PRESERVED_REQUIRED ordered RuleItems"},
-          "rule_objects": {"rule": "PRESERVED_REQUIRED", "invariant": "PRESERVED_REQUIRED SemanticValue qualifier", "field": "PRESERVED_REQUIRED SemanticValue qualifier", "expected_value": "PRESERVED_REQUIRED SemanticValue qualifier", "rationale": "EXPLANATORY_OPTIONAL", "legacy_id": "PRESERVED_REQUIRED as qualifier key id in LEGACY_FLAT_MODE", "legacy_description": "PRESERVED_REQUIRED as RuleItem.rule in LEGACY_FLAT_MODE"},
-          "packs": {"mapping_key_or_legacy_id": "PRESERVED_REQUIRED as pack_id", "paths": "PRESERVED_REQUIRED APPLICABILITY", "domain_contract": "PRESERVED_REQUIRED projection input to contract_refs", "additional_contract_refs": "PRESERVED_REQUIRED projection input to contract_refs", "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT", "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT", "critical_allow_external_review_require_full_diff_require_final_files_when_available_notes": "NOT_PART_OF_NORMALIZED_INTERFACE"},
-          "source_metadata": {"version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "schema_version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "updated": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "system": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata", "domain": "NOT_PART_OF_NORMALIZED_INTERFACE legacy source metadata"},
+          "contracts": {
+            "description": "EXPLANATORY_OPTIONAL",
+            "canonical_authority": "PRESERVED_REQUIRED SemanticValue",
+            "display_authority": "PRESERVED_REQUIRED SemanticValue",
+            "top_level_response_model_rules": "PRESERVED_REQUIRED ordered TextItem section"
+          },
+          "sections": {
+            "list[str]": "PRESERVED_REQUIRED ordered TextItems",
+            "list[rule-object]": "PRESERVED_REQUIRED ordered RuleItems"
+          },
+          "rule_objects": {
+            "rule": "PRESERVED_REQUIRED",
+            "invariant": "PRESERVED_REQUIRED SemanticValue qualifier",
+            "field": "PRESERVED_REQUIRED SemanticValue qualifier",
+            "expected_value": "PRESERVED_REQUIRED SemanticValue qualifier",
+            "rationale": "EXPLANATORY_OPTIONAL",
+            "legacy_id": "PRESERVED_REQUIRED as qualifier key id in LEGACY_FLAT_MODE",
+            "legacy_description": "PRESERVED_REQUIRED as RuleItem.rule in LEGACY_FLAT_MODE"
+          },
+          "packs": {
+            "mapping_key_or_legacy_id": "PRESERVED_REQUIRED as pack_id",
+            "paths": "PRESERVED_REQUIRED APPLICABILITY",
+            "domain_contract": "PRESERVED_REQUIRED projection input to contract_refs",
+            "additional_contract_refs": "PRESERVED_REQUIRED projection input to contract_refs",
+            "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT",
+            "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT",
+            "critical_allow_external_review_require_full_diff_require_final_files_when_available_notes": "NOT_PART_OF_NORMALIZED_INTERFACE"
+          },
+          "source_metadata": {
+            "version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
+            "schema_version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
+            "updated": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
+            "system": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
+            "domain": "NOT_PART_OF_NORMALIZED_INTERFACE legacy source metadata"
+          },
           "unclassified_fields": 0
         },
         "raw_admission_boundary": "Raw source is admitted by the successor RawSourceAdmissionContract into a NormalizedContractSet/NormalizedPackSet, or rejected as one typed invalid/unsupported source outcome. No malformed or ambiguous raw source normalizes to empty/not_relevant.",
-        "determinism": "SameNormalizedSemanticInput -> byte-equivalent canonical normalized value after canonical JSON serialization of sorted contract ids, sorted section ids, sorted SemanticValue keys, sorted pack ids, sorted paths/contract_refs and source-order items. Raw map insertion order is not authority."
+        "determinism": "Requirement: each admitted source must resolve to one implementation-qualified normalized interpretation. The exact executable normalization/canonicalization algorithm is Gate A authority, not proven by PR #367 prose.",
+        "authority_boundary": "Finite normalized concepts remain requirements vocabulary. Exact legacy alias resolution, raw-field projection, byte/text cost serialization and partition/repack behavior are NOT claimed qualified by this docs PR; Gate A code/tests are the truth-maker."
+      },
+      "requirements_freeze_2026_10_01": {
+        "terminal": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
+        "invariant": "RequirementsFrozen != ExecutableContractQualified",
+        "retained_requirements": [
+          "contract and section identity are preserved",
+          "advisory rule/list content is not fabricated into ClaimV1",
+          "explicit pack-to-contract relations are honored",
+          "source absence/invalidity never becomes false not_relevant",
+          "required semantic context loss cannot contribute to clean conclusive approval",
+          "legacy compatibility must remain covered by executable tests"
+        ],
+        "executable_owners": {
+          "A1": "RawSourceAdmission",
+          "A2": "LegacyCompatibility + Normalization",
+          "A3": "Applicability + explicit relation resolution",
+          "A4": "Canonical cost + deterministic budget/packing",
+          "A5": "Required-context loss propagation"
+        }
       }
     },
     {
@@ -273,25 +342,31 @@
       "positive_controls": [
         "sufficient context -> conclusive review unchanged"
       ],
-      "closure_predicate": "one test per class at gate level; a positive control proves no blanket downgrade",
+      "closure_predicate": "PR #367 freezes the semantic consequence classes and required positive controls; Gate A freezes and proves their exact executable serialization, reduction, candidate-cost, partition/repack and propagation behavior.",
       "owner": "#221 V1-C2",
       "mechanism_site": "app/agent_review/chunk_payload_builder.py:503-508,557-562 (shrink ladder / aux omission); payload-level limitations currently not consumed by parse/synth/gate",
       "relation": "refines OBL-CL4-01 for the context domain; CM-CL4-02/03 are shared",
       "owner_decision_budget_floor": {
         "source": "owner adjudication 2026-09-30 (recorded on PR #367)",
-        "invariant": "RequiredSemanticContext + MinimumReviewableHunkMaterial = NonSilentReviewFloor",
+        "invariant": "RequiredSemanticContext + MinimumReviewableHunkMaterial = NonSilentReviewFloor (semantic requirement). Exact cost representation, optional-minimal projection and deterministic packing/repacking are Gate-A A4 executable authority.",
         "minimum_reviewable_hunk_material": {
           "definition": "For every candidate file counted covered: its complete diff_by_file block associated with that canonical path, containing one or more unified-diff @@ headers and every context/add/remove line of those hunks, intact.",
           "existing_v1_mechanism": "payload_cost_model.block_has_observable_textual_hunk recognizes a unified-diff @@ header; project_min_hunk_preserving_chars constructs chunk_hunks_full and measures the minimal non-hunk state before chunk_payload_builder is allowed to shrink chunk_hunks; semantic_chunker marks a singleton exceeding that projection payload_oversize or must_review_payload_oversize and files_not_covered.",
-          "not_sufficient": ["header only", "changed-line sample", "truncation stub", "prefix/suffix", "partial hunk"],
+          "not_sufficient": [
+            "header only",
+            "changed-line sample",
+            "truncation stub",
+            "prefix/suffix",
+            "partial hunk"
+          ],
           "indivisibility": "A truncated/reduced chunk_hunks value never satisfies MinimumReviewableHunkMaterial and cannot make its file covered for this C2 floor."
         },
         "planner_procedure": [
-          "minimize optional context",
-          "keep the required normalized semantic kernel",
-          "keep every admitted hunk fully intact",
-          "split/repack file membership and retry",
-          "if a singleton still cannot fit: file is not covered; emit existing payload_oversize or must_review_payload_oversize outcome; affected review is non-conclusive"
+          "preserve RequiredSemanticContext and full intact reviewable hunks as non-silent floor",
+          "optional explanatory context may be removed only through one Gate-A-qualified optional-minimal projection",
+          "for every candidate file set, Gate A recomputes applicability, required semantic context and authoritative projected payload cost",
+          "Gate A preserves or explicitly replaces one deterministic packing authority with tested tie-breakers",
+          "if a singleton still exceeds the budget, the file is not covered and the affected review is non-conclusive"
         ],
         "not_allowed": [
           "forcing every contract document to be unbounded/non-truncatable",
@@ -309,12 +384,22 @@
           "serialized_form_owner": "successor implementation task contract chooses one deterministic serialized form per class and tests it as sole authority; examples here are history only"
         },
         "propagation": "smallest existing path: payload-cost projection -> SemanticChunkPlan limitation/status -> parse -> synthesize -> quality gate; no new manifest consumer unless the plan path is demonstrably inadequate",
-        "positive_control": "sufficient hunk material + sufficient applicable context -> useful review remains possible; contract-aware reviews are not all turned into manual_review_required"
+        "positive_control": "sufficient hunk material + sufficient applicable context -> useful review remains possible; contract-aware reviews are not all turned into manual_review_required",
+        "executable_authority": {
+          "cost": "Gate A A4 MUST use the existing v1 canonical_json/canonical_len authority or a separately justified replacement proven equivalent over the supported domain. Current v1 unit is Python canonical JSON text length, not unspecified bytes.",
+          "packing": "Gate A A4 MUST preserve or explicitly replace one deterministic packing authority. Current v1 authority is _pack_group_ffd: singleton projected cost descending, canonical-path tie-break, first fit, full candidate reprojection; later candidate selection uses must-review priority, GROUP_PRIORITY, partition_index and canonical first path.",
+          "optional_minimal_context": "Gate A A4 removes optional explanatory contract/pack fields as one canonical optional-minimal context, rather than choosing an unspecified per-field reduction order.",
+          "recomputation": "Applicability, contract refs, required semantic context and cost are recomputed for every candidate file set; parent-chunk applicability is never reused after splitting."
+        }
       },
       "source_slots": {
         "domain_contracts": ".aiops/domain-contracts.yaml",
         "review_packs": ".aiops/review-packs.yaml",
-        "source_state": ["present_valid", "absent", "invalid"],
+        "source_state": [
+          "present_valid",
+          "absent",
+          "invalid"
+        ],
         "rule": "Every known slot is independently classified. `absent` produces the SOURCE_ABSENT class; source state does not assert source requiredness and no TargetProfile field is added."
       },
       "absent_context": {
@@ -332,8 +417,20 @@
       },
       "required_semantic_kernel": {
         "applies_to": "each APPLICABLE contract",
-        "required": ["NormalizedContract.contract_id", "NormalizedSection.section_id", "TextItem.text", "RuleItem.rule", "every RuleItem.qualifier", "every NormalizedContract.semantic_value", "every applicable must_hold"],
-        "optional_explanatory": ["NormalizedContract.description", "RuleItem.rationale", "NormalizedPack.description"],
+        "required": [
+          "NormalizedContract.contract_id",
+          "NormalizedSection.section_id",
+          "TextItem.text",
+          "RuleItem.rule",
+          "every RuleItem.qualifier",
+          "every NormalizedContract.semantic_value",
+          "every applicable must_hold"
+        ],
+        "optional_explanatory": [
+          "NormalizedContract.description",
+          "RuleItem.rationale",
+          "NormalizedPack.description"
+        ],
         "budget_outcomes": "only optional loss -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive; required item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive"
       },
       "not_relevant_rule": "not_relevant is possible only after source states permit applicability evaluation AND ApplicableContractSet(chunk) is empty AND ApplicableNormalizedPackContext is empty. An applicable pack with neither contract_refs nor REVIEW_CONTEXT may be irrelevant; a typed absent, invalid or unsupported state never coexists with not_relevant, including when RequiredForChunk is false. ContractRelationAbsent != PackContextIrrelevant.",
@@ -406,15 +503,60 @@
         }
       },
       "aocm_closure_test": {
-        "P1": {"mechanism": "NormalizedContract finite fields and canonical serializer reject any unmapped semantic field", "countermodel": "CM-NORM-01", "focal_discriminator": "an extra admitted scalar has no declared projection and is rejected rather than placed in a map", "positive_control": "declared contract scalar becomes sorted SemanticValue"},
-        "P2": {"mechanism": "NormalizedItem tagged union admits only TextItem or RuleItem", "countermodel": "CM-NORM-02", "focal_discriminator": "equivalent raw map insertion orders serialize identically while source item order remains intact", "positive_control": "ordered text and rule lists retain their source sequence"},
-        "P3": {"mechanism": "finite raw-to-RuleItem projection roles plus required normalized kernel", "countermodel": "CM-NORM-03", "focal_discriminator": "a rule-object field without the declared rule/rationale/primitive-qualifier role is rejected by Gate A; dropping a projected rule, qualifier or semantic value emits REQUIRED_CONTEXT_OMITTED", "positive_control": "legacy {id,description} and declared rule fields project with their stated roles; rationale-only loss emits OPTIONAL_CONTEXT_REDUCED"},
-        "P4": {"mechanism": "NormalizedPack finite fields plus field census", "countermodel": "CM-NORM-04", "focal_discriminator": "undeclared pack metadata cannot silently become normalized context", "positive_control": "description and recommended_review_preset project as declared context"},
-        "P5": {"mechanism": "ApplicablePackSet, ApplicableContractSet and ApplicableNormalizedPackContext are separately evaluated", "countermodel": "CM-PACK-01", "focal_discriminator": "applicable pack context with no contract relation is not not_relevant", "positive_control": "a pack with a resolving reference yields both pack and contract evidence"},
-        "P6": {"mechanism": "not_relevant predicate requires ApplicableContractSet and ApplicableNormalizedPackContext empty after valid evaluation", "countermodel": "CM-PACK-02", "focal_discriminator": "only the valid zero-contract/zero-context case can yield not_relevant", "positive_control": "an applicable pack without relation or REVIEW_CONTEXT remains irrelevant"},
-        "P7": {"mechanism": "semantic reason classes separate source state from serialization", "countermodel": "CM-ABS-01", "focal_discriminator": "a future serialized spelling still maps to SOURCE_ABSENT and does not alter consequence", "positive_control": "absent known slot remains typed without inventing not_relevant"},
-        "P8": {"mechanism": "MinimumReviewableHunkMaterial and planner preflight preserve complete unified-diff blocks", "countermodel": "CM-HUNK-01 and CM-HUNK-02", "focal_discriminator": "a truncated hunk or a full hunk lacking required kernel is non-conclusive", "positive_control": "full intact hunk plus full required kernel remains conclusive-capable"},
-        "P9": {"mechanism": "deterministic canonical ordering and bounded planner procedure", "countermodel": "CM-NORM-02", "focal_discriminator": "same normalized input and budget produces byte-equivalent plan/outcome", "positive_control": "optional-only reduction remains deterministically conclusive-capable"}
+        "P1": {
+          "mechanism": "NormalizedContract finite fields and canonical serializer reject any unmapped semantic field",
+          "countermodel": "CM-NORM-01",
+          "focal_discriminator": "an extra admitted scalar has no declared projection and is rejected rather than placed in a map",
+          "positive_control": "declared contract scalar becomes sorted SemanticValue"
+        },
+        "P2": {
+          "mechanism": "NormalizedItem tagged union admits only TextItem or RuleItem",
+          "countermodel": "CM-NORM-02",
+          "focal_discriminator": "equivalent raw map insertion orders serialize identically while source item order remains intact",
+          "positive_control": "ordered text and rule lists retain their source sequence"
+        },
+        "P3": {
+          "mechanism": "finite raw-to-RuleItem projection roles plus required normalized kernel",
+          "countermodel": "CM-NORM-03",
+          "focal_discriminator": "a rule-object field without the declared rule/rationale/primitive-qualifier role is rejected by Gate A; dropping a projected rule, qualifier or semantic value emits REQUIRED_CONTEXT_OMITTED",
+          "positive_control": "legacy {id,description} and declared rule fields project with their stated roles; rationale-only loss emits OPTIONAL_CONTEXT_REDUCED"
+        },
+        "P4": {
+          "mechanism": "NormalizedPack finite fields plus field census",
+          "countermodel": "CM-NORM-04",
+          "focal_discriminator": "undeclared pack metadata cannot silently become normalized context",
+          "positive_control": "description and recommended_review_preset project as declared context"
+        },
+        "P5": {
+          "mechanism": "ApplicablePackSet, ApplicableContractSet and ApplicableNormalizedPackContext are separately evaluated",
+          "countermodel": "CM-PACK-01",
+          "focal_discriminator": "applicable pack context with no contract relation is not not_relevant",
+          "positive_control": "a pack with a resolving reference yields both pack and contract evidence"
+        },
+        "P6": {
+          "mechanism": "not_relevant predicate requires ApplicableContractSet and ApplicableNormalizedPackContext empty after valid evaluation",
+          "countermodel": "CM-PACK-02",
+          "focal_discriminator": "only the valid zero-contract/zero-context case can yield not_relevant",
+          "positive_control": "an applicable pack without relation or REVIEW_CONTEXT remains irrelevant"
+        },
+        "P7": {
+          "mechanism": "semantic reason classes separate source state from serialization",
+          "countermodel": "CM-ABS-01",
+          "focal_discriminator": "a future serialized spelling still maps to SOURCE_ABSENT and does not alter consequence",
+          "positive_control": "absent known slot remains typed without inventing not_relevant"
+        },
+        "P8": {
+          "mechanism": "MinimumReviewableHunkMaterial and planner preflight preserve complete unified-diff blocks",
+          "countermodel": "CM-HUNK-01 and CM-HUNK-02",
+          "focal_discriminator": "a truncated hunk or a full hunk lacking required kernel is non-conclusive",
+          "positive_control": "full intact hunk plus full required kernel remains conclusive-capable"
+        },
+        "P9": {
+          "mechanism": "requirements owner boundary + Gate-A A4 executable authority",
+          "countermodel": "same requirements with two unqualified cost/packing implementations producing different partitions",
+          "focal_discriminator": "PR #367 routes exact cost/partition determinism to one executable Gate-A owner; Gate A must make the implementation deterministic before runtime readiness",
+          "positive_control": "semantic requirements and positive conclusive path remain fixed while implementation details are proven in Gate A"
+        }
       }
     },
     {
@@ -449,24 +591,56 @@
       "obligation_id": "OBL-CL2-05",
       "claim": "CL-2",
       "domain": "context.projection_fidelity",
-      "proposition": "The engine normalizer does not silently drop fields of the supported interface (today _flatten_review_packs keeps only id/description/preset and _flatten_contract_rules only id/description/scope/is_global plus the path fields paths/patterns/file_path/path/files/source_files/related_files (payload_cost_model.py:797-809)); allowed losses are declared.",
+      "proposition": "No semantically material supported field may be silently lost. Raw legacy applicability aliases are compatibility inputs, not permanent normalized vocabulary: Gate A A2/A3 must project legacy scope/path fields into one executable ContractApplicability representation while preserving current supported matching behavior.",
       "countermodels": [
-        "content loss in projection: a pertinent field present in the target document never reaches the payload"
+        "content loss in projection: a pertinent field present in the target document never reaches the payload",
+        "legacy selected_contract_pack `calendar` no longer resolves compatibly to committed legacy pack `agentescala-calendar`",
+        "legacy rule scope/path aliases are admitted but disappear or change which chunks receive the rule"
       ],
       "positive_controls": [
-        "every declared field of the supported interface appears in the payload for a pertinent change"
+        "every declared field of the supported interface appears in the payload for a pertinent change",
+        "committed legacy fixtures retain selected-pack and rule applicability behavior through Gate-A compatibility/normalization tests"
       ],
       "mechanism_site": "app/agent_review/payload_cost_model.py:789-858",
-      "closure_predicate": "field-level payload assertions against a fixture of the frozen interface",
-      "owner": "#221 V1-C2"
+      "closure_predicate": "Gate A A2/A3 tests the current supported legacy behavior and a finite ContractApplicability projection. Mapping-mode target packs stay exact-id/path based. PR #367 freezes this compatibility obligation and owner, not the exact adapter algorithm.",
+      "owner": "#221 V1-C2",
+      "normalized_applicability_requirement": {
+        "target_concept": "ContractApplicability",
+        "legacy_inputs": [
+          "scope",
+          "is_global",
+          "file_path",
+          "path",
+          "files",
+          "paths",
+          "source_files",
+          "related_files",
+          "patterns"
+        ],
+        "required_semantics": [
+          "file_path/path/files/paths/source_files/related_files project to canonical exact path identities",
+          "patterns retain pattern applicability",
+          "scope=global or is_global=true implies global applicability",
+          "matching preserves current supported exact-path OR pattern OR global behavior",
+          "malformed path-bearing input never silently becomes global or irrelevant"
+        ],
+        "owner": "Gate A A2/A3 executable contract"
+      }
     },
     {
       "obligation_id": "OBL-CL2-06",
       "claim": "CL-2",
       "domain": "context.interface_discipline",
-      "proposition": "The minimal supported interface is frozen before the patch; schema/CLI extensions carry compatibility, fixtures and justification; no field is added that no consumer reads.",
-      "closure_predicate": "interface recorded in the V1-C2 task contract before the first patch; each new field has a named consumer and a test",
-      "owner": "#221 V1-C2"
+      "proposition": "Before the first runtime patch, requirements/non-claims/compatibility obligations and executable ownership boundaries are frozen. Exact parser/normalizer/cost/packing behavior is authoritative only after the Gate-A task contract and tests are frozen; no field/mechanism is added without a named consumer and control.",
+      "closure_predicate": "PR #367 terminal is V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN when all semantic obligations, non-claims, compatibility classes and positive controls are explicit and every implementation-determinism question has exactly one Gate-A owner. It does not claim Gate A is implemented.",
+      "owner": "#221 V1-C2",
+      "gate_a_executable_contract": {
+        "A1_raw_admission": "raw-source admission, ambiguity/invalidity and supported target/legacy fixtures",
+        "A2_legacy_normalization": "legacy selected-pack compatibility and legacy field projection",
+        "A3_applicability_relations": "exact normalized applicability and explicit contract relations",
+        "A4_cost_budget_packing": "single canonical cost authority, optional-minimal context, deterministic packing/repacking and candidate recomputation",
+        "A5_loss_propagation": "required-context/source/hunk loss reaches the existing deterministic downstream gate path"
+      }
     },
     {
       "obligation_id": "OBL-CL2-07",
@@ -816,6 +990,48 @@
         "fail_closed": "NORMATIVE: at PRE_MERGE_GATE, tested_tree_sha != reviewed_head tree, OR merge parents of tested_commit_sha != (base_sha, reviewed_head_sha), OR any field missing/inconsistent => the CI evidence does not relate to the reviewed head => STOP_PRE_MERGE_GATE_FAILED. (Restores the round-6 fail-closed rule that edacd39f dropped without record.)"
       }
     },
-    "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)"
+    "golden_fixtures": "any change to frozen v1 golden fixtures requires positive, reasoned justification in the PR (app/agent_review/AGENTS.md#Compatibility)",
+    "v1_c2_requirements_freeze": {
+      "terminal": "V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN",
+      "predicate": [
+        "all semantic obligations are explicit",
+        "all non-claims are explicit",
+        "all compatibility classes are routed",
+        "all required countermodel families and positive controls are named",
+        "every implementation-determinism question has exactly one executable Gate-A owner",
+        "no implementation-specific result is falsely claimed as already decided"
+      ],
+      "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
+      "runtime_requires": [
+        "Gate A C2ExecutableContract",
+        "Gate B AgentEscala#869",
+        "Gate C exact engine-target pair"
+      ]
+    },
+    "external_final_freeze_prerequisites": {
+      "relation": "V1_FINAL_SOURCE_CANDIDATE_READY != V1_FINAL_FREEZE",
+      "outside_c6_claim_reconstruction": true,
+      "prerequisites": [
+        {
+          "id": "AgentEscala#869",
+          "purpose": "target contract/projection/config qualification and exact-pair conformance"
+        },
+        {
+          "id": "AgentEscala#871",
+          "purpose": "thin-wrapper transport reliability: bounded HTTP 429 / Retry-After retry; persistent failure remains fail-closed/manual_review_required",
+          "evidence_contract": [
+            "target repository and issue identity",
+            "merged/qualified exact target commit",
+            "acceptance tests green",
+            "bounded retry semantics preserved",
+            "failure after bounded retries remains manual_review_required"
+          ]
+        },
+        "final maintenance release",
+        "consumer repin to exact compatible engine+target config pair",
+        "controlled canary",
+        "rollback proof and support/limitation documentation"
+      ]
+    }
   }
 }
