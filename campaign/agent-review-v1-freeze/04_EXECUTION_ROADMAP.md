@@ -112,6 +112,9 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 38. ApplicablePackSet union completo: resolved selection + mapping path matches + legacy `target_profile:review_packs` include-all + legacy exact `contract:<id>` pack refs + legacy semantic-group fallback.
 39. `target_profile:review_packs` sentinel torna review_packs RequiredForChunk; fonte ausente/inválida -> CM-CL2-04, non-conclusive.
 40. missing explicit contract target: applicable pack ref para contrato ausente -> CM-PACK-04 / SELECTED_CONTRACT_MISSING; counterpart com contrato presente resolve.
+41. duplicate legacy pack ids: ids limpos duplicados em LEGACY_PACK_MODE -> SOURCE_INVALID_OR_UNSUPPORTED antes da normalização; sem merge/dedupe/winner silencioso.
+42. SelectionResolution no-selector: ausência de general selector -> `status=not_requested`, token ausente, resolved ids vazios, sem degradação.
+43. ApplicableContractSet union completo: contract_refs de todos ApplicablePackSet + direct `contract:<id>` + legacy `target_profile:domain_contracts` include-all + ContractApplicability exact/path/pattern/global + legacy semantic-group fallback; missing explicit relation -> CM-PACK-04.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
