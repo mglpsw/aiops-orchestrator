@@ -240,7 +240,9 @@ contraexemplos passam a ser **famílias obrigatórias do Gate A executável**:
 - **CM-GA-A4-REPACK:** contexto opcional não possui ordem arbitrária de remoção. A4
   qualifica um único optional-minimal context, recompõe applicability/kernel/custo
   para cada candidate file set e preserva ou substitui explicitamente o FFD/tie-break
-  existente. Singleton oversize permanece não coberto.
+  existente. O controle focal de pack remove somente `review_preset`: deve emitir
+  `OPTIONAL_CONTEXT_REDUCED`, preservar `pack_id` como contexto requerido e manter a
+  possibilidade de conclusão limpa. Singleton oversize permanece não coberto.
 
 Essas famílias não são consideradas mortas por esta PR documental. Elas ficam
 **ROUTED_TO_EXECUTABLE_GATE_A** e só fecham quando código/testes do successor as
