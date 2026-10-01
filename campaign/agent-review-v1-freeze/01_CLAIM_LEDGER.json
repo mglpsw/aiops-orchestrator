@@ -148,7 +148,12 @@
         "Gate A A2 legacy-flat identity control: each admitted {id,description} rule -> one NormalizedContract(contract_id=id, section=rules, RuleItem.rule=description); explicit contract:<id> preserved.",
         "Gate A A2 selector preprocessing: first non-empty cleaned contract_pack then alias pack; trim whitespace, contract_pack precedence.",
         "Gate A A2 pattern normalization (trim/drop-empty/sanitize/dedupe/sort) and A3 matching-only handoff.",
-        "review_packs RequiredForChunk when either selected_contract_pack or semantic-context.contract_pack is non-empty."
+        "review_packs RequiredForChunk when either selected_contract_pack or semantic-context.contract_pack is non-empty.",
+        "Legacy general selector source precedence: file-diff-context.contract_pack, then file-diff-context.pack alias; semantic-context.contract_pack remains a separate must-hold constraint.",
+        "Legacy flat identity: one {id,description} rule -> one NormalizedContract(contract_id=id, description preserved, section rules, RuleItem.rule=description), no duplicate id qualifier; contract:<id> preserved.",
+        "Legacy include-all controls for exact sentinels target_profile:domain_contracts and target_profile:review_packs.",
+        "Finite ProvenanceV1 {source_kind,source_path,source_state} is required budgeted payload context; loss -> REQUIRED_CONTEXT_OMITTED.",
+        "Control B minimum directional criterion: bad arm meets predeclared material adverse-signal threshold and corrected arm does not; repeated-pair mode fixes N/K before execution."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -262,7 +267,17 @@
         },
         "legacy_contract_identity": "A2: one admitted legacy rule mapping -> one normalized contract keyed by cleaned rule.id; section=rules; rule text=description; explicit contract:<id> preserved.",
         "selector_preprocessing": "A2: first non-empty clean contract_pack, then legacy alias pack; contract_pack precedence; trim whitespace before legacy matcher.",
-        "pattern_handoff": "A2 canonicalizes raw patterns (strings only, trim, drop empty, sanitize, exact-dedupe, sort); A3 matches canonical patterns only."
+        "pattern_handoff": "A2 canonicalizes raw patterns (strings only, trim, drop empty, sanitize, exact-dedupe, sort); A3 matches canonical patterns only.",
+        "final_requirement_closure": {
+          "selector_source_precedence": "file-diff-context.contract_pack > file-diff-context.pack alias; semantic-context.contract_pack is must-hold constraint only",
+          "legacy_flat_identity": "one rule id -> one NormalizedContract.contract_id; description preserved and used as RuleItem.rule/legacy keyword operand; id not duplicated as qualifier",
+          "legacy_include_all": [
+            "target_profile:domain_contracts",
+            "target_profile:review_packs"
+          ],
+          "provenance": "required ProvenanceV1 {source_kind,source_path,source_state}; revision remains Gate C evidence",
+          "control_B_direction": "bad arm adverse; corrected arm not same adverse signal; seeded pair or predeclared K-of-N repeated pairs"
+        }
       },
       "consumer_history": {
         "superseded_value": [
