@@ -115,6 +115,10 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 41. duplicate legacy pack ids: ids limpos duplicados em LEGACY_PACK_MODE -> SOURCE_INVALID_OR_UNSUPPORTED antes da normalização; sem merge/dedupe/winner silencioso.
 42. SelectionResolution no-selector: ausência de general selector -> `status=not_requested`, token ausente, resolved ids vazios, sem degradação.
 43. ApplicableContractSet union completo: contract_refs de todos ApplicablePackSet + direct `contract:<id>` + legacy `target_profile:domain_contracts` include-all + ContractApplicability exact/path/pattern/global + legacy semantic-group fallback; missing explicit relation -> CM-PACK-04.
+44. semantic-context PackConstraintResolution: objeto separado do general SelectionResolution, estados `not_requested|resolved|unresolved`, resolved ids completos; usado só para must_hold constraint. Conflict control preserva general selector e semantic constraint distintos.
+45. domain include-all requiredness: `target_profile:domain_contracts` torna domain-contracts RequiredForChunk; fonte ausente/inválida -> CM-CL2-05, non-conclusive.
+46. direct missing contract: direct `contract:<id>` para alvo ausente -> CM-CONTRACT-01 / SELECTED_CONTRACT_MISSING; alvo presente é positive counterpart.
+47. direct legacy pack-ref requiredness: qualquer direct `contract:<id>` torna review-packs RequiredForChunk para preservar possível pack id legado; fonte ausente/inválida -> CM-CL2-06.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
