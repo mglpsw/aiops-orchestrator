@@ -302,10 +302,10 @@
             "mapping_key_or_legacy_id": "PRESERVED_REQUIRED as pack_id",
             "paths": "PRESERVED_REQUIRED APPLICABILITY",
             "domain_contract": "PRESERVED_REQUIRED projection input to contract_refs",
-            "additional_contract_refs": "PRESERVED_REQUIRED projection input to contract_refs",
             "description": "EXPLANATORY_OPTIONAL REVIEW_CONTEXT",
             "recommended_review_preset": "PRESERVED_OPTIONAL REVIEW_CONTEXT",
-            "critical_allow_external_review_require_full_diff_require_final_files_when_available_notes": "NOT_PART_OF_NORMALIZED_INTERFACE"
+            "critical_allow_external_review_require_full_diff_require_final_files_when_available_notes": "NOT_PART_OF_NORMALIZED_INTERFACE",
+            "contract_bindings": "PRESERVED_REQUIRED projection source outside the pack entry: contract_bindings.get(pack_id, []) contributes explicit refs to NormalizedPack.contract_refs; it is not a per-pack raw field."
           },
           "source_metadata": {
             "version": "NOT_PART_OF_NORMALIZED_INTERFACE raw parser metadata",
