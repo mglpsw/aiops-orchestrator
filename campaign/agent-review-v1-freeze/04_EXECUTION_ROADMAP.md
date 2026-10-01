@@ -14,7 +14,7 @@ modificar; `git diff --name-only` fora dela é parada (`02` → `slice_gates.v1_
 |---|---|---|---|---|---|
 | 0 | V1-C0 contract freeze | #221 | docs/contrato; sem comportamento | `V1_C0_CONTRACT_READY` | baixo |
 | 1 | V1-C1 coverage truth | #232 | comportamento v1 (planner + propagação) | `V1_C1_COVERAGE_TRUTH_READY` | médio: decisão de semântica "complete" (tier solicitado vs revisão textual) deve sair do texto de #232, não ser inventada |
-| 2 | V1-C2 contexto de contratos/packs + honestidade de limitação | #221 + AgentEscala#869 | slice de contrato (esta sincronização) + slice de implementação sucessora (engine genérico) | contrato: `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`; implementação: `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY` | médio: Gate A congela admissão bruta; per-claim #805 adiada pelo owner |
+| 2 | V1-C2 contexto de contratos/packs + honestidade de limitação | #221 + AgentEscala#869 | slice de contrato (esta sincronização) + slice de implementação sucessora (engine genérico) | requisitos: `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`; implementação: `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY` | médio: Gate A congela admissão bruta; per-claim #805 adiada pelo owner |
 | 3 | V1-C3 materiality | #343 | comportamento v1 (normalizer) | `V1_C3_MATERIALITY_READY` | médio: aboutness exige material revisado como nova entrada do parser; mudança de response contract toca golden fixtures congeladas |
 | 4 | V1-C4 non-vacuous result / TS1 | #307 | comportamento v1 (gate/synth) | `V1_C4_GATE_NONVACUITY_READY` | médio; CM-CL5-01/02 já reproduzidos |
 | 5 | V1-C5 egress disposition | #315 | decision contract primeiro | `V1_C5_EGRESS_DISPOSITION_READY` ou `BLOCKED_BY_EXPLICIT_HUMAN_DECISION` | **alto: `STOP_UNRESOLVED_POLICY` provável** |
@@ -94,7 +94,7 @@ Para cada novo predicado/reason: mecanismo ausente → RED focal; presente → G
 
 **Stop conditions:** `STOP_OWNER_BOUNDARY` (exige ClaimV1/máquina per-claim), `STOP_TARGET_COMPATIBILITY` (única saída é reescrever packs/contratos do AgentEscala), `STOP_CONTRACT_CONFLICT` (autoridade de regra ambígua ou adotado vs proposto sem resolução), `STOP_SCHEMA_EXPANSION` (novo schema/versão pública quando a propagação plan-level resolveria), `STOP_V2_COUPLING` (copiar/modificar Assured/OGR por conveniência), `STOP_POSITIVE_CONTROL` (honestidade só tornando toda revisão afetada manual), `STOP_SUBJECT_DRIFT`. Não contornar STOP enfraquecendo a claim.
 
-### V1-C2 — interface semântica normalizada (AOCM rescope, normativa para PR #367)
+### V1-C2 — interface semântica normalizada (histórico supersedido; requisitos preservados)
 
 O terminal anterior `V1_C2_CONTRACT_INTERFACE_DECIDED` permanece histórico e é
 substituído por `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`.
@@ -158,6 +158,50 @@ serializada para as classes: `SOURCE_ABSENT`, `SOURCE_INVALID_OR_UNSUPPORTED`,
 Gate A qualifica parser/admissão; AgentEscala#869 é Gate B; o par exato é Gate C.
 Nenhum deles é concedido por esta PR.
 
+### V1-C2 — requisitos e invariantes congelados (autoridade atual)
+
+A autoridade documental corrente é:
+
+```text
+V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN
+RequirementsFrozen != ExecutableContractQualified
+```
+
+A PR #367 congela requisitos semânticos, non-claims, classes de compatibilidade,
+positive controls, famílias de countermodels e **owners executáveis**. Ela não afirma
+que documentação já qualifica parser, compatibilidade legada, normalização, custo,
+packing/repacking ou propagação runtime.
+
+#### Gate A — C2ExecutableContract
+
+Antes do primeiro patch runtime, o task contract executável deve congelar e provar:
+
+```text
+A1 RawSourceAdmission
+A2 LegacyCompatibility + Normalization
+A3 Applicability + explicit relation resolution
+A4 Canonical cost + deterministic budget/packing
+A5 Required-context loss propagation
+```
+
+**A1** cobre fontes raw admitidas/rejeitadas, ambiguity/duplicate keys e fixtures
+atuais/legados. **A2** preserva a compatibilidade legada, inclusive
+`contract_pack=calendar -> agentescala-calendar`, e projeta os aliases legados de
+regra (`scope/is_global/file_path/path/files/paths/source_files/related_files/patterns`)
+em uma representação finita. **A3** consome identities normalizadas exatas e relações
+explícitas. **A4** usa a autoridade v1 `canonical_json/canonical_len` ou prova uma
+substituição equivalente, qualifica um optional-minimal context único, recompõe
+applicability/kernel/custo por candidate e preserva ou substitui explicitamente o
+FFD/tie-break existente. **A5** prova que perda requerida/source/hunk chega ao gate.
+
+Gate B continua sendo AgentEscala#869 (target projection/config). Gate C é a
+conformance do **par exato** engine SHA + target/config SHA. Somente A+B+C pode
+conceder `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
+
+Os terminais `V1_C2_CONTRACT_INTERFACE_DECIDED` e
+`V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED` são históricos supersedidos.
+
+
 ### V1-C3 (#343)
 Anexar predicados determinísticos em `finding_normalizer._normalize_finding`. **O
 canal de saída é decisão aberta:** `_downgrade_or_reject` gera `NormalizedRisk`, e
@@ -196,11 +240,34 @@ remaining limitation` para cada entrada de `01_CLAIM_LEDGER.json`.
 ## Decisões de freeze registradas em #221 (checkpoint 2026-09-30T20:07Z)
 
 - #232, #343 e #307 são blockers duros do freeze; #315 exige disposição explícita (fix, residual nomeado aceito, ou desabilitar/substituir a lane).
-- AgentEscala#871 (HTTP 429 sem retry / sem `Retry-After`) é bugfix target-side limitado; entra na C6 consolidada; falha persistente continua virando revisão manual.
+- AgentEscala#871 (HTTP 429 sem retry / sem `Retry-After`) é bugfix target-side limitado e **pré-requisito externo do freeze final**, fora da reconstrução de claims da V1-C6; falha persistente continua virando revisão manual.
 - Non-features do v1: `json_schema` no provider, reparo/retry semântico de saída malformada, nova estratégia de modelo/preset, nova arquitetura de agrupamento semântico, receipts/trust architecture v2, OGR/impact-context.
 - PR grande/evidência pesada: `chunk_budget_exceeded`/plano parcial não é blocker automático quando falha fechado para revisão manual. Exigência é **veracidade**, não escalabilidade.
 
 **Gate terminal de freeze registrado no checkpoint de #221:** #232/#343/#307/#315 com disposições terminais e evidência exact-subject; par de contexto da C2 qualificado; AgentEscala#871 corrigida (mesmo endpoint/preset/payload) ou aceita explicitamente com evidência operacional; release final imutável e reproduzível; AgentEscala consome exatamente esse par engine+config em canário controlado; 429/504/schema-inválido/budget-excedido permanecem fail-closed sem fabricar cobertura/readiness; rollback/suporte/limitações documentados.
+
+## Pré-requisitos externos do freeze final
+
+`V1_FINAL_SOURCE_CANDIDATE_READY != V1_FINAL_FREEZE`.
+
+A V1-C6 reconstrói somente claims/obrigações/countermodels canônicos do AgentReview.
+Os seguintes itens são **externos à reconstrução de claims C6**, mas bloqueiam o
+freeze final:
+
+- **AgentEscala#869:** target contract/projection/config e conformance do par exato;
+- **AgentEscala#871:** confiabilidade do thin wrapper para HTTP 429/`Retry-After`, com
+  retry bounded, mesmos endpoint/preset/payload e falha persistente continuando
+  fail-closed/`manual_review_required`;
+- release final de manutenção imutável/reproduzível;
+- repin do consumer para o par compatível exato;
+- canário controlado;
+- prova de rollback + support/limitation documentation.
+
+Para #871, a evidência mínima de fechamento é: issue/repo identity, exact target
+commit qualificado/mergeado, testes de aceite verdes, retry bounded preservado e
+falha após retries ainda manual. Não se cria claim semântica do engine para um bug de
+transporte do wrapper.
+
 
 ## Fronteira após o source candidate
 
