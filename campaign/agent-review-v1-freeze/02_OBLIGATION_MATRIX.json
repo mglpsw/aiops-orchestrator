@@ -713,8 +713,8 @@
       "must_hold_applicability": {
         "source": "semantic-context artifact: optional scope, change_type, contract_pack and flat must_hold list[str]",
         "owner_split": {
-          "A2": "normalize semantic-context fields; resolve semantic-context.contract_pack using the same legacy/exact SelectionResolution authority as selected_contract_pack; preserve scope/change_type/must_hold without inventing per-claim ids",
-          "A3": "decide MustHoldApplicable(chunk) from normalized scope plus optional resolved pack constraint"
+          "A2": "normalize semantic-context scope/change_type/must_hold and emit the DISTINCT PackConstraintResolution from semantic-context.contract_pack using the same selector-matching algorithm as appropriate for the source mode; never reuse or overwrite general SelectionResolution.",
+          "A3": "consume normalized scope plus PackConstraintResolution only; decide MustHoldApplicable(chunk) and never read raw semantic-context.contract_pack."
         },
         "scope_operator": {
           "rule": "trim/lower scope. Empty scope or one of global|all|document applies to every chunk. Otherwise split normalized scope on non-alphanumeric separators into tokens; scope applies when normalized scope is a substring of any canonical chunk path OR any scope token is a substring of any canonical chunk path.",
