@@ -161,7 +161,11 @@
         "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 and a resolving positive counterpart.",
         "Legacy pack ids are unique after clean-text; duplicate pack ids fail closed as SOURCE_INVALID_OR_UNSUPPORTED.",
         "SelectionResolution canonical handoff always uses not_requested|resolved|unresolved; no-selector case is explicit and non-degrading.",
-        "ApplicableContractSet canonical union covers applicable-pack contract_refs, direct contract:<id> refs, target_profile:domain_contracts include-all, normalized ContractApplicability and legacy semantic-group fallback."
+        "ApplicableContractSet canonical union covers applicable-pack contract_refs, direct contract:<id> refs, target_profile:domain_contracts include-all, normalized ContractApplicability and legacy semantic-group fallback.",
+        "Distinct PackConstraintResolution for semantic-context.contract_pack: not_requested|resolved|unresolved, complete resolved ids, separate from general SelectionResolution, with conflicting-token control.",
+        "domain_contracts RequiredForChunk when target_profile:domain_contracts sentinel is present; CM-CL2-05.",
+        "direct missing contract:<id> focal CM-CONTRACT-01 plus resolving positive control.",
+        "review_packs RequiredForChunk when any direct contract:<id> exists because legacy pack exact-id compatibility must be evaluable; CM-CL2-06."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -173,7 +177,38 @@
       "countermodels": [
         "CM-CL2-01",
         "CM-CL2-02",
-        "CM-CL2-03"
+        "CM-CL2-03",
+        "CM-CL2-04",
+        "CM-CL2-05",
+        "CM-CL2-06",
+        "CM-CL4-02",
+        "CM-CL4-03",
+        "CM-NORM-01",
+        "CM-NORM-02",
+        "CM-NORM-03",
+        "CM-NORM-04",
+        "CM-PACK-01",
+        "CM-PACK-02",
+        "CM-PACK-03",
+        "CM-PACK-04",
+        "CM-CONTRACT-01",
+        "CM-ABS-01",
+        "CM-HUNK-01",
+        "CM-HUNK-02",
+        "CM-GA-A2-LEGACY-PACK",
+        "CM-GA-A2-LEGACY-APPLICABILITY",
+        "CM-GA-A2-LEGACY-SELECTOR-SURFACE",
+        "CM-GA-A2-SELECTOR-SOURCE-PRECEDENCE",
+        "CM-GA-A2-LEGACY-FLAT-IDENTITY",
+        "CM-GA-A2-LEGACY-DUP-ID",
+        "CM-GA-A2-LEGACY-PACK-DUP-ID",
+        "CM-GA-A3-LEGACY-PATTERN",
+        "CM-GA-A3-SEMANTIC-GROUP",
+        "CM-GA-A3-INCLUDE-ALL",
+        "CM-GA-A4-COST",
+        "CM-GA-A4-REPACK",
+        "CM-MUST-HOLD-01",
+        "CM-PROVENANCE-01"
       ],
       "limitations": [
         "Detection that code falsifies a claim remains an LLM hypothesis; only the carriage, state and gate consumption can be deterministic.",
@@ -297,7 +332,8 @@
           "legacy_pack_id_uniqueness": "duplicate cleaned legacy pack ids fail closed",
           "selection_resolution_states": "not_requested|resolved|unresolved",
           "applicable_contract_set": "pack refs + direct refs + legacy include-all + normalized applicability + legacy semantic-group fallback"
-        }
+        },
+        "countermodel_registry": "countermodels array is the canonical structured CL-2 registry; shared CL-4 countermodels are listed explicitly, and Gate-A/AOCM IDs named by required_evidence are included rather than left only in prose."
       },
       "consumer_history": {
         "superseded_value": [
