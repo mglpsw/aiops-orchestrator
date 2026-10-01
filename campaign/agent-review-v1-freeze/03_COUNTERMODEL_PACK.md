@@ -330,3 +330,27 @@ limpa continua possível se todo o restante do piso estiver presente.
 `semantic-context.change_type` é metadata advisory opcional nesta V1 e não filtra
 `MustHoldApplicable`. Com must_hold aplicável preservado, remover somente
 `change_type` -> `OPTIONAL_CONTEXT_REDUCED`; a conclusão ainda pode permanecer limpa.
+
+### CM-GA-A2-LEGACY-CONTRACT-IDENTITY
+
+- **Owner:** Gate A A2.
+- **Projection:** cada rule legacy admitida `{id,description,...}` gera exatamente um `NormalizedContract`: `contract_id=clean(id)`, uma seção `rules`, um `RuleItem.rule=clean(description)`. Campos de applicability vão para `ContractApplicability`, não para qualifiers.
+- **Admissão:** `id` e `description` devem ser strings não vazias; ausência/malformação -> `SOURCE_INVALID_OR_UNSUPPORTED`.
+- **RED:** agrupar múltiplas rules sob um synthetic contract, ou manter id apenas como qualifier, quebra `contract:<id>`.
+- **GREEN:** `calendar_10_22_independent` e `no_auto_contract_fix` permanecem contratos distintos; `contract:calendar_10_22_independent` resolve exatamente um.
+
+### CM-GA-A2-PATTERN-NORMALIZATION
+
+- **Owner:** Gate A A2.
+- `patterns` raw list: aceitar strings, trim, descartar empty-after-trim, aplicar sanitização de path compatível com v1, deduplicar exato e ordenar. A3 recebe somente patterns canônicos não vazios.
+- **Control:** `['  backend/api/*  ', ' ', 'backend/api/*'] -> ['backend/api/*']`; A3 não trim/drop novamente.
+
+### CM-GA-A2-SELECTOR-ALIASES
+
+- **Owner:** Gate A A2.
+- Token explícito é o primeiro valor clean/non-empty entre `contract_pack` e alias legado `pack`; `contract_pack` tem precedência. Clean = string + strip; vazio após strip é absent.
+- **Controls:** `contract_pack: ' Calendar '` -> `Calendar`; contract_pack blank + `pack: ' Calendar '` -> `Calendar`; ambos presentes -> contract_pack vence; ambos vazios -> sem seleção explícita.
+
+### CM-MUST-HOLD-02 — pack source required by semantic-context
+
+Se `semantic-context.contract_pack` é não vazio, `review_packs` é `RequiredForChunk` antes da resolução. Ausência/invalidade do source degrada; não pode cair no branch `absent_when_not_required` nem em `not_relevant`.
