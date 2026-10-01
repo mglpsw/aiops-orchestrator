@@ -701,11 +701,10 @@
           "matching preserves current supported exact-path OR pattern OR global behavior",
           "malformed path-bearing input never silently becomes global or irrelevant"
         ],
-        "owner": "Gate A A2/A3 executable contract",
         "owner_split": {
-          "A2": "project raw aliases into ContractApplicability and resolve legacy selection token; owns raw-to-normalized correctness",
-          "A3": "evaluate normalized ContractApplicability against canonical chunk files; owns exact-path/pattern/global applicability and normalized relation evaluation",
-          "handoff": "A2 output is the only input to A3 for legacy applicability. If A2 normalized correctly but A3 selects the wrong chunk, A3 is the failing owner; if raw aliases/selector were normalized incorrectly, A2 is the failing owner."
+          "A2": "raw legacy aliases/selector/bindings -> normalized ContractApplicability, SelectionResolution and contract_refs; owns projection correctness",
+          "A3": "evaluate normalized structures against canonical candidate chunk files; owns exact-path/pattern/global/pack/contract applicability and consequences",
+          "handoff": "A3 receives only A2 normalized output; A3 never parses raw aliases or re-runs legacy fuzzy selector matching"
         },
         "pattern_semantics": {
           "owner": "Gate A A3",
