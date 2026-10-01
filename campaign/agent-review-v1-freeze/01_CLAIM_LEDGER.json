@@ -153,7 +153,12 @@
         "Legacy flat identity: one {id,description} rule -> one NormalizedContract(contract_id=id, description preserved, section rules, RuleItem.rule=description), no duplicate id qualifier; contract:<id> preserved.",
         "Legacy include-all controls for exact sentinels target_profile:domain_contracts and target_profile:review_packs.",
         "Finite ProvenanceV1 {source_kind,source_path,source_state} is required budgeted payload context; loss -> REQUIRED_CONTEXT_OMITTED.",
-        "Control B minimum directional criterion: bad arm meets predeclared material adverse-signal threshold and corrected arm does not; repeated-pair mode fixes N/K before execution."
+        "Control B minimum directional criterion: bad arm meets predeclared material adverse-signal threshold and corrected arm does not; repeated-pair mode fixes N/K before execution.",
+        "Legacy normalized contract ids are unique after clean-text; duplicate ids fail closed as SOURCE_INVALID_OR_UNSUPPORTED.",
+        "SelectionResolution explicitly covers not_requested/resolved/unresolved and resolved carries the complete exact pack-id set consumed in full by A3.",
+        "ApplicablePackSet controls cover all branches: resolved selector set, mapping path matches, target_profile:review_packs include-all, legacy explicit contract:<id> pack refs, and legacy semantic-group fallback.",
+        "review_packs source is RequiredForChunk when target_profile:review_packs sentinel is present; absent/invalid sentinel source has focal CM-CL2-04.",
+        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 and a resolving positive counterpart."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -277,6 +282,13 @@
           ],
           "provenance": "required ProvenanceV1 {source_kind,source_path,source_state}; revision remains Gate C evidence",
           "control_B_direction": "bad arm adverse; corrected arm not same adverse signal; seeded pair or predeclared K-of-N repeated pairs"
+        },
+        "final_pack_determinism": {
+          "duplicate_legacy_ids": "fail closed before normalization",
+          "selection_resolution": "not_requested|resolved|unresolved; resolved_pack_ids complete set",
+          "applicable_pack_set": "union of resolved selection, mapping paths, legacy include-all, legacy explicit refs, legacy semantic-group fallback",
+          "include_all_requiredness": "target_profile:review_packs makes review_packs source required",
+          "missing_contract_relation": "CM-PACK-04 / SELECTED_CONTRACT_MISSING"
         }
       },
       "consumer_history": {
