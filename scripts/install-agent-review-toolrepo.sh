@@ -193,28 +193,58 @@ if [ -z "$VENV_TARGET" ]; then
 fi
 
 CLEANUP_TARGET=""
+CLEANUP_IDENTITY=""
 ARM_CLEANUP=0
 
-cleanup_partial_venv() {
+cleanup_owned_target() {
+    local primary_status="$1"
+    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
+        if [ -L "$CLEANUP_TARGET" ]; then
+            echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' is a symlink; preserving original install failure $primary_status." >&2
+            return 0
+        fi
+        local current_identity
+        current_identity="$(stat -c "%d:%i" "$CLEANUP_TARGET" 2>/dev/null || true)"
+        if [ -n "$CLEANUP_IDENTITY" ] && [ "$current_identity" != "$CLEANUP_IDENTITY" ]; then
+            echo "Warning: AgentReview toolrepo cleanup skipped: target '$CLEANUP_TARGET' identity changed ($current_identity != $CLEANUP_IDENTITY); preserving original install failure $primary_status." >&2
+            return 0
+        fi
+        if [ -e "$CLEANUP_TARGET" ]; then
+            if rm -rf "$CLEANUP_TARGET"; then
+                :
+            else
+                local cleanup_status=$?
+                echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$CLEANUP_TARGET'; preserving original install failure $primary_status." >&2
+            fi
+        fi
+    fi
+}
+
+handle_exit() {
     local original_status=$?
     trap - EXIT INT TERM
     if [ "$original_status" -eq 0 ]; then
         original_status=1
     fi
-    if [ "$ARM_CLEANUP" -eq 1 ] && [ -n "$CLEANUP_TARGET" ] && [ "$CLEANUP_TARGET" != "/" ]; then
-        if [ -e "$CLEANUP_TARGET" ] || [ -L "$CLEANUP_TARGET" ]; then
-            if rm -rf "$CLEANUP_TARGET"; then
-                :
-            else
-                local cleanup_status=$?
-                echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$CLEANUP_TARGET'; preserving original install failure $original_status." >&2
-            fi
-        fi
-    fi
+    cleanup_owned_target "$original_status"
     exit "$original_status"
 }
 
-trap cleanup_partial_venv EXIT INT TERM
+handle_int() {
+    trap - EXIT INT TERM
+    cleanup_owned_target 130
+    exit 130
+}
+
+handle_term() {
+    trap - EXIT INT TERM
+    cleanup_owned_target 143
+    exit 143
+}
+
+trap handle_exit EXIT
+trap handle_int INT
+trap handle_term TERM
 
 VENV_PARENT="$(dirname "$VENV_TARGET")"
 if [ ! -d "$VENV_PARENT" ]; then
@@ -234,6 +264,7 @@ if ! mkdir "$VENV_TARGET" 2>/dev/null; then
 fi
 
 CLEANUP_TARGET="$VENV_TARGET"
+CLEANUP_IDENTITY="$(stat -c "%d:%i" "$VENV_TARGET" 2>/dev/null || true)"
 ARM_CLEANUP=1
 
 "$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"

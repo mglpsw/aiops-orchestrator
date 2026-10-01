@@ -1146,3 +1146,194 @@ def test_countermodel_f2_cleanup_failure_does_not_mask_primary_install_failure(t
 
     # 4. Target may remain because cleanup failed
     assert target_venv.exists()
+
+
+def test_countermodel_g1_cleanup_skips_when_directory_object_identity_replaced(tmp_path: Path) -> None:
+    """G1: Cleanup must remain bound to the claimed directory object identity (device:inode).
+
+    If the claimed directory is replaced by a different directory object or symlink before cleanup runs,
+    the cleanup handler must detect the identity mismatch, skip rm -rf, and preserve the original failure.
+    """
+    host_py = sys.executable
+
+    # Case A: Claimed directory replaced by another directory object with different inode
+    target_venv_a = tmp_path / "venv_g1_replaced_dir"
+    fake_py_a = tmp_path / "fake_py_replace_dir.sh"
+    fake_py_a.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    mv "$target" "${target}_old"\n'
+        '    mkdir "$target"\n'
+        '    echo "foreign replacement content" > "$target/replacement_sentinel.txt"\n'
+        '    exit 42\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py_a.chmod(0o755)
+
+    env_a = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_a))
+    res_a = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv_a)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_a,
+    )
+    assert res_a.returncode == 42
+    assert "identity changed" in res_a.stderr
+    assert target_venv_a.exists(), "Replaced directory must not be deleted by cleanup"
+    sentinel_a = target_venv_a / "replacement_sentinel.txt"
+    assert sentinel_a.exists()
+    assert sentinel_a.read_text(encoding="utf-8").strip() == "foreign replacement content"
+
+    # Case B: Claimed directory replaced by a symlink to an external directory
+    target_venv_b = tmp_path / "venv_g1_replaced_symlink"
+    external_dir = tmp_path / "external_protected_dir"
+    external_dir.mkdir()
+    (external_dir / "protected.txt").write_text("precious data\n", encoding="utf-8")
+
+    fake_py_b = tmp_path / "fake_py_replace_symlink.sh"
+    fake_py_b.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    target="$5"\n'
+        '    rmdir "$target"\n'
+        f'    ln -s "{external_dir}" "$target"\n'
+        '    exit 43\n'
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py_b.chmod(0o755)
+
+    env_b = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_b))
+    res_b = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv_b)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_b,
+    )
+    assert res_b.returncode == 43
+    assert "is a symlink" in res_b.stderr
+    assert (external_dir / "protected.txt").exists(), "Symlink target must not be deleted"
+    assert (external_dir / "protected.txt").read_text(encoding="utf-8") == "precious data\n"
+
+
+def test_countermodel_g3_signal_status_preserved_on_cancellation(tmp_path: Path) -> None:
+    """G3: Signal handlers must exit with appropriate signal exit codes (INT -> 130, TERM -> 143),
+    never rewritten to status 1, and signal exit codes must be preserved even if cleanup fails.
+    """
+    host_py = sys.executable
+
+    # Case 1: SIGINT (exit code 130)
+    target_venv_int = tmp_path / "venv_g3_sigint"
+    fake_py_int = tmp_path / "fake_py_sigint.sh"
+    fake_py_int.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    kill -INT "$PPID"\n'
+        '    sleep 1\n'
+        "    exit 1\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py_int.chmod(0o755)
+
+    env_int = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_int))
+    res_int = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv_int)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_int,
+    )
+    assert res_int.returncode == 130, f"SIGINT must exit with code 130, got {res_int.returncode}"
+    assert not target_venv_int.exists(), "Cleanup must remove target on SIGINT"
+
+    # Case 2: SIGTERM (exit code 143)
+    target_venv_term = tmp_path / "venv_g3_sigterm"
+    fake_py_term = tmp_path / "fake_py_sigterm.sh"
+    fake_py_term.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    kill -TERM "$PPID"\n'
+        '    sleep 1\n'
+        "    exit 1\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_py_term.chmod(0o755)
+
+    env_term = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_term))
+    res_term = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv_term)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_term,
+    )
+    assert res_term.returncode == 143, f"SIGTERM must exit with code 143, got {res_term.returncode}"
+    assert not target_venv_term.exists(), "Cleanup must remove target on SIGTERM"
+
+    # Case 3: SIGTERM + cleanup rm failure (exit code 73) -> must still exit 143
+    fake_bin = tmp_path / "bin_fail_rm"
+    fake_bin.mkdir()
+    fake_rm = fake_bin / "rm"
+    fake_rm.write_text(
+        "#!/bin/sh\n"
+        'echo "simulated rm failure witness" >&2\n'
+        "exit 73\n",
+        encoding="utf-8",
+    )
+    fake_rm.chmod(0o755)
+
+    target_venv_term_fail = tmp_path / "venv_g3_sigterm_rm_fail"
+    env_term_fail = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py_term),
+        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+    )
+    res_term_fail = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv_term_fail)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_term_fail,
+    )
+    assert res_term_fail.returncode == 143, f"SIGTERM + cleanup failure must preserve 143, got {res_term_fail.returncode}"
+    assert "simulated rm failure witness" in res_term_fail.stderr
+    assert "AgentReview toolrepo cleanup failed" in res_term_fail.stderr
+    assert "73" in res_term_fail.stderr

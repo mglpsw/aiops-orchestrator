@@ -2425,6 +2425,79 @@ def test_finding_r5_git_sources_validated_from_commit_tree(tmp_path: Path) -> No
         subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=fake_repo, check=True)
 
 
+def test_countermodel_g2_default_manifest_sources_from_git_commit_not_dirty_worktree(tmp_path: Path) -> None:
+    """G2: Default manifest must source from authoritative Git commit during git materialization.
+
+    When the default manifest file in the working tree is locally mutated (dirty):
+    1. --check fails observing the working tree's invalid manifest;
+    2. --materialize-to without --manifest succeeds and materializes strictly using the committed Git manifest;
+    3. --materialize-to with explicit --manifest respects the caller-specified manifest path.
+    """
+    fake_repo = tmp_path / "fake_repo_g2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+
+    (fake_repo / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_VALIDATOR_PATH, fake_repo / "scripts" / "verify-agent-review-standalone-closure.py")
+    (fake_repo / "config" / "agent-review").mkdir(parents=True, exist_ok=True)
+    manifest_src = REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    shutil.copy2(manifest_src, fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json")
+
+    _init_git_in_standalone(fake_repo)
+
+    manifest_file = fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    data["distribution_boundary"]["core_packages"].append("app/non_existent_package_probe")
+    manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    cli_script = fake_repo / "scripts" / "verify-agent-review-standalone-closure.py"
+
+    # 1. Live check (--check) must fail observing working-tree drift
+    res_check = subprocess.run(
+        [sys.executable, str(cli_script), "--check"],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_check.returncode == 1
+    assert "non_existent_package_probe" in res_check.stderr
+
+    # 2. Materialize without --manifest must succeed using committed Git manifest
+    target_clean = tmp_path / "target_g2_clean"
+    res_mat = subprocess.run(
+        [sys.executable, str(cli_script), "--materialize-to", str(target_clean)],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_mat.returncode == 0, f"Git materialization must succeed using commit manifest:\n{res_mat.stderr}"
+    assert "OK: Materialized standalone distribution" in res_mat.stdout
+    assert target_clean.exists()
+    assert (target_clean / "app" / "agent_review").exists()
+
+    # 3. Materialize with explicit --manifest must respect the caller's explicit manifest
+    explicit_manifest_file = tmp_path / "custom_manifest.json"
+    explicit_manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    target_explicit = tmp_path / "target_g2_explicit"
+    res_mat_exp = subprocess.run(
+        [
+            sys.executable,
+            str(cli_script),
+            "--materialize-to",
+            str(target_explicit),
+            "--manifest",
+            str(explicit_manifest_file),
+        ],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_mat_exp.returncode == 1
+    assert "non_existent_package_probe" in res_mat_exp.stderr
+    assert not target_explicit.exists()
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""
