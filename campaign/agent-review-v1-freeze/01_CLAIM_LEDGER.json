@@ -144,7 +144,11 @@
         "Gate A must_hold controls bind semantic-context scope/optional contract_pack to chunks: A2 normalizes/resolves; A3 evaluates scope + ApplicablePackSet; unresolved pack -> SELECTED_PACK_MISSING.",
         "Control B sampling attribution: supported shared deterministic seed per pair OR predeclared repeated-pair protocol with immutable pair_count/pass_criterion; all sampling identities and pair outcomes recorded.",
         "Gate A A3 legacy semantic-group fallback retains the current _relevance_keywords map and id+description substring matching only for legacy-mode items; mapping/domain mode is not promoted by keywords.",
-        "semantic-context.change_type is optional advisory metadata: it does not filter must_hold; loss-only -> OPTIONAL_CONTEXT_REDUCED with applicable must_hold preserved."
+        "semantic-context.change_type is optional advisory metadata: it does not filter must_hold; loss-only -> OPTIONAL_CONTEXT_REDUCED with applicable must_hold preserved.",
+        "Gate A A2 legacy-flat identity control: each admitted {id,description} rule -> one NormalizedContract(contract_id=id, section=rules, RuleItem.rule=description); explicit contract:<id> preserved.",
+        "Gate A A2 selector preprocessing: first non-empty cleaned contract_pack then alias pack; trim whitespace, contract_pack precedence.",
+        "Gate A A2 pattern normalization (trim/drop-empty/sanitize/dedupe/sort) and A3 matching-only handoff.",
+        "review_packs RequiredForChunk when either selected_contract_pack or semantic-context.contract_pack is non-empty."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -255,7 +259,10 @@
         "must_hold": {
           "applicability": "A2 normalizes semantic-context scope/change_type/contract_pack/must_hold and resolves contract_pack; A3 applies scope plus resolved pack constraint.",
           "change_type": "optional advisory metadata only; no applicability effect; loss-only is OPTIONAL_CONTEXT_REDUCED."
-        }
+        },
+        "legacy_contract_identity": "A2: one admitted legacy rule mapping -> one normalized contract keyed by cleaned rule.id; section=rules; rule text=description; explicit contract:<id> preserved.",
+        "selector_preprocessing": "A2: first non-empty clean contract_pack, then legacy alias pack; contract_pack precedence; trim whitespace before legacy matcher.",
+        "pattern_handoff": "A2 canonicalizes raw patterns (strings only, trim, drop empty, sanitize, exact-dedupe, sort); A3 matches canonical patterns only."
       },
       "consumer_history": {
         "superseded_value": [
