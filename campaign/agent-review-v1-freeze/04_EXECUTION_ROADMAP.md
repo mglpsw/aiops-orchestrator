@@ -97,7 +97,7 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 23. legacy flat rule identity (A2): cada `{id,description}` admitido -> um `NormalizedContract` com `contract_id=id`, section `rules`, `RuleItem.rule=description`; `contract:<id>` preservado; id/description malformados -> unsupported.
 24. selector preprocessing legado (A2): general selection lê `file-diff-context.contract_pack`; se ausente/blank usa alias `file-diff-context.pack`; ambos recebem clean-text/trim e `contract_pack` vence quando ambos estão presentes. `semantic-context.contract_pack` NÃO popula o general selector: é constraint separada de must_hold. Depois aplica-se o predicate legacy congelado.
 25. pattern normalization (A2) / matching (A3): A2 trim/drop-empty/sanitize/dedupe/sort; A3 só prefix por `*` final ou substring.
-26. `review_packs` requiredness: `selected_contract_pack` OU `semantic-context.contract_pack` não vazio tornam o source required antes da resolução.
+26. `review_packs` requiredness: source required quando houver general selected-pack token, `semantic-context.contract_pack`, sentinel `target_profile:review_packs`, qualquer direct `contract:<id>` (legacy pack-id compatibility) ou dependência mapping path/pack; ausência/invalidade então degrada.
 27. reserved review-pack metadata: `version/schema_version/updated` são metadata; `packs` e `contract_bindings` são structural reserved keys.
 28. resolved legacy pack multiplicity: A2 entrega o conjunto completo `resolved_pack_ids`; A3 avalia TODOS os resolved ids, nunca escolhe um arbitrariamente.
 29. provenance payload: `ProvenanceV1 {source_kind,source_path,source_state}` é requerido e budgeted; perda -> `REQUIRED_CONTEXT_OMITTED`; revision exata fica no Gate C.
