@@ -1,8 +1,8 @@
 # #301-S1-B: Architecture Freeze, "safe reader context"
 
 ```yaml
-status: ARCHITECTURE_FREEZE_CORRECTION_REQUIRED   # FINAL_BOUNDARY_ADJUDICATION (#301 5921263805) sobre a emenda final (#301 5921013078; STOP_STRUCTURAL_REDESIGN de 0053d77 adjudicado: redesign não exigido); 3b NOT_CONVERGED; a ratificação 5917390110 é HISTORICAL_SUPERSEDED
-ArchitectureFreezeReady: false         # nova adjudicação humana exigida após a revisão independente do successor
+status: ARCHITECTURE_FREEZE_READY       # FINAL_ADJUDICATION (#301 5921973281); ratificado sobre b8f1f18bdfe55f366b07155ca0df87e017f43284
+ArchitectureFreezeReady: true
 ImplementationGrant: false             # ArchitectureFreezeReady != ImplementationGrant
 implementation: NOT_STARTED            # B1, B2, B3 não iniciadas
 owner_issue: "#301"                    # Refs #301; esta PR não fecha nenhuma issue
@@ -41,10 +41,13 @@ forge_records:
   "#301 correction round 3b grant (R3 NOT_CONVERGED; N3 → S1-B)": 5919204387
   "#301 final freeze amendment grant (AB-1, AB-2; redesign não exigido)": 5921013078
   "#301 final boundary adjudication (TCB NPTL; FINALIZATION_BARRIER)": 5921263805
+  "#301 final freeze ratification adjudication": 5921973281
   "#46 reconciliada (2026-09-30)": "S1-A INTEGRATED; S1-B próxima, só planejamento; C4 incompleto; G5 não atingido"
 state:
   S1_A: INTEGRATED
-  S1_B: {architecture: FINAL_BOUNDARY_ADJUDICATION, implementation: NOT_STARTED}
+  S1_B:
+    architecture: FREEZE_RATIFIED
+    implementation: NOT_STARTED
   S1_C: NOT_STARTED
   S1_D: NOT_STARTED
   S_D: NOT_STARTED
@@ -435,6 +438,7 @@ S1B_TCB_FLOOR:
     - resistência a comprometimento do host
     - "detecção ou sobrevivência a adulteração arbitrária, no mesmo processo e por syscall crua, das disposições dos sinais reservados à glibc/NPTL (SameProcessNativeTCBCompromise != ProtectedAdversary)"
     - autoria do handler instalado no kernel para os sinais reservados
+  GitNotTrustedAsObjectTruth: true     # todo objeto entregue é re-hashado (§12)
 S1B_V1_TCB:                            # adjudicação de fronteira, #301 5921263805
   kernel: Linux
   libc_threads: glibc/NPTL
@@ -448,7 +452,6 @@ NPTL_RESERVED_SIGNALS:                 # 32, 33 no runtime glibc/NPTL qualificad
   trusted_as_part_of_TCB: true
   SigCgt_required_clear: false         # a glibc 2.39 instala handler no 33 quando o processo cria qualquer thread (observado)
   raw_rt_sigaction_rewrite: forbidden
-  GitNotTrustedAsObjectTruth: true     # todo objeto entregue é re-hashado (§12)
 ```
 
 ## 11. Transport type-state
@@ -597,7 +600,7 @@ OwnerEstablishedBeforeChildExists ∧ KernelBoundProcessIdentity ∧ TeardownOnE
 | 1 | Pré-condição dedicada: single-thread (`threading.active_count()==1` e uma única task em `/proc/self/task`), verificada; nenhum outro filho | — |
 | 2 | Subreaper: `PR_SET_CHILD_SUBREAPER` antes do spawn, verificado por `PR_GET_CHILD_SUBREAPER == 1` | ablação `no_subreaper` + grandchild com `setsid` → sobrevivente |
 | 3 | **Bootstrap de sinais do reader** (B-LIF-10, B-LIF-11), na ordem congelada em B-LIF-10 (bloqueia → pipe de wakeup → handlers que não levantam → `set_wakeup_fd` → SIGCHLD normalizado → estado de término pronto → desbloqueia → lê a máscara de volta → inspeciona wakeup e flag → só então admite trabalho). Depois NNP, `fchdir` e census tipado no reader antes do spawn | P2d R3B-S1..S3, R3B-S1-pidns, R3B-C1..C3, CM-R3-04..06; §8, §9, §10 |
-| 4 | **Spawn com seção crítica de sinais** (B-LIF-12): o envelope da unidade é fixado antes do `fork`; CONTROLLED bloqueado antes do `fork`; o `fork` fica sob uma guarda que restaura a máscara (e fecha os pipes) se ele falhar; no filho, o **estado de sinais do exec é construído, não herdado** (M1): bloqueia todos os sinais, `set_wakeup_fd(-1)`, **toda disposição do conjunto de sinais endereçáveis pela libc → `SIG_DFL` no kernel** (`sigaction`, nunca o cache do Python), fecha as cópias das pontas de wakeup, máscara de exec vazia para esse conjunto, verifica disposições e máscara lendo do kernel, e **verifica que os bits `SigIgn`/`SigBlk` visíveis no kernel dos sinais reservados à NPTL (32, 33) estão limpos, senão recusa antes do exec** (AB-1); então `dup2` do stdio do protocolo, `RLIMIT_AS`, fechamento dos fds não permitidos, census pré-exec exato e `execve` (env allowlist, argv absoluto, cwd do `fchdir`); a saída do bootstrap é `execve` **ou** relato limitado no canal de erro CLOEXEC + `os._exit`, nunca `raise`/`return`/desenrolar | P2d S-B1..B4, R3C-M1a..d, R3B-G1, R3B-S4/S4b (suporte preliminar), R3B-U1, R3B-F1; P2 (B) |
+| 4 | **Spawn com seção crítica de sinais** (B-LIF-12): o envelope da unidade é fixado antes do `fork`; CONTROLLED bloqueado antes do `fork`; o `fork` fica sob uma guarda que restaura a máscara (e fecha os pipes) se ele falhar; no filho, o **estado de sinais do exec é construído, não herdado** (M1): bloqueia todos os sinais controlados pela aplicação (o conjunto endereçável pela libc), `set_wakeup_fd(-1)`, **toda disposição do conjunto de sinais endereçáveis pela libc → `SIG_DFL` no kernel** (`sigaction`, nunca o cache do Python), fecha as cópias das pontas de wakeup, máscara de exec vazia para esse conjunto, verifica disposições e máscara lendo do kernel, e **verifica que os bits `SigIgn`/`SigBlk` visíveis no kernel dos sinais reservados à NPTL (32, 33) estão limpos, senão recusa antes do exec** (AB-1); então `dup2` do stdio do protocolo, `RLIMIT_AS`, fechamento dos fds não permitidos, census pré-exec exato e `execve` (env allowlist, argv absoluto, cwd do `fchdir`); a saída do bootstrap é `execve` **ou** relato limitado no canal de erro CLOEXEC + `os._exit`, nunca `raise`/`return`/desenrolar | P2d S-B1..B4, R3C-M1a..d, R3B-G1, R3B-S4/S4b (suporte preliminar), R3B-U1, R3B-F1; P2 (B) |
 | 5 | **Identidade:** no pai, `pidfd_open` **imediatamente após o `fork`**, ainda com CONTROLLED bloqueado. Depois restaura a máscara normalizada do reader, e um sinal que chegou durante o bloqueio é entregue nesse ponto, ao handler e ao wakeup. **HANDSHAKE:** `select` em `{setup_error_read, signal_wakeup_read}` sob o deadline (B-RES-02). Nenhuma API reapeia por PID nu | P2d R3B-H1 (1,001 s) vs ablação sem deadline (3,002 s) e A2 (3,002 s); R3B-S5; R3B-H2 |
 | 6 | Dono = o reader, por **atribuição do kernel**: a cada rodada, varre `/proc/[pid]/stat` por `ppid == self` (inclui netos reparentados ao subreaper) | ablação `handle_only` → sobrevivente em TF5-B, TF5-C e TF5-F |
 | 7 | **Teardown em duas fases** (M2, `OneStuckChildCannotStarveSiblingTeardown`). **Fase 1, atribuição e sinal:** varre todos os filhos atribuíveis, faz `pidfd_open` e a **prova de filiação** (`waitid(P_PIDFD, WEXITED\|WNOHANG\|WNOWAIT)`; um não-filho dá ECHILD e não é sinalizado) e envia `SIGKILL` a **todo** filho vivo atribuído, sem nenhum reap entre os sinais. **Fase 2, reap limitado:** `waitid(P_PIDFD, WEXITED\|WNOHANG)` sobre todos os pidfds possuídos; repete a varredura (netos reparentados), sinaliza os novos e repete o reap, até zero filhos ou o fim do envelope comum. Pelo menos uma passada de atribuição e sinal roda mesmo com o envelope esgotado. **Finalização (M4):** o pidfd do dono e os pidfds candidatos são fechados exatamente uma vez num `finally` externo que cobre varredura, `pidfd_open`, `pidfd_send_signal`, close de candidato e reap | R3C-M2 (dois filhos, um preso), R3C-M2b (neto reparentado), R3C-M4 (5 famílias de falha); R3B-H2; S-B1, W-POS |
@@ -1061,7 +1064,7 @@ A lei da #354 vale para todo fd novo: o novo dono é adquirido antes de o anteri
 - CDLL e `prctl` fora da gramática congelada (wrapper único);
 - aquisição de descriptor sem dono pré-existente;
 - re-close numérico stale;
-- bootstrap do filho que faça algo além de: construção do estado de sinais do exec (bloquear todos os sinais, `set_wakeup_fd(-1)`, `sigaction(SIG_DFL)` em todo sinal do conjunto endereçável pela libc, verificação dos bits `SigIgn`/`SigBlk` dos reservados 32/33 com recusa, fechamento das cópias das pontas de wakeup, máscara vazia exata, leitura de volta no kernel), `dup2` do stdio, `setrlimit`, fechamento, census pré-exec, relato pelo canal de erro, `execve` e `os._exit`;
+- bootstrap do filho que faça algo além de: construção do estado de sinais do exec (bloquear todos os sinais controlados pela aplicação (o conjunto endereçável pela libc), `set_wakeup_fd(-1)`, `sigaction(SIG_DFL)` em todo sinal do conjunto endereçável pela libc, verificação dos bits `SigIgn`/`SigBlk` dos reservados 32/33 com recusa, fechamento das cópias das pontas de wakeup, máscara vazia exata, leitura de volta no kernel), `dup2` do stdio, `setrlimit`, fechamento, census pré-exec, relato pelo canal de erro, `execve` e `os._exit`;
 - saída do bootstrap do filho que não seja `execve` ou `os._exit` (`raise`, `return`, desenrolar para o código do reader) (B-LIF-12);
 - `fork` sem CONTROLLED bloqueado, reset do filho depois de desbloquear, ou `fork` sem guarda que restaure a máscara se ele falhar (B-LIF-12);
 - pidfd do dono não fechado exatamente uma vez no teardown; outcome final decidido antes do resultado do teardown (§15);
@@ -1404,14 +1407,15 @@ A API aditiva de B-HO-02 **não** é `STOP_S1B_REQUIRES_S1A_SEMANTIC_CHANGE`: el
 ### 30.5 Final disposition
 
 ```yaml
-disposition: S1B_FINAL_BOUNDARY_ADJUDICATION     # #301 5921263805 (sobre a emenda 5921013078); a disposição terminal é registrada no forge após a revisão do exact head, não neste arquivo
-reviewed_head: b4a572a97465472d94165977edb05f720faf44eb     # independent review → S1B_FREEZE_CORRECTION_REQUIRED
+disposition: S1B_ARCHITECTURE_FREEZE_RATIFIED     # #301 5921973281
+reviewed_head: b8f1f18bdfe55f366b07155ca0df87e017f43284
 correction_rounds: [1 (3dc2965), 2 (adjudication round)]
-independent_review_of_b92a102: {material_findings: 0, authority_conflicts: 0, owner_conflicts: 0, obligation_domains: 11/11_CONFORMANT, S1B-REV-NIT-01: ACCEPTED_NON_BLOCKING_EDITORIAL}
+independent_review_of_b8f1f18: {material_findings: 0, architecture_blockers: 0, authority_conflicts: 0, owner_conflicts: 0, normative_conflicts: 0, qualification_gaps: 1, nits: 4}
+Codex_review_of_b8f1f18: {architecture_blockers: 0, result: CLEAN}
 pending_decisions: []
-ArchitectureFreezeReady: false    # nova adjudicação humana exigida
+ArchitectureFreezeReady: true
 ImplementationGrant: false
-next_authorization: "revisão independente do successor + Codex; depois nova adjudicação humana de ArchitectureFreezeReady"
+next_authorization: "nenhuma autorização de implementação concedida; Ready/merge e fases subsequentes exigem novo grant humano explícito"
 ```
 
 ### 30.6 Correction round 1 (review independente de `b4a572a`)
@@ -1689,3 +1693,46 @@ B2_MANDATORY_QUALIFICATION_GAPS_ADDENDUM_2:   # somado às listas da §30.10 e d
 **Regra terminal:**
 - `architecture_blockers`, `authority_conflicts`, `owner_conflicts` e `normative_contradictions` = 0; fronteira de TCB coerente; `FINALIZATION_BARRIER` coerente com a corrida de outcome definida; lacunas explícitas e atribuídas; CI GREEN; Codex sem blocker → `S1B_ARCHITECTURE_FREEZE_READY_FOR_MAINTAINER_ADJUDICATION`;
 - um blocker que falsifique genuinamente o mecanismo B ou estas duas fronteiras → `S1B_ARCHITECTURE_REDESIGN_REQUIRED`.
+
+### 30.13 Final architecture freeze ratification ([5921973281](https://github.com/mglpsw/aiops-orchestrator/issues/301#issuecomment-5921973281); reviewed head `b8f1f18`)
+
+Ratificação documental da arquitetura S1-B após revisão independente final e Codex sem blockers sobre o exact head `b8f1f18bdfe55f366b07155ca0df87e017f43284`.
+
+```yaml
+S1B_ARCHITECTURE_FREEZE_FINAL_ADJUDICATION:
+  reviewed_head:
+    b8f1f18bdfe55f366b07155ca0df87e017f43284
+
+  independent_review:
+    architecture_blockers: 0
+    qualification_gaps: 1
+    authority_conflicts: 0
+    owner_conflicts: 0
+    normative_conflicts: 0
+
+  Codex:
+    architecture_blockers: 0
+
+  maintainer_decision:
+    ArchitectureFreezeReady: true
+    ImplementationGrant: false
+
+  remaining_qualification_gap:
+    finalization_barrier_runtime_race_witness:
+      owner: B2
+      blocks_architecture: false
+
+  B1: NOT_STARTED
+  B2: NOT_STARTED
+  B3: NOT_STARTED
+
+  C4: INCOMPLETE
+  G5: NOT_REACHED
+```
+
+- **Delta de ratificação:**
+  - restauração do escopo YAML de `GitNotTrustedAsObjectTruth: true` em `S1B_TCB_FLOOR` (§10);
+  - alinhamento editorial da formulação de bloqueio no bootstrap do filho com o domínio de sinais controlados pela aplicação (§14 item 4, §23);
+  - transição formal de estado: `ArchitectureFreezeReady: true`, `status: ARCHITECTURE_FREEZE_READY`, `S1_B: {architecture: FREEZE_RATIFIED, implementation: NOT_STARTED}`;
+  - nenhuma proposição arquitetural, mecanismo, autoridade, fronteira de TCB ou alocação de qualificação B1/B2/B3 alterada.
+- **Lei fundamental:** `ArchitectureFreezeReady != ImplementationGrant`. B1/B2/B3 continuam não iniciadas. Ready e merge não autorizados.
