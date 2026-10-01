@@ -420,6 +420,18 @@
             "missing explicit/pack-ref target -> SELECTED_CONTRACT_MISSING, never empty/no_relation/not_relevant"
           ],
           "non_claim": "DOMAIN_MAPPING_MODE contracts are not promoted by semantic-group keywords."
+        },
+        "semantic_pack_constraint_resolution": {
+          "owner": "Gate A A2 emits; Gate A A3 consumes",
+          "shape": "PackConstraintResolution { requested_token?: non-empty string, resolved_pack_ids: [exact pack_id], status: not_requested|resolved|unresolved }",
+          "source": "semantic-context.contract_pack ONLY; it is distinct from general SelectionResolution sourced from file-diff-context",
+          "states": {
+            "not_requested": "semantic-context.contract_pack absent/blank; empty resolved ids; no pack constraint",
+            "resolved": "semantic-context token present and resolves to COMPLETE exact normalized pack-id set using the same mode-appropriate legacy/exact A2 selector authority",
+            "unresolved": "semantic-context token present and no pack resolves; A3 emits SELECTED_PACK_MISSING, must_hold applicability is unresolved and affected review is non-conclusive"
+          },
+          "handoff": "A3 receives both SelectionResolution (general pack selection) and PackConstraintResolution (must-hold constraint) as separate objects. Neither overwrites the other.",
+          "conflict_control": "file-diff general token calendar + semantic-context constraint security -> SelectionResolution(calendar) and PackConstraintResolution(security) coexist; general ApplicablePackSet and must-hold constraint remain distinct."
         }
       },
       "requirements_freeze_2026_10_01": {
@@ -454,13 +466,17 @@
         "CM-CL2-03 (source slot absent: A domain-contracts, B review-packs; required and not-required branches both falsify the old not_relevant behaviour)",
         "CM-PACK-03: non-empty selected_contract_pack resolves to no exact/legacy-compatible pack; must yield SELECTED_PACK_MISSING and non-conclusive outcome, never not_relevant",
         "CM-CL2-04: target_profile:review_packs sentinel present while review-packs source absent/invalid -> source required, typed SOURCE_ABSENT/SOURCE_INVALID_OR_UNSUPPORTED, non-conclusive; never optional absence",
-        "CM-PACK-04: applicable pack has explicit contract_refs containing a contract id absent from normalized contract set -> SELECTED_CONTRACT_MISSING, non-conclusive; distinct from no_relation/not_relevant"
+        "CM-PACK-04: applicable pack has explicit contract_refs containing a contract id absent from normalized contract set -> SELECTED_CONTRACT_MISSING, non-conclusive; distinct from no_relation/not_relevant",
+        "CM-CL2-05: target_profile:domain_contracts sentinel present while domain-contracts source absent/invalid -> source required, typed SOURCE_ABSENT/SOURCE_INVALID_OR_UNSUPPORTED, non-conclusive; never optional absence",
+        "CM-CONTRACT-01: direct contract:<id> names an id absent from normalized contract set -> SELECTED_CONTRACT_MISSING, non-conclusive; never empty/not_relevant",
+        "CM-CL2-06: direct contract:<id> reference exists while review-packs source absent/invalid -> review_packs required for legacy pack-reference compatibility; typed absence/invalidity is non-conclusive, never optional absence"
       ],
       "positive_controls": [
         "sufficient context -> conclusive review unchanged",
         "applicable pack with review_preset: dropping only review_preset emits OPTIONAL_CONTEXT_REDUCED while required pack_id remains and conclusive review stays possible",
         "semantic-context with must_hold + change_type: dropping only change_type emits OPTIONAL_CONTEXT_REDUCED while applicable must_hold remains required and conclusive review stays possible",
-        "CM-PACK-04 resolving control: same applicable pack ref with target contract present -> relation resolves, pack+contract context preserved, no SELECTED_CONTRACT_MISSING"
+        "CM-PACK-04 resolving control: same applicable pack ref with target contract present -> relation resolves, pack+contract context preserved, no SELECTED_CONTRACT_MISSING",
+        "CM-CONTRACT-01 resolving control: direct contract:<id> names an existing normalized contract -> exact contract enters ApplicableContractSet without SELECTED_CONTRACT_MISSING"
       ],
       "closure_predicate": "PR #367 freezes the semantic consequence classes and required positive controls; Gate A freezes and proves their exact executable serialization, reduction, candidate-cost, partition/repack and propagation behavior.",
       "owner": "#221 V1-C2",
@@ -528,8 +544,8 @@
         "distinction": "absent != unsupported shape != not applicable != omitted due to budget != reduced",
         "scope": "means a known source slot is absent; it does not assert that absence alone is obligation-degrading",
         "required_for_chunk": {
-          "domain_contracts": "true iff the chunk has an admitted explicit contract dependency OR an applicable/selected pack yields EffectiveContractRefs != empty",
-          "review_packs": "true iff any of: general selected-pack token is non-empty; semantic-context.contract_pack is non-empty; target_profile:review_packs include-all sentinel is present; or mapping-mode applicability for this chunk depends on a pack/path relation.",
+          "domain_contracts": "true iff any of: chunk has a direct admitted contract:<id> dependency; target_profile:domain_contracts include-all sentinel is present; or an applicable/selected pack yields EffectiveContractRefs != empty.",
+          "review_packs": "true iff any of: general selected-pack token is non-empty; semantic-context.contract_pack is non-empty; target_profile:review_packs include-all sentinel is present; any direct contract:<id> reference exists (legacy compatibility may resolve the same id as a pack); or mapping-mode applicability for this chunk depends on a pack/path relation.",
           "absent_or_invalid_when_required": "obligation-degrading -> affected chunk non-conclusive -> visible at gate",
           "absent_when_not_required": "typed absent state remains; no invented not_relevant and no blanket manual downgrade"
         },
@@ -615,7 +631,8 @@
           "explicit_ref_resolves": "focal positive counterpart: referenced normalized contract exists; explicit pack→contract relation is preserved in payload",
           "explicit_ref_missing": "CM-PACK-04 / SELECTED_CONTRACT_MISSING and non-conclusive affected review; never collapse to no_relation/not_relevant",
           "no_relation": "no contract is introduced by that pack relation",
-          "explicit_pack_missing": "SELECTED_PACK_MISSING and non-conclusive affected review (explicit selected pack identity itself unresolved)"
+          "explicit_pack_missing": "SELECTED_PACK_MISSING and non-conclusive affected review (explicit selected pack identity itself unresolved)",
+          "direct_ref_missing": "CM-CONTRACT-01 / direct contract:<id> target absent -> SELECTED_CONTRACT_MISSING and non-conclusive; resolving counterpart enters ApplicableContractSet."
         },
         "pack_context": {
           "present": "every applicable normalized pack contributes required pack_id context, regardless of contract_refs/description/review_preset",
@@ -708,11 +725,12 @@
           ]
         },
         "pack_constraint": {
-          "rule": "if semantic-context.contract_pack is absent, scope alone decides applicability. If present and A2 resolves it, must_hold applies only when scope applies AND at least one resolved exact pack id is in A3 ApplicablePackSet(chunk). If the explicit token cannot resolve, use SELECTED_PACK_MISSING and fail closed; do not treat must_hold as irrelevant.",
+          "rule": "If PackConstraintResolution.status=not_requested, scope alone decides must_hold applicability. If resolved, must_hold applies only when scope applies AND at least one PackConstraintResolution.resolved_pack_id is in ApplicablePackSet(chunk). If unresolved, SELECTED_PACK_MISSING and fail closed; never treat must_hold as irrelevant. General SelectionResolution does not substitute for PackConstraintResolution.",
           "controls": [
-            "scope backend + resolved calendar pack + calendar-applicable backend chunk -> must_hold required",
-            "scope backend + resolved calendar pack + backend chunk where calendar pack is not applicable -> must_hold not applicable",
-            "unresolved semantic-context contract_pack -> SELECTED_PACK_MISSING/non-conclusive"
+            "scope backend + PackConstraintResolution(calendar resolved) + calendar-applicable backend chunk -> must_hold required",
+            "scope backend + PackConstraintResolution(calendar resolved) + backend chunk where calendar pack is not applicable -> must_hold not applicable",
+            "PackConstraintResolution unresolved -> SELECTED_PACK_MISSING/non-conclusive",
+            "general SelectionResolution(calendar) + PackConstraintResolution(security) coexist without overwrite"
           ],
           "required_source": "non-empty semantic-context.contract_pack makes the review_packs source RequiredForChunk before resolution; absent/invalid review-packs therefore degrades and cannot be reinterpreted as not_required/not_relevant."
         },
@@ -1332,7 +1350,11 @@
         "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 plus resolving positive control",
         "legacy cleaned pack ids are unique; duplicates fail closed before normalization",
         "canonical A2→A3 SelectionResolution handoff includes not_requested|resolved|unresolved",
-        "ApplicableContractSet canonical union includes applicable-pack refs, direct refs, legacy include-all, normalized applicability and legacy semantic-group branches"
+        "ApplicableContractSet canonical union includes applicable-pack refs, direct refs, legacy include-all, normalized applicability and legacy semantic-group branches",
+        "semantic-context.contract_pack uses a distinct PackConstraintResolution handoff, separate from general SelectionResolution",
+        "target_profile:domain_contracts sentinel makes domain_contracts required",
+        "direct missing contract refs have focal CM-CONTRACT-01 plus resolving positive control",
+        "direct contract:<id> refs make review_packs required for legacy pack-reference compatibility"
       ],
       "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
       "runtime_requires": [
