@@ -181,6 +181,14 @@ Draft preparation → Ready → observe the current Codex cycle
 → final TOCTOU → human integration decision
 ```
 
+Live use must name the required check jobs explicitly and bind them to the
+trusted GitHub Actions producer and the expected HEAD. A disposition is
+accepted only when its author is supplied as a trusted adjudicator; missing
+or ambiguous policy, incomplete pagination, malformed evidence, and a
+collection-time identity change remain held states. The summary may be from
+the Ready trigger or the documented manual `@codex review` trigger, but its
+terminal result still has to be after the latest Ready cycle.
+
 The offline regression controls live in
 `tests/test_post_ready_codex_guard.py`; they include the #369 incident shape,
 stale and post-merge reviews, incomplete API evidence, unresolved findings,

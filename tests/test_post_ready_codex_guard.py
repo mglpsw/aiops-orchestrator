@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from scripts.github_codex_post_ready_guard import evaluate_evidence
+from scripts.github_codex_post_ready_guard import _is_codex_summary, evaluate_evidence
 
 
 HEAD = "661422837a3099bb8d989907d42314e26e410aa7"
@@ -28,6 +28,7 @@ def _evidence(*, draft: bool = False, merged: bool = False, review_head: str = H
             "state": "COMMENTED",
             "commit_id": review_head,
             "submitted_at": "2026-10-01T16:21:19Z",
+            "body": "",
         }],
         "summaries": [{
             "id": 5935569021,
@@ -37,8 +38,22 @@ def _evidence(*, draft: bool = False, merged: bool = False, review_head: str = H
         }],
         "findings": findings or [],
         "checks": [
-            {"name": "Validate repository", "status": "completed", "conclusion": "success"},
-            {"name": "AgentReview release gates", "status": "completed", "conclusion": "success"},
+            {
+                "name": "Validate repository",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": HEAD,
+                "app_slug": "github-actions",
+                "run_id": 1,
+            },
+            {
+                "name": "AgentReview release gates",
+                "status": "completed",
+                "conclusion": "success",
+                "head_sha": HEAD,
+                "app_slug": "github-actions",
+                "run_id": 2,
+            },
         ],
         "collection_errors": [],
     }
@@ -52,6 +67,8 @@ def _evaluate(evidence):
         expected_head=HEAD,
         expected_base=BASE,
         required_checks=("Validate repository", "AgentReview release gates"),
+        trusted_adjudicators=("mglpsw",),
+        trusted_check_producers=("github-actions",),
     )
 
 
@@ -101,6 +118,7 @@ def test_adjudicated_material_finding_can_satisfy_observation():
         "review_id": 5382257522,
         "material": True,
         "disposition": "FIXED",
+        "disposition_author": "mglpsw",
     }])
 
     assert _evaluate(evidence).state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
@@ -139,3 +157,74 @@ def test_latest_ready_cycle_invalidates_an_older_terminal_review():
 
 def test_draft_state_is_pending_even_with_a_review_shape():
     assert _evaluate(_evidence(draft=True)).state == "HELD_PENDING_CODEX"
+
+
+def test_empty_required_check_policy_is_not_success():
+    assert evaluate_evidence(
+        _evidence(),
+        expected_repo=REPO,
+        expected_pr=369,
+        expected_head=HEAD,
+        expected_base=BASE,
+        required_checks=(),
+        trusted_check_producers=("github-actions",),
+    ).state == "HELD_PENDING_REQUIRED_CI"
+
+
+def test_untrusted_disposition_author_does_not_adjudicate_finding():
+    evidence = _evidence(findings=[{
+        "id": 4157801069,
+        "review_id": 5382257522,
+        "material": True,
+        "disposition": "DISMISSED",
+        "disposition_author": "random-contributor",
+    }])
+
+    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
+
+
+def test_manual_review_summary_is_bound_after_ready():
+    evidence = _evidence()
+    evidence["summaries"][0]["body"] = "Codex Review Summary\n✅ Completed\nCommit `6614228`\nReview trigger: Manual request"
+
+    assert _evaluate(evidence).state == "READY_FOR_HUMAN_INTEGRATION_DECISION"
+
+
+def test_malformed_collection_is_unavailable():
+    evidence = _evidence()
+    evidence["ready_events"] = None
+
+    assert _evaluate(evidence).state == "HELD_CODEX_UNAVAILABLE"
+
+
+def test_non_inline_review_body_is_a_material_finding():
+    evidence = _evidence()
+    evidence["reviews"][0]["body"] = "### 💡 Codex Review\n\nA material issue requires correction."
+    evidence["findings"] = [{
+        "id": "review-body-5382257522",
+        "review_id": 5382257522,
+        "material": True,
+    }]
+
+    assert _evaluate(evidence).state == "HELD_WITH_MATERIAL_FINDINGS"
+
+
+def test_check_from_wrong_head_or_producer_is_not_success():
+    evidence = _evidence()
+    evidence["checks"][0]["head_sha"] = "d3f5946c4d0513def9f7c2018b63703a53df1cc"
+
+    assert _evaluate(evidence).state == "HELD_PENDING_REQUIRED_CI"
+
+
+def test_connector_bot_summary_and_manual_trigger_are_recognized():
+    assert _is_codex_summary({
+        "author_login": "chatgpt-codex-connector[bot]",
+        "body": "Codex Review Summary\nStatus | ✅ **Completed**\nCommit `6614228`\nReview trigger: Manual request",
+    }, HEAD)
+
+
+def test_incomplete_summary_is_not_terminal():
+    assert not _is_codex_summary({
+        "author_login": "chatgpt-codex-connector[bot]",
+        "body": "Codex Review Summary\nReview not completed due to an internal error\nCommit `6614228`\nReview trigger: Manual request",
+    }, HEAD)
