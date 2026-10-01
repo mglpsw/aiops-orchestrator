@@ -107,6 +107,11 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 33. applicable `NormalizedPack.contract_refs` é required advisory relation context; perda -> `REQUIRED_CONTEXT_OMITTED`.
 34. Control B directional criterion: bad arm deve atingir adverse-signal material pré-declarado e corrected arm não reproduzir o mesmo sinal; seeded pair ou K-of-N repeated pairs com K/N congelados antes do run.
 35. legacy-flat identity: cada `{id,description}` -> um `NormalizedContract(contract_id=id, description preservada, section=rules, RuleItem.rule=description)`; id não é qualifier duplicado; `contract:<id>` preservado.
+36. duplicate legacy contract ids: ids limpos duplicados em LEGACY_FLAT_MODE -> SOURCE_INVALID_OR_UNSUPPORTED antes da normalização; sem dedupe/winner silencioso.
+37. SelectionResolution states: `not_requested|resolved|unresolved`; `resolved_pack_ids` é o conjunto completo e A3 avalia todos os ids.
+38. ApplicablePackSet union completo: resolved selection + mapping path matches + legacy `target_profile:review_packs` include-all + legacy exact `contract:<id>` pack refs + legacy semantic-group fallback.
+39. `target_profile:review_packs` sentinel torna review_packs RequiredForChunk; fonte ausente/inválida -> CM-CL2-04, non-conclusive.
+40. missing explicit contract target: applicable pack ref para contrato ausente -> CM-PACK-04 / SELECTED_CONTRACT_MISSING; counterpart com contrato presente resolve.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
