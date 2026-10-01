@@ -202,10 +202,12 @@ A3 também preserva o fallback legado por semantic-group (`_relevance_keywords` 
 Compatibilidade legada requerida em A2: comparação case-insensitive e match por
 igualdade de id, igualdade de description, substring em id ou substring em
 description, preservando todos os matches.
-Uma rule legacy admitida `{id,description}` gera um contrato normalizado próprio (`contract_id=id`, section `rules`, rule text=`description`), preservando `contract:<id>`. O token de seleção é first non-empty clean `contract_pack`, depois alias `pack`, com `contract_pack` vencendo conflito e whitespace removido. Patterns são normalizados por A2 (trim/drop-empty/sanitize/dedupe/sort) e apenas matched por A3. A3 preserva o operador de `patterns`
+Uma rule legacy admitida `{id,description}` gera um contrato normalizado próprio (`contract_id=id`, `description` preservada, section `rules`, rule text=`description`), preservando `contract:<id>`; id não é qualifier duplicado. O general selected-pack token vem de `file-diff-context.contract_pack`; se ausente/blank, usa alias `file-diff-context.pack`. Ambos são trim/clean; contract_pack vence conflito. `semantic-context.contract_pack` é constraint separada de must_hold e não popula/substitui o general selector. Patterns são normalizados por A2 (trim/drop-empty/sanitize/dedupe/sort) e apenas matched por A3. A3 preserva o operador de `patterns`
 legado: final `*` = prefix match; demais patterns = substring; não é
 `fnmatchcase`. `semantic-context.must_hold` é normalizado por A2 e aplicado por A3
 usando scope + optional resolved contract_pack; unresolved pack falha fechado.
+
+`ProvenanceV1 {source_kind,source_path,source_state}` e `NormalizedPack.contract_refs` são contexto requerido/budgeted; perda material retém o terminal. `target_profile:domain_contracts`/`target_profile:review_packs` preservam include-all legado. Mapping/domain mode nunca recebe keyword fallback.
 
 Assim, compatibilidade legada como `calendar -> agentescala-calendar`, projeção
 dos aliases legados de applicability, a autoridade concreta
@@ -221,7 +223,7 @@ por `inference_config_id`; cada braço registra request identity/digest e soment
 difere. Para sampling, usa-se seed determinístico compartilhado quando suportado pela
 rota/modelo real; caso contrário, o grant congela antes do primeiro run um protocolo
 repeated-pair com `pair_count` e `pass_criterion`, sem adaptive stopping, descarte de pares
-ou rerun até favorável. Drift de configuração/protocolo invalida o controle. Somente A+B+C + Control B podem produzir
+ou rerun até favorável. Drift de configuração/protocolo invalida o controle. O critério mínimo é direcional: bad arm deve atingir o material adverse-signal threshold pré-declarado e corrected arm não deve reproduzir o mesmo sinal; seeded mode aplica essa regra ao par, repeated-pair usa K-of-N com K/N congelados antes do run. Somente A+B+C + Control B podem produzir
 `V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY`.
 
 Os terminais anteriores
