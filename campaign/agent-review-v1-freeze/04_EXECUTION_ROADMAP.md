@@ -96,8 +96,9 @@ Para cada novo predicado/reason: mecanismo ausente → RED focal; presente → G
 
 ### V1-C2 — interface semântica normalizada (histórico supersedido; requisitos preservados)
 
-O terminal anterior `V1_C2_CONTRACT_INTERFACE_DECIDED` permanece histórico e é
-substituído por `V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`.
+Historicamente, `V1_C2_CONTRACT_INTERFACE_DECIDED` foi substituído por
+`V1_C2_NORMALIZED_SEMANTIC_INTERFACE_DECIDED`; ambos estão agora supersedidos pelo
+terminal corrente `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`.
 
 ```text
 Raw Target Source
