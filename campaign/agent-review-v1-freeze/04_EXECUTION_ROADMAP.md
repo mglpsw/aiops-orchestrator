@@ -94,6 +94,10 @@ Começa do `master` resultante desta slice e **rederiva** paths exatos. Família
 20. semantic-context must_hold applicability: A2 normaliza scope/change_type/contract_pack/must_hold e resolve pack token; A3 aplica scope (empty/global/all/document global; otherwise substring/tokens sobre canonical paths) e, quando contract_pack existe, exige interseção com ApplicablePackSet. Unresolved pack -> SELECTED_PACK_MISSING.
 21. fallback legado por semantic-group (A3): preservar `_relevance_keywords` atual e substring sobre id+description somente para itens legacy; mapping/domain mode não usa keyword como autoridade quando relações explícitas existem.
 22. `semantic-context.change_type` é advisory opcional: não filtra must_hold; loss-only -> `OPTIONAL_CONTEXT_REDUCED`, mantendo must_hold aplicável requerido.
+23. legacy flat rule identity (A2): cada `{id,description}` admitido -> um `NormalizedContract` com `contract_id=id`, section `rules`, `RuleItem.rule=description`; `contract:<id>` preservado; id/description malformados -> unsupported.
+24. selector preprocessing legado (A2): first non-empty clean `contract_pack`, depois alias `pack`; trim whitespace, `contract_pack` vence conflito; então aplicar predicate legacy congelado.
+25. pattern normalization (A2) / matching (A3): A2 trim/drop-empty/sanitize/dedupe/sort; A3 só prefix por `*` final ou substring.
+26. `review_packs` requiredness: `selected_contract_pack` OU `semantic-context.contract_pack` não vazio tornam o source required antes da resolução.
 
 *(Histórico, superado pela revisão pós-Ready da PR #367: o item aberto sobre `response_model_rules` foi resolvido pelo owner em #221 5920435231/5920712897 e está congelado no discriminador de topo de `02` OBL-CL2-02 e na família 15.)*
 
