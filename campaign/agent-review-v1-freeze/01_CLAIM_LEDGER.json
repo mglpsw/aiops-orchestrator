@@ -502,8 +502,8 @@
   "id_namespaces": {
     "claims": "CL-0..CL-7",
     "obligations": "OBL-CLn-xx",
-    "countermodels": "CM-CLn-xx",
-    "positive_controls": "PC-CLn",
+    "countermodels": "CM-CL<n>-<nn> for claim-indexed campaign cases; CM-<FAMILY>-<nn> for cross-cutting semantic families (ABS, CONTRACT, HUNK, MUST-HOLD, NORM, PACK, PROVENANCE); CM-GA-A<1..5>-<SLUG> for executable Gate-A families. IDs are exact strings registered in the canonical CL-2 countermodel registry / countermodel pack; no consumer may assume only CM-CLn-xx.",
+    "positive_controls": "PC-CL<n>[-<nn>] for claim-indexed controls, plus PC-<UPPERCASE-HYPHENATED-SLUG> for named cross-cutting controls (e.g. PC-PACK-PRESET-OPTIONAL, PC-CHANGE-TYPE-OPTIONAL). Canonical IDs are the exact registered strings; no consumer may assume only PC-CLn.",
     "slices": "V1-C0..V1-C6 (traversal slices only; slice V1-Cn != claim CL-n)"
   }
 }
