@@ -10,7 +10,7 @@
 **Baseline publicada/consumida:** `v0.22.0 = 2ce1f45768b8779cb48ef8a302d4ed796349f0e5`
 
 **Namespaces:** claims do ledger são `CL-0…CL-7`; obrigações `OBL-CLn-xx`;
-countermodels `CM-CLn-xx`; positive controls `PC-CLn`. Os nomes `V1-C0…V1-C6`
+countermodels claim-indexados usam `CM-CL<n>-<nn>`, enquanto famílias cross-cutting usam `CM-<FAMILY>-<nn>` e Gate A usa `CM-GA-A<1..5>-<SLUG>`; positive controls usam `PC-CL<n>[-<nn>]` ou `PC-<SLUG>` nomeado. Os IDs canônicos são os strings exatos registrados no ledger/countermodel pack; nenhum consumidor pode assumir apenas `CM-CLn-xx`/`PC-CLn`. Os nomes `V1-C0…V1-C6`
 designam **somente slices** da travessia (e seus terminais, p.ex. `V1_Cn_*_READY` ou `V1_C2_REQUIREMENTS_AND_INVARIANTS_FROZEN`). Claim
 `CL-n` e slice `V1-Cn` não são a mesma coisa.
 
