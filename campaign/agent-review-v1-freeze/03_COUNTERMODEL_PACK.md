@@ -436,3 +436,20 @@ Repeated-pair mode freezes N and K before execution and passes only when at leas
 4. legacy pack exact ids referenced by `contract:<id>`;
 5. legacy semantic-group fallback matches.
 Mapping mode never receives keyword fallback.
+
+
+### CM-GA-A2-LEGACY-PACK-DUP-ID
+- Duplicate cleaned ids in one LEGACY_PACK_MODE source -> SOURCE_INVALID_OR_UNSUPPORTED before normalization.
+- No silent merge/dedupe/winner; distinct ids remain distinct normalized packs.
+
+### ApplicableContractSet canonical union
+A3 forms the exact-id union of:
+1. contract_refs from every ApplicablePackSet member;
+2. direct exact `contract:<id>` refs;
+3. all admitted legacy contracts under `target_profile:domain_contracts`;
+4. legacy contracts matched by normalized ContractApplicability (exact path / legacy pattern / global);
+5. legacy semantic-group fallback.
+Any explicit/pack relation to a missing contract -> `SELECTED_CONTRACT_MISSING` (CM-PACK-04), never empty/not_relevant.
+
+### SelectionResolution no-selector control
+No general selector -> `SelectionResolution {status=not_requested, requested_token absent, resolved_pack_ids=[]}`; non-degrading.
