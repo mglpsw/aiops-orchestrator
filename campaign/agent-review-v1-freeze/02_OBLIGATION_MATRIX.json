@@ -169,11 +169,12 @@
           "top_level_interface": {
             "reserved": [
               "version",
+              "schema_version",
               "updated",
               "packs",
               "contract_bindings"
             ],
-            "top_level_metadata": "version, schema_version and updated are metadata, never packs",
+            "top_level_metadata": "version, schema_version and updated are metadata, never packs; packs and contract_bindings are reserved structural keys",
             "packs": "list -> LEGACY_PACK_MODE; mapping -> MAPPING_PACK_MODE; absent -> empty only when contract_bindings is absent/empty; otherwise unsupported shape",
             "legacy_pack_mode": "Each list item must be a mapping with non-empty string id; description, recommended_review_preset are optional strings; already-admitted legacy fields remain only when consumed. Malformed item is contracts_context_unsupported_shape:review_packs:<index-or-id>; it is never skipped.",
             "mapping_pack_mode": "Each mapping key is a non-empty pack_id and each value must be a mapping. Consumed fields: description string if present; paths absent or list[str]; domain_contract non-empty string if present; recommended_review_preset string if present. A malformed value or applicability-bearing field is SOURCE-LEVEL incompatible for deterministic selection: contracts_context_unsupported_shape:review_packs:<pack_id>; it is never discarded or treated not_relevant.",
@@ -209,13 +210,14 @@
           "legacy_flat_identity": {
             "owner": "Gate A A2",
             "admission": "each admitted LEGACY_FLAT_MODE rule must have non-empty string `id` and non-empty string `description`; idless/descriptionless rule is SOURCE_INVALID_OR_UNSUPPORTED rather than silently normalized",
-            "projection": "each legacy rule mapping becomes exactly one NormalizedContract: contract_id = cleaned rule.id; semantic_values = []; one NormalizedSection with section_id=`rules`; one RuleItem whose rule = cleaned rule.description; raw applicability fields are projected separately into ContractApplicability and are not RuleItem qualifiers",
+            "projection": "each legacy rule mapping becomes exactly one NormalizedContract: contract_id = cleaned rule.id; description = cleaned rule.description; semantic_values = []; one NormalizedSection with section_id=`rules`; one RuleItem whose rule = cleaned rule.description; raw applicability fields project separately into ContractApplicability. The legacy id appears ONLY as contract_id, never duplicated as RuleItem qualifier.",
             "explicit_reference": "`contract:<id>` resolves against this NormalizedContract.contract_id, preserving current legacy explicit-reference semantics",
             "multiplicity": "N admitted legacy rule mappings -> N normalized contracts; rules are never grouped under one synthetic enclosing contract",
             "controls": [
-              "calendar_10_22_independent -> contract_id calendar_10_22_independent, section rules, rule text from description",
+              "calendar_10_22_independent -> contract_id calendar_10_22_independent, description preserved, section rules, rule text from description",
               "no_auto_contract_fix remains a distinct normalized contract",
-              "explicit contract:calendar_10_22_independent selects exactly that normalized contract"
+              "explicit contract:calendar_10_22_independent selects exactly that normalized contract",
+              "semantic-group fallback may inspect normalized contract_id + description; no duplicate id qualifier exists"
             ]
           }
         },
@@ -281,16 +283,16 @@
           "no_relation": "a pack without contract_refs contributes no contract and is not thereby irrelevant",
           "applicability_context_invariant": "ApplicablePackSet is determined before payload budgeting. For every applicable pack, pack_id is required context and cannot be dropped as optional detail. `not_relevant` requires ApplicablePackSet empty AND ApplicableContractSet empty after valid evaluation.",
           "selected_pack_resolution": {
-            "explicit_input": "selected_contract_pack is an explicit required selection request when non-empty",
-            "resolution_order": "Gate A A2 resolves legacy-compatible selection when in legacy mode; normalized A3 then operates on one exact resolved pack_id",
+            "explicit_input": "file-diff-context general selected-pack token is an explicit required selection request when non-empty; A2 resolves to a complete exact-id set. semantic-context.contract_pack is a separate must-hold constraint, not the general selected-pack source.",
+            "resolution_order": "Gate A A2 resolves legacy-compatible selection in legacy mode into SelectionResolution.resolved_pack_ids (a complete exact-id set, possibly multiple). A3 operates on the entire resolved_pack_ids set; it MUST NOT arbitrarily select one.",
             "unresolved": "if a non-empty explicit selected_contract_pack resolves to no admitted pack, emit semantic class SELECTED_PACK_MISSING, mark applicability unresolved/obligation-degrading, and forbid not_relevant/clean conclusive approval",
             "positive_controls": [
               "exact selected pack resolves",
               "legacy calendar selection resolves compatibly to agentescala-calendar in the committed legacy fixture"
             ],
             "owner_split": {
-              "A2": "resolve raw selected token to exact normalized pack-id set (or unresolved) using mode-appropriate compatibility rules",
-              "A3": "consume SelectionResolution and evaluate normalized applicability/consequence; status=unresolved yields SELECTED_PACK_MISSING and non-conclusive outcome"
+              "A2": "resolve raw selected token to the complete exact normalized pack-id set (or unresolved) using mode-appropriate compatibility rules",
+              "A3": "consume the complete SelectionResolution.resolved_pack_ids set and evaluate every resolved pack for normalized applicability/consequence; status=unresolved yields SELECTED_PACK_MISSING"
             }
           },
           "legacy_selection_compatibility": {
@@ -315,14 +317,18 @@
             "non_claim": "MAPPING_PACK_MODE does not inherit fuzzy/substring matching; it remains exact-id + fnmatchcase path applicability",
             "preprocessing": {
               "owner": "Gate A A2",
-              "source_aliases": "resolve raw selected token by first non-empty cleaned value of `contract_pack`, then legacy alias `pack`",
-              "precedence": "when both are non-empty, `contract_pack` wins",
-              "cleaning": "apply the same clean-text semantics as current v1: accept string, strip surrounding whitespace, empty-after-strip becomes absent",
+              "general_selection_source_precedence": [
+                "first inspect file-diff-context.contract_pack",
+                "if absent/blank, inspect file-diff-context.pack legacy alias",
+                "semantic-context.contract_pack is NOT promoted into the general selected-pack token; it is a separate must-hold pack constraint"
+              ],
+              "cleaning": "each candidate token uses current clean-text semantics: string only, strip surrounding whitespace, empty-after-strip -> absent",
+              "conflicts": "if file-diff-context.contract_pack and file-diff-context.pack are both non-empty, contract_pack wins. If file-diff general selection and semantic-context.contract_pack differ, keep both roles distinct: general selection drives ApplicablePackSet; semantic token constrains must_hold only. No conflict collapse.",
               "controls": [
-                "`contract_pack: ' Calendar '` -> cleaned `Calendar`",
-                "missing/blank contract_pack + `pack: ' Calendar '` -> cleaned `Calendar` via alias",
-                "both present -> contract_pack value wins",
-                "blank both -> no explicit selection"
+                "file-diff contract_pack ` Calendar ` -> cleaned Calendar general selection",
+                "blank/missing file-diff contract_pack + file-diff pack ` Calendar ` -> alias general selection",
+                "both file-diff values -> contract_pack wins",
+                "file-diff calendar + semantic-context security -> general pack selection calendar; must_hold constraint security"
               ]
             }
           }
@@ -344,8 +350,8 @@
             "field": "PRESERVED_REQUIRED SemanticValue qualifier",
             "expected_value": "PRESERVED_REQUIRED SemanticValue qualifier",
             "rationale": "EXPLANATORY_OPTIONAL",
-            "legacy_id": "PRESERVED_REQUIRED as qualifier key id in LEGACY_FLAT_MODE",
-            "legacy_description": "PRESERVED_REQUIRED as RuleItem.rule in LEGACY_FLAT_MODE"
+            "legacy_id": "PRESERVED_REQUIRED solely as NormalizedContract.contract_id in LEGACY_FLAT_MODE; NOT a RuleItem qualifier",
+            "legacy_description": "PRESERVED as NormalizedContract.description and RuleItem.rule in LEGACY_FLAT_MODE (description is the legacy semantic-group operand and advisory rule text)"
           },
           "packs": {
             "mapping_key_or_legacy_id": "PRESERVED_REQUIRED as pack_id",
@@ -491,7 +497,8 @@
           "every RuleItem.qualifier",
           "every NormalizedContract.semantic_value",
           "every applicable must_hold",
-          "every applicable NormalizedPack.pack_id"
+          "every applicable NormalizedPack.pack_id",
+          "every applicable NormalizedPack.contract_refs relation"
         ],
         "optional_explanatory": [
           "NormalizedContract.description",
@@ -500,9 +507,10 @@
           "NormalizedPack.review_preset",
           "semantic-context.change_type"
         ],
-        "budget_outcomes": "only optional loss (including NormalizedPack.description/review_preset) -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive because applicable pack_id remains required; required contract/pack identity or semantic item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive",
+        "budget_outcomes": "only optional loss (NormalizedContract.description, RuleItem.rationale, NormalizedPack.description/review_preset, semantic-context.change_type) -> OPTIONAL_CONTEXT_REDUCED and review may remain conclusive; required contract/pack identity, contract_refs relation, provenance or semantic item loss -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive; must_hold loss -> MUST_HOLD_OMITTED and affected chunk non-conclusive",
         "prebudget_selection_fields": [
-          "NormalizedPack.paths and contract_refs are deterministic applicability/relation inputs consumed before payload reduction; budget reduction may not change which packs/contracts are applicable."
+          "NormalizedPack.paths are deterministic applicability inputs consumed before payload reduction and need not be emitted as advisory payload if pack identity/relation are preserved.",
+          "NormalizedPack.contract_refs are BOTH pre-budget relation inputs and required advisory payload context for every applicable pack; their loss -> REQUIRED_CONTEXT_OMITTED because the pack→contract relation must remain explicit to the consumer."
         ]
       },
       "not_relevant_rule": "not_relevant is possible only after valid evaluation when ApplicablePackSet is empty AND ApplicableContractSet is empty AND there is no unresolved explicit selected_contract_pack. Any applicable pack contributes required pack_id context; SELECTED_PACK_MISSING, typed absent/invalid/unsupported states never coexist with not_relevant.",
@@ -667,7 +675,7 @@
       "obligation_id": "OBL-CL2-04",
       "claim": "CL-2",
       "domain": "context.source_layering",
-      "proposition": "The engine keeps AOCM method, product contract and slice intent/claims as distinct layers. Its minimum normalized provenance is source_kind (domain_contracts|review_packs), canonical target-relative source_path, source_state (present_valid|absent|invalid), and normalized contract/section identity where applicable; PR text never substitutes, overrides or waives policy.",
+      "proposition": "The engine keeps AOCM method, product contract and slice intent/claims as distinct layers. Minimum V1 normalized source provenance is a finite ProvenanceV1 {source_kind, source_path, source_state}; contract/section identity remains inside normalized contract context. PR text never substitutes, overrides or waives policy.",
       "countermodels": [
         "stale or mixed source presented as current contract",
         "PR text attempting to replace or waive a policy"
@@ -675,7 +683,7 @@
       "positive_controls": [
         "current normalized contract transported with bounded provenance"
       ],
-      "closure_predicate": "deterministic tests on normalized payload content and bounded provenance for each countermodel and control; exact repository SHA/revision remains Gate C qualification evidence, not V1 payload",
+      "closure_predicate": "Gate A tests finite ProvenanceV1 transport/budget behavior and Gate C separately records exact repository/target revisions; no arbitrary revision field is introduced.",
       "target_side": "recording rule sources and state (adopted/proposed/observed/historical) belongs to AgentEscala#869-A",
       "owner": "#221 V1-C2 (engine) + AgentEscala#869-A (source state)",
       "interface_note": "V1 carries no arbitrary revision field. Exact repository SHA/target revision are Gate C conformance evidence unless a future runtime consumer is named; source identity is carried only where a named consumer reads it (OBL-CL2-06)",
@@ -688,6 +696,17 @@
           "proposed specification",
           "PR intent",
           "deterministic evidence"
+        ]
+      },
+      "minimum_provenance": {
+        "shape": "ProvenanceV1 { source_kind: domain_contracts|review_packs, source_path: canonical target-relative string, source_state: present_valid|absent|invalid }",
+        "requiredness": "source_kind, source_path and source_state are REQUIRED payload context for each known contract/pack source slot represented in the chunk; they are budgeted and cannot be silently dropped",
+        "loss": "loss of any required provenance field -> REQUIRED_CONTEXT_OMITTED and affected chunk non-conclusive",
+        "revision_nonclaim": "exact repo/target revision is Gate C evidence, not a V1 payload field",
+        "controls": [
+          "present-valid domain_contracts provenance reaches payload",
+          "absent review_packs provenance remains typed absent",
+          "budget reduction never drops provenance while claiming required context preserved"
         ]
       }
     },
@@ -735,20 +754,21 @@
         },
         "pattern_semantics": {
           "owner": "Gate A A3",
-          "operator": "for each canonical non-empty pattern received from A2: if pattern ends with `*`, match canonical path by prefix against pattern without final `*`; otherwise match when pattern is a substring of canonical path. A3 performs no trim/drop/sanitize.",
+          "operator": "A3 receives canonical non-empty patterns from A2 ONLY. For each pattern: if it ends with `*`, match canonical path by prefix against pattern without final `*`; otherwise match when pattern is a substring of canonical path. A3 performs no trim/drop/sanitize/dedupe.",
           "non_claim": "this legacy rule-pattern operator is NOT fnmatchcase and is distinct from mapping-pack path semantics",
           "controls": [
-            "pattern `calendar` matches a canonical path containing `calendar`",
-            "pattern `backend/api/*` matches by prefix `backend/api/`",
-            "pattern `calendar/*.py` does NOT acquire glob semantics merely because it contains `*` before the final suffix; only final `*` has prefix semantics",
-            "non-matching substring remains irrelevant"
+            "A2 canonicalizes raw patterns before handoff",
+            "canonical `calendar` matches a path containing calendar",
+            "canonical `backend/api/*` matches by prefix backend/api/",
+            "canonical `calendar/*.py` has prefix semantics only if final *; otherwise no extra glob semantics",
+            "non-matching canonical substring remains irrelevant"
           ]
         },
         "global_semantics": "A2 projects scope/is_global; A3 treats scope case-insensitive `global` or is_global=true as global applicability; exact path intersection and legacy pattern operator remain the other admitted branches.",
         "semantic_group_legacy_fallback": {
           "owner": "Gate A A3",
-          "scope": "LEGACY_FLAT_MODE contracts and LEGACY_PACK_MODE packs only; MAPPING_PACK_MODE/domain-mapping target semantics do not use this fallback when explicit relations exist",
-          "source_operator": "preserve current v1 `_relevance_keywords(semantic_group)` + substring test over `(normalized id + ' ' + description).lower()`",
+          "scope": "LEGACY_FLAT_MODE contracts and LEGACY_PACK_MODE packs only. MAPPING_PACK_MODE packs and DOMAIN_MAPPING_MODE contracts NEVER use semantic-group keyword fallback, regardless of whether they have explicit relations.",
+          "source_operator": "preserve current v1 `_relevance_keywords(semantic_group)` + substring test over `(NormalizedContract.contract_id + ' ' + NormalizedContract.description).lower()` for legacy contracts, and `(NormalizedPack.pack_id + ' ' + NormalizedPack.description).lower()` for legacy packs. Legacy description is explicitly preserved for this compatibility operand.",
           "keyword_map": {
             "primary_backend_logic": [
               "backend",
@@ -795,7 +815,7 @@
             "primary_backend_logic + legacy id/description containing backend -> applicable",
             "workflow_aiops + legacy pack id agentescala-aiops -> applicable",
             "legacy item with no keyword match and no other applicability relation -> not applicable",
-            "mapping-mode pack with no exact/path applicability is NOT made applicable merely by keyword"
+            "mapping-mode pack/domain item is NEVER made applicable merely by semantic-group keyword"
           ]
         },
         "pattern_normalization": {
@@ -809,6 +829,20 @@
             "A3 prefix/substring matcher receives no blank or untrimmed pattern"
           ]
         }
+      },
+      "include_all_legacy_compatibility": {
+        "owner": "Gate A A2/A3",
+        "sentinels": {
+          "target_profile:domain_contracts": "when present in chunk contract refs, A3 includes every admitted legacy normalized contract for that candidate chunk before other narrowing",
+          "target_profile:review_packs": "when present in chunk contract refs, A3 includes every admitted legacy normalized pack for that candidate chunk before other narrowing"
+        },
+        "explicit_ref": "`contract:<id>` continues to select the matching normalized legacy contract id",
+        "controls": [
+          "domain sentinel present -> every admitted legacy contract included",
+          "pack sentinel present -> every admitted legacy pack included",
+          "without sentinel, normal exact/path/pattern/global/semantic-group/selector rules apply"
+        ],
+        "non_claim": "mapping/domain target semantics may later replace include-all under a separately frozen rule; this requirement preserves current legacy behavior for Gate A"
       }
     },
     {
@@ -871,12 +905,21 @@
           "requirement": "sampling attribution is predeclared before provider execution and is identical for bad/corrected arms",
           "mode_choice": "If the resolved provider/model supports a deterministic seed accepted by the actual route, use one shared predeclared seed per pair and record it. Otherwise use a predeclared repeated-pair protocol; adaptive stopping is forbidden.",
           "repeated_pair_protocol": {
-            "parameters": "pair_count and pass_criterion are fixed in the explicit provider-run grant BEFORE the first attempt; neither may be changed after observing outputs",
+            "parameters": "pair_count N and directional pass threshold K (or an equivalent monotone threshold over discriminating pairs) are fixed in the explicit provider-run grant BEFORE the first attempt; neither may be changed after observing outputs",
             "pairing": "each pair contains one bad-subject arm and one corrected-subject arm under the same inference_config_id; order/cadence policy is predeclared and recorded",
             "evidence": "record sampling_mode, supported seed when used, pair_count, pass_criterion, pair index, all admitted attempts and outcomes",
             "anti_cherry_pick": "no early stop after a favorable pair, no dropping failed/unfavorable pairs, no rerun until pass"
           },
           "terminal_effect": "Control B is valid only if the declared sampling protocol is followed; otherwise evidence is invalid and V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY is withheld"
+        },
+        "minimum_directional_criterion": {
+          "invariant": "pass_criterion must measure semantic discrimination, not mere transport validity",
+          "bad_arm_requirement": "the bad #805-style subject must produce the predeclared material contract-linked adverse signal (e.g. material finding / changes-requested-or-blocking advisory disposition) at or above the predetermined threshold",
+          "corrected_arm_requirement": "the corrected counterpart under identical context/configuration must not reproduce that same material contract-linked adverse signal at the same threshold",
+          "pair_rule": "a pair is discriminating only when bad arm meets bad_arm_requirement AND corrected arm meets corrected_arm_requirement",
+          "aggregate_rule": "for repeated-pair mode, the predeclared pass_criterion MUST be expressed as a threshold over discriminating pairs (e.g. at least K of N), with K and N fixed before execution; `both responses valid` or equivalent non-directional criteria are forbidden",
+          "seeded_rule": "for deterministic-seed mode, the single seeded pair must satisfy the same directional pair_rule",
+          "terminal_effect": "non-discriminating or failed criterion -> Control B FAIL and V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY withheld"
         }
       }
     },
@@ -1229,7 +1272,10 @@
         "A2 raw-to-normalized compatibility ownership and A3 normalized applicability ownership are disjoint with an explicit handoff invariant",
         "legacy selector and legacy rule-pattern compatibility operators are frozen as requirements",
         "must_hold applicability from semantic-context scope/pack to chunks is frozen with positive/negative controls",
-        "Control B sampling attribution uses shared supported seed or predeclared repeated-pair protocol"
+        "Control B sampling attribution uses shared supported seed or predeclared repeated-pair protocol",
+        "finite ProvenanceV1 source_kind/source_path/source_state is required/budgeted payload context",
+        "legacy include-all sentinels target_profile:domain_contracts and target_profile:review_packs are frozen compatibility inputs",
+        "Control B pass criterion is directional: bad subject triggers predeclared material signal and corrected counterpart does not"
       ],
       "runtime_terminal": "V1_C2_CONTRACT_CONTEXT_AND_LIMITATION_READY",
       "runtime_requires": [
