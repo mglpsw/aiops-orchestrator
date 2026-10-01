@@ -354,3 +354,50 @@ limpa continua possível se todo o restante do piso estiver presente.
 ### CM-MUST-HOLD-02 — pack source required by semantic-context
 
 Se `semantic-context.contract_pack` é não vazio, `review_packs` é `RequiredForChunk` antes da resolução. Ausência/invalidade do source degrada; não pode cair no branch `absent_when_not_required` nem em `not_relevant`.
+
+
+### CM-GA-A2-SELECTOR-SOURCE-PRECEDENCE
+
+- **Owner:** Gate A A2.
+- **General selected-pack source:** `file-diff-context.contract_pack`; if absent/blank, legacy alias `file-diff-context.pack`. Both use clean-text trim; `contract_pack` wins when both are non-empty.
+- **Separate semantic-context role:** `semantic-context.contract_pack` is a must-hold pack constraint only; it does not overwrite/populate the general selected-pack token.
+- **Conflict control:** file-diff `calendar` + semantic-context `security` preserves both roles independently.
+
+### CM-GA-A2-LEGACY-FLAT-IDENTITY
+
+- **Owner:** Gate A A2.
+- Each admitted legacy `{id, description}` rule becomes exactly one `NormalizedContract` with `contract_id=id`, preserved `description`, section `rules`, and one `RuleItem.rule=description`.
+- The raw legacy id is **not** duplicated as a qualifier.
+- `contract:<id>` resolves that exact normalized contract.
+- N legacy rules -> N normalized contracts; no synthetic enclosing contract.
+
+### CM-GA-A3-SEMANTIC-GROUP
+
+- **Owner:** Gate A A3.
+- Retain `_relevance_keywords` only for LEGACY_FLAT_MODE contracts and LEGACY_PACK_MODE packs.
+- Legacy contract operand = lowercase `contract_id + " " + description`; legacy pack operand = lowercase `pack_id + " " + description`.
+- MAPPING_PACK_MODE and DOMAIN_MAPPING_MODE NEVER gain applicability from semantic-group keywords.
+
+### CM-GA-A3-INCLUDE-ALL
+
+- **Owner:** Gate A A3.
+- `target_profile:domain_contracts` includes every admitted legacy normalized contract for the candidate chunk.
+- `target_profile:review_packs` includes every admitted legacy normalized pack for the candidate chunk.
+- Without those sentinels, normal explicit/path/pattern/global/semantic-group applicability applies.
+
+### CM-PROVENANCE-01
+
+- **Required payload shape:** `ProvenanceV1 {source_kind, source_path, source_state}` for each represented known contract/pack source slot.
+- Loss of any provenance field is `REQUIRED_CONTEXT_OMITTED` and non-conclusive.
+- Exact repository revision remains Gate C evidence, not a V1 payload field.
+
+### Control B — minimum directional criterion
+
+Control B cannot pass merely because both arms return valid responses.
+
+For every pair:
+- bad subject MUST meet the predeclared material contract-linked adverse-signal threshold;
+- corrected counterpart under the same context/configuration MUST NOT reproduce that same material adverse signal.
+
+Seeded mode uses the same directional rule for the shared-seed pair.
+Repeated-pair mode freezes N and K before execution and passes only when at least K of N pairs are discriminating. No adaptive stopping or pair dropping.
