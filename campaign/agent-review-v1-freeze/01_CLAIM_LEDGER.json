@@ -158,7 +158,10 @@
         "SelectionResolution explicitly covers not_requested/resolved/unresolved and resolved carries the complete exact pack-id set consumed in full by A3.",
         "ApplicablePackSet controls cover all branches: resolved selector set, mapping path matches, target_profile:review_packs include-all, legacy explicit contract:<id> pack refs, and legacy semantic-group fallback.",
         "review_packs source is RequiredForChunk when target_profile:review_packs sentinel is present; absent/invalid sentinel source has focal CM-CL2-04.",
-        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 and a resolving positive counterpart."
+        "SELECTED_CONTRACT_MISSING has focal CM-PACK-04 and a resolving positive counterpart.",
+        "Legacy pack ids are unique after clean-text; duplicate pack ids fail closed as SOURCE_INVALID_OR_UNSUPPORTED.",
+        "SelectionResolution canonical handoff always uses not_requested|resolved|unresolved; no-selector case is explicit and non-degrading.",
+        "ApplicableContractSet canonical union covers applicable-pack contract_refs, direct contract:<id> refs, target_profile:domain_contracts include-all, normalized ContractApplicability and legacy semantic-group fallback."
       ],
       "degraded_by": [
         "claim present only as PR free text (never transported: no PR title/body in chunk payload)",
@@ -289,6 +292,11 @@
           "applicable_pack_set": "union of resolved selection, mapping paths, legacy include-all, legacy explicit refs, legacy semantic-group fallback",
           "include_all_requiredness": "target_profile:review_packs makes review_packs source required",
           "missing_contract_relation": "CM-PACK-04 / SELECTED_CONTRACT_MISSING"
+        },
+        "final_set_invariants": {
+          "legacy_pack_id_uniqueness": "duplicate cleaned legacy pack ids fail closed",
+          "selection_resolution_states": "not_requested|resolved|unresolved",
+          "applicable_contract_set": "pack refs + direct refs + legacy include-all + normalized applicability + legacy semantic-group fallback"
         }
       },
       "consumer_history": {
