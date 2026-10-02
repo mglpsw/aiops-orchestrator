@@ -271,6 +271,17 @@ kill_active_group() {
             kill -"$sig" -"$ACTIVE_PGID" 2>/dev/null || true
         fi
         kill -"$sig" "$ACTIVE_PID" 2>/dev/null || true
+        local waited=0
+        while kill -0 "$ACTIVE_PID" 2>/dev/null && [ "$waited" -lt 30 ]; do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$ACTIVE_PID" 2>/dev/null; then
+            if [ -n "${ACTIVE_PGID:-}" ]; then
+                kill -9 -"$ACTIVE_PGID" 2>/dev/null || true
+            fi
+            kill -9 "$ACTIVE_PID" 2>/dev/null || true
+        fi
         wait "$ACTIVE_PID" 2>/dev/null || true
         ACTIVE_PID=""
         ACTIVE_PGID=""
@@ -338,34 +349,149 @@ trap handle_int INT
 trap handle_term TERM
 
 read -r -d '' SUBREAPER_WRAPPER << 'EOF' || true
-import ctypes, os, sys, signal, subprocess
+import ctypes, os, sys, signal, subprocess, time
+
 PR_SET_CHILD_SUBREAPER = 36
-try:
-    ctypes.CDLL(None, use_errno=True).prctl(ctypes.c_int(PR_SET_CHILD_SUBREAPER), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
-except Exception:
-    pass
+PR_GET_CHILD_SUBREAPER = 37
+
+libc = ctypes.CDLL(None, use_errno=True)
+
+# Ablation hooks for qualification testing
+ablate_set = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_SET") == "1"
+ablate_get = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_GET") == "1"
+ablate_val = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_VAL") == "0"
+
+if ablate_set:
+    rc_set = -1
+    err_set = 1
+else:
+    rc_set = libc.prctl(
+        ctypes.c_int(PR_SET_CHILD_SUBREAPER),
+        ctypes.c_ulong(1),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+    )
+    err_set = ctypes.get_errno()
+
+if rc_set != 0:
+    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_SET_CHILD_SUBREAPER failed (rc={rc_set}, errno={err_set})\n")
+    sys.exit(2)
+
+val_get = ctypes.c_int(0)
+if ablate_get:
+    rc_get = -1
+    err_get = 1
+else:
+    rc_get = libc.prctl(
+        ctypes.c_int(PR_GET_CHILD_SUBREAPER),
+        ctypes.byref(val_get),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+        ctypes.c_ulong(0),
+    )
+    err_get = ctypes.get_errno()
+
+if rc_get != 0:
+    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_GET_CHILD_SUBREAPER failed (rc={rc_get}, errno={err_get})\n")
+    sys.exit(2)
+
+if ablate_val:
+    val_get.value = 0
+
+if val_get.value != 1:
+    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_GET_CHILD_SUBREAPER returned {val_get.value} (expected 1)\n")
+    sys.exit(2)
 
 cmd = sys.argv[1:]
 proc = subprocess.Popen(cmd, close_fds=False)
 
-def handle_sig(sig, frame):
+def get_adopted_children():
+    my_pid = os.getpid()
+    ch_path = f"/proc/self/task/{my_pid}/children"
+    if os.path.exists(ch_path):
+        try:
+            with open(ch_path, "r") as f:
+                return [int(p) for p in f.read().split()]
+        except Exception:
+            pass
+    return []
+
+def terminate_and_reap_all(sig_code):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+    my_pid = os.getpid()
+
+    try:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+    except Exception:
+        pass
+
+    for child in get_adopted_children():
+        try:
+            os.kill(child, signal.SIGTERM)
+        except Exception:
+            pass
+
+    grace_deadline = time.time() + 1.0
+    all_reaped = False
+    while time.time() < grace_deadline:
+        while True:
+            try:
+                wpid, _ = os.waitpid(-1, os.WNOHANG)
+                if wpid == 0:
+                    break
+            except ChildProcessError:
+                all_reaped = True
+                break
+        if all_reaped:
+            break
+        time.sleep(0.05)
+
+    if not all_reaped:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+
+        for child in get_adopted_children():
+            try:
+                os.kill(child, signal.SIGKILL)
+            except Exception:
+                pass
+
     while True:
         try:
-            wpid, _ = os.waitpid(-1, 0)
+            os.waitpid(-1, 0)
         except ChildProcessError:
             break
-    sys.exit(143 if sig == signal.SIGTERM else 130)
+
+    sys.exit(sig_code)
+
+def handle_sig(sig, frame):
+    terminate_and_reap_all(143 if sig == signal.SIGTERM else 130)
 
 signal.signal(signal.SIGINT, handle_sig)
 signal.signal(signal.SIGTERM, handle_sig)
 
 rc = proc.wait()
-while True:
-    try:
-        wpid, _ = os.waitpid(-1, 0)
-    except ChildProcessError:
-        break
-sys.exit(rc)
+if rc == 0:
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        while True:
+            try:
+                wpid, _ = os.waitpid(-1, os.WNOHANG)
+                if wpid == 0:
+                    break
+            except ChildProcessError:
+                sys.exit(0)
+        time.sleep(0.05)
+    terminate_and_reap_all(0)
+else:
+    terminate_and_reap_all(rc)
 EOF
 
 HOST_PYTHON="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
@@ -543,7 +669,7 @@ if os.path.isdir(bin_dir):
                 sys.exit(2)
             shebang_len = len(first_line.rstrip(b"\r\n"))
             if shebang_len > 127:
-                print(f"Blocked: shebang in {p} exceeds Linux kernel limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
+                print(f"Blocked: shebang in {p} exceeds AgentReviewShebangPolicyV1 limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
                 sys.exit(2)
 
 # Atomic publication: point of no return / commit linearization point

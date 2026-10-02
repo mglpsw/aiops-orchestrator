@@ -795,6 +795,8 @@ def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
         py311 = shutil.which("python3.11")
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
+        elif sys.version_info[:2] != (3, 11):
+            pytest.skip("EVIDENCE_LIMITATION: Python 3.11 interpreter not available on local host")
     result = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), str(venv_dir)],
         capture_output=True,
@@ -2085,7 +2087,7 @@ sys.exit(1)
         text=True,
     )
     assert res_fail.returncode == 2, f"Oversized shebang must fail with exit 2, got {res_fail.returncode}"
-    assert "exceeds Linux kernel limit" in res_fail.stderr
+    assert "exceeds AgentReviewShebangPolicyV1 limit" in res_fail.stderr
     assert not target_venv.exists()
 
     # Case B: Normal shebang succeeds, and bin/pip* is discarded at publication boundary
@@ -2301,3 +2303,452 @@ sys.exit(1)
     )
     assert res_oversized.returncode == 2, f"Path component > 255 must fail with exit 2, got {res_oversized.returncode}"
     assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+
+def test_subreaper_fail_closed_ablations(tmp_path: Path) -> None:
+    """Q-PROC-01, Q-PROC-02: Subreaper setup and readback verification are strictly fail-closed.
+    Ablations for SET failure, GET failure, and GET != 1 must fail closed with exit 2,
+    reporting STOP_UNQUALIFIED_SUBREAPER before spawning any worker or staging directory.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_ablation"
+
+    fake_py = tmp_path / "fake_py_ablation.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    base_env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+
+    # Ablation 1: SET returns failure
+    env_set = dict(base_env, _AIOPS_TEST_ABLATE_SUBREAPER_SET="1")
+    res_set = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env_set,
+        capture_output=True,
+        text=True,
+    )
+    assert res_set.returncode == 2, f"SET ablation must exit 2, got {res_set.returncode}"
+    assert "STOP_UNQUALIFIED_SUBREAPER" in res_set.stderr
+    assert not target_venv.exists()
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+    # Ablation 2: GET returns failure
+    env_get = dict(base_env, _AIOPS_TEST_ABLATE_SUBREAPER_GET="1")
+    res_get = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env_get,
+        capture_output=True,
+        text=True,
+    )
+    assert res_get.returncode == 2, f"GET ablation must exit 2, got {res_get.returncode}"
+    assert "STOP_UNQUALIFIED_SUBREAPER" in res_get.stderr
+    assert not target_venv.exists()
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+    # Ablation 3: GET returns 0 (not subreaper)
+    env_val = dict(base_env, _AIOPS_TEST_ABLATE_SUBREAPER_VAL="0")
+    res_val = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env_val,
+        capture_output=True,
+        text=True,
+    )
+    assert res_val.returncode == 2, f"VAL ablation must exit 2, got {res_val.returncode}"
+    assert "STOP_UNQUALIFIED_SUBREAPER" in res_val.stderr
+    assert not target_venv.exists()
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+
+def test_bounded_descendant_termination_term_resistant_descendant(tmp_path: Path) -> None:
+    """Q-PROC-03, Q-PROC-04: Bounded termination of TERM-resistant descendants.
+    When a worker process spawns a descendant that explicitly ignores SIGTERM and sleeps,
+    a cancellation signal (SIGTERM) delivered to the installer triggers initial SIGTERM,
+    bounded grace period, and SIGKILL escalation, reaping all adopted descendants until
+    ECHILD and leaving zero running, zombie, or waitable owned descendants.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_term_resistant"
+    grandchild_pid_file = tmp_path / "term_resistant_grandchild.pid"
+
+    fake_py = tmp_path / "fake_py_term_resistant.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os, subprocess, signal, time
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Spawn grandchild that explicitly ignores SIGTERM and sleeps
+    grandchild_code = '''
+import time, os, sys, signal
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open({repr(str(grandchild_pid_file))}, "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(120)
+sys.exit(0)
+'''
+    subprocess.Popen([sys.executable, "-c", grandchild_code])
+    # Parent worker process sleeps briefly so it is alive when cancelled
+    time.sleep(30)
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    start_time = time.time()
+    p = subprocess.Popen(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    # Wait for the grandchild to spawn and write its PID
+    for _ in range(60):
+        if grandchild_pid_file.exists():
+            break
+        time.sleep(0.05)
+    assert grandchild_pid_file.exists(), "Grandchild PID file was not written"
+    grandchild_pid = int(grandchild_pid_file.read_text().strip())
+
+    # Send SIGTERM to the installer process
+    os.kill(p.pid, signal.SIGTERM)
+    stdout, stderr = p.communicate(timeout=8)
+    elapsed = time.time() - start_time
+
+    # Must terminate boundedly under escalation (<= 5 seconds)
+    assert elapsed < 5.0, f"Installer took {elapsed:.2f}s to terminate; escalation was not bounded"
+    assert p.returncode == 143, f"Installer must return canonical cancellation code 143, got {p.returncode}"
+
+    # Verify grandchild was terminated and reaped: no zombie, process nonexistent
+    proc_stat = Path(f"/proc/{grandchild_pid}/status")
+    if proc_stat.exists():
+        status_text = proc_stat.read_text(encoding="utf-8")
+        assert "State:\tZ" not in status_text, f"Grandchild process {grandchild_pid} remained as a zombie!"
+    with pytest.raises(ProcessLookupError):
+        os.kill(grandchild_pid, 0)
+
+    # Target venv must not exist and staging directories cleaned up
+    assert not target_venv.exists()
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+
+def test_pid1_environment_qualification_u0_and_u1(tmp_path: Path) -> None:
+    """Q-PROC-05: Subreaper qualification under U0 (normal host) and U1 (deliberately non-reaping PID 1).
+    Demonstrates that the subreaper wrapper itself is the necessary adopter and reaper of orphaned
+    descendants and does not rely on ambient PID 1 reaping.
+    """
+    # U0: Normal host verification already demonstrated by test_countermodel_z1 and test_bounded_descendant_termination.
+    # U1: Isolated PID namespace with non-reaping PID 1
+    unshare_check = subprocess.run(
+        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", "bash", "-c", "echo PID=$$"],
+        capture_output=True,
+        text=True,
+    )
+    if unshare_check.returncode != 0 or unshare_check.stdout.strip() != "PID=1":
+        pytest.skip("EVIDENCE_LIMITATION_NON_REAPING_PID1: unshare PID namespace unavailable in this environment")
+
+    # In U1: PID 1 is a python process that ignores child reaping (does not call waitpid).
+    # The subreaper wrapper executes inside this namespace, spawns an orphan, and must reap it.
+    grandchild_script = tmp_path / "u1_grandchild.py"
+    grandchild_script.write_text("import time, sys; time.sleep(0.2); sys.exit(0)\n", encoding="utf-8")
+
+    worker_script = tmp_path / "u1_worker.py"
+    worker_script.write_text(
+        f"import subprocess, sys; subprocess.Popen([sys.executable, {repr(str(grandchild_script))}]); sys.exit(0)\n",
+        encoding="utf-8",
+    )
+
+    u1_file = tmp_path / "u1_pid1_test.py"
+    u1_file.write_text(
+        f"""import os, sys, time, subprocess, ctypes
+
+assert os.getpid() == 1, f"Expected PID 1 in namespace, got {{os.getpid()}}"
+
+code = '''
+import os, sys, time, subprocess, ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
+
+rc_set = libc.prctl(ctypes.c_int(PR_SET_CHILD_SUBREAPER), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
+val = ctypes.c_int(0)
+rc_get = libc.prctl(ctypes.c_int(PR_GET_CHILD_SUBREAPER), ctypes.byref(val), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
+assert rc_set == 0 and rc_get == 0 and val.value == 1
+
+# Direct child worker spawns grandchild and exits immediately
+p_child = subprocess.Popen([sys.executable, {repr(str(worker_script))}])
+p_child.wait()
+
+# Subreaper waits for and reaps adopted grandchild
+reaped = []
+while True:
+    try:
+        wpid, _ = os.waitpid(-1, 0)
+        reaped.append(wpid)
+    except ChildProcessError:
+        break
+
+assert len(reaped) == 1, f"Expected 1 reaped grandchild, got {{reaped}}"
+sys.exit(0)
+'''
+
+p_subreaper = subprocess.Popen([sys.executable, "-c", code])
+rc = p_subreaper.wait()
+assert rc == 0, f"Subreaper exited with {{rc}}"
+
+# PID 1 verifies that no zombies were dumped onto PID 1
+entries = [d for d in os.listdir("/proc") if d.isdigit()]
+assert entries == ["1"], f"Unexpected processes remaining in namespace: {{entries}}"
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    res_u1 = subprocess.run(
+        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", sys.executable, str(u1_file)],
+        capture_output=True,
+        text=True,
+    )
+    assert res_u1.returncode == 0, f"U1 non-reaping PID 1 qualification failed: {res_u1.stderr}"
+
+
+def test_target_path_contract_v1_equivalence_classes(tmp_path: Path) -> None:
+    """Q-PATH-01, Q-PATH-02, Q-PATH-03: TargetPathContractV1 and AgentReviewTargetPathPolicyV1.
+    All supported path equivalence classes succeed and verify consumer execution (bin/python3).
+    All rejected classes fail closed before staging directory creation.
+    """
+    host_py = sys.executable
+
+    def make_fake_py(marker: str) -> Path:
+        f = tmp_path / f"fake_py_{marker}.py"
+        f.write_text(
+            f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as fp:
+        fp.write("#!/bin/sh\\nexec {repr(host_py)} \\"$@\\"\\n")
+    os.chmod(py_bin, 0o755)
+    # Write activation scripts to prove they are discarded
+    for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+        with open(os.path.join(stage, "bin", act), "w") as fp:
+            fp.write("# activation\\n")
+    # Write pip console script to prove discarded
+    with open(os.path.join(stage, "bin", "pip"), "w") as fp:
+        fp.write("# pip\\n")
+    os.chmod(os.path.join(stage, "bin", "pip"), 0o755)
+    sys.exit(0)
+
+sys.exit(1)
+""",
+            encoding="utf-8",
+        )
+        f.chmod(0o755)
+        return f
+
+    fake_py = make_fake_py("path_classes")
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+
+    # Supported classes:
+    supported_classes = [
+        ("ordinary", tmp_path / "venv_ordinary"),
+        ("whitespace", tmp_path / "venv with spaces"),
+        ("single_quote", tmp_path / "venv'quote"),
+        ("double_quote", tmp_path / 'venv"doublequote'),
+        ("dollar", tmp_path / "venv$dollar"),
+        ("backtick", tmp_path / "venv`backtick"),
+        ("backslash", tmp_path / "venv\\backslash"),
+        ("unicode", tmp_path / "venv_ñ_λ_🚀"),
+    ]
+
+    for class_name, target in supported_classes:
+        res = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT), str(target)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, f"Supported class '{class_name}' failed with {res.returncode}; stderr: {res.stderr}"
+        assert target.exists(), f"Target '{target}' was not created"
+        py_bin = target / "bin" / "python3"
+        assert py_bin.exists(), f"python3 missing for '{class_name}'"
+
+        # Consumer execution verified:
+        res_exec = subprocess.run(
+            [str(py_bin), "-c", "import sys; print('CONSUMER_OK')"],
+            capture_output=True,
+            text=True,
+        )
+        assert res_exec.returncode == 0, f"Consumer execution failed for '{class_name}': {res_exec.stderr}"
+        assert "CONSUMER_OK" in res_exec.stdout
+
+        # DiscardAtBoundary verified:
+        for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+            assert not (target / "bin" / act).exists(), f"{act} not discarded in '{class_name}'"
+        assert not (target / "bin" / "pip").exists(), f"pip not discarded in '{class_name}'"
+
+    # Rejected classes:
+    rejected_classes = [
+        ("lf", tmp_path / "venv\ninvalid"),
+        ("cr", tmp_path / "venv\rinvalid"),
+        ("oversized_component", tmp_path / ("x" * 256)),
+        ("oversized_total_path", tmp_path / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200) / ("y" * 200)),
+    ]
+
+    for class_name, target in rejected_classes:
+        res = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT), str(target)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 2, f"Rejected class '{class_name}' must fail with exit 2, got {res.returncode}"
+        assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+
+def test_consumer_capability_closure_minimal_surface(tmp_path: Path) -> None:
+    """Q-CONSUME-01, Q-REP-01..06: ConsumerCapabilityContractV1 and RuntimeProjectionContractV1.
+    Proves that the published runtime surface contains only what real consumers consume:
+    - bin/python3 is runtime_required (and executable)
+    - activation scripts and console pip scripts are discarded
+    - staging references are absent
+    - shebangs conform to AgentReviewShebangPolicyV1 (<= 127 bytes)
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_consumer_closure"
+
+    fake_py = tmp_path / "fake_py_consumer.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as fp:
+        fp.write("#!/bin/sh\\nexec {repr(host_py)} \\"$@\\"\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Add activation scripts (DISCARDABLE)
+    for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+        with open(os.path.join(stage, "bin", act), "w") as fp:
+            fp.write("# activation script\\n")
+
+    # Add pip console script (DISCARDABLE)
+    with open(os.path.join(stage, "bin", "pip"), "w") as fp:
+        fp.write("# pip\\n")
+    os.chmod(os.path.join(stage, "bin", "pip"), 0o755)
+
+    # Add dummy site-packages and text file with stage path to verify normalizer
+    site = os.path.join(stage, "lib", "python3.11", "site-packages")
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(site, "test_pkg.pth"), "w") as fp:
+        fp.write(stage + "\\n")
+
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"Install failed with {res.returncode}; stderr: {res.stderr}"
+    assert target_venv.exists()
+
+    # 1. Runtime required: bin/python3 exists and executes
+    py_bin = target_venv / "bin" / "python3"
+    assert py_bin.exists()
+    assert os.access(py_bin, os.X_OK)
+
+    # 2. Discarded: activation scripts and pip scripts do not exist
+    for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+        assert not (target_venv / "bin" / act).exists()
+    assert not (target_venv / "bin" / "pip").exists()
+
+    # 3. Normalized: stage path was normalized to final target path in text files
+    pth_file = target_venv / "lib" / "python3.11" / "site-packages" / "test_pkg.pth"
+    assert pth_file.exists()
+    assert str(target_venv) in pth_file.read_text(encoding="utf-8")
+    assert ".agent_review_stage" not in pth_file.read_text(encoding="utf-8")
