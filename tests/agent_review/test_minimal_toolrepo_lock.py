@@ -788,8 +788,14 @@ def test_install_script_normalizes_relative_target_before_venv_creation(tmp_path
 
 
 @pytest.mark.requires_network
-def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
-    venv_dir = tmp_path / "agent-review-venv"
+@pytest.mark.parametrize("pathname", [
+    "agent-review-venv", "venv with spaces", "venv'quote", 'venv"quote',
+    "venv$dollar", "venv`backtick", "venv\\backslash", "venv_ñ_λ_🚀",
+], ids=["ordinary", "space", "single-quote", "double-quote", "dollar", "backtick", "backslash", "unicode"])
+def test_install_script_produces_a_working_minimal_venv(tmp_path: Path, pathname: str) -> None:
+    """Independent lock-backed runtimes, distinct from wrapper path controls."""
+    import json
+    venv_dir = tmp_path / pathname
     env = os.environ.copy()
     if "AGENT_REVIEW_PYTHON" not in env:
         py311 = shutil.which("python3.11")
@@ -813,19 +819,34 @@ def test_install_script_produces_a_working_minimal_venv(tmp_path: Path) -> None:
         text=True,
         check=False,
     )
-    installed = {line.split("==")[0].lower() for line in list_result.stdout.splitlines() if "==" in line}
+    assert list_result.returncode == 0, list_result.stderr
+    installed_versions = {re.sub(r"[-_.]+", "-", line.split("==")[0]).lower(): line.split("==")[1]
+                          for line in list_result.stdout.splitlines() if "==" in line}
+    installed = set(installed_versions)
+    for name, entry in _parse_lock().items():
+        assert installed_versions[name] == entry["version"]
     for forbidden in _FORBIDDEN_PACKAGES:
         assert forbidden not in installed
 
     import_result = subprocess.run(
-        [str(python), "-c", "import pydantic, yaml; print('ok')"],
+        [str(python), "-c",
+         "import json,sys,pydantic,yaml; "
+         "from app.agent_review.contracts_v2 import ChunkPayloadV2; "
+         "print(json.dumps({'prefix':sys.prefix,'base_prefix':sys.base_prefix,'executable':sys.executable}))"],
         capture_output=True,
         text=True,
         check=False,
         env={"PYTHONPATH": str(ROOT)},
     )
     assert import_result.returncode == 0, import_result.stderr
-    assert "ok" in import_result.stdout
+    runtime = json.loads(import_result.stdout)
+    assert runtime["prefix"] == str(venv_dir)
+    assert runtime["prefix"] != runtime["base_prefix"]
+    assert runtime["executable"] == str(python)
+    assert not list(tmp_path.glob(".agent_review_stage.*"))
+    for discarded in ("activate", "activate.csh", "activate.fish", "Activate.ps1", "pip", "pip3", "pip3.11"):
+        assert not (venv_dir / "bin" / discarded).exists()
+    print(json.dumps({"runtime": runtime, "locked_versions": installed_versions, "pathname": pathname}))
 
 
 @pytest.mark.requires_network
@@ -2473,88 +2494,161 @@ sys.exit(1)
     assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
 
 
-def test_pid1_environment_qualification_u0_and_u1(tmp_path: Path) -> None:
-    """Q-PROC-05: Subreaper qualification under U0 (normal host) and U1 (deliberately non-reaping PID 1).
-    Demonstrates that the subreaper wrapper itself is the necessary adopter and reaper of orphaned
-    descendants and does not rely on ambient PID 1 reaping.
+@pytest.mark.parametrize("outcome", ["worker_failure", "cancellation"])
+@pytest.mark.parametrize("subreaper", [True, False], ids=["production", "ablation"])
+def test_pid1_environment_qualification_u0_and_u1(tmp_path: Path, outcome: str, subreaper: bool) -> None:
+    """U1 exercises the installer supervisor; PID1 waits only for its direct installer.
+
+    Controlled venv workers are process witnesses, not runtime installation proof.
+    The ablation changes only a disposable copy, disabling SET and its GET oracle.
+    U0 remains covered separately by Z1 and bounded-descendant controls.
     """
-    # U0: Normal host verification already demonstrated by test_countermodel_z1 and test_bounded_descendant_termination.
-    # U1: Isolated PID namespace with non-reaping PID 1
-    unshare_check = subprocess.run(
-        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", "bash", "-c", "echo PID=$$"],
-        capture_output=True,
-        text=True,
+    import json
+    import textwrap
+
+    probe = subprocess.run(
+        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", "sh", "-c", "echo PID=$$"],
+        capture_output=True, text=True, timeout=10,
     )
-    if unshare_check.returncode != 0 or unshare_check.stdout.strip() != "PID=1":
-        pytest.skip("EVIDENCE_LIMITATION_NON_REAPING_PID1: unshare PID namespace unavailable in this environment")
+    if probe.returncode != 0 or probe.stdout.strip() != "PID=1":
+        pytest.skip("EVIDENCE_LIMITATION_NON_REAPING_PID1: " + probe.stderr.strip())
 
-    # In U1: PID 1 is a python process that ignores child reaping (does not call waitpid).
-    # The subreaper wrapper executes inside this namespace, spawns an orphan, and must reap it.
-    grandchild_script = tmp_path / "u1_grandchild.py"
-    grandchild_script.write_text("import time, sys; time.sleep(0.2); sys.exit(0)\n", encoding="utf-8")
+    installer = INSTALL_SCRIPT
+    if not subreaper:
+        disposable = tmp_path / "ablated"
+        (disposable / "scripts").mkdir(parents=True)
+        shutil.copy2(LOCK_FILE, disposable / LOCK_FILE.name)
+        original = INSTALL_SCRIPT.read_text(encoding="utf-8")
+        set_call = "ctypes.c_int(PR_SET_CHILD_SUBREAPER),\n        ctypes.c_ulong(1),"
+        get_oracle = "if val_get.value != 1:"
+        assert original.count(set_call) == original.count(get_oracle) == 1
+        changed = original.replace(set_call, set_call.replace("c_ulong(1)", "c_ulong(0)"))
+        changed = changed.replace(get_oracle, "if val_get.value != 0:")
+        installer = disposable / "scripts" / INSTALL_SCRIPT.name
+        installer.write_text(changed, encoding="utf-8")
+        (tmp_path / "ablation.diff").write_text(
+            "PR_SET_CHILD_SUBREAPER argument: 1 -> 0\nGET acceptance: 1 -> 0\n",
+            encoding="utf-8",
+        )
 
-    worker_script = tmp_path / "u1_worker.py"
-    worker_script.write_text(
-        f"import subprocess, sys; subprocess.Popen([sys.executable, {repr(str(grandchild_script))}]); sys.exit(0)\n",
+    # Only the venv worker is controlled; all interpreter probes delegate to CPython.
+    worker = tmp_path / "worker.py"
+    worker.write_text(textwrap.dedent(r"""
+        import os, signal, subprocess, sys, time
+        from pathlib import Path
+        root = Path(__file__).parent
+        if sys.argv[1:5] != ["-I", "-S", "-m", "venv"]:
+            os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+        stage = Path(sys.argv[5])
+        (stage / "controlled-worker").write_text("process witness")
+        (root / "worker.json").write_text(__import__("json").dumps({
+            "pid": os.getpid(), "supervisor": os.getppid(), "stage": str(stage)}))
+        child = os.fork()
+        if child == 0:
+            grandchild = os.fork()
+            if grandchild != 0:
+                deadline = time.monotonic() + 5
+                while not (root / "descendant.json").exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                os._exit(0)
+            os.setsid()  # escape the worker group: supervisor adoption is required
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            (root / "descendant.json").write_text(__import__("json").dumps({
+                "pid": os.getpid(), "birth_parent": os.getppid(), "sid": os.getsid(0)}))
+            while True:
+                time.sleep(0.02)
+        os.waitpid(child, 0)  # direct child only; never reap the orphan
+        while not (root / "release").exists():
+            time.sleep(0.02)
+        sys.exit(19)
+    """), encoding="utf-8")
+    wrapper = tmp_path / "python-worker"
+    import shlex
+    wrapper.write_text(
+        "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(worker)) + ' "$@"\n',
         encoding="utf-8",
     )
+    wrapper.chmod(0o755)
 
-    u1_file = tmp_path / "u1_pid1_test.py"
-    u1_file.write_text(
-        f"""import os, sys, time, subprocess, ctypes
-
-assert os.getpid() == 1, f"Expected PID 1 in namespace, got {{os.getpid()}}"
-
-code = '''
-import os, sys, time, subprocess, ctypes
-libc = ctypes.CDLL(None, use_errno=True)
-PR_SET_CHILD_SUBREAPER = 36
-PR_GET_CHILD_SUBREAPER = 37
-
-rc_set = libc.prctl(ctypes.c_int(PR_SET_CHILD_SUBREAPER), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
-val = ctypes.c_int(0)
-rc_get = libc.prctl(ctypes.c_int(PR_GET_CHILD_SUBREAPER), ctypes.byref(val), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
-assert rc_set == 0 and rc_get == 0 and val.value == 1
-
-# Direct child worker spawns grandchild and exits immediately
-p_child = subprocess.Popen([sys.executable, {repr(str(worker_script))}])
-p_child.wait()
-
-# Subreaper waits for and reaps adopted grandchild
-reaped = []
-while True:
-    try:
-        wpid, _ = os.waitpid(-1, 0)
-        reaped.append(wpid)
-    except ChildProcessError:
-        break
-
-assert len(reaped) == 1, f"Expected 1 reaped grandchild, got {{reaped}}"
-sys.exit(0)
-'''
-
-p_subreaper = subprocess.Popen([sys.executable, "-c", code])
-rc = p_subreaper.wait()
-assert rc == 0, f"Subreaper exited with {{rc}}"
-
-# PID 1 verifies that no zombies were dumped onto PID 1
-entries = [d for d in os.listdir("/proc") if d.isdigit()]
-assert entries == ["1"], f"Unexpected processes remaining in namespace: {{entries}}"
-sys.exit(0)
-""",
-        encoding="utf-8",
+    pid1 = tmp_path / "pid1.py"
+    pid1.write_text(textwrap.dedent(r"""
+        import json, os, signal, subprocess, sys, time
+        from pathlib import Path
+        root, installer, wrapper, outcome, mechanism = sys.argv[1:]
+        root = Path(root)
+        assert os.getpid() == 1
+        def read(name):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                try:
+                    return json.loads((root / name).read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    time.sleep(0.02)
+            raise AssertionError("witness missing: " + name)
+        def state(pid):
+            try:
+                data = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                return {"state": data[0], "ppid": int(data[1])}
+            except FileNotFoundError:
+                return None
+        with (root / "installer.stdout").open("w") as out, (root / "installer.stderr").open("w") as err:
+            proc = subprocess.Popen(["bash", installer, str(root / "target")],
+                env=dict(os.environ, AGENT_REVIEW_PYTHON=wrapper),
+                stdout=out, stderr=err, start_new_session=True)
+            worker = read("worker.json")
+            descendant = read("descendant.json")
+            expected_parent = worker["supervisor"] if mechanism == "present" else 1
+            deadline = time.monotonic() + 5
+            adopted = state(descendant["pid"])
+            while adopted and adopted["ppid"] != expected_parent and time.monotonic() < deadline:
+                time.sleep(0.02)
+                adopted = state(descendant["pid"])
+            assert descendant["birth_parent"] not in (1, worker["supervisor"])
+            assert adopted and adopted["ppid"] == expected_parent, (worker, descendant, adopted)
+            assert state(worker["supervisor"])["ppid"] == proc.pid
+            supervisor_cmd = Path(f"/proc/{worker['supervisor']}/cmdline").read_bytes()
+            assert b"PR_SET_CHILD_SUBREAPER" in supervisor_cmd
+            if outcome == "cancellation":
+                proc.send_signal(signal.SIGTERM)
+            else:
+                (root / "release").touch()
+            rc = proc.wait(timeout=15)  # PID1 waits ONLY for its direct child
+        expected_rc = 143 if outcome == "cancellation" else 19
+        assert rc == expected_rc, (rc, (root / "installer.stderr").read_text())
+        remaining = {int(p.name): state(int(p.name)) for p in Path("/proc").iterdir() if p.name.isdigit() and p.name != "1"}
+        target_absent = not (root / "target").exists()
+        staging_absent = not list(root.glob(".agent_review_stage.*"))
+        receipt = {"pid1": 1, "installer": proc.pid, "worker": worker,
+            "descendant": descendant, "adoption": adopted, "outcome": outcome,
+            "exit_status": rc, "mechanism": mechanism, "remaining_before_namespace_exit": remaining,
+            "target_absent": target_absent, "staging_absent": staging_absent}
+        (root / "u1-receipt.json").write_text(json.dumps(receipt, indent=2))
+        print(json.dumps(receipt), flush=True)
+        assert target_absent and staging_absent
+        if mechanism == "present":
+            assert remaining == {}, remaining
+        else:
+            # The identical scenario violates adoption/reaping without the mechanism.
+            assert descendant["pid"] in remaining, remaining
+            assert remaining[descendant["pid"]]["ppid"] == 1
+        # No generic waitpid or cleanup here: namespace teardown is not the oracle.
+    """), encoding="utf-8")
+    result = subprocess.run(
+        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", sys.executable,
+         str(pid1), str(tmp_path), str(installer), str(wrapper), outcome,
+         "present" if subreaper else "absent"],
+        capture_output=True, text=True, timeout=40,
     )
-    res_u1 = subprocess.run(
-        ["unshare", "-U", "-r", "-p", "-f", "--mount-proc", sys.executable, str(u1_file)],
-        capture_output=True,
-        text=True,
-    )
-    assert res_u1.returncode == 0, f"U1 non-reaping PID 1 qualification failed: {res_u1.stderr}"
+    print(result.stdout)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / "u1-receipt.json").read_text())
+    assert receipt["mechanism"] == ("present" if subreaper else "absent")
 
 
 def test_target_path_contract_v1_equivalence_classes(tmp_path: Path) -> None:
     """Q-PATH-01, Q-PATH-02, Q-PATH-03: TargetPathContractV1 and AgentReviewTargetPathPolicyV1.
-    All supported path equivalence classes succeed and verify consumer execution (bin/python3).
+    Harness controls qualify argument/path preservation and execution via bin/python3.
+    These wrappers do not prove a real venv, sys.prefix, lock dependencies or imports.
     All rejected classes fail closed before staging directory creation.
     """
     host_py = sys.executable
