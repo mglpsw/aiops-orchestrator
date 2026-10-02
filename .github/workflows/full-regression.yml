@@ -3,6 +3,21 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '17 5 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/full-regression.yml'
+      - 'scripts/ci_validate.sh'
+      - 'scripts/test.sh'
+      - 'scripts/test_*.py'
+      - 'scripts/local_validate.sh'
+      - 'scripts/local_validation.py'
+      - 'scripts/github_full_receipt.py'
+      - 'pytest.ini'
+      - 'requirements-dev.txt'
+      - 'tests/conftest.py'
+      - 'tests/test_ci_validation.py'
+      - 'tests/test_test_workers.py'
 permissions:
   contents: read
 env:
@@ -28,11 +43,16 @@ jobs:
       - name: Install development dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Full validation
-        run: bash scripts/local_validate.sh
+        run: |
+          AIOPS_TEST_WORKERS="$(python scripts/test_workers.py --workers)" \
+            bash scripts/local_validate.sh
+      - name: Bind receipt to GitHub subject and retain skip reasons
+        if: always()
+        run: python -m scripts.github_full_receipt
       - name: Preserve receipt and test reports, including failures
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-validation-${{ github.sha }}
+          name: full-validation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/aiops-validation-*
           if-no-files-found: warn

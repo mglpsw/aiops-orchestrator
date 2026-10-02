@@ -175,14 +175,31 @@ No producer attestation, trusted-host promotion, receipt ingestion or
 AgentReview v2 readiness integration is introduced by this DevX runner.
 
 `Validate repository` and `AgentReview release gates` are bounded fast CI;
-manual/periodic `Full offline regression` provides the complete offline pytest
-lanes. A regression failure requires investigation even though that workflow
-is not required on each PR. A timeout is `INCOMPLETE_TIMEOUT`, not a demonstrated
+`Full offline regression` provides complete offline pytest lanes on
+manual/periodic runs and path-filtered CI/test-infrastructure pull requests.
+It remains non-required; ordinary product PRs keep fast CI only. A regression
+failure requires investigation even though that workflow is not required on
+each PR. A timeout is `INCOMPLETE_TIMEOUT`, not a demonstrated
 test failure. A suite excluded by scope is `SkippedByScope`, not passed.
 
 The CI optimization's master base does not contain the post-Ready guard tests
 owned by Draft PR #370. The fast workflow explicitly records this absence and
 runs `tests/test_post_ready_codex_guard.py` on any subject that contains it.
-Until that corpus is available, its requested remote qualification is pending.
+Its current qualification is `NOT_APPLICABLE_TO_CURRENT_SUBJECT`
+(`ABSENT_BY_SUBJECT`), never PASS. After #371 integrates, #370 must
+reconcile/rebase onto that master and fast CI must execute its present corpus.
 Changing a workflow and passing that changed workflow does not establish an
 independent authority or stronger provenance than GitHub actually provides.
+
+For CI/test-infrastructure changes, the path-filtered non-required full workflow
+must also pass on the successor exact subject before Ready. Its artifact records
+source HEAD and tested merge/tree separately; see TESTING.md for the receipt
+fields and environment-failure classification. This is evidence, not a new
+required check or stronger trust architecture.
+
+#327 remains independent: after #371 integrates, rebase #327 and attach its
+ledger linter to the correct --repository/--generated owner, without duplication.
+After Ready, wait for the newly triggered Codex review on that HEAD. Pending is
+`HELD_PENDING_CODEX`; material findings are `HELD_WITH_MATERIAL_FINDINGS`;
+terminal clean with unchanged gates is `READY_FOR_HUMAN_INTEGRATION_DECISION`,
+with `merge_authorized: false`.

@@ -52,7 +52,7 @@ jobs:
           if [[ -f tests/test_post_ready_codex_guard.py ]]; then
             bash scripts/test.sh --serial tests/test_post_ready_codex_guard.py
           else
-            echo '::notice::SkippedByScope: post-Ready guard is absent on master; qualification of this requested corpus remains pending (PR #370 owns it).'
+            echo '::notice::ABSENT_BY_SUBJECT / NOT_APPLICABLE_TO_CURRENT_SUBJECT: post-Ready guard corpus; requalify when PR #370 is reconciled onto post-#371 master.'
           fi
 
   agent-review-release-gates:

@@ -126,12 +126,70 @@ def test_workflows_have_disjoint_owners_and_full_regression_remains_visible():
     full = yaml.safe_load((ROOT / '.github/workflows/full-regression.yml').read_text())
     # PyYAML uses YAML 1.1; GitHub's unquoted `on` key is parsed as True.
     triggers = full.get('on', full.get(True))
-    assert set(triggers) == {'workflow_dispatch', 'schedule'}
+    assert set(triggers) == {'workflow_dispatch', 'schedule', 'pull_request'}
+    patterns = triggers['pull_request']['paths']
+    from fnmatch import fnmatchcase
+    infrastructure = ['.github/workflows/ci.yml', '.github/workflows/full-regression.yml',
+                      'scripts/ci_validate.sh', 'scripts/test.sh', 'scripts/test_runner.py',
+                      'scripts/test_lanes.py', 'scripts/test_workers.py', 'scripts/test_census.py',
+                      'scripts/local_validate.sh', 'scripts/local_validation.py', 'scripts/github_full_receipt.py',
+                      'pytest.ini', 'requirements-dev.txt', 'tests/conftest.py',
+                      'tests/test_ci_validation.py', 'tests/test_test_workers.py']
+    assert all(any(fnmatchcase(path, pattern) for pattern in patterns) for path in infrastructure)
+    ordinary = ['app/agent_review/pipeline.py', 'tests/agent_review/test_review_transport_v2.py',
+                'tests/test_policy_engine.py', 'docs/TESTING.md']
+    assert not any(fnmatchcase(path, pattern) for path in ordinary for pattern in patterns)
+    assert full['permissions'] == {'contents': 'read'}
     steps = full['jobs']['regression']['steps']
-    assert any(s.get('run') == 'bash scripts/local_validate.sh' for s in steps)
+    assert any('bash scripts/local_validate.sh' in s.get('run', '') for s in steps)
+    assert any(s.get('if') == 'always()' and s.get('run') == 'python -m scripts.github_full_receipt' for s in steps)
     assert any(s.get('if') == 'always()' and s.get('uses', '').startswith('actions/upload-artifact@') for s in steps)
 
 
 def test_invalid_ci_mode_cannot_execute_checks():
     result = subprocess.run(['bash', str(ROOT / 'scripts/ci_validate.sh'), '--unknown'], capture_output=True, text=True)
     assert result.returncode == 2 and '[static]' not in result.stdout
+
+
+def test_github_receipt_distinguishes_source_and_synthetic_merge(tmp_path):
+    from scripts.github_full_receipt import github_subject, enrich
+    import json
+    event = {'number': 371, 'pull_request': {'head': {'sha': 'a' * 40}, 'base': {'sha': 'b' * 40}}}
+    env = {'GITHUB_SHA': 'c' * 40, 'GITHUB_EVENT_NAME': 'pull_request',
+           'GITHUB_REPOSITORY': 'mglpsw/aiops-orchestrator', 'GITHUB_RUN_ID': '123',
+           'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_WORKFLOW_SHA': 'a' * 40,
+           'GITHUB_WORKFLOW_REF': 'mglpsw/aiops-orchestrator/.github/workflows/full-regression.yml@refs/pull/371/merge'}
+    def fake_git(*args):
+        return 'c' * 40 if args == ('rev-parse', 'HEAD') else 'd' * 40
+    subject = github_subject(event, env, fake_git)
+    assert subject['head_sha'] == 'a' * 40 and subject['tested_synthetic_merge_sha'] == 'c' * 40
+    assert subject['tree_equivalence'] and subject['pr'] == 371 and subject['run_attempt'] == 2
+    receipt = tmp_path / 'receipt.json'
+    receipt.write_text(json.dumps({'head_sha': 'c' * 40, 'tree_sha': 'd' * 40, 'status': 'VALIDATION_FAILED'}))
+    (tmp_path / 'network.xml').write_text('<testsuites><testsuite><testcase classname="N" name="blocked"><skipped message="capability unavailable"/></testcase><testcase classname="N" name="broken"><failure message="failure preserved"/></testcase></testsuite></testsuites>')
+    data = enrich(receipt, subject, '/usr/bin/sudo')
+    assert data['status'] == 'VALIDATION_FAILED'  # Enrichment cannot promote a failed run.
+    assert data['lane_results']['network'][0]['reason'] == 'capability unavailable'
+    assert data['lane_results']['network'][1]['outcome'] == 'failure'
+    assert data['environment_capabilities']['canonical_sudo_path'] == '/usr/bin/sudo'
+
+
+def test_github_receipt_records_tree_difference_and_rejects_wrong_checkout(tmp_path):
+    from scripts.github_full_receipt import github_subject, enrich
+    import json
+    event = {'number': 371, 'pull_request': {'head': {'sha': 'a' * 40}, 'base': {'sha': 'b' * 40}}}
+    env = {'GITHUB_SHA': 'c' * 40, 'GITHUB_EVENT_NAME': 'pull_request',
+           'GITHUB_REPOSITORY': 'mglpsw/aiops-orchestrator', 'GITHUB_RUN_ID': '123',
+           'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_WORKFLOW_SHA': 'a' * 40,
+           'GITHUB_WORKFLOW_REF': 'mglpsw/aiops-orchestrator/.github/workflows/full-regression.yml@refs/pull/371/merge'}
+    def fake_git(*args):
+        if args == ('rev-parse', 'HEAD'): return 'c' * 40
+        return 'd' * 40 if args[1].startswith('a') else 'e' * 40
+    subject = github_subject(event, env, fake_git)
+    assert not subject['tree_equivalence']
+    receipt = tmp_path / 'receipt.json'
+    receipt.write_text(json.dumps({'head_sha': 'a' * 40, 'tree_sha': 'd' * 40, 'status': 'PASSED'}))
+    with pytest.raises(ValueError, match='identity differs'):
+        enrich(receipt, subject, None)
+    with pytest.raises(ValueError, match='GITHUB_SHA'):
+        github_subject(event, {**env, 'GITHUB_SHA': 'f' * 40}, fake_git)

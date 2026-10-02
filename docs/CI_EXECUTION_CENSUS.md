@@ -56,7 +56,7 @@ new required CI
                       → post-Ready guard tests when present on subject
   AgentReview release gates → eleven generated/contract/benchmark checks
 
-local FULL / manual + weekly GitHub FULL
+local FULL / CI-infrastructure PR + manual + weekly GitHub FULL
   A static/generated → ordinary collection
   B P (host-aware loadfile) → C S (serial) → D N (serial)
 ```
@@ -98,11 +98,21 @@ speedup or fabricated expected timing. Fresh new-PR Actions timing is required.
 
 The base lacks `tests/test_post_ready_codex_guard.py` and its implementation;
 they belong to frozen #370. Fast CI explicitly records SkippedByScope when
-absent and executes the corpus when present. Its requested qualification is
-pending; no C2 code is imported to claim it passed.
+absent and executes the corpus when present. Current classification:
+`ABSENT_BY_SUBJECT` / `NOT_APPLICABLE_TO_CURRENT_SUBJECT`, never PASS. After
+#371 integrates, #370 must reconcile/rebase onto its master and requalify the
+real present corpus through fast CI. No C2 code is imported.
 
 The PR changes the workflow that tests it. Passing those changed jobs is
 GitHub CI evidence, not independent workflow provenance or a stronger trust
 architecture. LocalReceipt != AutomaticMergeAuthority; push stales receipts.
 The existing code under test can implement v2; the new test infrastructure
 imports none of its attestation/readiness/broker contracts.
+
+The full workflow also runs for the explicit CI/test-infrastructure pull-request
+path list, remaining non-required. Its artifact binds source and tested
+identities/trees/run/attempt and retains P/S/N collections, outcomes and skips;
+see TESTING.md. Existing local sudo-dependent failures remain classified as
+PREEXISTING_ENVIRONMENT_CAPABILITY_LIMITATION pending remote qualification.
+#327 is independent and must reconcile its ledger-lint owner if it integrates
+after #371. No linter or C2 implementation is imported here.

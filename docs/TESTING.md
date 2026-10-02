@@ -85,8 +85,11 @@ copy with example environment values, preserving the checkout's `.env`.
 The dangerous-pattern inventory is informational, as before; actual blocking
 checks are the catalog validator and focused command guardrail tests.
 
-`full-regression.yml` runs manually or weekly on master; all offline tests run
-once through the canonical full runner. It is not required for each PR. Its
+`full-regression.yml` runs manually or weekly on master, and on pull requests
+that change the explicit CI/test-infrastructure path list. Ordinary product/test
+changes do not match that list. Full regression remains non-required; all
+offline lanes run once through the canonical full runner. No repository
+required-check settings are changed. Its
 40-minute timeout accommodates regression work; required fast jobs have a
 7-minute margin and should normally complete in 3–5 minutes including setup.
 Inspect failures/cancellations in Actions and the retained artifact logs and
@@ -175,7 +178,10 @@ trust broker or readiness dependency is introduced.
 
 The master base lacks `tests/test_post_ready_codex_guard.py` (owned by #370).
 Fast CI runs it when present and explicitly reports `SkippedByScope` otherwise;
-its requested remote qualification remains pending while absent.
+its classification is `ABSENT_BY_SUBJECT` /
+`NOT_APPLICABLE_TO_CURRENT_SUBJECT`, never PASS. After #371 integration, #370
+must reconcile/rebase on the new master; fast CI must then execute the corpus
+because it exists on that future subject.
 
 ## AgentReview v0.20.0
 
@@ -301,3 +307,35 @@ contém o marker em questão na seção `markers`.
 ### Testes de guardrail falhando
 
 Verifique `app/policies/command_guardrails.py` e `app/policies/engine.py`.
+
+## Remote full qualification and handoffs
+
+For changes to CI/test infrastructure, the path-filtered, non-required full
+workflow must finish on the successor PR subject before Ready. Its artifact
+retains P/S/N IDs, JUnit outcomes and skip reasons, counts, durations, capacity
+and the receipt status. `scripts/github_full_receipt.py` enriches that existing
+receipt without promoting its status: repository/PR/base/source HEAD, tested
+checkout or synthetic merge, source/tested trees and their equivalence, workflow
+path/SHA, run ID and attempt, plus safe sudo capability metadata. Local generic
+head/tree fields still describe the checkout; `github_subject` distinguishes
+source HEAD and tested merge. A tree difference is recorded, never hidden.
+Receipts are artifacts, never committed back to the tested HEAD. These remain
+evidence from the workflow under review, not independent provenance authority.
+
+The two local sudo-dependent N failures reproduced on clean base are
+`PREEXISTING_ENVIRONMENT_CAPABILITY_LIMITATION`; tests, skips and isolation
+code remain unchanged. Qualify N on the GitHub-hosted runner and inspect all
+remaining skips rather than suppressing a failure locally. Missing capability
+on that runner means `ENVIRONMENT_QUALIFICATION_UNAVAILABLE`, not product
+regression. Product failure leaves `CI_OPTIMIZATION_NOT_READY`.
+
+Draft #327 also changes `scripts/ci_validate.sh`; whichever PR integrates later
+must reconcile. If #371 integrates first, #327 must rebase and attach its
+canonical-ledger linter to the semantically correct --repository/--generated
+owner, without duplication. This slice imports no #327 linter.
+
+After full and fast CI pass, revalidate exact subject/checks/threads, mark Ready
+only under the specific grant, and wait for the new Ready-triggered Codex
+review. Pending review is `HELD_PENDING_CODEX`; a material finding is
+`HELD_WITH_MATERIAL_FINDINGS`; terminal clean review with unchanged gates is
+`READY_FOR_HUMAN_INTEGRATION_DECISION`, with `merge_authorized: false`.
