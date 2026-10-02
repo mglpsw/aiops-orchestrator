@@ -197,12 +197,11 @@ merge grant. Every later push stales a local receipt by default. Receipts do
 not become required checks or automatic merge authority; no v2 attestation,
 trust broker or readiness dependency is introduced.
 
-The master base lacks `tests/test_post_ready_codex_guard.py` (owned by #370).
-Fast CI runs it when present and explicitly reports `SkippedByScope` otherwise;
-its classification is `ABSENT_BY_SUBJECT` /
-`NOT_APPLICABLE_TO_CURRENT_SUBJECT`, never PASS. After #371 integration, #370
-must reconcile/rebase on the new master; fast CI must then execute the corpus
-because it exists on that future subject.
+The reconciled #370 subject contains `tests/test_post_ready_codex_guard.py`.
+The required `Validate repository` job must execute that corpus through
+`bash scripts/test.sh --serial tests/test_post_ready_codex_guard.py`.
+The absence classification observed on #371 applies only to its historical
+subject. A present corpus that is skipped leaves successor qualification held.
 
 ## AgentReview v0.20.0
 

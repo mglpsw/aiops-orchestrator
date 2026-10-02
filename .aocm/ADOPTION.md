@@ -23,6 +23,7 @@ A precedência de autoridades neste repositório é estritamente demarcada por d
    - Os contratos canônicos e owners de `mglpsw/aiops-orchestrator` e `AgentReview` governam com exclusividade a execução em produção, esquemas de produto, intake, chunking, sanitização, parsers, síntese, quality/readiness gates, publisher, Router, runners e resultados publicáveis (`docs/engineering/PROJECT_OVERLAY.md`, issue #46 como autoridade canônica de roadmap; `docs/AGENT_REVIEW_V2_ROADMAP.md` permanece arquivado como snapshot histórico de 2026-07-23).
 2. **Procedimento Local de Engenharia**:
    - O `AOCM-MPACK 0.1.0-preview.1` governa o método operacional local (planejamento, derivação de obrigações, testes causais, contramodelos, ciclo de PR e isolamento de claims). O método auxilia o processo de engenharia e não substitui a interpretação competente do domínio.
+   - A barreira Codex pós-Ready é uma extensão local do lifecycle documentada em `docs/CODEX_REVIEW_WORKFLOW.md` e exercitada por `scripts/github_codex_post_ready_guard.py`; ela governa a observação da integração e não altera o runtime nem a autoridade automática do quality gate.
 3. **Norma CAEM (Upstream)**:
    - A autoridade normativa pertence exclusivamente a `mglpsw/caem`. O pin local do AIOps (`config/caem/caem-3.0-f0.pin.json`) permanece upstream e inalterado por esta adoção.
 4. **Governança de Mudanças Estruturais e Limiares STOP/REDESIGN**:

@@ -1,4 +1,8 @@
-"""V1-C0 evidence: CM-CL2-02 flattening reproduction (read-only).
+"""Historical V1-C0 evidence: CM-CL2-02 legacy-flattening reproduction (read-only).
+
+This helper keeps the historical CM-CL2-02 identity and scope. It is not the
+new mapping/binding witness, which is named CM-C2-MAP-01 in the current C2
+countermodel pack.
 
 Feeds the exact AgentEscala contract documents, identified by git blob SHA, through
 v1's real flatteners. Inputs are obtained outside this script, e.g.

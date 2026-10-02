@@ -15,11 +15,13 @@ on:
       - 'scripts/local_validate.sh'
       - 'scripts/local_validation.py'
       - 'scripts/github_full_receipt.py'
+      - 'scripts/github_codex_post_ready_guard.py'
       - 'pytest.ini'
       - 'requirements-dev.txt'
       - 'tests/conftest.py'
       - 'tests/test_ci_validation.py'
       - 'tests/test_test_workers.py'
+      - 'tests/test_post_ready_codex_guard.py'
 permissions:
   contents: read
 env:

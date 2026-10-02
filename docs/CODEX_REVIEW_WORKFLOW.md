@@ -152,6 +152,147 @@ part of this slice's acceptance criteria.
 - the ChatGPT Workspace Agent;
 - auto-merge, auto-deploy, or automated remediation.
 
+## Engineering lifecycle barrier after Ready
+
+The GitHub shadow review remains advisory to the AgentReview quality gate and
+is not a required CI check. Separately, the repository's protected PR
+finalization procedure has a post-Ready observation barrier: a PR cannot be
+presented for a human integration decision until the Codex review associated
+with the current HEAD and the Ready cycle has reached a terminal result and
+all material findings have an explicit disposition.
+
+The local, read-only guard is
+`scripts/github_codex_post_ready_guard.py`. It consumes GitHub lifecycle,
+review, comment, thread, and check evidence; binds the observation to the
+expected repository, PR, base, HEAD, Ready event, connector identity, and
+required checks; and returns a non-positive state for missing, stale,
+ambiguous, unavailable, or finding-bearing evidence. It never performs
+Ready, merge, thread resolution, or policy changes. A positive result is
+`READY_FOR_HUMAN_INTEGRATION_DECISION` and explicitly carries
+`merge_authorized: false`.
+
+The guard is an engineering-flow control, not runtime behavior, a provider
+call, a new trust broker, or an automatic adjudicator of findings. The
+workflow remains:
+
+```text
+Draft preparation → Ready → observe the current Codex cycle
+→ consume findings → correct/requalify if needed
+→ final TOCTOU → human integration decision
+```
+
+Live use must name the required check jobs explicitly and bind them to the
+trusted GitHub Actions producer and the expected HEAD. A disposition is
+accepted only when its author is supplied as a trusted adjudicator; missing
+or ambiguous policy, incomplete pagination, malformed evidence, and a
+collection-time identity change remain held states. The summary may be from
+the Ready trigger or the documented manual `@codex review` trigger, but its
+terminal result still has to be after the latest Ready cycle.
+
+The guard's local canonical CI policy is `.github/workflows/ci.yml`, event
+`pull_request`, with required jobs `Validate repository` and `AgentReview
+release gates`. A caller may explicitly supply `--canonical-workflow-path`
+and `--required-check` for a different trusted local policy; policy is never
+read from PR comments or check names. No current run ID or PR number is pinned.
+Workflow numeric ID is observed but not pinned: repository + exact workflow
+path + event + exact PR/base/HEAD + suite/run/job membership provide this
+bounded engineering identity, without claiming base-owned workflow code or
+the independent-judge/attestation guarantees of AgentReview v2.
+
+Live collection paginates head-scoped Actions runs and refuses multiple
+plausible canonical exact-subject runs, rather than picking the first or a
+green one. It rereads the unique run, reads its current attempt's complete
+job list, and binds each required check through `check_suite_id` and the real
+job's ID/name/run/attempt/HEAD. All required jobs must belong to that same run
+and attempt; run, jobs and checks must be completed/success. `details_url`
+and workflow display name are not authority. Missing PR/base metadata,
+forks lacking a subject association, ambiguous runs, missing membership or
+inconsistent suites stay held. Actions metadata is revalidated before the
+final PR identity read. This policy does not import any v2 module or schema.
+
+`--evidence-json` is offline diagnostic input and can never establish live
+readiness, even if it contains clean checks or self-declared live flags.
+Only authenticated collection with final revalidation can yield the positive
+terminal. The connector's abbreviated commit is resolved by GitHub to a full
+SHA (never compared as a prefix). Its completion row is bound after the latest
+Ready/authorized manual trigger to either one submitted exact-head review or
+a clean connector completion with a new reaction on the PR, as described below. Collection
+includes all check-run pages and rejects malformed or incomplete members.
+
+Inline findings retain their comment ID. Body-only findings use
+`review-body:<review-id>:<sha256-of-normalized-residual-body>`. An explicitly
+trusted adjudicator may post the following entire, unquoted issue comment
+or inline reply; thread resolution alone is not a disposition:
+
+```text
+Guard-Disposition: <finding-id> FIXED|DISMISSED|SUPERSEDED
+Subject-Head: <full-current-HEAD>
+Repair-Commit: <full-repair-commit>
+Evidence: <causal repair and regression evidence or justified adjudication>
+```
+
+The repair must be an ancestor of the subject or equal to it. For `FIXED`,
+the immutable commit reviewed in the originating review must also be a strict
+ancestor of the repair, including body-only findings. GitHub comparisons use
+the full SHAs for both relations; relocated comment positions and commit/review
+publication timestamps do not establish ancestry. Pre-finding, identical,
+divergent and unverifiable repairs cannot establish `FIXED`. This post-finding
+repair condition does not apply to a justified `DISMISSED` disposition.
+An inline `FIXED` disposition
+also requires the affected file's blob to differ from its finding-time blob
+at both repair and current HEAD. Changed bytes alone never prove a repair:
+predecessor findings remain blocking without authorized disposition, even
+after a newer clean review. Unknown applicability stays held. This bounded
+byte-identity/adjudication rule is not semantic-equivalence automation.
+
+Manual-request supersession uses an explicit operator-supplied requester policy:
+`--trusted-requester <login>` for each account known to be authorized to trigger
+Codex. It is separate from `--trusted-adjudicator` and is never inferred from
+PR text, comments or an author's disposition authority. With a manual command
+and no requester policy, cycle binding remains held; with an explicit policy,
+commands from other accounts cannot supersede the current cycle. Terminal
+summary binding uses the current authenticated trigger-to-completion window,
+without an arbitrary one-minute latency cutoff.
+
+Review metadata is validated by state. A `PENDING` draft may have absent/null
+`submitted_at`; neither its body nor its inline drafts create published findings.
+Submitted reviews still require valid submission metadata. An unrelated human
+draft does not invalidate an otherwise qualified Codex cycle. A current Codex
+draft remains `HELD_PENDING_CODEX` and cannot inherit an earlier completion.
+This observation guard does not replace the repository's independent approval gates.
+
+The connector has two observed terminal formats: a submitted review plus its
+completion row, or a clean completion row plus a new `+1` reaction without a
+formal review. The second format requires the same connector login on both
+surfaces, a complete authenticated read of reactions on the expected PR object,
+one uniquely matching reaction created after the current trigger and at/after
+completion, and resolution of the row's ref to the exact full HEAD. An old or
+foreign reaction, Completed alone, or a thumbs-up alone never qualifies. No
+review ID or empty COMMENTED review is fabricated. A current draft, an active
+connector `eyes` reaction, a later required request or an ambiguous binding stays
+held. Reusing a summary comment ID does not reuse the earlier execution row.
+Both formats require all material findings to be dispositioned, canonical CI,
+complete collection and final review/comment/reaction/CI/PR revalidation.
+
+Required-check uniqueness is evaluated after the independent canonical run/suite
+selection. Proven foreign-suite homonyms remain diagnostic evidence and cannot
+replace a missing, failed or pending canonical job. Unknown suite provenance,
+duplicates within the canonical suite, ambiguous canonical runs and incorrect
+job membership/attempt/base remain non-positive; result order and green status
+never choose the authoritative domain.
+
+Only root inline review comments create findings. Replies remain collected for
+explicit dispositions. A 404 for a predecessor's path at the known current HEAD
+or ancestry-verified repair means that path is absent (including a rename),
+not that the finding disappeared: an authorized disposition is still required.
+The finding-time blob must remain available; permission/transport failures and
+malformed content remain held. Deletion bytes alone never prove a repair.
+
+The offline regression controls live in
+`tests/test_post_ready_codex_guard.py`; they include the #369 incident shape,
+stale and post-merge reviews, incomplete API evidence, unresolved findings,
+the positive observational path, and a causal mutation.
+
 ## References
 
 - AGENTS.md: https://developers.openai.com/codex/guides/agents-md
@@ -182,12 +323,10 @@ failure requires investigation even though that workflow is not required on
 each PR. A timeout is `INCOMPLETE_TIMEOUT`, not a demonstrated
 test failure. A suite excluded by scope is `SkippedByScope`, not passed.
 
-The CI optimization's master base does not contain the post-Ready guard tests
-owned by Draft PR #370. The fast workflow explicitly records this absence and
-runs `tests/test_post_ready_codex_guard.py` on any subject that contains it.
-Its current qualification is `NOT_APPLICABLE_TO_CURRENT_SUBJECT`
-(`ABSENT_BY_SUBJECT`), never PASS. After #371 integrates, #370 must
-reconcile/rebase onto that master and fast CI must execute its present corpus.
+The reconciled #370 subject contains `tests/test_post_ready_codex_guard.py`.
+Required fast CI executes this present corpus through the canonical serial
+runner. The absence classification recorded on #371 was historical evidence
+for that earlier subject and cannot qualify or exempt this successor.
 Changing a workflow and passing that changed workflow does not establish an
 independent authority or stronger provenance than GitHub actually provides.
 

@@ -133,6 +133,7 @@ def test_workflows_have_disjoint_owners_and_full_regression_remains_visible():
                       'scripts/ci_validate.sh', 'scripts/test.sh', 'scripts/test_runner.py',
                       'scripts/test_lanes.py', 'scripts/test_workers.py', 'scripts/test_census.py',
                       'scripts/local_validate.sh', 'scripts/local_validation.py', 'scripts/github_full_receipt.py',
+                      'scripts/github_codex_post_ready_guard.py', 'tests/test_post_ready_codex_guard.py',
                       'pytest.ini', 'requirements-dev.txt', 'tests/conftest.py',
                       'tests/test_ci_validation.py', 'tests/test_test_workers.py']
     assert all(any(fnmatchcase(path, pattern) for pattern in patterns) for path in infrastructure)

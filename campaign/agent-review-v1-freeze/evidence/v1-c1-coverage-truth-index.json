@@ -1,0 +1,16 @@
+{
+  "artifact_type": "HISTORICAL_C1_CONTRACT_INDEX",
+  "status": "historical_reference_only",
+  "source_commit": "d3f5946c4d0513def9f7c2018b63703a53df1cc7",
+  "source_paths": [
+    "campaign/agent-review-v1-freeze/01_CLAIM_LEDGER.json",
+    "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
+    "campaign/agent-review-v1-freeze/03_COUNTERMODEL_PACK.md"
+  ],
+  "consumer": "tests/agent_review/test_semantic_chunker_232_coverage_truth.py",
+  "contracts": {
+    "obligation_ids": ["OBL-CL1-01"],
+    "countermodel_ids": ["CM-CL1-01", "CM-CL1-02", "CM-CL1-03"]
+  },
+  "authority": "The immutable source commit is the authority for the historical C1 contract and implementation evidence. This index is not a C2 obligation and does not reopen C1."
+}
