@@ -189,6 +189,27 @@ collection-time identity change remain held states. The summary may be from
 the Ready trigger or the documented manual `@codex review` trigger, but its
 terminal result still has to be after the latest Ready cycle.
 
+The guard's local canonical CI policy is `.github/workflows/ci.yml`, event
+`pull_request`, with required jobs `Validate repository` and `AgentReview
+release gates`. A caller may explicitly supply `--canonical-workflow-path`
+and `--required-check` for a different trusted local policy; policy is never
+read from PR comments or check names. No current run ID or PR number is pinned.
+Workflow numeric ID is observed but not pinned: repository + exact workflow
+path + event + exact PR/base/HEAD + suite/run/job membership provide this
+bounded engineering identity, without claiming base-owned workflow code or
+the independent-judge/attestation guarantees of AgentReview v2.
+
+Live collection paginates head-scoped Actions runs and refuses multiple
+plausible canonical exact-subject runs, rather than picking the first or a
+green one. It rereads the unique run, reads its current attempt's complete
+job list, and binds each required check through `check_suite_id` and the real
+job's ID/name/run/attempt/HEAD. All required jobs must belong to that same run
+and attempt; run, jobs and checks must be completed/success. `details_url`
+and workflow display name are not authority. Missing PR/base metadata,
+forks lacking a subject association, ambiguous runs, missing membership or
+inconsistent suites stay held. Actions metadata is revalidated before the
+final PR identity read. This policy does not import any v2 module or schema.
+
 `--evidence-json` is offline diagnostic input and can never establish live
 readiness, even if it contains clean checks or self-declared live flags.
 Only authenticated collection with final revalidation can yield the positive

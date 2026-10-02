@@ -48,7 +48,18 @@ class FakeGitHub(guard.GitHubReadOnlyClient):
                           "updated_at": "2026-10-01T16:21:24Z"}]
         self.timeline = [{"id": 31, "event": "ready_for_review", "created_at": "2026-10-01T16:16:00Z"}]
         self.checks = [{"id": index + 1, "name": name, "status": "completed", "conclusion": "success",
-                        "head_sha": HEAD, "app": {"slug": "github-actions"}} for index, name in enumerate(CHECKS)]
+                        "head_sha": HEAD, "app": {"slug": "github-actions"},
+                        "check_suite": {"id": 800},
+                        "details_url": f"https://github.com/{REPO}/actions/runs/700/job/{index+1}"}
+                       for index, name in enumerate(CHECKS)]
+        self.run = {"id": 700, "workflow_id": 600, "path": ".github/workflows/ci.yml",
+                    "event": "pull_request", "head_sha": HEAD, "run_attempt": 1,
+                    "check_suite_id": 800, "repository": {"full_name": REPO},
+                    "status": "completed", "conclusion": "success",
+                    "pull_requests": [{"number": 370, "head": {"sha": HEAD}, "base": {"sha": BASE},
+                                       "url": f"https://api.github.com/repos/{REPO}/pulls/370"}]}
+        self.runs = [self.run]
+        self.jobs = [dict(check, run_id=700, run_attempt=1) for check in self.checks]
         self.resolved = HEAD
         self.blobs = {OLD: "a" * 40, HEAD: "b" * 40}
         self.paths = []
@@ -60,6 +71,13 @@ class FakeGitHub(guard.GitHubReadOnlyClient):
         parsed = urlsplit(path)
         route = parsed.path
         params = parse_qs(parsed.query)
+        page = int(params.get("page", ["1"])[0])
+        if route.endswith("/actions/runs"):
+            return {"total_count": len(self.runs), "workflow_runs": deepcopy(self.runs[(page-1)*100:page*100])}
+        if route.endswith("/actions/runs/700"):
+            return deepcopy(self.run)
+        if route.endswith("/actions/runs/700/attempts/1/jobs"):
+            return {"total_count": len(self.jobs), "jobs": deepcopy(self.jobs[(page-1)*100:page*100])}
         if route.endswith("/pulls/370"):
             self.pr_reads += 1
             result = deepcopy(self.pr)
@@ -106,6 +124,99 @@ def evaluate(evidence):
 
 
 class PostReadyGuardTests(unittest.TestCase):
+    def test_ci_wrong_workflow_preserves_original_counterexample(self):
+        client = FakeGitHub()
+        client.run["path"] = ".github/workflows/lookalike.yml"
+        self.assertIn(evaluate(client.collect(REPO, 370)).state,
+                      {"HELD_PENDING_REQUIRED_CI", "HELD_CODEX_UNAVAILABLE"})
+
+    def test_ci_wrong_pr(self):
+        client = FakeGitHub()
+        client.run["pull_requests"][0]["number"] = 371
+        self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_stale_base(self):
+        client = FakeGitHub()
+        client.run["pull_requests"][0]["base"]["sha"] = OLD
+        self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_wrong_job_membership(self):
+        client = FakeGitHub()
+        client.jobs[0]["id"] = 999
+        self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_suite_mismatch(self):
+        client = FakeGitHub()
+        client.checks[0]["check_suite"]["id"] = 999
+        self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_ambiguous_canonical_runs(self):
+        client = FakeGitHub()
+        client.runs.append(dict(client.run, id=701))
+        self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_real_shaped_positive_subgate(self):
+        live = FakeGitHub().collect(REPO, 370)
+        self.assertEqual(evaluate(live).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        self.assertFalse(evaluate(live).merge_authorized)
+
+    def test_ci_details_url_is_not_authority(self):
+        client = FakeGitHub()
+        for check in client.checks:
+            check["details_url"] = "https://untrusted.invalid/actions/runs/999"
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_wrong_repository_or_pr_reference_or_event_or_head(self):
+        for field in ("repository", "pr_url", "event", "head", "pr_head"):
+            client = FakeGitHub()
+            if field == "repository": client.run["repository"]["full_name"] = "wrong/repository"
+            if field == "pr_url": client.run["pull_requests"][0]["url"] = "https://api.github.com/repos/wrong/repository/pulls/370"
+            if field == "event": client.run["event"] = "push"
+            if field == "head": client.run["head_sha"] = OLD
+            if field == "pr_head": client.run["pull_requests"][0]["head"]["sha"] = OLD
+            with self.subTest(field=field):
+                self.assertNotEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+
+    def test_ci_failed_or_pending_run_cannot_be_replaced_by_green_jobs(self):
+        for status, conclusion in (("completed", "failure"), ("in_progress", None)):
+            client = FakeGitHub()
+            client.run.update(status=status, conclusion=conclusion)
+            self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_REQUIRED_CI")
+
+    def test_ci_wrong_job_attempt_run_head_or_status(self):
+        for key, value in (("run_attempt", 2), ("run_id", 701), ("head_sha", OLD),
+                           ("status", "in_progress"), ("conclusion", "failure")):
+            client = FakeGitHub()
+            client.jobs[0][key] = value
+            with self.subTest(key=key):
+                self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_REQUIRED_CI")
+
+    def test_ci_jobs_later_page_and_duplicate_names(self):
+        client = FakeGitHub()
+        client.jobs = [dict(client.jobs[0], id=100+i, name=f"unrelated-{i}") for i in range(100)] + client.jobs
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "READY_FOR_HUMAN_INTEGRATION_DECISION")
+        self.assertTrue(any("attempts/1/jobs?per_page=100&page=2" in path for path in client.paths))
+        client.jobs.append(dict(client.jobs[-1], id=999))
+        self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_PENDING_REQUIRED_CI")
+
+    def test_ci_collection_shape_completeness_and_mutable_run_drift(self):
+        for defect in ("null_run", "null_pull", "null_job", "incomplete", "drift"):
+            client = FakeGitHub()
+            if defect == "null_run": client.runs = [None]
+            if defect == "null_pull": client.run["pull_requests"] = [None]
+            if defect == "null_job": client.jobs = [None]
+            original = client._request
+            reads = []
+            def request(method, path, payload=None):
+                result = original(method, path, payload)
+                if defect == "incomplete" and "/jobs?" in path: result["total_count"] += 1
+                if defect == "drift" and path.endswith("/actions/runs/700"):
+                    reads.append(path)
+                    if len(reads) > 1: result["run_attempt"] = 2
+                return result
+            client._request = request
+            with self.subTest(defect=defect):
+                self.assertEqual(evaluate(client.collect(REPO, 370)).state, "HELD_CODEX_UNAVAILABLE")
     def test_live_path_positive_and_no_merge_authority(self):
         result = evaluate(FakeGitHub().collect(REPO, 370))
         self.assertEqual(result.state, "READY_FOR_HUMAN_INTEGRATION_DECISION")

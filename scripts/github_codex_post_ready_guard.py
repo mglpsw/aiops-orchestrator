@@ -31,6 +31,8 @@ CODEX_LOGINS = {
 TERMINAL_REVIEW_STATES = {"APPROVED", "COMMENTED"}
 ADJUDICATED = {"FIXED", "DISMISSED", "SUPERSEDED"}
 EVIDENCE_COLLECTIONS = ("ready_events", "reviews", "summaries", "findings", "checks")
+CANONICAL_WORKFLOW_PATH = ".github/workflows/ci.yml"
+REQUIRED_JOBS = ("Validate repository", "AgentReview release gates")
 CODEX_BOILERPLATE = """<details> <summary>ℹ️ About Codex in GitHub</summary>
 <br/>
 [Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you
@@ -65,6 +67,34 @@ def _text(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("evidence text is malformed")
     return value
+
+
+def _positive_id(value: Any) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("GitHub identity/attempt is malformed")
+    return value
+
+
+def _canonical_run_matches(run: dict[str, Any], *, repo: str, pr: int, head: str,
+                           base: str, workflow_path: str) -> bool:
+    for key in ("id", "workflow_id", "run_attempt", "check_suite_id"):
+        _positive_id(run.get(key))
+    for key in ("path", "event", "head_sha", "status"):
+        _text(run.get(key))
+    _text(_object(run.get("repository")).get("full_name"))
+    pulls = _objects(run.get("pull_requests"))
+    for pull in pulls:
+        _positive_id(pull.get("number"))
+        _text(pull.get("url"))
+        _text(_object(pull.get("head")).get("sha"))
+        _text(_object(pull.get("base")).get("sha"))
+    return (
+        run["repository"]["full_name"] == repo and run["path"] == workflow_path
+        and run["event"] == "pull_request" and run["head_sha"] == head
+        and len(pulls) == 1 and pulls[0]["number"] == pr
+        and pulls[0]["url"].endswith(f"/repos/{repo}/pulls/{pr}")
+        and pulls[0]["head"]["sha"] == head and pulls[0]["base"]["sha"] == base
+    )
 
 
 @dataclass(frozen=True)
@@ -153,10 +183,15 @@ def _required_checks_pass(
     *,
     expected_head: str,
     trusted_check_producers: tuple[str, ...],
+    expected_repo: str,
+    expected_pr: int,
+    expected_base: str,
+    canonical_workflow_path: str,
 ) -> bool | None:
     checks = evidence.get("checks")
     if not isinstance(checks, list) or not required_checks or not trusted_check_producers:
         return None
+    bound_runs = set()
     for name in required_checks:
         matches = [item for item in checks if isinstance(item, dict) and item.get("name") == name]
         if len(matches) != 1:
@@ -172,6 +207,23 @@ def _required_checks_pass(
             or not run_id
         ):
             return False
+        binding = item.get("ci_binding")
+        if not isinstance(binding, dict):
+            return False
+        run, job = _object(binding.get("run")), _object(binding.get("job"))
+        if not _canonical_run_matches(run, repo=expected_repo, pr=expected_pr, head=expected_head,
+                                      base=expected_base, workflow_path=canonical_workflow_path):
+            return False
+        if (run["status"] != "completed" or run.get("conclusion") != "success"
+            or item.get("check_suite_id") != run["check_suite_id"]
+            or job.get("id") != run_id or job.get("name") != name
+            or job.get("run_id") != run["id"] or job.get("run_attempt") != run["run_attempt"]
+            or job.get("head_sha") != expected_head or job.get("status") != "completed"
+            or job.get("conclusion") != "success"):
+            return False
+        bound_runs.add((run["id"], run["run_attempt"]))
+    if len(bound_runs) != 1:
+        return False
     return True
 
 
@@ -221,6 +273,7 @@ def evaluate_evidence(
     required_checks: tuple[str, ...] = (),
     trusted_adjudicators: tuple[str, ...] = (),
     trusted_check_producers: tuple[str, ...] = ("github-actions",),
+    canonical_workflow_path: str = CANONICAL_WORKFLOW_PATH,
 ) -> GuardResult:
     """Evaluate normalized evidence without trusting self-declared clean flags."""
 
@@ -230,7 +283,8 @@ def evaluate_evidence(
         return _evaluate_live(evidence.data, expected_repo=expected_repo, expected_pr=expected_pr,
                               expected_head=expected_head, expected_base=expected_base,
                               required_checks=required_checks, trusted_adjudicators=trusted_adjudicators,
-                              trusted_check_producers=trusted_check_producers)
+                              trusted_check_producers=trusted_check_producers,
+                              canonical_workflow_path=canonical_workflow_path)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         return _held("HELD_CODEX_UNAVAILABLE", f"live evidence shape is malformed ({type(exc).__name__})")
 
@@ -291,6 +345,8 @@ def _evaluate_live(evidence: dict[str, Any], **policy: Any) -> GuardResult:
         required_checks,
         expected_head=expected_head,
         trusted_check_producers=trusted_check_producers,
+        expected_repo=expected_repo, expected_pr=expected_pr, expected_base=expected_base,
+        canonical_workflow_path=policy.get("canonical_workflow_path", CANONICAL_WORKFLOW_PATH),
     )
     if checks is None:
         return _held("HELD_PENDING_REQUIRED_CI", "required-check evidence is absent", evidence)
@@ -401,32 +457,67 @@ class GitHubReadOnlyClient:
                 return result
         raise RuntimeError("GitHub pagination exceeded the bounded page budget")
 
-    def _check_pages(self, path: str) -> dict[str, Any]:
+    def _envelope_pages(self, path: str, key: str) -> dict[str, Any]:
         result: list[dict[str, Any]] = []
         total_count: int | None = None
         for page in range(1, 21):
             query = urlencode({"per_page": 100, "page": page})
-            payload = self._request("GET", f"{path}?{query}")
-            if not isinstance(payload, dict) or not isinstance(payload.get("check_runs"), list):
-                raise RuntimeError("GitHub check-run response was malformed")
-            if any(not isinstance(item, dict) for item in payload["check_runs"]):
-                raise RuntimeError("GitHub check-run response contained a malformed member")
-            if any(type(item.get("id")) is not int for item in payload["check_runs"]):
-                raise RuntimeError("GitHub check-run identity is malformed")
+            payload = self._request("GET", f"{path}{'&' if '?' in path else '?'}{query}")
+            if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+                raise RuntimeError(f"GitHub {key} response was malformed")
+            if any(not isinstance(item, dict) for item in payload[key]):
+                raise RuntimeError(f"GitHub {key} response contained a malformed member")
+            if any(type(item.get("id")) is not int or item["id"] <= 0 for item in payload[key]):
+                raise RuntimeError(f"GitHub {key} identity is malformed")
             if type(payload.get("total_count")) is not int or payload["total_count"] < 0:
-                raise RuntimeError("GitHub check-run response lacked a completeness count")
+                raise RuntimeError(f"GitHub {key} response lacked a completeness count")
             if total_count is None:
                 total_count = payload["total_count"]
             elif payload["total_count"] != total_count:
-                raise RuntimeError("GitHub check-run total changed during collection")
-            result.extend(payload["check_runs"])
-            if len(payload["check_runs"]) < 100:
+                raise RuntimeError(f"GitHub {key} total changed during collection")
+            result.extend(payload[key])
+            if len(payload[key]) < 100:
                 if len(result) != total_count:
-                    raise RuntimeError("GitHub check-run pagination is incomplete")
+                    raise RuntimeError(f"GitHub {key} pagination is incomplete")
                 if len({item["id"] for item in result}) != len(result):
-                    raise RuntimeError("GitHub check-run pages contain duplicate identities")
-                return {"total_count": total_count, "check_runs": result}
-        raise RuntimeError("GitHub check-run pagination exceeded the bounded page budget")
+                    raise RuntimeError(f"GitHub {key} pages contain duplicate identities")
+                return {"total_count": total_count, key: result}
+        raise RuntimeError(f"GitHub {key} pagination exceeded the bounded page budget")
+
+    def _check_pages(self, path: str) -> dict[str, Any]:
+        return self._envelope_pages(path, "check_runs")
+
+    def _canonical_ci(self, prefix: str, pr: dict[str, Any], workflow_path: str) -> dict[str, Any]:
+        # The suite relation, not details_url or job name, selects the Actions
+        # run. All plausible exact-subject runs are observed before selection.
+        head, base = _text(pr["head"]["sha"]), _text(pr["base"]["sha"])
+        runs = self._envelope_pages(
+            f"{prefix}/actions/runs?{urlencode({'head_sha': head, 'event': 'pull_request'})}",
+            "workflow_runs",
+        )["workflow_runs"]
+        candidates = [run for run in runs if _canonical_run_matches(
+            run, repo=pr["base"]["repo"]["full_name"], pr=pr["number"], head=head,
+            base=base, workflow_path=workflow_path,
+        )]
+        if len(candidates) != 1:
+            return {"runs": runs, "run": None, "jobs": []}
+        selected = candidates[0]
+        run = _object(self._request("GET", f"{prefix}/actions/runs/{selected['id']}"))
+        fields = ("id", "workflow_id", "path", "event", "head_sha", "run_attempt",
+                  "check_suite_id", "repository", "pull_requests", "status", "conclusion")
+        if any(run.get(key) != selected.get(key) for key in fields):
+            raise RuntimeError("canonical Actions run changed during collection")
+        jobs = self._envelope_pages(
+            f"{prefix}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs",
+        )["jobs"]
+        for job in jobs:
+            for key in ("id", "run_id", "run_attempt"):
+                _positive_id(job.get(key))
+            for key in ("name", "head_sha", "status"):
+                _text(job.get(key))
+            if job.get("conclusion") is not None:
+                _text(job["conclusion"])
+        return {"runs": runs, "run": run, "jobs": jobs}
 
     def _content_sha(self, prefix: str, path: str, ref: str) -> str:
         payload = self._request(
@@ -498,16 +589,20 @@ class GitHubReadOnlyClient:
         pr_number: int,
         *,
         trusted_adjudicators: tuple[str, ...] = (),
+        required_checks: tuple[str, ...] = REQUIRED_JOBS,
+        canonical_workflow_path: str = CANONICAL_WORKFLOW_PATH,
     ) -> _LiveEvidence:
         try:
             if not self.token:
                 raise ValueError("authenticated live collection requires a token")
-            data = self._collect(repo, pr_number, trusted_adjudicators=trusted_adjudicators)
+            data = self._collect(repo, pr_number, trusted_adjudicators=trusted_adjudicators,
+                                 required_checks=required_checks, canonical_workflow_path=canonical_workflow_path)
             return _LiveEvidence(data)
         except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             return _LiveEvidence({"collection_errors": [str(exc)], "revalidated": False})
 
-    def _collect(self, repo: str, pr_number: int, *, trusted_adjudicators: tuple[str, ...]) -> dict[str, Any]:
+    def _collect(self, repo: str, pr_number: int, *, trusted_adjudicators: tuple[str, ...],
+                 required_checks: tuple[str, ...], canonical_workflow_path: str) -> dict[str, Any]:
         owner, name = repo.split("/", 1)
         prefix = f"/repos/{owner}/{name}"
         errors: list[str] = []
@@ -522,6 +617,7 @@ class GitHubReadOnlyClient:
             # the heterogeneous timeline they do not contain ID-less commits.
             timeline = self._pages(f"{prefix}/issues/{pr_number}/events")
             checks = self._check_pages(f"{prefix}/commits/{pr['head']['sha']}/check-runs")
+            canonical_ci = self._canonical_ci(prefix, pr, canonical_workflow_path)
         except (KeyError, ValueError, RuntimeError) as exc:
             return {"collection_errors": [str(exc)]}
 
@@ -643,6 +739,8 @@ class GitHubReadOnlyClient:
             errors.append("cycle/disposition evidence changed during collection")
         if checks != self._check_pages(f"{prefix}/commits/{pr['head']['sha']}/check-runs"):
             errors.append("CI evidence changed during collection")
+        if canonical_ci != self._canonical_ci(prefix, pr, canonical_workflow_path):
+            errors.append("canonical Actions provenance changed during collection")
         pr_after = _object(self._request("GET", f"{prefix}/pulls/{pr_number}"))
         _object(pr_after.get("head"))
         _object(_object(pr_after.get("base")).get("repo"))
@@ -684,12 +782,28 @@ class GitHubReadOnlyClient:
                     "head_sha": item.get("head_sha"),
                     "app_slug": ((item.get("app") or {}).get("slug")),
                     "run_id": item.get("id"),
+                    "check_suite_id": _positive_id(_object(item.get("check_suite")).get("id"))
+                        if item["name"] in required_checks else None,
+                    "ci_binding": self._job_binding(item, canonical_ci)
+                        if item["name"] in required_checks else None,
                 }
                 for item in (checks.get("check_runs", []) if isinstance(checks, dict) else [])
             ],
             "collection_errors": errors,
             "revalidated": not errors,
+            "canonical_ci": canonical_ci,
         }
+
+    @staticmethod
+    def _job_binding(check: dict[str, Any], canonical_ci: dict[str, Any]) -> dict[str, Any] | None:
+        run = canonical_ci["run"]
+        if run is None or _object(check.get("check_suite")).get("id") != run["check_suite_id"]:
+            return None
+        # Match both identity and name; duplicate names/IDs are never last-wins.
+        matches = [job for job in canonical_ci["jobs"] if job["id"] == check["id"] or job["name"] == check["name"]]
+        if len(matches) != 1 or matches[0]["id"] != check["id"] or matches[0]["name"] != check["name"]:
+            return None
+        return {"run": run, "job": matches[0]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -701,6 +815,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--required-check", action="append", default=[])
     parser.add_argument("--trusted-adjudicator", action="append", default=[])
     parser.add_argument("--trusted-check-producer", action="append", default=["github-actions"])
+    parser.add_argument("--canonical-workflow-path", default=CANONICAL_WORKFLOW_PATH)
     parser.add_argument("--evidence-json", type=Path)
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     args = parser.parse_args(argv)
@@ -727,6 +842,8 @@ def main(argv: list[str] | None = None) -> int:
             args.repo,
             args.pr,
             trusted_adjudicators=tuple(args.trusted_adjudicator),
+            required_checks=tuple(args.required_check),
+            canonical_workflow_path=args.canonical_workflow_path,
         )
 
     result = evaluate_evidence(
@@ -738,6 +855,7 @@ def main(argv: list[str] | None = None) -> int:
         required_checks=tuple(args.required_check),
         trusted_adjudicators=tuple(args.trusted_adjudicator),
         trusted_check_producers=tuple(args.trusted_check_producer),
+        canonical_workflow_path=args.canonical_workflow_path,
     )
     print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
     return 0 if result.state == "READY_FOR_HUMAN_INTEGRATION_DECISION" else 2
