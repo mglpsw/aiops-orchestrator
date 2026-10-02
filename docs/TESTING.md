@@ -5,7 +5,8 @@
 | Script | Onde roda | O que valida |
 |---|---|---|
 | `scripts/test.sh` | Em qualquer lugar | Testes Python unitários (offline) |
-| `scripts/ci_validate.sh` | GitHub Actions / agents | Repo: scripts, catalog, compose syntax, testes |
+| `scripts/ci_validate.sh` | GitHub Actions / agents | Explicit static/generated/pytest modes |
+| `scripts/local_validate.sh` | Local / periodic GitHub | Full offline P + S + N, static/generated, receipt |
 | `scripts/validate.sh` | Dentro do CT 102 | Runtime: container, project name, health, endpoints |
 
 ---
@@ -16,7 +17,7 @@
 pip install -r requirements-dev.txt
 ```
 
-`requirements-dev.txt` inclui `requirements.txt` + `pytest`.
+`requirements-dev.txt` inclui `requirements.txt` + `pytest` + `pytest-xdist` (development only).
 
 Para desenvolvimento local fora do CT:
 
@@ -56,30 +57,151 @@ bash scripts/test.sh --co   # só collect, sem executar
 
 ---
 
-## CI (GitHub Actions)
+## Fast CI and full offline regression
 
-O workflow instala `requirements-dev.txt` e executa:
+Required `aiops-ci` has disjoint primary owners:
 
-```bash
-bash scripts/test.sh
-```
+| Job | Scope |
+|---|---|
+| Validate repository | shell syntax, catalog/guardrails, compose config, git whitespace/structure, focused runner and validator tests |
+| AgentReview release gates | generated schemas/evals, CAEM pin, RI/target-pack view, deterministic benchmark checks and safety |
 
-Para reproduzir o CI localmente exatamente:
-
-```bash
-pip install -r requirements-dev.txt
-bash scripts/test.sh
-```
-
----
-
-## Validação de repositório (CI-safe)
-
-Roda bash syntax check, catálogo de actions, compose config e testes:
+Full ordinary pytest is not repeated in these jobs. Fast CI is not full
+regression, and local validation is not GitHub required CI. The new workflow
+changes its own test surface; a green run does not confer independent trust.
 
 ```bash
-bash scripts/ci_validate.sh
+bash scripts/ci_validate.sh --repository       # first job, no pytest
+bash scripts/ci_validate.sh --generated        # second job, no pytest
+bash scripts/ci_validate.sh --static           # both static classes, once
+bash scripts/ci_validate.sh --unit             # ordinary P + S
+bash scripts/ci_validate.sh --requires-network # serial N
+bash scripts/ci_validate.sh --all              # full offline (default)
 ```
+
+Static validation requires Docker Compose config capability but never starts
+containers or needs the daemon. Compose files are rendered in a temporary
+copy with example environment values, preserving the checkout's `.env`.
+The dangerous-pattern inventory is informational, as before; actual blocking
+checks are the catalog validator and focused command guardrail tests.
+
+`full-regression.yml` runs manually or weekly on master, and on pull requests
+that change the explicit CI/test-infrastructure path list. Ordinary product/test
+changes do not match that list. Full regression remains non-required; all
+offline lanes run once through the canonical full runner. No repository
+required-check settings are changed. Its
+40-minute timeout accommodates regression work; required fast jobs have a
+7-minute margin and should normally complete in 3–5 minutes including setup.
+Inspect failures/cancellations in Actions and the retained artifact logs and
+receipt; failure must trigger investigation. No issue-writing automation is
+introduced. GitHub's job-timeout cancellation is incomplete evidence, not a
+demonstrated test failure. A cancelled job may not finish uploading artifacts.
+
+## Host capacity and explicit pytest lanes
+
+`pytest-xdist` is a development dependency only. `scripts/test.sh` installs
+nothing; it falls back explicitly to serial when xdist is absent.
+
+```bash
+python3 scripts/test_workers.py --workers
+python3 scripts/test_workers.py --json
+python3 scripts/test_workers.py --doctor
+bash scripts/test.sh                         # parallel P, then serial S
+bash scripts/test.sh --serial                # all ordinary tests serially
+AIOPS_TEST_WORKERS=8 bash scripts/test.sh     # explicit operator override
+bash scripts/test.sh --lane network --serial # N, no external runtime lanes
+```
+
+The stdlib selector observes visible CPUs, process scheduler affinity,
+cgroup v2 CPU quota (v1 fallback), effective cpuset, host MemAvailable,
+and cgroup memory maximum/current. It
+checks conventional membership paths and ancestor limits. CPU capacity is the
+minimum of visible CPU, floored quota (minimum one), cpuset count and known
+`os.sched_getaffinity(0)` count. Missing/unsupported affinity APIs or empty/
+malformed affinity observations are unknown, never zero workers; `--doctor`
+exposes `affinity_cpu`. Memory
+capacity uses the smaller of host availability and cgroup spare RAM. Unknown
+memory is conservatively one worker. Automatic workers are the minimum of CPU,
+memory capacity and `AIOPS_TEST_AUTO_MAX` (default 4). Reserve 2 GiB for the host
+and controller; budget 1 GiB per Python worker because fixtures/subprocesses
+are materially heavier than isolated pure functions. These are conservative
+starting budgets, not resource enforcement or a performance guarantee.
+
+`AIOPS_TEST_WORKERS=N` explicitly overrides automatic bounds; operators own its
+capacity risk. Invalid or empty overrides fail. The hosted full regression
+caps automatic workers at 2. `--doctor` only emits operational capacity fields,
+never environment variables, credentials, provider configuration or payloads.
+Nonstandard cgroup mount layouts may be unavailable; null fields expose that
+limitation. Worker selection does not install software or change host limits.
+
+| Lane | Classification | Execution |
+|---|---|---|
+| P | ordinary minus `serial_required` | xdist `-n N --dist=loadfile`, or explicit fallback |
+| S | host namespace/carrier and parent-child process observation exceptions | serial |
+| N | `requires_network`, excluding external runtime markers | serial |
+| R | integration/runtime/docker/prometheus | outside offline validation |
+
+`tests/conftest.py` assigns S using the explicit file list in
+`scripts/test_lanes.py`. N includes real Git, process supervision, kill-group
+and isolation tests, so it stays serial pending separate qualification. Per
+process cwd/environment/monkeypatch state and private `tmp_path` fixtures alone
+do not require S. P, S, N run sequentially; there is one worker budget, with no
+concurrent suites each consuming that whole budget. New shared resources must
+be characterized before moving their tests into P. Collection-only default
+ordinary includes both P and S; zero selected tests report `SkippedByScope`.
+Marker/worker overrides through pytest flags or PYTEST_ADDOPTS are rejected;
+use the runner's explicit lanes and worker variables instead.
+
+The existing `AIOPS_INTEGRATION=1` opt-in remains a serial legacy invocation;
+external services/environment authority are the operator's responsibility.
+It is never invoked by these workflows or offline full validation.
+
+## Local full validation and receipts
+
+```bash
+bash scripts/local_validate.sh
+bash scripts/local_validate.sh --receipt /tmp/aiops-receipt.json
+```
+
+This runs A: static/generated, B: P, C: S, D: N. Reports/logs and the default
+receipt live in a temporary directory (RUNNER_TEMP on GitHub), never committed
+automatically. The receipt binds repository, merge-base with origin/master,
+HEAD/tree, dirty state/diff digest, Python, selected workers/capacity, exact
+commands, start/end, lane exit statuses, counts and collection digests.
+A dirty worktree is `NOT_QUALIFIED_DIRTY_WORKTREE`; movement during execution is
+`SUBJECT_MOVED`; a per-lane timeout is `INCOMPLETE_TIMEOUT`. Missing/interrupted
+reports do not manufacture zero-failure test counts. `--lane-timeout` defaults
+to 1,800 seconds. Filters via PYTEST_ADDOPTS and integration opt-in are rejected
+by canonical full validation to avoid narrowed coverage being called full.
+
+Collection reports are bounded to 16 MiB and distinguish `valid`, `missing`
+and `unreadable`. Invalid JSON/UTF-8/shape/members or read failures leave
+count/digest unknown, not zero. A timed-out lane retains `INCOMPLETE_TIMEOUT`
+even with truncated collection data; a successful process with unreadable
+evidence is `INCOMPLETE_TEST_REPORT`. Each returned lane atomically replaces
+the current receipt through a sibling temporary file; an earlier `IN_PROGRESS`
+receipt cannot survive an ordinary lane timeout merely because JSON is partial.
+
+Automatic full PR qualification follows Class B in `.github/AGENTS.md`:
+GitHub-hosted ephemeral, read-only token, no persisted checkout credentials,
+no application/environment secrets, self-hosted resources, privileged socket
+mounts or publication/deploy/provider steps. Its artifacts remain untrusted
+evidence. Class A privileged/secret-bearing workflows still require specific
+trust before executing PR-controlled content. The workflow-specific parsed
+conformance test and privilege mutants freeze this structure; they do not
+verify arbitrary PR code or create merge authority.
+
+Before Ready: focused tests; exact-HEAD full validation when risk requires;
+required fast CI; Ready; Ready-triggered Codex; terminal review; TOCTOU; human
+merge grant. Every later push stales a local receipt by default. Receipts do
+not become required checks or automatic merge authority; no v2 attestation,
+trust broker or readiness dependency is introduced.
+
+The reconciled #370 subject contains `tests/test_post_ready_codex_guard.py`.
+The required `Validate repository` job must execute that corpus through
+`bash scripts/test.sh --serial tests/test_post_ready_codex_guard.py`.
+The absence classification observed on #371 applies only to its historical
+subject. A present corpus that is skipped leaves successor qualification held.
 
 ## AgentReview v0.20.0
 
@@ -160,7 +282,8 @@ Registrados em `pytest.ini`:
 | `requires_runtime` | Requer runtime em produção (CT 102) |
 | `requires_docker` | Requer Docker daemon acessível |
 | `requires_prometheus` | Requer Prometheus em `PROMETHEUS_URL` |
-| `requires_network` | Requer acesso à rede externa |
+| `requires_network` | Real Git/subprocess tests by repository convention; kept serial |
+| `serial_required` | Host/process observation exception |
 
 Uso:
 
@@ -204,3 +327,35 @@ contém o marker em questão na seção `markers`.
 ### Testes de guardrail falhando
 
 Verifique `app/policies/command_guardrails.py` e `app/policies/engine.py`.
+
+## Remote full qualification and handoffs
+
+For changes to CI/test infrastructure, the path-filtered, non-required full
+workflow must finish on the successor PR subject before Ready. Its artifact
+retains P/S/N IDs, JUnit outcomes and skip reasons, counts, durations, capacity
+and the receipt status. `scripts/github_full_receipt.py` enriches that existing
+receipt without promoting its status: repository/PR/base/source HEAD, tested
+checkout or synthetic merge, source/tested trees and their equivalence, workflow
+path/SHA, run ID and attempt, plus safe sudo capability metadata. Local generic
+head/tree fields still describe the checkout; `github_subject` distinguishes
+source HEAD and tested merge. A tree difference is recorded, never hidden.
+Receipts are artifacts, never committed back to the tested HEAD. These remain
+evidence from the workflow under review, not independent provenance authority.
+
+The two local sudo-dependent N failures reproduced on clean base are
+`PREEXISTING_ENVIRONMENT_CAPABILITY_LIMITATION`; tests, skips and isolation
+code remain unchanged. Qualify N on the GitHub-hosted runner and inspect all
+remaining skips rather than suppressing a failure locally. Missing capability
+on that runner means `ENVIRONMENT_QUALIFICATION_UNAVAILABLE`, not product
+regression. Product failure leaves `CI_OPTIMIZATION_NOT_READY`.
+
+Draft #327 also changes `scripts/ci_validate.sh`; whichever PR integrates later
+must reconcile. If #371 integrates first, #327 must rebase and attach its
+canonical-ledger linter to the semantically correct --repository/--generated
+owner, without duplication. This slice imports no #327 linter.
+
+After full and fast CI pass, revalidate exact subject/checks/threads, mark Ready
+only under the specific grant, and wait for the new Ready-triggered Codex
+review. Pending review is `HELD_PENDING_CODEX`; a material finding is
+`HELD_WITH_MATERIAL_FINDINGS`; terminal clean review with unchanged gates is
+`READY_FOR_HUMAN_INTEGRATION_DECISION`, with `merge_authorized: false`.
