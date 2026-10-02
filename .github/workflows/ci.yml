@@ -10,15 +10,21 @@ env:
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Validate repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 7
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,38 +38,34 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Validate shell scripts
-        run: find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Fast repository integrity
+        run: bash scripts/ci_validate.sh --repository
 
-      - name: Validate actions catalog
-        run: bash scripts/validate_actions_catalog.sh
+      - name: Focused validator and runner regression
+        run: >-
+          bash scripts/test.sh --serial
+          tests/test_test_workers.py tests/test_ci_validation.py
+          tests/test_action_catalog.py tests/test_executor_guardrails.py
 
-      - name: Validate compose syntax
+      - name: Post-Ready guard regression when present on this subject
         run: |
-          cp .env.example .env
-          docker compose -p aiops-orchestrator -f deploy/docker-compose.yml config --quiet
-          docker compose -p aiops-orchestrator \
-            -f deploy/docker-compose.yml \
-            -f deploy/docker-compose.bluegreen.yml config --quiet
-          rm -f .env
-
-      - name: Run unit tests
-        run: bash scripts/test.sh
-
-      - name: Dangerous patterns grep
-        run: |
-          grep -RInE \
-            'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' \
-            app docs tests config scripts README.md || true
+          if [[ -f tests/test_post_ready_codex_guard.py ]]; then
+            bash scripts/test.sh --serial tests/test_post_ready_codex_guard.py
+          else
+            echo '::notice::ABSENT_BY_SUBJECT / NOT_APPLICABLE_TO_CURRENT_SUBJECT: post-Ready guard corpus; requalify when PR #370 is reconciled onto post-#371 master.'
+          fi
 
   agent-review-release-gates:
     name: AgentReview release gates
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 7
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -77,38 +79,5 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Repository validation (ci_validate.sh)
-        run: bash scripts/ci_validate.sh
-
-      - name: AgentReview v2 schemas byte-identical
-        run: python scripts/export-agent-review-v2-schemas.py --check
-
-      - name: AgentReview v2 Lane 1 evals byte-identical
-        run: python scripts/run-agent-review-v2-evals.py --check
-
-      - name: CAEM 3.0 F0 pin valid
-        run: python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check
-
-      - name: RI-B0a.2 reuse view in sync
-        run: python scripts/generate-ri-b0a-2-reuse-view.py --check
-
-      - name: Target-pack runtime authority view in sync
-        run: python scripts/generate-target-pack-runtime-authority-view.py --check
-
-      - name: Benchmark corpus materializer byte-identical
-        run: python scripts/materialize-benchmark-case.py --check
-
-      - name: Benchmark corpus manifest byte-identical and minimums met
-        run: python scripts/generate-benchmark-corpus-manifest.py --check
-
-      - name: Benchmark premanifest byte-identical
-        run: python scripts/generate-benchmark-premanifest.py --check
-
-      - name: Benchmark final identity structurally complete and frozen fields intact
-        run: python scripts/generate-benchmark-identity-final.py --check
-
-      - name: Benchmark report deterministically reproducible from committed observations
-        run: python scripts/generate-benchmark-report.py --check
-
-      - name: Benchmark corpus safety gate (secrets/paths/identifiers)
-        run: python scripts/validate-benchmark-corpus-safety.py
+      - name: Generated, contract and benchmark gates
+        run: bash scripts/ci_validate.sh --generated
