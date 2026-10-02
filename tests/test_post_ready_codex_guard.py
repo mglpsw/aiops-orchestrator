@@ -422,3 +422,115 @@ class PostReadyGuardTests(unittest.TestCase):
         client.comments.append(disposition("61", subject=OLD))
         self.assertEqual(evaluate(client.collect(REPO, 370, trusted_adjudicators=("mglpsw",))).state,
                          "HELD_WITH_MATERIAL_FINDINGS")
+
+
+def _content_error(client, *, ref=HEAD, status=404):
+    """Exercise production HTTP classification through the synthetic transport."""
+    from urllib.error import HTTPError
+    request = client._request
+
+    def missing(method, path, payload=None):
+        if '/contents/' in path and parse_qs(urlsplit(path).query)['ref'][0] == ref:
+            with patch.object(guard, 'urlopen', side_effect=HTTPError(
+                    'https://api.github.com' + path, status, 'content unavailable', {}, None)):
+                return guard.GitHubReadOnlyClient._request(client, method, path, payload)
+        return request(method, path, payload)
+
+    client._request = missing
+    return client
+
+
+def test_deleted_or_renamed_predecessor_path_allows_authorized_disposition():
+    for state in ('FIXED', 'DISMISSED', 'SUPERSEDED'):
+        client = FakeGitHub()
+        client.predecessor()
+        client.comments.append(disposition('61', state=state))
+        live = _content_error(client).collect(REPO, 370, trusted_adjudicators=('mglpsw',))
+        assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+        finding = live.data['findings'][0]
+        assert finding['affected_blob_current'] is None
+        assert finding['applicability'] == 'changed_requires_disposition'
+        assert finding['disposition_verified'] is True
+
+
+def test_missing_current_path_remains_material_without_disposition():
+    client = FakeGitHub()
+    client.predecessor()
+    assert evaluate(_content_error(client).collect(REPO, 370)).state == 'HELD_WITH_MATERIAL_FINDINGS'
+
+
+def test_path_auth_failure_or_missing_finding_time_blob_is_unavailable():
+    for ref, status in ((HEAD, 403), (OLD, 404)):
+        client = FakeGitHub()
+        client.predecessor()
+        client.comments.append(disposition('61', state='DISMISSED'))
+        live = _content_error(client, ref=ref, status=status).collect(REPO, 370, trusted_adjudicators=('mglpsw',))
+        assert evaluate(live).state == 'HELD_CODEX_UNAVAILABLE'
+
+
+def test_bot_reply_is_not_a_finding_and_replies_still_carry_dispositions():
+    client = FakeGitHub()
+    client.predecessor()
+    client.inline.append({'id': 62, 'user': BOT, 'body': 'Acknowledged, thanks',
+                          'path': 'scripts/example.py', 'pull_request_review_id': 41,
+                          'commit_id': HEAD, 'in_reply_to_id': 61})
+    live = client.collect(REPO, 370, trusted_adjudicators=('mglpsw',))
+    assert [f['id'] for f in live.data['findings']] == [61]
+    assert evaluate(live).state == 'HELD_WITH_MATERIAL_FINDINGS'
+    reply = disposition('61')
+    reply['in_reply_to_id'] = 61
+    client.inline.append(reply)
+    assert evaluate(client.collect(REPO, 370, trusted_adjudicators=('mglpsw',))).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    client.inline.append({'id': 63, 'user': BOT, 'body': 'A new root finding',
+                          'path': 'scripts/example.py', 'pull_request_review_id': 41,
+                          'commit_id': HEAD})
+    held = evaluate(client.collect(REPO, 370, trusted_adjudicators=('mglpsw',)))
+    assert held.state == 'HELD_WITH_MATERIAL_FINDINGS'
+    assert [f['id'] for f in held.evidence['open_findings']] == [63]
+
+
+def test_untrusted_manual_command_cannot_supersede_with_explicit_requester_policy():
+    client = FakeGitHub()
+    client.comments.append({'id': 52, 'user': {'login': 'untrusted-participant'},
+                            'body': '@codex review', 'created_at': '2026-10-01T16:25:00Z',
+                            'updated_at': '2026-10-01T16:25:00Z'})
+    assert evaluate(client.collect(REPO, 370, trusted_requesters=('mglpsw',))).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    # Unknown requester policy is held, rather than borrowing adjudicator authority.
+    assert evaluate(client.collect(REPO, 370, trusted_adjudicators=('mglpsw',))).state == 'HELD_PENDING_CODEX'
+
+
+def test_authorized_manual_request_supersedes_and_requires_its_own_terminal():
+    client = FakeGitHub()
+    client.comments.append({'id': 52, 'user': {'login': 'mglpsw'}, 'body': '@codex review',
+                            'created_at': '2026-10-01T16:25:00Z', 'updated_at': '2026-10-01T16:25:00Z'})
+    assert evaluate(client.collect(REPO, 370, trusted_requesters=('mglpsw',))).state == 'HELD_PENDING_CODEX'
+    client.comments[0]['body'] = summary(completed='2026-10-01T16:26:04Z', trigger='Manual request')
+    client.comments[0]['updated_at'] = '2026-10-01T16:26:05Z'
+    client.reviews[0]['submitted_at'] = '2026-10-01T16:26:01Z'
+    assert evaluate(client.collect(REPO, 370, trusted_requesters=('mglpsw',))).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_requester_authority_does_not_authorize_finding_disposition():
+    client = FakeGitHub()
+    client.predecessor()
+    client.comments[0]['body'] = summary(trigger='Manual request')
+    client.comments.extend([
+        {'id': 52, 'user': {'login': 'operator'}, 'body': '@codex review',
+         'created_at': '2026-10-01T16:17:00Z', 'updated_at': '2026-10-01T16:17:00Z'},
+        disposition('61', author='operator')])
+    live = client.collect(REPO, 370, trusted_requesters=('operator',), trusted_adjudicators=('mglpsw',))
+    assert evaluate(live).state == 'HELD_WITH_MATERIAL_FINDINGS'
+    client.comments.append(dict(disposition('61'), id=72))
+    live = client.collect(REPO, 370, trusted_requesters=('operator',), trusted_adjudicators=('mglpsw',))
+    assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_delayed_terminal_summary_requires_unique_review_inside_current_cycle():
+    client = FakeGitHub()
+    client.comments[0]['body'] = summary(completed='2026-10-01T16:25:23Z')
+    client.comments[0]['updated_at'] = '2026-10-01T16:25:24Z'
+    assert evaluate(client.collect(REPO, 370)).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    client.reviews.append(dict(client.reviews[0], id=42, submitted_at='2026-10-01T16:24:00Z'))
+    assert evaluate(client.collect(REPO, 370)).state == 'HELD_PENDING_CODEX'
+    client.reviews = [dict(client.reviews[0], submitted_at='2026-10-01T16:00:00Z')]
+    assert evaluate(client.collect(REPO, 370)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'

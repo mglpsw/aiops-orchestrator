@@ -237,6 +237,22 @@ predecessor findings remain blocking without authorized disposition, even
 after a newer clean review. Unknown applicability stays held. This bounded
 byte-identity/adjudication rule is not semantic-equivalence automation.
 
+Manual-request supersession uses an explicit operator-supplied requester policy:
+`--trusted-requester <login>` for each account known to be authorized to trigger
+Codex. It is separate from `--trusted-adjudicator` and is never inferred from
+PR text, comments or an author's disposition authority. With a manual command
+and no requester policy, cycle binding remains held; with an explicit policy,
+commands from other accounts cannot supersede the current cycle. Terminal
+summary binding requires one exact-head review inside the current authenticated
+trigger-to-completion window, without an arbitrary one-minute latency cutoff.
+
+Only root inline review comments create findings. Replies remain collected for
+explicit dispositions. A 404 for a predecessor's path at the known current HEAD
+or ancestry-verified repair means that path is absent (including a rename),
+not that the finding disappeared: an authorized disposition is still required.
+The finding-time blob must remain available; permission/transport failures and
+malformed content remain held. Deletion bytes alone never prove a repair.
+
 The offline regression controls live in
 `tests/test_post_ready_codex_guard.py`; they include the #369 incident shape,
 stale and post-merge reviews, incomplete API evidence, unresolved findings,

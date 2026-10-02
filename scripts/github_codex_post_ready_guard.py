@@ -44,6 +44,14 @@ Codex can also answer questions or update the PR. Try commenting "@codex address
 </details>"""
 
 
+class GitHubReadError(RuntimeError):
+    """Retain HTTP status without exposing response bodies or credentials."""
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
 @dataclass(frozen=True)
 class _LiveEvidence:
     """Process-local collector result, never reconstructed from a JSON file."""
@@ -436,7 +444,9 @@ class GitHubReadOnlyClient:
         try:
             with urlopen(request, timeout=15) as response:
                 return json.load(response)
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        except HTTPError as exc:
+            raise GitHubReadError("GitHub read failed (HTTPError)", http_status=exc.code) from exc
+        except (URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(f"GitHub read failed ({type(exc).__name__})") from exc
 
     def _pages(self, path: str) -> list[dict[str, Any]]:
@@ -519,18 +529,24 @@ class GitHubReadOnlyClient:
                 _text(job["conclusion"])
         return {"runs": runs, "run": run, "jobs": jobs}
 
-    def _content_sha(self, prefix: str, path: str, ref: str) -> str:
-        payload = self._request(
-            "GET",
-            f"{prefix}/contents/{quote(path, safe='/')}?{urlencode({'ref': ref})}",
-        )
+    def _content_sha(self, prefix: str, path: str, ref: str, *, allow_missing: bool = False) -> str | None:
+        try:
+            payload = self._request(
+                "GET",
+                f"{prefix}/contents/{quote(path, safe='/')}?{urlencode({'ref': ref})}",
+            )
+        except GitHubReadError as exc:
+            if allow_missing and exc.http_status == 404:
+                return None
+            raise
         if (not isinstance(payload, dict) or payload.get("type") != "file"
             or not isinstance(payload.get("sha"), str) or not re.fullmatch(r"[0-9a-f]{40}", payload["sha"])):
             raise RuntimeError("affected-file byte identity could not be collected")
         return payload["sha"]
 
     def _bind_summaries(self, prefix: str, head: str, reviews: list[dict[str, Any]],
-                        comments: list[dict[str, Any]], ready_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                        comments: list[dict[str, Any]], ready_events: list[dict[str, Any]], *,
+                        trusted_requesters: tuple[str, ...]) -> list[dict[str, Any]]:
         result = [{"id": item["id"], "author_login": _object(item["user"])["login"],
                    "body": item["body"], "updated_at": _text(item.get("updated_at"))}
                   for item in comments if _object(item["user"])["login"] in CODEX_LOGINS]
@@ -538,9 +554,13 @@ class GitHubReadOnlyClient:
             return result
         ready = max(ready_events, key=lambda event: _parse_time(event["created_at"]))
         ready_time = _parse_time(ready["created_at"])
-        requests = [item for item in comments if item["body"].strip() == "@codex review"
+        manual_commands = [item for item in comments if item["body"].strip() == "@codex review"
                     and _parse_time(item.get("created_at")) is not None
                     and _parse_time(item["created_at"]) >= ready_time]
+        if manual_commands and not trusted_requesters:
+            return result  # requester policy is unknown; no positive cycle inference
+        trusted = {login.lower() for login in trusted_requesters}
+        requests = [item for item in manual_commands if item["user"]["login"].lower() in trusted]
         for summary in result:
             # Only the connector table row supplies the ref and completion time.
             rows = re.findall(
@@ -575,7 +595,7 @@ class GitHubReadOnlyClient:
                 submitted = _parse_time(review.get("submitted_at"))
                 if (_object(review["user"])["login"] in CODEX_LOGINS and review["commit_id"] == full_sha
                     and review["state"] in TERMINAL_REVIEW_STATES and submitted is not None
-                    and start <= submitted <= completed and (completed - submitted).total_seconds() <= 60):
+                    and start <= submitted <= completed):
                     candidates.append(review)
             if len(candidates) == 1:
                 summary.update(bound_head_sha=full_sha, bound_review_id=candidates[0]["id"],
@@ -589,6 +609,7 @@ class GitHubReadOnlyClient:
         pr_number: int,
         *,
         trusted_adjudicators: tuple[str, ...] = (),
+        trusted_requesters: tuple[str, ...] = (),
         required_checks: tuple[str, ...] = REQUIRED_JOBS,
         canonical_workflow_path: str = CANONICAL_WORKFLOW_PATH,
     ) -> _LiveEvidence:
@@ -596,13 +617,15 @@ class GitHubReadOnlyClient:
             if not self.token:
                 raise ValueError("authenticated live collection requires a token")
             data = self._collect(repo, pr_number, trusted_adjudicators=trusted_adjudicators,
-                                 required_checks=required_checks, canonical_workflow_path=canonical_workflow_path)
+                                 trusted_requesters=trusted_requesters, required_checks=required_checks,
+                                 canonical_workflow_path=canonical_workflow_path)
             return _LiveEvidence(data)
         except (ValueError, TypeError, KeyError, AttributeError, RuntimeError) as exc:
             return _LiveEvidence({"collection_errors": [str(exc)], "revalidated": False})
 
     def _collect(self, repo: str, pr_number: int, *, trusted_adjudicators: tuple[str, ...],
-                 required_checks: tuple[str, ...], canonical_workflow_path: str) -> dict[str, Any]:
+                 trusted_requesters: tuple[str, ...], required_checks: tuple[str, ...],
+                 canonical_workflow_path: str) -> dict[str, Any]:
         owner, name = repo.split("/", 1)
         prefix = f"/repos/{owner}/{name}"
         errors: list[str] = []
@@ -666,6 +689,9 @@ class GitHubReadOnlyClient:
         review_by_id = {item.get("id"): item for item in reviews if isinstance(item, dict)}
         findings: list[dict[str, Any]] = []
         for comment in review_comments:
+            if comment.get("in_reply_to_id") is not None:
+                _positive_id(comment["in_reply_to_id"])
+                continue  # replies remain available below for disposition processing
             review_id = comment.get("pull_request_review_id")
             if review_id not in review_by_id:
                 raise ValueError("inline comment has an unavailable review identity")
@@ -706,7 +732,7 @@ class GitHubReadOnlyClient:
                 finding["applicability"] = "unknown"
                 if finding["path"]:
                     old_blob = self._content_sha(prefix, finding["path"], finding["commit_id"])
-                    current_blob = self._content_sha(prefix, finding["path"], pr["head"]["sha"])
+                    current_blob = self._content_sha(prefix, finding["path"], pr["head"]["sha"], allow_missing=True)
                     finding.update(affected_blob_before=old_blob, affected_blob_current=current_blob,
                                    applicability="byte_identical" if old_blob == current_blob else "changed_requires_disposition")
             for comment in review_comments + summaries:
@@ -721,8 +747,8 @@ class GitHubReadOnlyClient:
                     continue
                 if disposition["state"] == "FIXED" and finding["path"]:
                     old_blob = self._content_sha(prefix, finding["path"], finding["commit_id"])
-                    repaired_blob = self._content_sha(prefix, finding["path"], disposition["repair"])
-                    current_blob = self._content_sha(prefix, finding["path"], pr["head"]["sha"])
+                    repaired_blob = self._content_sha(prefix, finding["path"], disposition["repair"], allow_missing=True)
+                    current_blob = self._content_sha(prefix, finding["path"], pr["head"]["sha"], allow_missing=True)
                     if old_blob == repaired_blob or old_blob == current_blob:
                         continue
                 finding.update(disposition=disposition["state"], disposition_author=author,
@@ -731,7 +757,8 @@ class GitHubReadOnlyClient:
                                repair_evidence=disposition["evidence"])
 
         ready_events = [item for item in timeline if item["event"] == "ready_for_review"]
-        bound_summaries = self._bind_summaries(prefix, pr["head"]["sha"], reviews, summaries, ready_events)
+        bound_summaries = self._bind_summaries(prefix, pr["head"]["sha"], reviews, summaries, ready_events,
+                                             trusted_requesters=trusted_requesters)
         # Complete all dependent reads before the final mutable-channel/PR check.
         if reviews != self._pages(f"{prefix}/pulls/{pr_number}/reviews") or review_comments != self._pages(f"{prefix}/pulls/{pr_number}/comments"):
             errors.append("review evidence changed during collection")
@@ -814,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-base", required=True)
     parser.add_argument("--required-check", action="append", default=[])
     parser.add_argument("--trusted-adjudicator", action="append", default=[])
+    parser.add_argument("--trusted-requester", action="append", default=[])
     parser.add_argument("--trusted-check-producer", action="append", default=["github-actions"])
     parser.add_argument("--canonical-workflow-path", default=CANONICAL_WORKFLOW_PATH)
     parser.add_argument("--evidence-json", type=Path)
@@ -842,6 +870,7 @@ def main(argv: list[str] | None = None) -> int:
             args.repo,
             args.pr,
             trusted_adjudicators=tuple(args.trusted_adjudicator),
+            trusted_requesters=tuple(args.trusted_requester),
             required_checks=tuple(args.required_check),
             canonical_workflow_path=args.canonical_workflow_path,
         )
