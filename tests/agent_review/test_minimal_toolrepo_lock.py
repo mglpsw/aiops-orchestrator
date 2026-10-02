@@ -1939,3 +1939,365 @@ def test_countermodel_k1_competition_eexist_remains_abort(tmp_path: Path) -> Non
     assert comp_file.exists()
     assert comp_file.read_text(encoding="utf-8") == "COMPETITOR_DATA_BYTE_IDENTICAL\n"
     assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+
+def test_countermodel_z1_subreaper_reaps_orphaned_grandchildren_leaving_zero_zombies(tmp_path: Path) -> None:
+    """Z1: When a worker process creates grandchild processes and exits without waiting for them,
+    the subreaper wrapper adopts the orphaned descendants and reaps them completely upon exit,
+    guaranteeing zero zombie processes even when ambient PID 1 does not reap orphans.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_z1_subreaper"
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    grandchild_done_file = tmp_path / "grandchild.done"
+
+    fake_py = tmp_path / "fake_py_z1.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os, subprocess, time
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Spawn an orphaned grandchild that outlives this direct child
+    grandchild_code = '''
+import time, os, sys
+with open({repr(str(grandchild_pid_file))}, "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(0.3)
+with open({repr(str(grandchild_done_file))}, "w") as f:
+    f.write("DONE")
+sys.exit(0)
+'''
+    subprocess.Popen([sys.executable, "-c", grandchild_code])
+    # Parent exits immediately, leaving grandchild orphaned
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"Installer must succeed, got {res.returncode}; stderr: {res.stderr}"
+    assert grandchild_pid_file.exists(), "Grandchild PID file was not written"
+    grandchild_pid = int(grandchild_pid_file.read_text().strip())
+
+    # Wait for grandchild completion
+    for _ in range(50):
+        if grandchild_done_file.exists():
+            break
+        time.sleep(0.05)
+    assert grandchild_done_file.exists(), "Grandchild did not complete execution"
+
+    # Verify that grandchild is completely reaped: no zombie in /proc/<pid>/status
+    proc_stat = Path(f"/proc/{grandchild_pid}/status")
+    if proc_stat.exists():
+        status_text = proc_stat.read_text(encoding="utf-8")
+        assert "State:\tZ" not in status_text, f"Grandchild process {grandchild_pid} remained as a zombie!"
+    with pytest.raises(ProcessLookupError):
+        os.kill(grandchild_pid, 0)
+
+
+def test_countermodel_p1_shebang_length_limit_and_pip_discarded(tmp_path: Path) -> None:
+    """P1: Relocation and census strictly validate that executable shebang lines do not exceed
+    the Linux kernel limit (127 bytes, BINPRM_BUF_SIZE = 128), and console pip scripts are discarded
+    at the publication boundary (DiscardAtBoundary).
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_p1_shebang"
+
+    # Case A: Shebang exceeding 127 bytes fails closed with exit 2
+    fake_py_long = tmp_path / "fake_py_long.py"
+    fake_py_long.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Write a tool with a shebang exceeding 127 bytes
+    tool_bin = os.path.join(stage, "bin", "oversized_tool")
+    oversized_shebang = "#!" + "/usr/bin/python3" + "_" * 120 + "\\n"
+    with open(tool_bin, "w") as f:
+        f.write(oversized_shebang + "exit 0\\n")
+    os.chmod(tool_bin, 0o755)
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py_long.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_long))
+    res_fail = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res_fail.returncode == 2, f"Oversized shebang must fail with exit 2, got {res_fail.returncode}"
+    assert "exceeds Linux kernel limit" in res_fail.stderr
+    assert not target_venv.exists()
+
+    # Case B: Normal shebang succeeds, and bin/pip* is discarded at publication boundary
+    fake_py_ok = tmp_path / "fake_py_ok.py"
+    fake_py_ok.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Write a pip script that should be discarded
+    pip_bin = os.path.join(stage, "bin", "pip")
+    with open(pip_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(pip_bin, 0o755)
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py_ok.chmod(0o755)
+
+    env_ok = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py_ok))
+    res_ok = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env_ok,
+        capture_output=True,
+        text=True,
+    )
+    assert res_ok.returncode == 0, f"Valid shebang must succeed, got {res_ok.returncode}; stderr: {res_ok.stderr}"
+    assert target_venv.exists()
+    assert (target_venv / "bin" / "python3").exists()
+    assert not (target_venv / "bin" / "pip").exists(), "bin/pip console script must be discarded at boundary"
+
+
+def test_countermodel_t1_postcommit_signal_trap_preserves_committed_outcome(tmp_path: Path) -> None:
+    """T1: When a signal (SIGTERM) arrives in the post-commit epilogue (after COMMITTED=1 is set),
+    the commit-aware signal handler remains disarmed from rollback, preserves the committed target,
+    reports the committed outcome to stderr, and exits with status 0 cleanly without retry ambiguity.
+    """
+    host_py = sys.executable
+    target_venv = tmp_path / "venv_t1_postcommit_signal"
+    barrier_file = tmp_path / "postcommit_barrier.txt"
+
+    fake_py = tmp_path / "fake_py_t1.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(
+        os.environ,
+        AGENT_REVIEW_PYTHON=str(fake_py),
+        AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER=str(barrier_file),
+    )
+    p = subprocess.Popen(
+        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    # Wait for the postcommit barrier to be reached
+    for _ in range(50):
+        if barrier_file.exists():
+            break
+        time.sleep(0.05)
+    assert barrier_file.exists(), "Post-commit barrier was not reached"
+
+    # Deliver SIGTERM in the postcommit epilogue
+    os.kill(p.pid, signal.SIGTERM)
+    stdout, stderr = p.communicate(timeout=5)
+    assert p.returncode == 0, f"Installer must exit 0 on post-commit signal, got {p.returncode}; stderr: {stderr}"
+    assert "Signal observed after transaction commit; installation already committed." in stderr
+    assert target_venv.exists(), "Target venv must remain intact on post-commit signal"
+
+
+def test_countermodel_r1_target_path_contract_and_activation_discarded(tmp_path: Path) -> None:
+    """R1: Target paths containing spaces succeed because activation scripts (which rely on shell quoting)
+    are discarded at the boundary (DiscardAtBoundary), and TargetPathContract strictly rejects control
+    characters and oversized path components fail-closed before any stage is created.
+    """
+    host_py = sys.executable
+
+    # Case A: Path with whitespace succeeds and activation scripts are discarded
+    target_with_spaces = tmp_path / "venv with spaces in target path"
+
+    fake_py = tmp_path / "fake_py_r1.py"
+    fake_py.write_text(
+        f"""#!{host_py}
+import sys, os
+
+if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if len(sys.argv) == 5:
+        print("OK")
+        sys.exit(0)
+    if len(sys.argv) == 6:
+        script = sys.argv[4]
+        sys.argv = ["<norm>", sys.argv[5]]
+        exec(script)
+        sys.exit(0)
+    if len(sys.argv) == 7:
+        script = sys.argv[4]
+        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
+        exec(script)
+        sys.exit(0)
+
+if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
+    stage = sys.argv[5]
+    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
+    py_bin = os.path.join(stage, "bin", "python3")
+    with open(py_bin, "w") as f:
+        f.write("#!/bin/sh\\nexit 0\\n")
+    os.chmod(py_bin, 0o755)
+
+    # Write activation scripts that must be discarded
+    for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+        act_path = os.path.join(stage, "bin", act)
+        with open(act_path, "w") as f:
+            f.write("# activation script\\n")
+
+    sys.exit(0)
+
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_py.chmod(0o755)
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
+    res_spaces = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_with_spaces)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res_spaces.returncode == 0, f"Path with spaces must succeed, got {res_spaces.returncode}; stderr: {res_spaces.stderr}"
+    assert target_with_spaces.exists()
+    assert (target_with_spaces / "bin" / "python3").exists()
+    for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
+        assert not (target_with_spaces / "bin" / act).exists(), f"{act} must be discarded at boundary"
+
+    # Case B: Target path with newline is rejected fail-closed before staging
+    target_with_newline = tmp_path / "venv\ninvalid"
+    res_newline = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_with_newline)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res_newline.returncode == 2, f"Path with newline must fail with exit 2, got {res_newline.returncode}"
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0
+
+    # Case C: Target path with component > 255 bytes is rejected fail-closed
+    oversized_component = tmp_path / ("c" * 256)
+    res_oversized = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(oversized_component)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert res_oversized.returncode == 2, f"Path component > 255 must fail with exit 2, got {res_oversized.returncode}"
+    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0

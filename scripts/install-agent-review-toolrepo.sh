@@ -184,7 +184,19 @@ import os, sys
 raw = sys.argv[1]
 if not raw or not raw.strip():
     sys.exit(2)
-print(os.path.abspath(raw))
+if "\x00" in raw or "\n" in raw or "\r" in raw:
+    sys.exit(2)
+raw_bytes = os.fsencode(raw)
+if len(raw_bytes) > 4096:
+    sys.exit(2)
+target = os.path.abspath(raw)
+target_bytes = os.fsencode(target)
+if len(target_bytes) > 4096:
+    sys.exit(2)
+for part in target.split(os.sep):
+    if len(os.fsencode(part)) > 255:
+        sys.exit(2)
+print(target)
 ' "$VENV_DIR" 2>/dev/null || true)"
 
 if [ -z "$VENV_TARGET" ]; then
@@ -249,7 +261,7 @@ has_commit_witness() {
 }
 
 close_commit_witness() {
-    exec 3>&- 2>/dev/null || true
+    exec 3>&- || true
 }
 
 kill_active_group() {
@@ -325,8 +337,41 @@ trap handle_exit EXIT
 trap handle_int INT
 trap handle_term TERM
 
+read -r -d '' SUBREAPER_WRAPPER << 'EOF' || true
+import ctypes, os, sys, signal, subprocess
+PR_SET_CHILD_SUBREAPER = 36
+try:
+    ctypes.CDLL(None, use_errno=True).prctl(ctypes.c_int(PR_SET_CHILD_SUBREAPER), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
+except Exception:
+    pass
+
+cmd = sys.argv[1:]
+proc = subprocess.Popen(cmd, close_fds=False)
+
+def handle_sig(sig, frame):
+    while True:
+        try:
+            wpid, _ = os.waitpid(-1, 0)
+        except ChildProcessError:
+            break
+    sys.exit(143 if sig == signal.SIGTERM else 130)
+
+signal.signal(signal.SIGINT, handle_sig)
+signal.signal(signal.SIGTERM, handle_sig)
+
+rc = proc.wait()
+while True:
+    try:
+        wpid, _ = os.waitpid(-1, 0)
+    except ChildProcessError:
+        break
+sys.exit(rc)
+EOF
+
+HOST_PYTHON="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
+
 run_tracked_step() {
-    "$@" &
+    "$HOST_PYTHON" -I -S -c "$SUBREAPER_WRAPPER" "$@" &
     ACTIVE_PID=$!
     ACTIVE_PGID="$(ps -o pgid= -p "$ACTIVE_PID" 2>/dev/null | tr -d ' ' || true)"
     if [ -z "$ACTIVE_PGID" ]; then
@@ -420,6 +465,20 @@ for root, dirs, files in os.walk(stage_dir, topdown=False):
         if d == "__pycache__":
             shutil.rmtree(os.path.join(root, d), ignore_errors=True)
 
+# DiscardAtBoundary:
+# Remove activation scripts (bin/activate*) and pip console scripts (bin/pip*)
+bin_dir = os.path.join(stage_dir, "bin")
+if os.path.isdir(bin_dir):
+    for f in list(os.listdir(bin_dir)):
+        p = os.path.join(bin_dir, f)
+        if os.path.isfile(p) and not os.path.islink(p):
+            f_lower = f.lower()
+            if f_lower.startswith("activate") or f_lower.endswith(".ps1") or f_lower.startswith("pip"):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
 # R2: Normalize textual files containing stage path
 stage_bytes = os.fsencode(stage_dir)
 final_bytes = os.fsencode(final_dir)
@@ -467,8 +526,7 @@ for root, dirs, files in os.walk(stage_dir):
             print(f"Blocked: staging path reference remains in {p}", file=sys.stderr)
             sys.exit(2)
 
-# R4: Executable/shebang census
-bin_dir = os.path.join(stage_dir, "bin")
+# R4: Executable/shebang census & kernel boundary validation (max 127 bytes)
 if os.path.isdir(bin_dir):
     for f in os.listdir(bin_dir):
         p = os.path.join(bin_dir, f)
@@ -482,6 +540,10 @@ if os.path.isdir(bin_dir):
         if first_line.startswith(b"#!"):
             if stage_bytes in first_line:
                 print(f"Blocked: shebang in {p} refers to staging path", file=sys.stderr)
+                sys.exit(2)
+            shebang_len = len(first_line.rstrip(b"\r\n"))
+            if shebang_len > 127:
+                print(f"Blocked: shebang in {p} exceeds Linux kernel limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
                 sys.exit(2)
 
 # Atomic publication: point of no return / commit linearization point
@@ -516,11 +578,18 @@ elif [ "$PUBLISH_STATUS" -ne 0 ]; then
     exit "$PUBLISH_STATUS"
 fi
 
-has_commit_witness
+has_commit_witness || true
 COMMITTED=1
 PRIVATE_STAGE=""
-trap - EXIT INT TERM
+# Keep commit-aware INT and TERM handlers active through the entire epilogue and exit
+trap - EXIT
 close_commit_witness
+
+if [ -n "${AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER:-}" ]; then
+    echo "READY" > "$AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER"
+    sleep 5 &
+    wait $! 2>/dev/null || true
+fi
 
 echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
 
@@ -529,3 +598,4 @@ echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
 if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
 fi
+exit 0
