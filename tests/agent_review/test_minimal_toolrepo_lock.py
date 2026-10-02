@@ -30,6 +30,18 @@ _REQUIREMENT_RE = re.compile(
 )
 
 
+def _path_harness_python(host_python: str, pip_arguments: Path) -> str:
+    """Intercept pip locally; preserve host forwarding for pathname consumers."""
+    import shlex
+    return (
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
+        '    printf "%s\\n" "$@" > ' + shlex.quote(str(pip_arguments)) + "\n"
+        "    exit 0\nfi\n"
+        "exec " + shlex.quote(host_python) + ' "$@"\n'
+    )
+
+
 def _parse_lock() -> dict[str, dict[str, object]]:
     text = LOCK_FILE.read_text(encoding="utf-8")
     entries: dict[str, dict[str, object]] = {}
@@ -2679,7 +2691,7 @@ if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
     os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
     py_bin = os.path.join(stage, "bin", "python3")
     with open(py_bin, "w") as fp:
-        fp.write("#!/bin/sh\\nexec {repr(host_py)} \\"$@\\"\\n")
+        fp.write({_path_harness_python(host_py, tmp_path / "harness-pip.args")!r})
     os.chmod(py_bin, 0o755)
     # Write activation scripts to prove they are discarded
     for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
@@ -2721,6 +2733,10 @@ sys.exit(1)
             text=True,
         )
         assert res.returncode == 0, f"Supported class '{class_name}' failed with {res.returncode}; stderr: {res.stderr}"
+        assert (tmp_path / "harness-pip.args").read_text().splitlines() == [
+            "-I", "-m", "pip", "--isolated", "install", "--require-hashes",
+            "--no-deps", "-r", str(LOCK_FILE),
+        ]
         assert target.exists(), f"Target '{target}' was not created"
         py_bin = target / "bin" / "python3"
         assert py_bin.exists(), f"python3 missing for '{class_name}'"
@@ -2760,7 +2776,7 @@ sys.exit(1)
 
 def test_consumer_capability_closure_minimal_surface(tmp_path: Path) -> None:
     """Q-CONSUME-01, Q-REP-01..06: ConsumerCapabilityContractV1 and RuntimeProjectionContractV1.
-    Proves that the published runtime surface contains only what real consumers consume:
+    Wrapper control of published interface surfaces, not proof of a real venv/import closure:
     - bin/python3 is runtime_required (and executable)
     - activation scripts and console pip scripts are discarded
     - staging references are absent
@@ -2794,7 +2810,7 @@ if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
     os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
     py_bin = os.path.join(stage, "bin", "python3")
     with open(py_bin, "w") as fp:
-        fp.write("#!/bin/sh\\nexec {repr(host_py)} \\"$@\\"\\n")
+        fp.write({_path_harness_python(host_py, tmp_path / "harness-pip.args")!r})
     os.chmod(py_bin, 0o755)
 
     # Add activation scripts (DISCARDABLE)
@@ -2829,6 +2845,10 @@ sys.exit(1)
         text=True,
     )
     assert res.returncode == 0, f"Install failed with {res.returncode}; stderr: {res.stderr}"
+    assert (tmp_path / "harness-pip.args").read_text().splitlines() == [
+        "-I", "-m", "pip", "--isolated", "install", "--require-hashes",
+        "--no-deps", "-r", str(LOCK_FILE),
+    ]
     assert target_venv.exists()
 
     # 1. Runtime required: bin/python3 exists and executes
