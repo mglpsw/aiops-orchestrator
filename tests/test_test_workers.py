@@ -11,6 +11,12 @@ def capacity(cpu=16, quota=None, cpuset=None, memory=32 * w.GIB):
     return dict(visible_cpu=cpu, quota_cpu=quota, cpuset_cpu=cpuset, memory_available_bytes=memory)
 
 
+@pytest.fixture(autouse=True)
+def independent_affinity(monkeypatch):
+    # Simulated cgroups must not inherit the machine running these tests.
+    monkeypatch.setattr(w.os, 'sched_getaffinity', lambda pid: set(range(32)), raising=False)
+
+
 @pytest.mark.parametrize('observed,expected', [
     (capacity(), 4), (capacity(quota=2.8), 2), (capacity(cpuset=3), 3),
     (capacity(memory=4 * w.GIB), 2),
@@ -90,7 +96,43 @@ def test_cli_safe_metadata_and_invalid_override(monkeypatch):
         result = subprocess.run([sys.executable, str(script), mode], text=True, capture_output=True)
         assert result.returncode == 0
         assert json.loads(result.stdout)['selected_workers'] == 2
+        assert 'affinity_cpu' in json.loads(result.stdout)
         assert 'must-never-print-this' not in result.stdout
     monkeypatch.setenv('AIOPS_TEST_WORKERS', 'bad')
     result = subprocess.run([sys.executable, str(script), '--workers'], text=True, capture_output=True)
     assert result.returncode == 2 and 'positive integer' in result.stderr
+
+
+@pytest.mark.parametrize('affinity,expected', [({2}, 1), ({1, 3}, 2)])
+def test_process_affinity_discriminator(tmp_path, monkeypatch, affinity, expected):
+    proc, cg = tmp_path / 'proc', tmp_path / 'cg'
+    put(proc, 'meminfo', f'MemAvailable: {5 * w.GIB // 1024} kB')
+    put(cg, 'cpuset.cpus.effective', '0-3')
+    monkeypatch.setattr(w.os, 'cpu_count', lambda: 4)
+    monkeypatch.setattr(w.os, 'sched_getaffinity', lambda pid: affinity)
+    observed = w.observe_capacity(proc, cg)
+    assert observed['visible_cpu'] == observed['cpuset_cpu'] == 4
+    assert w.select_workers(observed)['memory_bound'] == 3
+    assert w.select_workers(observed)['selected_workers'] == expected
+    assert observed['affinity_cpu'] == expected
+    explicit = w.select_workers(observed, '8')
+    assert explicit['selected_workers'] == 8 and explicit['worker_source'] == 'explicit'
+
+
+@pytest.mark.parametrize('unavailable', ['absent', 'oserror', 'unimplemented', 'empty', 'shape', 'member'])
+def test_unknown_affinity_keeps_other_bounds(tmp_path, monkeypatch, unavailable):
+    if unavailable == 'absent':
+        monkeypatch.delattr(w.os, 'sched_getaffinity')
+    else:
+        def query(pid):
+            if unavailable == 'oserror': raise OSError('unsupported')
+            if unavailable == 'unimplemented': raise NotImplementedError
+            return {'empty': set(), 'shape': [0], 'member': {'bad'}}[unavailable]
+        monkeypatch.setattr(w.os, 'sched_getaffinity', query)
+    proc, cg = tmp_path / 'proc', tmp_path / 'cg'
+    put(proc, 'meminfo', f'MemAvailable: {5 * w.GIB // 1024} kB')
+    put(cg, 'cpuset.cpus.effective', '0-3')
+    put(cg, 'cpu.max', '200000 100000')
+    observed = w.observe_capacity(proc, cg, visible_cpu=4)
+    assert observed['affinity_cpu'] is None
+    assert w.select_workers(observed)['selected_workers'] == 2

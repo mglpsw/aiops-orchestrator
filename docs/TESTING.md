@@ -112,10 +112,14 @@ AIOPS_TEST_WORKERS=8 bash scripts/test.sh     # explicit operator override
 bash scripts/test.sh --lane network --serial # N, no external runtime lanes
 ```
 
-The stdlib selector observes visible CPUs, cgroup v2 CPU quota (v1 fallback),
-effective cpuset, host MemAvailable, and cgroup memory maximum/current. It
+The stdlib selector observes visible CPUs, process scheduler affinity,
+cgroup v2 CPU quota (v1 fallback), effective cpuset, host MemAvailable,
+and cgroup memory maximum/current. It
 checks conventional membership paths and ancestor limits. CPU capacity is the
-minimum of visible CPU, floored quota (minimum one), and cpuset count. Memory
+minimum of visible CPU, floored quota (minimum one), cpuset count and known
+`os.sched_getaffinity(0)` count. Missing/unsupported affinity APIs or empty/
+malformed affinity observations are unknown, never zero workers; `--doctor`
+exposes `affinity_cpu`. Memory
 capacity uses the smaller of host availability and cgroup spare RAM. Unknown
 memory is conservatively one worker. Automatic workers are the minimum of CPU,
 memory capacity and `AIOPS_TEST_AUTO_MAX` (default 4). Reserve 2 GiB for the host
@@ -169,6 +173,23 @@ A dirty worktree is `NOT_QUALIFIED_DIRTY_WORKTREE`; movement during execution is
 reports do not manufacture zero-failure test counts. `--lane-timeout` defaults
 to 1,800 seconds. Filters via PYTEST_ADDOPTS and integration opt-in are rejected
 by canonical full validation to avoid narrowed coverage being called full.
+
+Collection reports are bounded to 16 MiB and distinguish `valid`, `missing`
+and `unreadable`. Invalid JSON/UTF-8/shape/members or read failures leave
+count/digest unknown, not zero. A timed-out lane retains `INCOMPLETE_TIMEOUT`
+even with truncated collection data; a successful process with unreadable
+evidence is `INCOMPLETE_TEST_REPORT`. Each returned lane atomically replaces
+the current receipt through a sibling temporary file; an earlier `IN_PROGRESS`
+receipt cannot survive an ordinary lane timeout merely because JSON is partial.
+
+Automatic full PR qualification follows Class B in `.github/AGENTS.md`:
+GitHub-hosted ephemeral, read-only token, no persisted checkout credentials,
+no application/environment secrets, self-hosted resources, privileged socket
+mounts or publication/deploy/provider steps. Its artifacts remain untrusted
+evidence. Class A privileged/secret-bearing workflows still require specific
+trust before executing PR-controlled content. The workflow-specific parsed
+conformance test and privilege mutants freeze this structure; they do not
+verify arbitrary PR code or create merge authority.
 
 Before Ready: focused tests; exact-HEAD full validation when risk requires;
 required fast CI; Ready; Ready-triggered Codex; terminal review; TOCTOU; human

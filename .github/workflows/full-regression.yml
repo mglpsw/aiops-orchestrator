@@ -1,4 +1,6 @@
 name: Full offline regression
+# PR runs use the owner-authorized SECRETLESS_EPHEMERAL_PR_CI_SANDBOX
+# (.github/AGENTS.md). PR code and its artifacts remain untrusted evidence.
 on:
   workflow_dispatch:
   schedule:

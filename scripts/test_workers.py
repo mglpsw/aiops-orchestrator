@@ -48,6 +48,21 @@ def limit(value: str) -> int | None:
         return None
 
 
+def affinity_count() -> int | None:
+    """Process affinity can be narrower than the host/cgroup CPU bounds."""
+    query = getattr(os, 'sched_getaffinity', None)
+    if query is None:
+        return None
+    try:
+        cpus = query(0)
+        if not isinstance(cpus, (set, frozenset)) or not cpus or any(
+                type(cpu) is not int or cpu < 0 for cpu in cpus):
+            return None
+        return len(cpus)
+    except (OSError, NotImplementedError):
+        return None
+
+
 def observe_capacity(proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/cgroup'),
                      visible_cpu: int | None = None) -> dict:
     """Observe membership and ancestor limits, including namespace-root limits.
@@ -103,6 +118,7 @@ def observe_capacity(proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/cg
                 pass
     remaining = spare + ([host_available] if host_available is not None else [])
     return {'visible_cpu': max(1, visible_cpu or os.cpu_count() or 1),
+            'affinity_cpu': affinity_count(),
             'quota_cpu': min(quotas) if quotas else None,
             'cpuset_cpu': min(sets) if sets else None,
             'host_memory_available_bytes': host_available,
@@ -118,6 +134,8 @@ def select_workers(capacity: dict, override: str | None = None, auto_max: int = 
         cpu.append(max(1, math.floor(capacity['quota_cpu'])))
     if capacity['cpuset_cpu'] is not None:
         cpu.append(capacity['cpuset_cpu'])
+    if capacity.get('affinity_cpu') is not None:
+        cpu.append(max(1, capacity['affinity_cpu']))
     effective = max(1, min(cpu))
     memory = capacity['memory_available_bytes']
     memory_bound = max(1, (memory - RESERVED_MEMORY) // MEMORY_PER_WORKER) if memory is not None else 1

@@ -193,3 +193,161 @@ def test_github_receipt_records_tree_difference_and_rejects_wrong_checkout(tmp_p
         enrich(receipt, subject, None)
     with pytest.raises(ValueError, match='GITHUB_SHA'):
         github_subject(event, {**env, 'GITHUB_SHA': 'f' * 40}, fake_git)
+
+
+@pytest.mark.parametrize('payload', [b'[', b'\xff', b'{}', b'null', b'[1]', b'[""]', b'["id", "id"]'])
+def test_unreadable_collection_is_not_empty_evidence(tmp_path, payload):
+    from scripts.local_validation import read_collection
+    report = tmp_path / 'collection.json'
+    report.write_bytes(payload)
+    result = read_collection(report)
+    assert result['collection_state'] == 'unreadable'
+    assert result['ids'] is result['collection_count'] is result['collection_sha256'] is None
+
+
+def test_collection_missing_unreadable_and_valid_are_distinct(tmp_path, monkeypatch):
+    import hashlib
+    from scripts import local_validation as validation
+    report = tmp_path / 'collection.json'
+    assert validation.read_collection(report)['collection_state'] == 'missing'
+    report.mkdir()  # OSError while opening is unreadable, not missing/empty.
+    assert validation.read_collection(report)['collection_state'] == 'unreadable'
+    report.rmdir()
+    raw = b'["old::p", "old::s"]\n'
+    report.write_bytes(raw)
+    result = validation.read_collection(report)
+    assert result['collection_state'] == 'valid' and result['collection_count'] == 2
+    assert result['ids'] == ['old::p', 'old::s']
+    assert result['collection_sha256'] == hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(validation, 'MAX_COLLECTION_BYTES', len(raw) - 1)
+    assert validation.read_collection(report)['collection_state'] == 'unreadable'
+
+
+@pytest.mark.parametrize('damaged_lane,timeout,expected', [
+    ('parallel', True, 'INCOMPLETE_TIMEOUT'),
+    ('network', True, 'INCOMPLETE_TIMEOUT'),  # Final-lane equivalence must not override timeout.
+    ('parallel', False, 'INCOMPLETE_TEST_REPORT'),
+    (None, False, 'PASSED'),
+])
+def test_current_receipt_survives_partial_collection(tmp_path, monkeypatch, damaged_lane, timeout, expected):
+    """Run real child processes, including termination, through the receipt writer."""
+    import json
+    from scripts import local_validation as validation
+    receipt = tmp_path / 'receipt.json'
+    receipt.write_text(json.dumps({'status': 'IN_PROGRESS', 'obsolete': True}))
+    monkeypatch.setattr(validation, 'ROOT', tmp_path)
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    monkeypatch.delenv('PYTEST_ADDOPTS', raising=False)
+    monkeypatch.delenv('AIOPS_INTEGRATION', raising=False)
+    monkeypatch.setattr(validation, 'identity', lambda: {'head_sha': 'a' * 40, 'dirty': False})
+    monkeypatch.setattr(validation, 'git', lambda *args: 'b' * 40)
+    monkeypatch.setattr(validation, 'characterize', lambda: {'selected_workers': 1})
+    original = validation.run_lane
+    ids = {'ordinary-collection': ['old::p', 'old::s'], 'parallel': ['old::p'],
+           'serial': ['old::s'], 'network': ['old::n']}
+    def run_child(name, command, directory, limit):
+        raw = '[' if name == damaged_lane else json.dumps(ids.get(name, []))
+        report = directory / f'{name}.xml'
+        cases = ''.join(f'<testcase name="{node}"/>' for node in ids.get(name, []))
+        xml = f'<testsuites><testsuite>{cases}</testsuite></testsuites>'
+        child = ('import os,time; from pathlib import Path; '
+                 f'Path(os.environ["AIOPS_TEST_COLLECTION_REPORT"]).write_text({raw!r}); '
+                 f'Path({str(report)!r}).write_text({xml!r}); '
+                 f'time.sleep({60 if timeout and name == damaged_lane else 0})')
+        return original(name, [sys.executable, '-c', child], directory, limit)
+    monkeypatch.setattr(validation, 'run_lane', run_child)
+    monkeypatch.setattr(sys, 'argv', ['local_validation', '--receipt', str(receipt), '--lane-timeout', '1'])
+    assert validation.main() == (0 if expected == 'PASSED' else 1)
+    current = json.loads(receipt.read_text())
+    assert current['status'] == expected and 'obsolete' not in current
+    if damaged_lane:
+        last = current['lanes'][-1]
+        assert last['lane'] == damaged_lane and last['status'] == expected
+        assert last['collection_state'] == 'unreadable'
+        assert last['collection_count'] is last['collection_sha256'] is None
+    else:
+        assert current['collection_equivalence'] is True and len(current['lanes']) == 5
+
+
+def test_atomic_receipt_keeps_previous_file_if_replace_fails(tmp_path, monkeypatch):
+    from scripts import local_validation as validation
+    receipt = tmp_path / 'receipt.json'
+    original = '{"status": "IN_PROGRESS"}\n'
+    receipt.write_text(original)
+    def fail_replace(source, target):
+        assert receipt.read_text() == original  # The old file was never truncated.
+        assert source.parent == receipt.parent
+        raise OSError('replacement denied')
+    monkeypatch.setattr(validation.os, 'replace', fail_replace)
+    with pytest.raises(OSError, match='replacement denied'):
+        validation.write_receipt(receipt, {'status': 'INCOMPLETE_TIMEOUT'})
+    assert receipt.read_text() == original
+    assert list(tmp_path.iterdir()) == [receipt]
+
+
+def assert_full_regression_sandbox(workflow):
+    """Contract of this one workflow, not an arbitrary-code sandbox verifier."""
+    import re
+    triggers = workflow.get('on', workflow.get(True))
+    assert isinstance(triggers, dict) and 'pull_request' in triggers
+    assert set(triggers) == {'pull_request', 'workflow_dispatch', 'schedule'}
+    assert workflow['permissions'] == {'contents': 'read'}
+    assert 'environment' not in workflow
+    jobs = workflow['jobs']
+    assert set(jobs) == {'regression'}
+    for job in jobs.values():
+        assert job['runs-on'] == 'ubuntu-latest'
+        assert 'permissions' not in job or job['permissions'] == {'contents': 'read'}
+        assert not {'environment', 'container', 'services', 'uses', 'secrets'} & job.keys()
+        actions = [step for step in job['steps'] if 'uses' in step]
+        assert {step['uses'] for step in actions} == {
+            'actions/checkout@v4', 'actions/setup-python@v5', 'actions/upload-artifact@v4'}
+        checkout = [step for step in actions if step['uses'].startswith('actions/checkout@')]
+        assert len(checkout) == 1
+        assert checkout[0]['with']['persist-credentials'] is False
+        assert 'token' not in checkout[0]['with'] and 'ssh-key' not in checkout[0]['with']
+        # Freeze the entry points of this workflow; no publishing/deploy step
+        # can be added under a read-only-looking job without changing this gate.
+        commands = {' '.join(step['run'].split()) for step in job['steps'] if 'run' in step}
+        assert commands == {
+            'python -m pip install -r requirements-dev.txt',
+            'AIOPS_TEST_WORKERS="$(python scripts/test_workers.py --workers)" \\ bash scripts/local_validate.sh',
+            'python -m scripts.github_full_receipt',
+        }
+    def inspect(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                inspect(str(key))
+                inspect(item)
+        elif isinstance(value, list):
+            for item in value: inspect(item)
+        elif isinstance(value, str):
+            assert not re.search(r'\bsecrets\s*(?:\.|\[)', value, re.I)
+            assert not re.search(r'AGENT_ROUTER_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GOOGLE_API_KEY|DEPLOY_TOKEN|AWS_SECRET_ACCESS_KEY', value, re.I)
+            assert not re.search(r'/var/run/docker\.sock|/run/docker\.sock|--privileged|self-hosted', value, re.I)
+    inspect(workflow)
+
+
+def test_full_regression_conforms_to_secretless_ephemeral_policy():
+    assert_full_regression_sandbox(yaml.safe_load((ROOT / '.github/workflows/full-regression.yml').read_text()))
+
+
+@pytest.mark.parametrize('mutation', [
+    'target', 'runner', 'permissions', 'job_permissions', 'credentials', 'secret',
+    'provider', 'environment', 'socket', 'publication',
+])
+def test_full_regression_sandbox_rejects_privileged_mutants(mutation):
+    workflow = yaml.safe_load((ROOT / '.github/workflows/full-regression.yml').read_text())
+    job = workflow['jobs']['regression']
+    if mutation == 'target': workflow.get('on', workflow.get(True))['pull_request_target'] = {}
+    if mutation == 'runner': job['runs-on'] = ['self-hosted', 'linux']
+    if mutation == 'permissions': workflow['permissions']['contents'] = 'write'
+    if mutation == 'job_permissions': job['permissions'] = {'contents': 'write'}
+    if mutation == 'credentials': job['steps'][0]['with']['persist-credentials'] = True
+    if mutation == 'secret': job['steps'][3]['env'] = {'VALUE': '${{ secrets.X }}'}
+    if mutation == 'provider': job['steps'][3]['env'] = {'AGENT_ROUTER_API_KEY': 'example'}
+    if mutation == 'environment': job['environment'] = 'production'
+    if mutation == 'socket': job['container'] = {'image': 'python:3.11', 'volumes': ['/var/run/docker.sock:/var/run/docker.sock']}
+    if mutation == 'publication': job['steps'].append({'run': 'gh pr comment 371 --body example'})
+    with pytest.raises(AssertionError):
+        assert_full_regression_sandbox(workflow)

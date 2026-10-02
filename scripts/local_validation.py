@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from scripts.test_workers import characterize
 
 ROOT = Path(__file__).resolve().parent.parent
+MAX_COLLECTION_BYTES = 16 * 1024 * 1024
 
 
 def utc() -> str:
@@ -48,6 +49,43 @@ def test_counts(path: Path) -> dict | None:
             'skipped': sum(c.find('skipped') is not None for c in cases)}
 
 
+def read_collection(path: Path) -> dict:
+    """Bounded evidence read; missing/unreadable never means an empty corpus."""
+    unknown = {'collection_count': None, 'collection_sha256': None, 'ids': None}
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(MAX_COLLECTION_BYTES + 1)
+        if len(raw) > MAX_COLLECTION_BYTES:
+            raise ValueError('collection report exceeds size bound')
+        ids = json.loads(raw.decode('utf-8'))
+        if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids):
+            raise ValueError('collection must be a list of nonempty node IDs')
+        if len(set(ids)) != len(ids):
+            raise ValueError('collection contains duplicate node IDs')
+    except FileNotFoundError:
+        return {**unknown, 'collection_state': 'missing'}
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return {**unknown, 'collection_state': 'unreadable'}
+    return {'collection_state': 'valid', 'collection_count': len(ids),
+            'collection_sha256': hashlib.sha256(raw).hexdigest(), 'ids': ids}
+
+
+def write_receipt(path: Path, data: dict) -> None:
+    """Replace the last lane receipt atomically, without truncating it in place."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=f'.{path.name}.', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(json.dumps(data, indent=2, sort_keys=True) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def run_lane(name: str, command: list[str], directory: Path, timeout: int) -> dict:
     start, tick = utc(), time.monotonic()
     log = directory / f'{name}.log'
@@ -70,11 +108,12 @@ def run_lane(name: str, command: list[str], directory: Path, timeout: int) -> di
     data = {'lane': name, 'commands': [command], 'start': start, 'end': utc(),
             'seconds': round(time.monotonic() - tick, 3), 'exit_status': code,
             'status': status, 'log': str(log), 'test_counts': test_counts(directory / f'{name}.xml')}
-    collection = directory / f'{name}-collection.json'
-    if collection.is_file():
-        ids = json.loads(collection.read_text())
-        data['collection_count'] = len(ids)
-        data['collection_sha256'] = hashlib.sha256(collection.read_bytes()).hexdigest()
+    collection = read_collection(directory / f'{name}-collection.json')
+    data.update({key: value for key, value in collection.items() if key != 'ids'})
+    if not timed_out and (collection['collection_state'] == 'unreadable' or
+            (code == 0 and name in ('ordinary-collection', 'parallel', 'serial', 'network') and
+             collection['collection_state'] != 'valid')):
+        data['status'] = 'INCOMPLETE_TEST_REPORT'
     print(json.dumps(data), flush=True)
     return data
 
@@ -130,15 +169,19 @@ def main() -> int:
             data['status'] = 'NOT_QUALIFIED_DIRTY_WORKTREE'
         else:
             data['status'] = 'IN_PROGRESS' if len(data['lanes']) < len(specifications) else 'PASSED'
-        if len(data['lanes']) == len(specifications):
-            ids = {lane: set(json.loads((directory / f'{lane}-collection.json').read_text()))
-                   for lane in ('ordinary-collection', 'parallel', 'serial')}
-            equivalent = (ids['ordinary-collection'] == ids['parallel'] | ids['serial'] and
-                          not ids['parallel'] & ids['serial'])
-            data['collection_equivalence'] = equivalent
-            if not equivalent:
-                data['status'] = 'COLLECTION_MISMATCH'
-        receipt.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+        if data['status'] == 'PASSED':
+            reports = {lane: read_collection(directory / f'{lane}-collection.json')
+                       for lane in ('ordinary-collection', 'parallel', 'serial')}
+            if any(report['collection_state'] != 'valid' for report in reports.values()):
+                data['status'] = 'INCOMPLETE_TEST_REPORT'
+            else:
+                ids = {lane: set(report['ids']) for lane, report in reports.items()}
+                equivalent = (ids['ordinary-collection'] == ids['parallel'] | ids['serial'] and
+                              not ids['parallel'] & ids['serial'])
+                data['collection_equivalence'] = equivalent
+                if not equivalent:
+                    data['status'] = 'COLLECTION_MISMATCH'
+        write_receipt(receipt, data)
         if result['status'] != 'PASSED' or data['status'] in ('SUBJECT_MOVED', 'INCOMPLETE_TEST_REPORT', 'COLLECTION_MISMATCH'):
             break
     print(f'[local-validation] {data["status"]}; receipt={receipt}', flush=True)
