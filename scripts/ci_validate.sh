@@ -1,163 +1,52 @@
 #!/usr/bin/env bash
-# AIOps Orchestrator — Validação CI (repo-only, sem runtime)
-#
-# Projetado para GitHub Actions e agents remotos.
-# NÃO requer: Docker daemon, container em produção, systemd, CT 102,
-#              Prometheus, Ollama, rede externa, secrets reais.
-#
-# O que valida:
-#   - sintaxe bash de todos os scripts
-#   - catálogo de actions (YAML + guardrails)
-#   - compose syntax (config --quiet, sem daemon)
-#   - identidade CAEM 3.0 F0 pinada e generated views consistentes
-#   - testes Python unitários offline
+# Explicit ownership: repository integrity, generated gates, or pytest lanes.
 set -euo pipefail
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
-ERRORS=0
-
-header() { echo ""; echo "=== $* ==="; }
-ok()     { echo "  [OK] $*"; }
-fail()   { echo "  [FALHA] $*"; ERRORS=$((ERRORS + 1)); }
-skip()   { echo "  [SKIP] $*"; }
-
-header "CI — Validação de repositório (offline)"
-echo "Diretório : $ROOT_DIR"
-echo "Python    : $(python3 --version 2>&1)"
-echo "Data      : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-# ── 1. Sintaxe bash ──────────────────────────────────────────────────────────
-header "1. Sintaxe bash"
-while IFS= read -r -d '' script; do
-    if bash -n "$script" 2>/dev/null; then
-        ok "$(basename "$script")"
-    else
-        fail "$(basename "$script") — erro de sintaxe"
-        bash -n "$script" || true
-    fi
-done < <(find scripts -name '*.sh' -print0)
-
-# ── 2. Catálogo de actions ────────────────────────────────────────────────────
-header "2. Catálogo de actions"
-if bash scripts/validate_actions_catalog.sh; then
-    ok "catálogo válido"
-else
-    fail "catálogo inválido"
-fi
-
-# ── 3. Docker Compose syntax (sem daemon) ────────────────────────────────────
-header "3. Docker Compose syntax"
-if command -v docker compose &>/dev/null || command -v docker-compose &>/dev/null; then
-    # Cria .env mínimo se não existir (CI não tem .env real)
-    if [ ! -f "$ROOT_DIR/.env" ] && [ -f "$ROOT_DIR/.env.example" ]; then
-        cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"
-        CREATED_ENV=1
-    else
-        CREATED_ENV=0
-    fi
-
-    if docker compose -p aiops-orchestrator \
-            -f "$ROOT_DIR/deploy/docker-compose.yml" config --quiet 2>/dev/null; then
-        ok "docker-compose.yml válido"
-    else
-        fail "docker-compose.yml inválido"
-    fi
-
-    if docker compose -p aiops-orchestrator \
-            -f "$ROOT_DIR/deploy/docker-compose.yml" \
-            -f "$ROOT_DIR/deploy/docker-compose.bluegreen.yml" config --quiet 2>/dev/null; then
-        ok "docker-compose.bluegreen.yml válido"
-    else
-        fail "docker-compose.bluegreen.yml inválido"
-    fi
-
-    # Limpa .env temporário
-    if [ "${CREATED_ENV:-0}" = "1" ]; then
-        rm -f "$ROOT_DIR/.env"
-    fi
-else
-    skip "docker compose não disponível — pulando validação de compose"
-fi
-
-# ── 4. Schemas v2 reproduzíveis ──────────────────────────────────────────────
-header "4. Schemas AgentReview v2"
-if python3 scripts/export-agent-review-v2-schemas.py --check; then
-    ok "schemas v2 byte-identical"
-else
-    fail "schemas v2 divergentes — regenere no toolchain pinado"
-fi
-
-# ── 5. Identidade CAEM 3.0 F0 pinada ─────────────────────────────────────────
-header "5. Identidade CAEM 3.0 F0"
-if python3 scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check; then
-    ok "pin válido e generated views consistentes"
-else
-    fail "pin ausente/incompleto ou generated views divergentes"
-fi
-
-# ── 6. RI-B0a.2 reuse/reference view ─────────────────────────────────────────
-header "6. RI-B0a.2 reuse/reference view"
-if python3 scripts/generate-ri-b0a-2-reuse-view.py --check; then
-    ok "generated view em sincronia com o manifest"
-else
-    fail "docs/generated/RI_B0A_2_REUSE_REFERENCE.md desatualizado — regenere sem --check"
-fi
-
-# ── 7. Target-pack runtime authority view ────────────────────────────────────
-header "7. Target-pack runtime authority view"
-if python3 scripts/generate-target-pack-runtime-authority-view.py --check; then
-    ok "docs/generated/target-pack-runtime-authority.v1.json em sincronia com as autoridades declaradas"
-else
-    fail "runtime authority view desatualizada — regenere com scripts/generate-target-pack-runtime-authority-view.py"
-fi
-
-# ── 8. Testes Python (unit, offline) ─────────────────────────────────────────
-header "8. Testes Python"
-if ! command -v python3 &>/dev/null; then
-    fail "python3 não encontrado"
-elif ! python3 -m pytest --version &>/dev/null; then
-    fail "pytest não instalado — rode: pip install -r requirements-dev.txt"
-else
-    if python3 -m pytest -q \
-            -m "not integration and not requires_runtime and not requires_docker and not requires_prometheus and not requires_network" \
-            --tb=short; then
-        ok "todos os testes unitários passaram"
-    else
-        fail "testes falharam"
-    fi
-fi
-
-# ── 9. Testes de subprocess git real (requires_network) ─────────────────────
-# `requires_network` é a convenção já estabelecida deste repositório para
-# "spawna um subprocess git real" (não acesso literal à rede -- ver o
-# docstring do próprio test_diff_acquisition_v2.py), e a secção 7 acima a
-# exclui por padrão. Uma auditoria adversarial da extração de conteúdo do
-# AgentReview v2 (#200-B/#200-C) encontrou que isso deixava todo teste E2E
-# real (redaction, losslessness de windowing, caminhos fail-closed de DLP)
-# sem execução nesta gate, mesmo com `pytest -q` local (sem filtro de
-# marker) sempre os executando e passando. Esta seção fecha essa lacuna sem
-# tocar o escopo do filtro padrão da seção 7 (nenhuma dependência de
-# docker/prometheus/runtime existe neste runner) -- roda somente os testes
-# desse marker, isolados da execução padrão acima.
-header "9. Testes de subprocess git real (requires_network)"
-if ! command -v python3 &>/dev/null; then
-    fail "python3 não encontrado"
-else
-    if python3 -m pytest -q -m requires_network --tb=short; then
-        ok "todos os testes requires_network passaram"
-    else
-        fail "testes requires_network falharam"
-    fi
-fi
-
-# ── Resultado ────────────────────────────────────────────────────────────────
-echo ""
-if [ $ERRORS -eq 0 ]; then
-    echo "=== CI validation: OK ==="
-    exit 0
-else
-    echo "=== CI validation: $ERRORS falha(s) ==="
-    exit 1
-fi
+MODE="${1:---all}"
+[[ $# -le 1 ]] || { echo 'One validation mode expected' >&2; exit 2; }
+case "$MODE" in
+  --repository|--generated|--static|--unit|--requires-network|--all) ;;
+  *) echo 'Usage: ci_validate.sh [--repository|--generated|--static|--unit|--requires-network|--all]' >&2; exit 2 ;;
+esac
+repository() {
+  echo '[static] shell syntax'
+  while IFS= read -r -d '' script; do bash -n "$script"; done < <(find scripts -name '*.sh' -print0)
+  bash scripts/validate_actions_catalog.sh
+  echo '[static] compose syntax (no daemon)'
+  docker compose version >/dev/null
+  # Compose also references ../.env as a service env_file. Render an isolated
+  # copy with example values; never create/overwrite the checkout's .env.
+  COMPOSE_TMP="$(mktemp -d)"
+  trap 'rm -rf "$COMPOSE_TMP"' EXIT
+  mkdir "$COMPOSE_TMP/deploy"
+  cp .env.example "$COMPOSE_TMP/.env"
+  cp deploy/docker-compose.yml deploy/docker-compose.bluegreen.yml "$COMPOSE_TMP/deploy/"
+  docker compose --env-file "$COMPOSE_TMP/.env" -p aiops-orchestrator -f "$COMPOSE_TMP/deploy/docker-compose.yml" config --quiet
+  docker compose --env-file "$COMPOSE_TMP/.env" -p aiops-orchestrator -f "$COMPOSE_TMP/deploy/docker-compose.yml" -f "$COMPOSE_TMP/deploy/docker-compose.bluegreen.yml" config --quiet
+  git diff --check
+  git diff --check HEAD^ HEAD
+  echo '[static] dangerous-pattern inventory (informational); enforcement: catalog + focused guardrail tests'
+  grep -RInE 'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' app docs tests config scripts README.md || [[ $? == 1 ]]
+}
+generated() {
+  python3 scripts/export-agent-review-v2-schemas.py --check
+  python3 scripts/run-agent-review-v2-evals.py --check
+  python3 scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check
+  python3 scripts/generate-ri-b0a-2-reuse-view.py --check
+  python3 scripts/generate-target-pack-runtime-authority-view.py --check
+  python3 scripts/materialize-benchmark-case.py --check
+  python3 scripts/generate-benchmark-corpus-manifest.py --check
+  python3 scripts/generate-benchmark-premanifest.py --check
+  python3 scripts/generate-benchmark-identity-final.py --check
+  python3 scripts/generate-benchmark-report.py --check
+  python3 scripts/validate-benchmark-corpus-safety.py
+}
+case "$MODE" in
+ --repository) repository ;;
+ --generated) generated ;;
+ --static) repository; generated ;;
+ --unit) bash scripts/test.sh ;;
+ --requires-network) bash scripts/test.sh --lane network --serial ;;
+ --all) repository; generated; bash scripts/test.sh; bash scripts/test.sh --lane network --serial ;;
+esac
