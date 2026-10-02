@@ -30,7 +30,7 @@ CODEX_LOGINS = {
 }
 TERMINAL_REVIEW_STATES = {"APPROVED", "COMMENTED"}
 ADJUDICATED = {"FIXED", "DISMISSED", "SUPERSEDED"}
-EVIDENCE_COLLECTIONS = ("ready_events", "reviews", "summaries", "findings", "checks")
+EVIDENCE_COLLECTIONS = ("ready_events", "reviews", "summaries", "findings", "checks", "reactions")
 CANONICAL_WORKFLOW_PATH = ".github/workflows/ci.yml"
 REQUIRED_JOBS = ("Validate repository", "AgentReview release gates")
 CODEX_BOILERPLATE = """<details> <summary>ℹ️ About Codex in GitHub</summary>
@@ -135,6 +135,16 @@ def _parse_time(value: str | None) -> datetime | None:
         return None
 
 
+def _review_submission(review: dict[str, Any]) -> datetime | None:
+    """An unsubmitted draft has no submission time and supplies no terminal evidence."""
+    if review.get("state") == "PENDING" and review.get("submitted_at") is None:
+        return None
+    submitted = _parse_time(review.get("submitted_at"))
+    if submitted is None:
+        raise ValueError("submitted review timestamp is malformed")
+    return submitted
+
+
 def _summary_is_explicitly_completed(body: str) -> bool:
     visible = re.sub(r"<details>.*?</details>", "", body, flags=re.IGNORECASE | re.DOTALL)
     lower = visible.lower()
@@ -147,7 +157,8 @@ def _is_codex_summary(
     comment: dict[str, Any],
     expected_head: str,
     *,
-    review_id: int | str,
+    review_id: int | str | None = None,
+    reaction_id: int | None = None,
     ready_event_id: int | str,
 ) -> bool:
     body = str(comment.get("body", ""))
@@ -158,8 +169,25 @@ def _is_codex_summary(
         and _summary_is_explicitly_completed(body)
         and ("draft marked ready" in lower or "manual request" in lower)
         and comment.get("bound_head_sha") == expected_head
-        and str(comment.get("bound_review_id")) == str(review_id)
+        and (
+            (review_id is not None and comment.get("bound_terminal_kind") == "review"
+             and comment.get("bound_review_id") == review_id and "bound_reaction_id" not in comment)
+            or (reaction_id is not None and comment.get("bound_terminal_kind") == "clean_reaction"
+                and comment.get("bound_reaction_id") == reaction_id and "bound_review_id" not in comment)
+        )
         and str(comment.get("bound_ready_event_id")) == str(ready_event_id)
+    )
+
+
+def _clean_reaction_matches(reaction: dict[str, Any], summary: dict[str, Any], *,
+                            repo: str, pr: int, start: datetime, completed: datetime) -> bool:
+    created = _parse_time(reaction.get("created_at"))
+    return (
+        reaction.get("author_login") in CODEX_LOGINS
+        and reaction.get("author_login") == summary.get("author_login")
+        and reaction.get("content") == "+1"
+        and reaction.get("target_repo") == repo and reaction.get("target_pr") == pr
+        and created is not None and created > start and created >= completed
     )
 
 
@@ -199,34 +227,44 @@ def _required_checks_pass(
     checks = evidence.get("checks")
     if not isinstance(checks, list) or not required_checks or not trusted_check_producers:
         return None
+    canonical = evidence.get("canonical_ci")
+    canonical_run = canonical.get("run") if isinstance(canonical, dict) else None
+    if not isinstance(canonical_run, dict) or not _canonical_run_matches(
+        canonical_run, repo=expected_repo, pr=expected_pr, head=expected_head,
+        base=expected_base, workflow_path=canonical_workflow_path,
+    ):
+        return False
     bound_runs = set()
     for name in required_checks:
-        matches = [item for item in checks if isinstance(item, dict) and item.get("name") == name]
+        matches = []
+        for item in checks:
+            if not isinstance(item, dict) or item.get("name") != name:
+                continue
+            suite = item.get("check_suite_id")
+            if type(suite) is not int or suite <= 0:
+                return False  # unknown membership is not evidence of a foreign suite
+            if suite == canonical_run["check_suite_id"]:
+                matches.append(item)
         if len(matches) != 1:
             return False
         item = matches[0]
         producer = item.get("app_slug") or item.get("producer")
         run_id = item.get("run_id") or item.get("id")
-        if (
-            item.get("status") != "completed"
-            or item.get("conclusion") != "success"
-            or item.get("head_sha") != expected_head
-            or producer not in trusted_check_producers
-            or not run_id
-        ):
-            return False
         binding = item.get("ci_binding")
         if not isinstance(binding, dict):
             return False
         run, job = _object(binding.get("run")), _object(binding.get("job"))
-        if not _canonical_run_matches(run, repo=expected_repo, pr=expected_pr, head=expected_head,
-                                      base=expected_base, workflow_path=canonical_workflow_path):
+        if run != canonical_run:
             return False
-        if (run["status"] != "completed" or run.get("conclusion") != "success"
+        if (item.get("head_sha") != expected_head or producer not in trusted_check_producers
             or item.get("check_suite_id") != run["check_suite_id"]
             or job.get("id") != run_id or job.get("name") != name
             or job.get("run_id") != run["id"] or job.get("run_attempt") != run["run_attempt"]
-            or job.get("head_sha") != expected_head or job.get("status") != "completed"
+            or job.get("head_sha") != expected_head):
+            return False
+        if (run["status"] != "completed" or run.get("conclusion") != "success"
+            or item.get("status") != "completed" or item.get("conclusion") != "success"
+            or job.get("status") != "completed"
             or job.get("conclusion") != "success"):
             return False
         bound_runs.add((run["id"], run["run_attempt"]))
@@ -320,10 +358,9 @@ def _evaluate_live(evidence: dict[str, Any], **policy: Any) -> GuardResult:
         if not isinstance(event.get("created_at"), str) or type(event.get("id")) is not int:
             raise ValueError("Ready event fields are malformed")
     for review in evidence["reviews"]:
-        if type(review.get("id")) is not int or any(not isinstance(review.get(key), str) for key in ("author_login", "commit_id", "state", "submitted_at")):
+        if type(review.get("id")) is not int or any(not isinstance(review.get(key), str) for key in ("author_login", "commit_id", "state")):
             raise ValueError("review fields are malformed")
-        if _parse_time(review["submitted_at"]) is None:
-            raise ValueError("review timestamp is malformed")
+        _review_submission(review)
     for summary in evidence["summaries"]:
         if type(summary.get("id")) is not int or any(not isinstance(summary.get(key), str) for key in ("body", "author_login", "updated_at")):
             raise ValueError("summary fields are malformed")
@@ -333,6 +370,13 @@ def _evaluate_live(evidence: dict[str, Any], **policy: Any) -> GuardResult:
     for check in evidence["checks"]:
         if type(check.get("run_id")) is not int or any(not isinstance(check.get(key), str) for key in ("name", "head_sha", "app_slug", "status")):
             raise ValueError("check fields are malformed")
+    for reaction in evidence["reactions"]:
+        _positive_id(reaction.get("id"))
+        _positive_id(reaction.get("target_pr"))
+        for key in ("author_login", "content", "target_repo"):
+            _text(reaction.get(key))
+        if _parse_time(reaction.get("created_at")) is None:
+            raise ValueError("reaction timestamp is malformed")
 
     pr = evidence.get("pr")
     if not isinstance(pr, dict):
@@ -374,27 +418,48 @@ def _evaluate_live(evidence: dict[str, Any], **policy: Any) -> GuardResult:
     ready_time = _parse_time(ready_event.get("created_at"))
     if ready_time is None:
         return _held("HELD_CODEX_UNAVAILABLE", "Ready-cycle timestamp is malformed", evidence)
-    if not reviews:
-        return _held("HELD_PENDING_CODEX", "no terminal Codex review bound to the current exact HEAD", evidence)
-    review = max(reviews, key=lambda item: _parse_time(item["submitted_at"]))
-    review_time = _parse_time(review.get("submitted_at"))
-    if review_time is None or ready_time is None or review_time < ready_time:
-        return _held("HELD_STALE", "the Codex review is not demonstrably after the Ready event", evidence)
+    if any(item.get("author_login") in CODEX_LOGINS and item.get("commit_id") == expected_head
+           and item.get("state") == "PENDING" for item in evidence["reviews"]):
+        return _held("HELD_PENDING_CODEX", "a current Codex review is still unsubmitted", evidence)
     summaries = [
         item for item in evidence.get("summaries", [])
         if _is_codex_summary(
             item,
             expected_head,
-            review_id=review.get("id"),
+            review_id=item.get("bound_review_id"),
+            reaction_id=item.get("bound_reaction_id"),
             ready_event_id=ready_event.get("id"),
         )
-        and (summary_time := _parse_time(item.get("observed_at") or item.get("updated_at") or item.get("created_at"))) is not None
-        and summary_time >= review_time
     ]
     if not summaries:
+        if reviews and max(_review_submission(item) for item in reviews) < ready_time:
+            return _held("HELD_STALE", "the Codex review predates the Ready event", evidence)
         return _held("HELD_PENDING_CODEX", "no exact-cycle terminal summary is bound to the current review", evidence)
     if len(summaries) != 1:
         return _held("HELD_CODEX_UNAVAILABLE", "terminal summary binding is ambiguous", evidence)
+    summary = summaries[0]
+    start, completed = _parse_time(summary.get("bound_trigger_at")), _parse_time(summary.get("completed_at"))
+    if start is None or completed is None or start < ready_time or completed < start:
+        return _held("HELD_PENDING_CODEX", "terminal completion is not bound to the current trigger", evidence)
+    if any(r["author_login"] in CODEX_LOGINS and r["content"] == "eyes"
+           and r["target_repo"] == expected_repo and r["target_pr"] == expected_pr
+           and _parse_time(r["created_at"]) >= start for r in evidence["reactions"]):
+        return _held("HELD_PENDING_CODEX", "the connector still signals an active review", evidence)
+    current_reviews = [item for item in evidence["reviews"]
+                       if item["author_login"] in CODEX_LOGINS and item["commit_id"] == expected_head
+                       and _review_submission(item) is not None and _review_submission(item) >= start]
+    if summary["bound_terminal_kind"] == "review":
+        if (len(current_reviews) != 1 or current_reviews[0]["id"] != summary["bound_review_id"]
+            or current_reviews[0]["author_login"] != summary["author_login"]
+            or current_reviews[0]["state"] not in TERMINAL_REVIEW_STATES
+            or _review_submission(current_reviews[0]) > completed
+            or _parse_time(summary["updated_at"]) < _review_submission(current_reviews[0])):
+            return _held("HELD_PENDING_CODEX", "formal review completion binding is not unique/current", evidence)
+    else:
+        reactions = [r for r in evidence["reactions"] if _clean_reaction_matches(
+            r, summary, repo=expected_repo, pr=expected_pr, start=start, completed=completed)]
+        if current_reviews or len(reactions) != 1 or reactions[0]["id"] != summary["bound_reaction_id"]:
+            return _held("HELD_PENDING_CODEX", "clean completion lacks a unique new reaction on this PR", evidence)
 
     findings = [
         item for item in evidence.get("findings", [])
@@ -414,7 +479,7 @@ def _evaluate_live(evidence: dict[str, Any], **policy: Any) -> GuardResult:
 
     return GuardResult(
         state="READY_FOR_HUMAN_INTEGRATION_DECISION",
-        reason="current HEAD, Ready cycle, terminal Codex review, findings, and required checks are observed",
+        reason="current HEAD, Ready cycle, terminal Codex completion, findings, and required checks are observed",
         merge_authorized=False,
         evidence=evidence,
     )
@@ -545,7 +610,8 @@ class GitHubReadOnlyClient:
         return payload["sha"]
 
     def _bind_summaries(self, prefix: str, head: str, reviews: list[dict[str, Any]],
-                        comments: list[dict[str, Any]], ready_events: list[dict[str, Any]], *,
+                        comments: list[dict[str, Any]], ready_events: list[dict[str, Any]],
+                        reactions: list[dict[str, Any]], *, repo: str, pr: int,
                         trusted_requesters: tuple[str, ...]) -> list[dict[str, Any]]:
         result = [{"id": item["id"], "author_login": _object(item["user"])["login"],
                    "body": item["body"], "updated_at": _text(item.get("updated_at"))}
@@ -554,6 +620,9 @@ class GitHubReadOnlyClient:
             return result
         ready = max(ready_events, key=lambda event: _parse_time(event["created_at"]))
         ready_time = _parse_time(ready["created_at"])
+        if any(item["user"]["login"] in CODEX_LOGINS and item["commit_id"] == head
+               and item["state"] == "PENDING" for item in reviews):
+            return result
         manual_commands = [item for item in comments if item["body"].strip() == "@codex review"
                     and _parse_time(item.get("created_at")) is not None
                     and _parse_time(item["created_at"]) >= ready_time]
@@ -590,17 +659,28 @@ class GitHubReadOnlyClient:
             full_sha = _text(resolved.get("sha"))
             if not re.fullmatch(r"[0-9a-f]{40}", full_sha) or full_sha != head or completed < start:
                 continue
-            candidates = []
+            current_reviews = []
             for review in reviews:
-                submitted = _parse_time(review.get("submitted_at"))
+                submitted = _review_submission(review)
                 if (_object(review["user"])["login"] in CODEX_LOGINS and review["commit_id"] == full_sha
-                    and review["state"] in TERMINAL_REVIEW_STATES and submitted is not None
-                    and start <= submitted <= completed):
-                    candidates.append(review)
-            if len(candidates) == 1:
-                summary.update(bound_head_sha=full_sha, bound_review_id=candidates[0]["id"],
-                               bound_ready_event_id=ready["id"], completed_at=completed.isoformat(),
-                               bound_trigger_at=start.isoformat())
+                    and submitted is not None and submitted >= start):
+                    current_reviews.append(review)
+            if any(r["author_login"] in CODEX_LOGINS and r["content"] == "eyes"
+                   and _parse_time(r["created_at"]) >= start for r in reactions):
+                continue
+            binding = {}
+            if (len(current_reviews) == 1 and current_reviews[0]["state"] in TERMINAL_REVIEW_STATES
+                and current_reviews[0]["user"]["login"] == summary["author_login"]
+                and _review_submission(current_reviews[0]) <= completed):
+                binding = {"bound_terminal_kind": "review", "bound_review_id": current_reviews[0]["id"]}
+            elif not current_reviews:
+                clean = [r for r in reactions if _clean_reaction_matches(
+                    r, summary, repo=repo, pr=pr, start=start, completed=completed)]
+                if len(clean) == 1:
+                    binding = {"bound_terminal_kind": "clean_reaction", "bound_reaction_id": clean[0]["id"]}
+            if binding:
+                summary.update(binding, bound_head_sha=full_sha, bound_ready_event_id=ready["id"],
+                               completed_at=completed.isoformat(), bound_trigger_at=start.isoformat())
         return result
 
     def collect(
@@ -639,6 +719,7 @@ class GitHubReadOnlyClient:
             # Issue events provide stable IDs/times for Ready transitions; unlike
             # the heterogeneous timeline they do not contain ID-less commits.
             timeline = self._pages(f"{prefix}/issues/{pr_number}/events")
+            reactions = self._pages(f"{prefix}/issues/{pr_number}/reactions")
             checks = self._check_pages(f"{prefix}/commits/{pr['head']['sha']}/check-runs")
             canonical_ci = self._canonical_ci(prefix, pr, canonical_workflow_path)
         except (KeyError, ValueError, RuntimeError) as exc:
@@ -670,8 +751,17 @@ class GitHubReadOnlyClient:
         for item in reviews:
             _text(item.get("commit_id"))
             _text(item.get("state"))
-            if _parse_time(item.get("submitted_at")) is None:
-                raise ValueError("review timestamp is malformed")
+            _review_submission(item)
+        for item in reactions:
+            _positive_id(item["id"])
+            _text(_object(item.get("user")).get("login"))
+            _text(item.get("content"))
+            if _parse_time(item.get("created_at")) is None:
+                raise ValueError("reaction timestamp is malformed")
+        normalized_reactions = [{"id": item["id"], "author_login": item["user"]["login"],
+                                 "content": item["content"], "created_at": item["created_at"],
+                                 "target_repo": canonical_repo, "target_pr": canonical_number}
+                                for item in reactions]
         for item in summaries:
             if any(_parse_time(item.get(key)) is None for key in ("created_at", "updated_at")):
                 raise ValueError("issue-comment timestamp is malformed")
@@ -696,6 +786,8 @@ class GitHubReadOnlyClient:
             if review_id not in review_by_id:
                 raise ValueError("inline comment has an unavailable review identity")
             reviewer = (review_by_id.get(review_id) or {}).get("user") or {}
+            if review_by_id[review_id]["state"] == "PENDING":
+                continue
             if review_id not in review_by_id or reviewer.get("login") not in CODEX_LOGINS or _object(comment.get("user")).get("login") not in CODEX_LOGINS:
                 continue
             findings.append({
@@ -709,6 +801,8 @@ class GitHubReadOnlyClient:
                 "commit_id": review_by_id[review_id]["commit_id"],
             })
         for review in reviews:
+            if review["state"] == "PENDING":
+                continue
             reviewer = review.get("user") or {}
             residual = _review_body_residual(str(review.get("body", "")))
             if reviewer.get("login") in CODEX_LOGINS and residual:
@@ -745,6 +839,12 @@ class GitHubReadOnlyClient:
                 comparison = _object(self._request("GET", f"{prefix}/compare/{disposition['repair']}...{pr['head']['sha']}"))
                 if comparison.get("status") not in {"ahead", "identical"}:
                     continue
+                if disposition["state"] == "FIXED":
+                    if finding["commit_id"] == disposition["repair"]:
+                        continue
+                    causal = _object(self._request("GET", f"{prefix}/compare/{finding['commit_id']}...{disposition['repair']}"))
+                    if causal.get("status") != "ahead":
+                        continue
                 if disposition["state"] == "FIXED" and finding["path"]:
                     old_blob = self._content_sha(prefix, finding["path"], finding["commit_id"])
                     repaired_blob = self._content_sha(prefix, finding["path"], disposition["repair"], allow_missing=True)
@@ -758,12 +858,15 @@ class GitHubReadOnlyClient:
 
         ready_events = [item for item in timeline if item["event"] == "ready_for_review"]
         bound_summaries = self._bind_summaries(prefix, pr["head"]["sha"], reviews, summaries, ready_events,
+                                             normalized_reactions, repo=canonical_repo, pr=canonical_number,
                                              trusted_requesters=trusted_requesters)
         # Complete all dependent reads before the final mutable-channel/PR check.
         if reviews != self._pages(f"{prefix}/pulls/{pr_number}/reviews") or review_comments != self._pages(f"{prefix}/pulls/{pr_number}/comments"):
             errors.append("review evidence changed during collection")
         if summaries != self._pages(f"{prefix}/issues/{pr_number}/comments") or timeline != self._pages(f"{prefix}/issues/{pr_number}/events"):
             errors.append("cycle/disposition evidence changed during collection")
+        if reactions != self._pages(f"{prefix}/issues/{pr_number}/reactions"):
+            errors.append("reaction evidence changed during collection")
         if checks != self._check_pages(f"{prefix}/commits/{pr['head']['sha']}/check-runs"):
             errors.append("CI evidence changed during collection")
         if canonical_ci != self._canonical_ci(prefix, pr, canonical_workflow_path):
@@ -801,6 +904,7 @@ class GitHubReadOnlyClient:
             ],
             "summaries": bound_summaries,
             "findings": findings,
+            "reactions": normalized_reactions,
             "checks": [
                 {
                     "name": item.get("name"),

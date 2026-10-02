@@ -62,6 +62,8 @@ class FakeGitHub(guard.GitHubReadOnlyClient):
         self.jobs = [dict(check, run_id=700, run_attempt=1) for check in self.checks]
         self.resolved = HEAD
         self.blobs = {OLD: "a" * 40, HEAD: "b" * 40}
+        self.comparisons = {(HEAD, HEAD): "identical", (OLD, HEAD): "ahead", (OLD, OLD): "identical"}
+        self.reactions = []
         self.paths = []
         self.drift = False
         self.pr_reads = 0
@@ -78,7 +80,7 @@ class FakeGitHub(guard.GitHubReadOnlyClient):
             return deepcopy(self.run)
         if route.endswith("/actions/runs/700/attempts/1/jobs"):
             return {"total_count": len(self.jobs), "jobs": deepcopy(self.jobs[(page-1)*100:page*100])}
-        if route.endswith("/pulls/370"):
+        if route.endswith(f"/pulls/{self.pr['number']}"):
             self.pr_reads += 1
             result = deepcopy(self.pr)
             if self.drift and self.pr_reads > 1:
@@ -87,19 +89,26 @@ class FakeGitHub(guard.GitHubReadOnlyClient):
         if "/contents/" in route:
             return {"type": "file", "sha": self.blobs[params["ref"][0]]}
         if "/compare/" in route:
-            return {"status": "identical" if route.endswith(HEAD + "..." + HEAD) else "ahead"}
+            pair = tuple(route.rsplit("/", 1)[1].split("..."))
+            assert pair in self.comparisons, f"undeclared commit relation: {pair}"
+            status = self.comparisons[pair]
+            if isinstance(status, Exception):
+                raise status
+            return {"status": status}
         if route.endswith("/check-runs"):
             page = int(params["page"][0])
             return {"total_count": len(self.checks), "check_runs": deepcopy(self.checks[(page-1)*100:page*100])}
         if "/commits/" in route:
             return {"sha": self.resolved}
         collection = None
-        if route.endswith("/pulls/370/reviews"):
+        if route.endswith(f"/pulls/{self.pr['number']}/reviews"):
             collection = self.reviews
-        elif route.endswith("/pulls/370/comments"):
+        elif route.endswith(f"/pulls/{self.pr['number']}/comments"):
             collection = self.inline
-        elif route.endswith("/issues/370/comments"):
+        elif route.endswith(f"/issues/{self.pr['number']}/comments"):
             collection = self.comments
+        elif route.endswith(f"/issues/{self.pr['number']}/reactions"):
+            collection = self.reactions
         elif route.endswith("/events"):
             collection = self.timeline
         if collection is None:
@@ -534,3 +543,274 @@ def test_delayed_terminal_summary_requires_unique_review_inside_current_cycle():
     assert evaluate(client.collect(REPO, 370)).state == 'HELD_PENDING_CODEX'
     client.reviews = [dict(client.reviews[0], submitted_at='2026-10-01T16:00:00Z')]
     assert evaluate(client.collect(REPO, 370)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def _collect(client):
+    return client.collect(REPO, 370, trusted_adjudicators=('mglpsw',), trusted_requesters=('mglpsw',))
+
+
+def _pending(client, *, bot=False, missing=False):
+    review = dict(id=42, state='PENDING', submitted_at=None, commit_id=HEAD,
+                  user=BOT if bot else {'login': 'human-reviewer'}, body='Unsubmitted draft finding')
+    if missing:
+        review.pop('submitted_at')
+    client.reviews.append(review)
+    client.inline.append({'id': 62, 'user': review['user'], 'body': 'Unsubmitted inline draft',
+                          'path': 'scripts/example.py', 'pull_request_review_id': 42,
+                          'commit_id': HEAD})
+
+
+def _clean_client():
+    client = FakeGitHub()
+    client.reviews = []
+    client.reactions = [{'id': 81, 'user': BOT, 'content': '+1',
+                         'created_at': '2026-10-01T16:21:24Z'}]
+    return client
+
+
+def _repair_client(*, body=False, repair='1' * 40, relation='ahead', current_relation='ahead'):
+    client = FakeGitHub()
+    client.predecessor(body=body)
+    client.blobs[repair] = 'c' * 40 if repair not in (OLD, HEAD) else client.blobs[repair]
+    client.comparisons[(OLD, repair)] = relation
+    client.comparisons[(repair, HEAD)] = current_relation
+    finding = '61'
+    if body:
+        residual = guard._review_body_residual(client.reviews[0]['body'])
+        finding = 'review-body:40:' + guard.hashlib.sha256(residual.encode()).hexdigest()
+    comment = disposition(finding)
+    comment['body'] = comment['body'].replace('Repair-Commit: ' + HEAD, 'Repair-Commit: ' + repair)
+    client.comments.append(comment)
+    return client
+
+
+def test_pending_human_null_or_missing_timestamp_does_not_invalidate_completed_cycle():
+    for missing in (False, True):
+        client = FakeGitHub()
+        _pending(client, missing=missing)
+        live = _collect(client)
+        assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+        assert live.data['findings'] == []
+        assert live.data['reviews'][-1]['submitted_at'] is None
+        assert live.data['revalidated'] is True
+
+
+def test_pending_codex_is_not_published_and_cannot_inherit_previous_completion():
+    for previous in (False, True):
+        client = FakeGitHub()
+        _pending(client, bot=True, missing=not previous)
+        if not previous:
+            client.reviews.pop(0)
+        live = _collect(client)
+        assert live.data['findings'] == []
+        assert evaluate(live).state == 'HELD_PENDING_CODEX'
+
+
+def test_submitted_reviews_still_require_valid_timestamps_in_collector_and_evaluator():
+    for timestamp in (None, '', 'bad', '2026-10-01T16:21:19', 5):
+        client = FakeGitHub()
+        client.reviews[0]['submitted_at'] = timestamp
+        assert evaluate(_collect(client)).state == 'HELD_CODEX_UNAVAILABLE'
+        live = _collect(FakeGitHub())
+        live.data['reviews'][0]['submitted_at'] = timestamp
+        assert evaluate(live).state == 'HELD_CODEX_UNAVAILABLE'
+    client = FakeGitHub()
+    client.reviews[0].pop('submitted_at')
+    assert evaluate(_collect(client)).state == 'HELD_CODEX_UNAVAILABLE'
+
+
+def test_fixed_requires_strict_finding_to_repair_and_repair_to_head_relations():
+    for relation, current_relation in (('behind', 'ahead'), ('diverged', 'ahead'),
+                                       ('ahead', 'diverged'), ('ahead', 'behind')):
+        for body in (False, True):
+            client = _repair_client(body=body, relation=relation, current_relation=current_relation)
+            assert evaluate(_collect(client)).state == 'HELD_WITH_MATERIAL_FINDINGS'
+    for body in (False, True):
+        client = _repair_client(body=body, repair=OLD, relation='identical')
+        assert evaluate(_collect(client)).state == 'HELD_WITH_MATERIAL_FINDINGS'
+        client = _repair_client(body=body, relation=RuntimeError('ancestry unavailable'))
+        assert evaluate(_collect(client)).state == 'HELD_CODEX_UNAVAILABLE'
+
+
+def test_fixed_uses_immutable_review_subject_and_not_publication_chronology():
+    for body in (False, True):
+        client = _repair_client(body=body)
+        client.reviews[0]['submitted_at'] = '2026-10-01T16:19:00Z'
+        request = client._request
+
+        def older_repair_date(method, path, payload=None):
+            result = request(method, path, payload)
+            if '/compare/' in path:
+                result['commits'] = [{'commit': {'author': {'date': '2026-10-01T16:18:00Z'}}}]
+            return result
+
+        client._request = older_repair_date
+        live = _collect(client)
+        assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+        assert live.data['findings'][0]['commit_id'] == OLD
+        assert any('/compare/' + OLD + '...' + '1' * 40 in p for p in client.paths)
+
+
+def test_justified_dismissal_does_not_claim_a_post_finding_repair():
+    for body in (False, True):
+        client = _repair_client(body=body, repair=OLD, relation='identical')
+        client.comments[-1]['body'] = client.comments[-1]['body'].replace(' FIXED\n', ' DISMISSED\n')
+        client.comments[-1]['body'] += '\nJustification: proposition rejected by the positive control, no causal repair claimed.'
+        assert evaluate(_collect(client)).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_fixture_never_invents_undeclared_ancestry():
+    client = FakeGitHub()
+    with unittest.TestCase().assertRaisesRegex(AssertionError, 'undeclared commit relation'):
+        client._request('GET', '/compare/' + '2' * 40 + '...' + HEAD)
+
+
+def test_foreign_homonymous_checks_do_not_change_canonical_result_or_order():
+    for reverse in (False, True):
+        client = FakeGitHub()
+        foreign = dict(client.checks[0], id=999, check_suite={'id': 801})
+        client.checks.append(foreign)
+        if reverse:
+            client.checks.reverse()
+        live = _collect(client)
+        assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+        assert len(live.data['checks']) == 3  # retain foreign evidence for diagnostics
+        client.checks = [foreign, next(c for c in client.checks if c['name'] == CHECKS[1])]
+        assert evaluate(_collect(client)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_foreign_green_check_cannot_replace_failed_or_pending_canonical_job():
+    for status, conclusion in (('completed', 'failure'), ('in_progress', None)):
+        client = FakeGitHub()
+        client.checks.append(dict(client.checks[0], id=999, check_suite={'id': 801}))
+        client.checks[0].update(status=status, conclusion=conclusion)
+        client.jobs[0].update(status=status, conclusion=conclusion)
+        assert evaluate(_collect(client)).state == 'HELD_PENDING_REQUIRED_CI'
+
+
+def test_canonical_duplicate_or_incomplete_suite_provenance_remains_held():
+    for suite in ({'id': 800}, None, {}, {'id': '801'}):
+        client = FakeGitHub()
+        client.checks.append(dict(client.checks[0], id=999, check_suite=suite))
+        assert evaluate(_collect(client)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_clean_connector_completion_without_formal_review_collects_and_binds_reaction():
+    client = _clean_client()
+    live = _collect(client)
+    assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    assert live.data['reviews'] == []
+    row = live.data['summaries'][0]
+    assert row['bound_reaction_id'] == 81
+    assert 'bound_review_id' not in row
+    assert row['bound_head_sha'] == HEAD and row['bound_ready_event_id'] == 31
+    assert sum('/issues/370/reactions?' in p for p in client.paths) == 2
+
+
+def test_clean_reaction_requires_new_authenticated_current_completion():
+    for defect in ('old', 'before_completion', 'foreign', 'other_connector', 'wrong_head',
+                   'running', 'missing_summary', 'missing_reaction', 'ambiguous', 'eyes'):
+        client = _clean_client()
+        if defect == 'old': client.reactions[0]['created_at'] = '2026-10-01T16:15:00Z'
+        if defect == 'before_completion': client.reactions[0]['created_at'] = '2026-10-01T16:20:00Z'
+        if defect == 'foreign': client.reactions[0]['user'] = {'login': 'mglpsw'}
+        if defect == 'other_connector': client.reactions[0]['user'] = {'login': 'openai-codex[bot]'}
+        if defect == 'wrong_head': client.resolved = OLD
+        if defect == 'running': client.comments[0]['body'] = summary().replace('Completed', 'Running')
+        if defect == 'missing_summary': client.comments = []
+        if defect == 'missing_reaction': client.reactions = []
+        if defect == 'ambiguous': client.reactions.append(dict(client.reactions[0], id=82))
+        if defect == 'eyes': client.reactions.append(dict(client.reactions[0], id=82, content='eyes'))
+        assert evaluate(_collect(client)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION', defect
+
+
+def test_clean_reaction_cannot_close_findings_or_survive_a_new_required_cycle():
+    client = _clean_client()
+    client.predecessor()
+    assert evaluate(_collect(client)).state == 'HELD_WITH_MATERIAL_FINDINGS'
+    client.comments.append(disposition('61'))
+    assert evaluate(_collect(client)).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    client.comments.append({'id': 52, 'user': {'login': 'mglpsw'}, 'body': '@codex review',
+                            'created_at': '2026-10-01T16:22:00Z', 'updated_at': '2026-10-01T16:22:00Z'})
+    assert evaluate(_collect(client)).state == 'HELD_PENDING_CODEX'
+    client = _clean_client()
+    _pending(client, bot=True)
+    assert evaluate(_collect(client)).state == 'HELD_PENDING_CODEX'
+
+
+def test_clean_reaction_target_and_shape_are_checked_and_surface_revalidated():
+    for defect in ('foreign_target', 'bad_time', 'drift'):
+        client = _clean_client()
+        if defect == 'bad_time': client.reactions[0]['created_at'] = None
+        if defect == 'drift':
+            request = client._request
+            reads = []
+
+            def changing(method, path, payload=None):
+                result = request(method, path, payload)
+                if '/reactions?' in path:
+                    reads.append(path)
+                    if len(reads) > 1: result = []
+                return result
+
+            client._request = changing
+        live = _collect(client)
+        if defect == 'foreign_target': live.data['reactions'][0]['target_pr'] = 371
+        assert evaluate(live).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+
+
+def test_clean_reaction_later_page_and_reused_summary_container_are_observed():
+    client = _clean_client()
+    client.reactions = [dict(client.reactions[0], id=1000+i, content='heart',
+                             user={'login': 'unrelated'}) for i in range(100)] + client.reactions
+    assert evaluate(_collect(client)).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    assert any('/reactions?per_page=100&page=2' in p for p in client.paths)
+    client.timeline.append({'id': 32, 'event': 'ready_for_review', 'created_at': '2026-10-01T16:22:00Z'})
+    assert evaluate(_collect(client)).state != 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    client.comments[0]['body'] = summary(completed='2026-10-01T16:23:00Z')
+    client.comments[0]['updated_at'] = '2026-10-01T16:23:01Z'
+    client.reactions[-1]['created_at'] = '2026-10-01T16:23:01Z'
+    live = _collect(client)
+    assert evaluate(live).state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    assert live.data['summaries'][0]['id'] == 51 and live.data['summaries'][0]['bound_ready_event_id'] == 32
+
+
+def test_composed_clean_path_requires_completion_ancestry_and_canonical_job():
+    for defect in (None, 'conclusion', 'ancestry', 'job'):
+        client = _repair_client()
+        client.reviews.pop()  # current cycle has no formal review
+        client.reactions = _clean_client().reactions
+        _pending(client)  # a legitimate unrelated human draft
+        client.checks.append(dict(client.checks[0], id=999, check_suite={'id': 801}))
+        if defect == 'conclusion': client.comments[0]['body'] = summary().replace('Completed', 'Running')
+        if defect == 'ancestry': client.comparisons[(OLD, '1' * 40)] = 'behind'
+        if defect == 'job': client.checks.pop(0)
+        live = _collect(client)
+        state = evaluate(live).state
+        assert (state == 'READY_FOR_HUMAN_INTEGRATION_DECISION') == (defect is None), (defect, state)
+
+
+def test_historical_371_connector_format_with_synthetic_sufficient_lifecycle_and_ci():
+    # Historical connector values, synthetic unmerged lifecycle/CI. #371 is merged:
+    # this fixture never represents a LIVE-ready replay or promotion of that PR.
+    client = _clean_client()
+    head = '420bf76c15a76eaf14ee333e4ce52e9ef0d372b0'
+    base = 'ea6a6584b7a4735a753e9a2b61f8f96cb4e3494f'
+    client.pr.update(number=371, head={'sha': head}, base={'sha': base, 'repo': {'full_name': REPO}})
+    client.run['head_sha'] = head
+    client.run['pull_requests'] = [{'number': 371, 'head': {'sha': head}, 'base': {'sha': base},
+                                    'url': f'https://api.github.com/repos/{REPO}/pulls/371'}]
+    for check in client.checks + client.jobs:
+        check['head_sha'] = head
+    client.resolved = head
+    client.timeline = [{'id': 32308791745, 'event': 'ready_for_review',
+                        'created_at': '2026-10-02T04:23:12Z'}]
+    client.comments[0].update(id=5945118945, body=summary(ref='420bf76', completed='2026-10-02T04:26:55.420911Z'),
+                              created_at='2026-10-02T03:33:33Z', updated_at='2026-10-02T04:26:58Z')
+    client.reactions[0].update(id=540159791, created_at='2026-10-02T04:27:00Z')
+    live = client.collect(REPO, 371, trusted_requesters=('mglpsw',))
+    result = guard.evaluate_evidence(live, expected_repo=REPO, expected_pr=371,
+                                     expected_head=head, expected_base=base, required_checks=CHECKS)
+    assert result.state == 'READY_FOR_HUMAN_INTEGRATION_DECISION'
+    assert result.merge_authorized is False
+    assert live.data['reviews'] == []

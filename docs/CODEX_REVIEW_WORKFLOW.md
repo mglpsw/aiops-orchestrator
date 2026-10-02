@@ -164,7 +164,7 @@ all material findings have an explicit disposition.
 The local, read-only guard is
 `scripts/github_codex_post_ready_guard.py`. It consumes GitHub lifecycle,
 review, comment, thread, and check evidence; binds the observation to the
-expected repository, PR, base, HEAD, Ready event, reviewer identity, and
+expected repository, PR, base, HEAD, Ready event, connector identity, and
 required checks; and returns a non-positive state for missing, stale,
 ambiguous, unavailable, or finding-bearing evidence. It never performs
 Ready, merge, thread resolution, or policy changes. A positive result is
@@ -214,8 +214,9 @@ final PR identity read. This policy does not import any v2 module or schema.
 readiness, even if it contains clean checks or self-declared live flags.
 Only authenticated collection with final revalidation can yield the positive
 terminal. The connector's abbreviated commit is resolved by GitHub to a full
-SHA (never compared as a prefix), and its completion row is correlated with
-one exact-head review after the latest Ready/manual trigger. Collection
+SHA (never compared as a prefix). Its completion row is bound after the latest
+Ready/authorized manual trigger to either one submitted exact-head review or
+a clean connector completion with a new reaction on the PR, as described below. Collection
 includes all check-run pages and rejects malformed or incomplete members.
 
 Inline findings retain their comment ID. Body-only findings use
@@ -230,7 +231,14 @@ Repair-Commit: <full-repair-commit>
 Evidence: <causal repair and regression evidence or justified adjudication>
 ```
 
-The repair must be an ancestor of the subject. An inline `FIXED` disposition
+The repair must be an ancestor of the subject or equal to it. For `FIXED`,
+the immutable commit reviewed in the originating review must also be a strict
+ancestor of the repair, including body-only findings. GitHub comparisons use
+the full SHAs for both relations; relocated comment positions and commit/review
+publication timestamps do not establish ancestry. Pre-finding, identical,
+divergent and unverifiable repairs cannot establish `FIXED`. This post-finding
+repair condition does not apply to a justified `DISMISSED` disposition.
+An inline `FIXED` disposition
 also requires the affected file's blob to differ from its finding-time blob
 at both repair and current HEAD. Changed bytes alone never prove a repair:
 predecessor findings remain blocking without authorized disposition, even
@@ -243,8 +251,35 @@ Codex. It is separate from `--trusted-adjudicator` and is never inferred from
 PR text, comments or an author's disposition authority. With a manual command
 and no requester policy, cycle binding remains held; with an explicit policy,
 commands from other accounts cannot supersede the current cycle. Terminal
-summary binding requires one exact-head review inside the current authenticated
-trigger-to-completion window, without an arbitrary one-minute latency cutoff.
+summary binding uses the current authenticated trigger-to-completion window,
+without an arbitrary one-minute latency cutoff.
+
+Review metadata is validated by state. A `PENDING` draft may have absent/null
+`submitted_at`; neither its body nor its inline drafts create published findings.
+Submitted reviews still require valid submission metadata. An unrelated human
+draft does not invalidate an otherwise qualified Codex cycle. A current Codex
+draft remains `HELD_PENDING_CODEX` and cannot inherit an earlier completion.
+This observation guard does not replace the repository's independent approval gates.
+
+The connector has two observed terminal formats: a submitted review plus its
+completion row, or a clean completion row plus a new `+1` reaction without a
+formal review. The second format requires the same connector login on both
+surfaces, a complete authenticated read of reactions on the expected PR object,
+one uniquely matching reaction created after the current trigger and at/after
+completion, and resolution of the row's ref to the exact full HEAD. An old or
+foreign reaction, Completed alone, or a thumbs-up alone never qualifies. No
+review ID or empty COMMENTED review is fabricated. A current draft, an active
+connector `eyes` reaction, a later required request or an ambiguous binding stays
+held. Reusing a summary comment ID does not reuse the earlier execution row.
+Both formats require all material findings to be dispositioned, canonical CI,
+complete collection and final review/comment/reaction/CI/PR revalidation.
+
+Required-check uniqueness is evaluated after the independent canonical run/suite
+selection. Proven foreign-suite homonyms remain diagnostic evidence and cannot
+replace a missing, failed or pending canonical job. Unknown suite provenance,
+duplicates within the canonical suite, ambiguous canonical runs and incorrect
+job membership/attempt/base remain non-positive; result order and green status
+never choose the authoritative domain.
 
 Only root inline review comments create findings. Replies remain collected for
 explicit dispositions. A 404 for a predecessor's path at the known current HEAD
