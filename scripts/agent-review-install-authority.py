@@ -121,8 +121,8 @@ for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):
 
 # R3: Fail closed on remaining staging references
 for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):
-    for f in files:
-        p = os.path.join(root, f)
+    for entry in list(dirs) + list(files):
+        p = os.path.join(root, entry)
         if os.path.islink(p):
             try:
                 target_link = os.readlink(p)
@@ -132,6 +132,8 @@ for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):
             if stage_dir in target_link:
                 print(f"Blocked: symlink {ascii(p)} targets staging path {ascii(target_link)}", file=sys.stderr)
                 sys.exit(2)
+            continue
+        if entry in dirs:
             continue
         try:
             with open(p, "rb") as fp:
@@ -150,9 +152,15 @@ if os.path.isdir(bin_dir):
     except OSError as err:
         print(f"Blocked: cannot list bin directory {ascii(bin_dir)} during R4 census: {ascii(str(err))}", file=sys.stderr)
         sys.exit(2)
+    canonical_pythons = (
+        os.fsencode(os.path.join(final_dir, "bin", "python3")),
+        os.fsencode(os.path.join(final_dir, "bin", "python")),
+        os.fsencode(os.path.join(final_dir, "bin", f"python{sys.version_info[0]}.{sys.version_info[1]}")),
+    )
+    python_binaries = {"python", "python3", f"python{sys.version_info[0]}.{sys.version_info[1]}"}
     for f in bin_files:
         p = os.path.join(bin_dir, f)
-        if os.path.islink(p) or not os.path.isfile(p):
+        if os.path.islink(p) or not os.path.isfile(p) or f in python_binaries:
             continue
         try:
             with open(p, "rb") as fp:
@@ -167,6 +175,10 @@ if os.path.isdir(bin_dir):
             shebang_len = len(first_line.rstrip(b"\r\n"))
             if shebang_len > 127:
                 print(f"Blocked: shebang in {ascii(p)} exceeds AgentReviewShebangPolicyV1 limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
+                sys.exit(2)
+            shebang_target = first_line[2:].strip()
+            if shebang_target not in canonical_pythons:
+                print(f"Blocked: noncanonical shebang {ascii(first_line)} in {ascii(p)}; must target canonical venv Python", file=sys.stderr)
                 sys.exit(2)
 """
 
@@ -305,10 +317,10 @@ def drain_children(force=False):
                 time.sleep(0.02)
 
 
-def run_phase(argv, *, cleanup=False):
+def run_phase(argv, *, cleanup=False, env=None):
     if cancel_signal and not cleanup:
         return 128 + cancel_signal
-    proc = subprocess.Popen(argv, start_new_session=True)
+    proc = subprocess.Popen(argv, start_new_session=True, env=env)
     # Cleanup is admitted even after cancellation, with a short opportunity to
     # finish its private removal. It remains an owned, supervised worker.
     deadline = time.monotonic() + 1.0 if cleanup and cancel_signal else None
@@ -366,15 +378,20 @@ def main():
                 publication_reason = f"staging setup failed: chmod ({error})"
                 raise
 
+            stage_python = os.path.join(stage_dir, "bin", "python3")
+            pip_env = dict(os.environ)
+            pip_env["PIP_CONFIG_FILE"] = "/dev/null"
+            for k in ("PIP_TARGET", "PIP_PREFIX", "PYTHONPATH"):
+                pip_env.pop(k, None)
+
             phases = (
-                [bootstrap, "-I", "-S", "-m", "venv", stage_dir],
-                ["env", "PIP_CONFIG_FILE=/dev/null", os.path.join(stage_dir, "bin/python3"),
-                 "-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps", "-r", lock_file],
-                [bootstrap, "-I", "-S", "-c", PREPARATION_CODE, stage_dir, final_dir],
+                ([bootstrap, "-I", "-S", "-m", "venv", stage_dir], None),
+                ([stage_python, "-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps", "-r", lock_file], pip_env),
+                ([bootstrap, "-I", "-S", "-c", PREPARATION_CODE, stage_dir, final_dir], None),
             )
             primary = 0
-            for argv in phases:
-                primary = run_phase(argv)
+            for argv, phase_env in phases:
+                primary = run_phase(argv, env=phase_env)
                 if primary:
                     publication_reason = "preparation failed or cancelled"
                     break

@@ -458,8 +458,9 @@ def test_countermodel_l2_ambient_pythonpath_cannot_shadow_pip(tmp_path: Path) ->
 def test_install_script_invokes_pip_in_isolated_mode() -> None:
     """M3: scripts/install-agent-review-toolrepo.sh invokes pip with PIP_CONFIG_FILE=/dev/null and --isolated."""
     script_text = INSTALL_AUTHORITY.read_text(encoding="utf-8")
-    assert '"PIP_CONFIG_FILE=/dev/null", os.path.join(stage_dir, "bin/python3")' in script_text
-    assert '"-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps"' in script_text
+    assert 'pip_env["PIP_CONFIG_FILE"] = "/dev/null"' in script_text
+    assert 'stage_python = os.path.join(stage_dir, "bin", "python3")' in script_text
+    assert '[stage_python, "-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps", "-r", lock_file]' in script_text
 
 
 def test_countermodel_m3_pip_isolation_ignores_pip_target(tmp_path: Path) -> None:
@@ -830,10 +831,10 @@ def test_supervisor_uses_qualified_bootstrap_runtime(tmp_path: Path, explicit_ov
     # unchanged real worker execution, never a successful fake supervisor.
     argv_log = tmp_path / "phase-arguments.jsonl"
     installer = _disposable_authority(tmp_path,
-        "    proc = subprocess.Popen(argv, start_new_session=True)\n",
+        "    proc = subprocess.Popen(argv, start_new_session=True, env=env)\n",
         f"    with open({str(argv_log)!r}, 'a') as observation:\n"
         "        observation.write(__import__('json').dumps(argv) + '\\n')\n"
-        "    proc = subprocess.Popen(argv, start_new_session=True)\n")
+        "    proc = subprocess.Popen(argv, start_new_session=True, env=env)\n")
     result = subprocess.run(
         ["bash", "-x", str(installer), str(target)],
         env=env, capture_output=True, text=True, check=False,
@@ -848,9 +849,8 @@ def test_supervisor_uses_qualified_bootstrap_runtime(tmp_path: Path, explicit_ov
     assert f"+ {selected} -I -S -c '" in result.stderr
     assert "PR_SET_CHILD_SUBREAPER" in result.stderr
     phases = [json.loads(line) for line in argv_log.read_text().splitlines()]
-    pip_phase = next(argv for argv in phases if argv[:2] == ["env", "PIP_CONFIG_FILE=/dev/null"])
-    assert re.search(r"/\.agent_review_stage\.[^ /]+/bin/python3$", pip_phase[2])
-    assert pip_phase[3:10] == ["-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps"]
+    pip_phase = next(argv for argv in phases if re.search(r"/\.agent_review_stage\.[^ /]+/bin/python3$", argv[0]))
+    assert pip_phase[1:8] == ["-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps"]
     runtime = subprocess.run(
         [str(target / "bin" / "python3"), "-c",
          "import json,sys,pydantic,yaml; print(json.dumps({'prefix':sys.prefix,'base_prefix':sys.base_prefix}))"],
@@ -2684,9 +2684,11 @@ if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
     stage = sys.argv[5]
     os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
     py_bin = os.path.join(stage, "bin", "python3")
-    with open(py_bin, "w") as fp:
+    harness_file = os.path.join(os.path.dirname(stage), "consumer_harness_py.sh")
+    with open(harness_file, "w") as fp:
         fp.write({_path_harness_python(host_py, tmp_path / "harness-pip.args")!r})
-    os.chmod(py_bin, 0o755)
+    os.chmod(harness_file, 0o755)
+    os.symlink(harness_file, py_bin)
 
     # Add activation scripts (DISCARDABLE)
     for act in ["activate", "activate.csh", "activate.fish", "Activate.ps1"]:
@@ -2767,8 +2769,10 @@ def _controlled_bootstrap(tmp_path: Path, before_prepare: str = "") -> Path:
         "if sys.argv[1:5] != ['-I','-S','-m','venv']:\n"
         "    os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n"
         "stage=Path(sys.argv[5])\n(stage/'bin').mkdir(exist_ok=True)\n"
-        f"(stage/'bin'/'python3').write_text({_path_harness_python(sys.executable, tmp_path/'pip-arguments.txt')!r})\n"
-        "(stage/'bin'/'python3').chmod(0o755)\n"
+        "harness = stage.parent / 'path-harness-python.sh'\n"
+        f"harness.write_text({_path_harness_python(sys.executable, tmp_path/'pip-arguments.txt')!r})\n"
+        "harness.chmod(0o755)\n"
+        "(stage/'bin'/'python3').symlink_to(harness)\n"
         "(stage/'pyvenv.cfg').write_text('controlled projection; not a real venv')\n" + before_prepare
     )
     worker = tmp_path / "controlled-bootstrap.py"
@@ -3555,3 +3559,284 @@ def test_ablation_oc_census_complete_proves_anti_vacuity(tmp_path: Path) -> None
                 p.chmod(0o755)
             except OSError:
                 pass
+
+
+def test_countermodel_r3_directory_symlink_rejected(tmp_path: Path) -> None:
+    """CM-R3-DIR-SYMLINK (Finding 4173778176):
+    os.walk classifies a directory symlink into `dirs`.
+    Predecessor R3 only checked `files`, so directory symlinks pointing to
+    the staging path survived preparation and were published.
+    Fail-closed requirement: R3 must inspect symlinks in both dirs and files,
+    rejecting any symlink targeting the staging directory with exit 2.
+    """
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "real_sub = stage / 'real_subdir'\n"
+        "real_sub.mkdir()\n"
+        "dir_symlink = stage / 'dir_symlink'\n"
+        "dir_symlink.symlink_to(real_sub, target_is_directory=True)\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, f"Directory symlink must fail closed with exit 2; got {result.returncode}\nstderr: {result.stderr.decode()}"
+    assert b"Blocked: symlink" in result.stderr
+    assert b"targets staging path" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists()
+
+
+def test_countermodel_r4_noncanonical_shebang_rejected(tmp_path: Path) -> None:
+    """CM-R4-NONCANONICAL-SHEBANG (Finding 4173778178):
+    Predecessor R4 accepted any shebang <= 127 bytes not containing stage_dir,
+    permitting noncanonical interpreters (e.g. #!/bin/sh or #!/usr/bin/env python).
+    Fail-closed requirement: R4 must compare shebang target against canonical
+    final-venv Python interpreter and reject foreign shebangs with exit 2.
+    """
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "foreign_tool = stage / 'bin' / 'foreign_tool'\n"
+        "foreign_tool.write_bytes(b'#!/bin/sh\\necho foreign\\n')\n"
+        "foreign_tool.chmod(0o755)\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, f"Foreign shebang must fail closed with exit 2; got {result.returncode}\nstderr: {result.stderr.decode()}"
+    assert b"Blocked: noncanonical shebang" in result.stderr
+    assert b"must target canonical venv Python" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists()
+
+
+def test_countermodel_exec_ambient_helper_rejected(tmp_path: Path) -> None:
+    """CM-EXEC-AMBIENT-HELPER (Finding 4173778184):
+    Predecessor installer invoked pip via `['env', 'PIP_CONFIG_FILE=/dev/null', stage_python, ...]`,
+    resolving `env` from ambient PATH. A rogue `env` ahead on PATH could intercept execution.
+    Requirement: installer must invoke stage_python directly and pass PIP_CONFIG_FILE via
+    subprocess environment mapping, never executing ambient PATH helpers.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    interception_marker = tmp_path / "ambient_env_intercepted.marker"
+    rogue_env = fake_bin / "env"
+    rogue_env.write_text(
+        f"#!/bin/sh\n"
+        f"echo 'INTERCEPTED' > {shlex.quote(str(interception_marker))}\n"
+        f"exit 0\n"
+    )
+    rogue_env.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+    )
+    assert not interception_marker.exists(), (
+        "Vulnerability reproduced: ambient PATH helper 'env' was executed by installer"
+    )
+
+
+def test_ablation_r3_directory_symlink_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Proves anti-vacuity for OC-CENSUS-COMPLETE-OR-FAIL (Finding 4173778176):
+    Ablating the R3 directory symlink inspection (reverting to predecessor loop
+    over files only) silently permits a directory symlink targeting the staging
+    directory to survive and commit into the final target.
+    """
+    fixed_r3_dirs = (
+        "for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):\n"
+        "    for entry in list(dirs) + list(files):\n"
+    )
+    ablated_r3_dirs = (
+        "for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):\n"
+        "    for entry in files:  # Reverted: predecessor omitted directory symlink inspection\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_r3_dirs, ablated_r3_dirs)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "real_sub = stage / 'real_subdir'\n"
+        "real_sub.mkdir()\n"
+        "dir_symlink = stage / 'dir_symlink'\n"
+        "dir_symlink.symlink_to(real_sub, target_is_directory=True)\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 0, "ablated mutant must exhibit predecessor silent publish escape for directory symlinks"
+    assert b"publication=COMMITTED" in result.stderr
+    assert target.exists()
+
+
+def test_ablation_r4_canonical_shebang_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Proves anti-vacuity for OC-ENFORCEMENT-CLOSURE (Finding 4173778178):
+    Ablating the R4 canonical shebang check (reverting to predecessor which only
+    checked staging path and length <= 127) silently accepts foreign shebangs
+    and commits them into the final target.
+    """
+    fixed_r4_check = (
+        "            shebang_target = first_line[2:].strip()\n"
+        "            if shebang_target not in canonical_pythons:\n"
+        "                print(f\"Blocked: noncanonical shebang {ascii(first_line)} in {ascii(p)}; must target canonical venv Python\", file=sys.stderr)\n"
+        "                sys.exit(2)\n"
+    )
+    ablated_r4_check = (
+        "            # Reverted: predecessor accepted foreign shebangs (e.g. #!/bin/sh)\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_r4_check, ablated_r4_check)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "foreign_tool = stage / 'bin' / 'foreign_tool'\n"
+        "foreign_tool.write_bytes(b'#!/bin/sh\\necho foreign\\n')\n"
+        "foreign_tool.chmod(0o755)\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 0, "ablated mutant must exhibit predecessor silent publish escape for foreign shebangs"
+    assert b"publication=COMMITTED" in result.stderr
+    assert target.exists()
+
+
+def test_ablation_exec_ambient_helper_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Proves anti-vacuity for OC-AMBIENT-EXECUTABLE-IDENTITY (Finding 4173778184):
+    Ablating the direct execution (reverting to predecessor `['env', ...]`) causes
+    the installer to execute the ambient PATH helper rather than the validated interpreter.
+    """
+    import shlex
+    fixed_pip_invocation = (
+        "            phases = (\n"
+        "                ([bootstrap, \"-I\", \"-S\", \"-m\", \"venv\", stage_dir], None),\n"
+        "                ([stage_python, \"-I\", \"-m\", \"pip\", \"--isolated\", \"install\", \"--require-hashes\", \"--no-deps\", \"-r\", lock_file], pip_env),\n"
+        "                ([bootstrap, \"-I\", \"-S\", \"-c\", PREPARATION_CODE, stage_dir, final_dir], None),\n"
+        "            )\n"
+    )
+    ablated_pip_invocation = (
+        "            phases = (\n"
+        "                ([bootstrap, \"-I\", \"-S\", \"-m\", \"venv\", stage_dir], None),\n"
+        "                ([\"env\", \"PIP_CONFIG_FILE=/dev/null\", stage_python, \"-I\", \"-m\", \"pip\", \"--isolated\", \"install\", \"--require-hashes\", \"--no-deps\", \"-r\", lock_file], None),\n"
+        "                ([bootstrap, \"-I\", \"-S\", \"-c\", PREPARATION_CODE, stage_dir, final_dir], None),\n"
+        "            )\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_pip_invocation, ablated_pip_invocation)
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    interception_marker = tmp_path / "ambient_env_intercepted.marker"
+    rogue_env = fake_bin / "env"
+    rogue_env.write_text(
+        f"#!/bin/sh\n"
+        f"echo 'INTERCEPTED' > {shlex.quote(str(interception_marker))}\n"
+        f"exit 0\n"
+    )
+    rogue_env.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=env,
+        capture_output=True,
+    )
+    assert interception_marker.exists(), "ablated mutant must execute ambient PATH helper 'env'"
+
+
+def test_positive_r3_valid_directory_structure_accepted(tmp_path: Path) -> None:
+    """Positive control for R3: regular subdirectories and files without staging
+    references are admitted and committed cleanly.
+    """
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "valid_sub = stage / 'valid_subdir' / 'nested'\n"
+        "valid_sub.mkdir(parents=True)\n"
+        "(valid_sub / 'data.txt').write_text('clean content')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 0, f"Valid directory structure must succeed; got {result.returncode}\nstderr: {result.stderr.decode()}"
+    assert b"publication=COMMITTED" in result.stderr
+    assert (target / "valid_subdir" / "nested" / "data.txt").is_file()
+
+
+def test_positive_r4_canonical_shebang_and_binary_accepted(tmp_path: Path) -> None:
+    """Positive control for R4: scripts with canonical venv shebangs and ELF binaries
+    are admitted and committed cleanly.
+    """
+    target = tmp_path / "target"
+    expected_shebang = f"#!{target}/bin/python3\n"
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        f"(stage / 'bin' / 'canonical_tool').write_bytes({expected_shebang.encode()!r} + b'print(42)\\n')\n"
+        f"(stage / 'bin' / 'canonical_tool').chmod(0o755)\n"
+        f"(stage / 'bin' / 'elf_tool').write_bytes(b'\\x7fELFfakebinary')\n"
+        f"(stage / 'bin' / 'elf_tool').chmod(0o755)\n",
+    )
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 0, f"Canonical shebang and ELF binary must succeed; got {result.returncode}\nstderr: {result.stderr.decode()}"
+    assert b"publication=COMMITTED" in result.stderr
+    assert (target / "bin" / "canonical_tool").is_file()
+    assert (target / "bin" / "elf_tool").is_file()
+
+
+def test_positive_exec_stage_python_direct_with_pip_env(tmp_path: Path) -> None:
+    """Positive control for ambient executable identity: installer succeeds with
+    status 0 and commits publication even when rogue `env` exists on PATH,
+    confirming direct invocation of stage_python without relying on ambient PATH helpers.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    interception_marker = tmp_path / "ambient_env_intercepted.marker"
+    rogue_env = fake_bin / "env"
+    rogue_env.write_text(
+        f"#!/bin/sh\n"
+        f"echo 'INTERCEPTED' > {shlex.quote(str(interception_marker))}\n"
+        f"exit 99\n"
+    )
+    rogue_env.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+    )
+    assert result.returncode == 0, f"Installer must succeed; got {result.returncode}\nstderr: {result.stderr.decode()}"
+    assert b"publication=COMMITTED" in result.stderr
+    assert not interception_marker.exists(), "Rogue env on PATH must not be executed"
+    assert target.exists()
