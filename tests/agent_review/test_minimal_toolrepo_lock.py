@@ -800,6 +800,91 @@ def test_install_script_normalizes_relative_target_before_venv_creation(tmp_path
 
 
 @pytest.mark.requires_network
+@pytest.mark.parametrize("explicit_override", [True, False], ids=["valid-override-bad-default", "absent-override-good-default"])
+def test_supervisor_uses_qualified_bootstrap_runtime(tmp_path: Path, explicit_override: bool) -> None:
+    """Q-EXEC-01: exercise the real supervisor, private pip and published runtime."""
+    import json
+    import shlex
+
+    assert sys.version_info[:2] == (3, 11), "this installation control requires CPython 3.11"
+    ambient_bin = tmp_path / "ambient"
+    ambient_bin.mkdir()
+    ambient_python = ambient_bin / "python3"
+    marker = tmp_path / "ambient-invocations"
+    env = os.environ.copy()
+    env.pop("AGENT_REVIEW_PYTHON", None)
+    env["PATH"] = str(ambient_bin) + os.pathsep + env["PATH"]
+    if explicit_override:
+        env["AGENT_REVIEW_PYTHON"] = sys.executable
+        ambient_python.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$@\" >> " + shlex.quote(str(marker)) + "\n"
+            "exit 97\n", encoding="utf-8",
+        )
+        ambient_python.chmod(0o755)
+    else:
+        ambient_python.symlink_to(sys.executable)
+
+    target = tmp_path / "runtime"
+    result = subprocess.run(
+        ["bash", "-x", str(INSTALL_SCRIPT), str(target)],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    (tmp_path / "installer.stdout").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "installer.stderr").write_text(result.stderr, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists(), "the explicit bootstrap runtime must not be replaced by PATH/python3"
+    selected = sys.executable if explicit_override else "python3"
+    # The trace witnesses execution of the production wrapper by the selected
+    # real interpreter; a double returning OK cannot satisfy this control.
+    assert f"+ {selected} -I -S -c '" in result.stderr
+    assert "PR_SET_CHILD_SUBREAPER" in result.stderr
+    assert re.search(r"/\.agent_review_stage\.[^ /]+/bin/python3 -I -m pip --isolated install", result.stderr)
+    runtime = subprocess.run(
+        [str(target / "bin" / "python3"), "-c",
+         "import json,sys,pydantic,yaml; print(json.dumps({'prefix':sys.prefix,'base_prefix':sys.base_prefix}))"],
+        capture_output=True, text=True, check=False,
+    )
+    assert runtime.returncode == 0, runtime.stderr
+    identity = json.loads(runtime.stdout)
+    assert identity["prefix"] == str(target)
+    assert identity["base_prefix"] != str(target)
+    assert not list(tmp_path.glob(".agent_review_stage.*"))
+    print(json.dumps({"bootstrap": selected, "runtime": identity, "trace": str(tmp_path / "installer.stderr")}))
+
+
+def test_incompatible_override_does_not_fall_back_to_valid_default(tmp_path: Path) -> None:
+    """C2: refusal precedes admission of any installation worker."""
+    import shlex
+
+    ambient_bin = tmp_path / "ambient"
+    ambient_bin.mkdir()
+    (ambient_bin / "python3").symlink_to(sys.executable)
+    marker = tmp_path / "override-invocations"
+    override = tmp_path / "incompatible-python"
+    override.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$@\" >> " + shlex.quote(str(marker)) + "\n"
+        "echo 'INCOMPATIBLE: interpreter CPython 3.12 (required: CPython 3.11)'\n"
+        "exit 0\n", encoding="utf-8",
+    )
+    override.chmod(0o755)
+    target = tmp_path / "runtime"
+    result = subprocess.run(
+        ["bash", "-x", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(override),
+                 PATH=str(ambient_bin) + os.pathsep + os.environ["PATH"]),
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "INCOMPATIBLE" in result.stderr
+    assert marker.read_text(encoding="utf-8").splitlines()[:3] == ["-I", "-S", "-c"]
+    assert "+ run_tracked_step" not in result.stderr
+    assert not target.exists()
+    assert not list(tmp_path.glob(".agent_review_stage.*"))
+
+
+@pytest.mark.requires_network
 @pytest.mark.parametrize("pathname", [
     "agent-review-venv", "venv with spaces", "venv'quote", 'venv"quote',
     "venv$dollar", "venv`backtick", "venv\\backslash", "venv_ñ_λ_🚀",
@@ -1064,6 +1149,8 @@ def test_countermodel_f1_atomic_ownership_race_refuses_without_deleting_concurre
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -1992,6 +2079,8 @@ def test_countermodel_z1_subreaper_reaps_orphaned_grandchildren_leaving_zero_zom
 import sys, os, subprocess, time
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2076,6 +2165,8 @@ def test_countermodel_p1_shebang_length_limit_and_pip_discarded(tmp_path: Path) 
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2130,6 +2221,8 @@ sys.exit(1)
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2193,6 +2286,8 @@ def test_countermodel_t1_postcommit_signal_trap_preserves_committed_outcome(tmp_
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2266,6 +2361,8 @@ def test_countermodel_r1_target_path_contract_and_activation_discarded(tmp_path:
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2349,8 +2446,10 @@ def test_subreaper_fail_closed_ablations(tmp_path: Path) -> None:
     fake_py = tmp_path / "fake_py_ablation.py"
     fake_py.write_text(
         f"""#!{host_py}
-import sys
+import sys, os
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2424,6 +2523,8 @@ def test_bounded_descendant_termination_term_resistant_descendant(tmp_path: Path
 import sys, os, subprocess, signal, time
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2672,6 +2773,8 @@ def test_target_path_contract_v1_equivalence_classes(tmp_path: Path) -> None:
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)
@@ -2791,6 +2894,8 @@ def test_consumer_capability_closure_minimal_surface(tmp_path: Path) -> None:
 import sys, os
 
 if sys.argv[1:4] == ["-I", "-S", "-c"]:
+    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
+        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
     if len(sys.argv) == 5:
         print("OK")
         sys.exit(0)

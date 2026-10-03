@@ -494,10 +494,9 @@ else:
     terminate_and_reap_all(rc)
 EOF
 
-HOST_PYTHON="$(command -v python3 2>/dev/null || echo /usr/bin/python3)"
-
 run_tracked_step() {
-    "$HOST_PYTHON" -I -S -c "$SUBREAPER_WRAPPER" "$@" &
+    # Reuse the bootstrap interpreter admitted by the platform preflight.
+    "$PYTHON_BIN" -I -S -c "$SUBREAPER_WRAPPER" "$@" &
     ACTIVE_PID=$!
     ACTIVE_PGID="$(ps -o pgid= -p "$ACTIVE_PID" 2>/dev/null | tr -d ' ' || true)"
     if [ -z "$ACTIVE_PGID" ]; then

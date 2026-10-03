@@ -42,6 +42,11 @@ AGENT_REVIEW_PYTHON=python3.11 \
   bash scripts/install-agent-review-toolrepo.sh <venv-dir>
 ```
 
+The selected bootstrap interpreter (`AGENT_REVIEW_PYTHON`, or `python3` when
+absent) runs the compatibility preflight, installation supervisor and bootstrap
+helpers. The supervisor does not select a second interpreter from the host.
+The private staging venv's own Python continues to run its isolated pip.
+
 The script:
 
 1. requires `--toolrepo-sha`, when given, to match `^[0-9a-f]{40}$` exactly
