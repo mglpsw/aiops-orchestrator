@@ -182,6 +182,19 @@ if os.path.isdir(bin_dir):
                 sys.exit(2)
 """
 
+CLEANUP_CODE = r"""
+import os, sys, shutil
+stage_dir = sys.argv[1]
+try:
+    if os.path.islink(stage_dir) or os.path.isfile(stage_dir):
+        os.unlink(stage_dir)
+    elif os.path.isdir(stage_dir):
+        shutil.rmtree(stage_dir)
+except Exception as err:
+    sys.stderr.write(f"cleanup error: {err}\n")
+    sys.exit(1)
+"""
+
 cancel_signal = 0
 
 
@@ -441,9 +454,11 @@ def main():
         # Never inspect/remove FINAL or clean an unknown publication outcome.
         if stage_dir and publication == "NOT_PUBLISHED":
             try:
-                cleanup_status = run_phase(["rm", "-rf", "--", stage_dir], cleanup=True)
+                cleanup_status = run_phase([bootstrap, "-I", "-S", "-c", CLEANUP_CODE, stage_dir], cleanup=True)
                 if cleanup_status:
                     raise RuntimeError(f"cleanup status {cleanup_status}")
+                if os.path.lexists(stage_dir):
+                    raise RuntimeError(f"staging directory still exists after cleanup: {stage_dir}")
             except Exception as error:
                 teardown = "FAILED"
                 teardown_reason = ascii(str(error))

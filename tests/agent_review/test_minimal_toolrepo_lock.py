@@ -1235,6 +1235,14 @@ def test_countermodel_f2_cleanup_failure_does_not_mask_primary_install_failure(t
     fake_py.write_text(
         f"#!/bin/sh\n"
         'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -z "${6:-}" ] && [ -n "${5:-}" ]; then\n'
+        '        case "$4" in\n'
+        '            *CLEANUP_CODE*|*stage_dir*|*shutil.rmtree*)\n'
+        '                echo "simulated rm failure witness" >&2\n'
+        '                exit 73\n'
+        '                ;;\n'
+        '        esac\n'
+        '    fi\n'
         '    if [ -n "${5:-}" ]; then\n'
         f'        exec "{host_py}" "$@"\n'
         "    fi\n"
@@ -1376,23 +1384,39 @@ def test_countermodel_g3_signal_status_preserved_on_cancellation(tmp_path: Path)
     assert res_term.returncode == 143, f"SIGTERM must exit with code 143, got {res_term.returncode}"
     assert not target_venv_term.exists(), "Cleanup must remove target on SIGTERM"
 
-    # Case 3: SIGTERM + cleanup rm failure (exit code 73) -> must still exit 143
-    fake_bin = tmp_path / "bin_fail_rm"
-    fake_bin.mkdir()
-    fake_rm = fake_bin / "rm"
-    fake_rm.write_text(
-        "#!/bin/sh\n"
-        'echo "simulated rm failure witness" >&2\n'
-        "exit 73\n",
+    # Case 3: SIGTERM + cleanup failure (exit code 73) -> must still exit 143
+    fake_py_term_fail = tmp_path / "fake_py_sigterm_fail.sh"
+    fake_py_term_fail.write_text(
+        f"#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    if [ -z "${6:-}" ] && [ -n "${5:-}" ]; then\n'
+        '        case "$4" in\n'
+        '            *CLEANUP_CODE*|*stage_dir*|*shutil.rmtree*)\n'
+        '                echo "simulated rm failure witness" >&2\n'
+        '                exit 73\n'
+        '                ;;\n'
+        '        esac\n'
+        '    fi\n'
+        '    if [ -n "${5:-}" ]; then\n'
+        f'        exec "{host_py}" "$@"\n'
+        "    fi\n"
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
+        '    kill -TERM "$PPID"\n'
+        '    sleep 1\n'
+        "    exit 1\n"
+        "fi\n"
+        "exit 1\n",
         encoding="utf-8",
     )
-    fake_rm.chmod(0o755)
+    fake_py_term_fail.chmod(0o755)
 
     target_venv_term_fail = tmp_path / "venv_g3_sigterm_rm_fail"
     env_term_fail = dict(
         os.environ,
-        AGENT_REVIEW_PYTHON=str(fake_py_term),
-        PATH=f"{fake_bin}:{os.environ.get('PATH', '')}",
+        AGENT_REVIEW_PYTHON=str(fake_py_term_fail),
     )
     res_term_fail = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), str(target_venv_term_fail)],
@@ -3009,17 +3033,22 @@ def test_cancel_during_resistant_cleanup_preserves_primary_and_classifies_teardo
     """Cleanup remains a supervised child; its cancellation cannot hide primary failure."""
     import shlex
     bootstrap = _controlled_bootstrap(tmp_path, "sys.exit(66)\n")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
     marker = tmp_path / "cleanup.pid"
-    rm = bin_dir / "rm"
-    rm.write_text("#!" + sys.executable + "\nimport os,signal,time\nfrom pathlib import Path\n"
-        "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
-        f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
-        "time.sleep(60)\n")
-    rm.chmod(0o755)
+    resistant_bootstrap = tmp_path / "resistant_bootstrap.sh"
+    resistant_bootstrap.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ] && [ -z "${6:-}" ]; then\n'
+        '    case "$4" in\n'
+        '        *CLEANUP_CODE*|*shutil.rmtree*|*cleanup\\ error*)\n'
+        f'            exec {shlex.quote(sys.executable)} -c "import os,signal,time; from pathlib import Path; signal.signal(signal.SIGTERM,signal.SIG_IGN); Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(60)"\n'
+        '            ;;\n'
+        '    esac\n'
+        'fi\n'
+        f'exec {shlex.quote(str(bootstrap))} "$@"\n'
+    )
+    resistant_bootstrap.chmod(0o755)
     proc = subprocess.Popen(["bash", str(INSTALL_SCRIPT), str(tmp_path / "target")],
-        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap), PATH=str(bin_dir)+os.pathsep+os.environ['PATH']),
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(resistant_bootstrap)),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     _await_file(marker)
     cleanup_pid = int(marker.read_text())
@@ -3840,3 +3869,248 @@ def test_positive_exec_stage_python_direct_with_pip_env(tmp_path: Path) -> None:
     assert b"publication=COMMITTED" in result.stderr
     assert not interception_marker.exists(), "Rogue env on PATH must not be executed"
     assert target.exists()
+
+
+def test_countermodel_ambient_cat_authority_rejected(tmp_path: Path) -> None:
+    """CM-AMBIENT-CAT-AUTHORITY: When PATH contains a rogue `cat` returning fake
+    python code (e.g. exit 0), the installer must not execute the rogue cat or let
+    substituted bytes reach Python -c, and must not return success without creating target.
+    """
+    import shlex
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "cat_invoked.marker"
+    rogue_cat = fake_bin / "cat"
+    rogue_cat.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_CAT_INVOKED' > {shlex.quote(str(marker))}\n"
+        "echo \"print('rogue cat intercepted authority'); import sys; sys.exit(0)\"\n"
+    )
+    rogue_cat.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_cat"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    # Secure property: rogue cat must not be executed, real authority must run
+    assert not marker.exists(), "Rogue cat on PATH must not be executed to read authority"
+    assert "rogue cat intercepted authority" not in result.stdout
+    assert result.returncode == 0, f"Real install must succeed; got {result.returncode}\nstderr: {result.stderr}"
+    assert target.exists(), "Target venv must be created by real authority"
+
+
+def test_countermodel_ambient_rm_teardown_rejected(tmp_path: Path) -> None:
+    """CM-AMBIENT-RM-TEARDOWN: When PATH contains a rogue `rm` returning 0 without deleting,
+    a failed installation requiring cleanup must not fabricate teardown=COMPLETE while
+    stage_dir remains uncleaned on disk. Teardown must be FAILED, or stage must be absent.
+    """
+    import shlex
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "rm_invoked.marker"
+    rogue_rm = fake_bin / "rm"
+    rogue_rm.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_RM_INVOKED' > {shlex.quote(str(marker))}\n"
+        "exit 0\n"
+    )
+    rogue_rm.chmod(0o755)
+
+    # Controlled bootstrap that causes deliberate failure during pip phase
+    bootstrap = _controlled_bootstrap(tmp_path, "sys.exit(66)\n")
+    target = tmp_path / "target_rm"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    remaining_stages = list(tmp_path.glob(".agent_review_stage.*"))
+    # Secure property: rogue rm must not be executed, and uncleaned staging must not report teardown=COMPLETE
+    assert not marker.exists(), "Rogue rm on PATH must not be executed for staging cleanup"
+    assert len(remaining_stages) == 0, f"Staging directory leaked after cleanup: {remaining_stages}"
+    if remaining_stages:
+        assert "teardown=COMPLETE" not in result.stderr
+
+
+def _disposable_installer(tmp_path: Path, old: str, new: str) -> Path:
+    """Instrument a disposable copy of install-agent-review-toolrepo.sh."""
+    scripts = tmp_path / "instrumented_installer" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(INSTALL_AUTHORITY, scripts / INSTALL_AUTHORITY.name)
+    shutil.copy2(LOCK_FILE, scripts.parent / LOCK_FILE.name)
+    original = INSTALL_SCRIPT.read_text()
+    assert original.count(old) == 1
+    changed = original.replace(old, new)
+    installer = scripts / INSTALL_SCRIPT.name
+    installer.write_text(changed)
+    installer.chmod(0o755)
+    return installer
+
+
+def test_ablation_ambient_cat_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Proves anti-vacuity for OC-AMBIENT-EXECUTABLE-IDENTITY (Finding 4174769886):
+    Ablating authority code loading back to $(cat "$INSTALL_AUTHORITY") causes the
+    installer to execute ambient `cat` from PATH, allowing rogue cat to intercept
+    the authority source code.
+    """
+    import shlex
+    old_code = 'AUTHORITY_CODE="$(< "$INSTALL_AUTHORITY")"'
+    new_code = 'AUTHORITY_CODE="$(cat "$INSTALL_AUTHORITY")"'
+    installer_ablated = _disposable_installer(tmp_path, old_code, new_code)
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "cat_ablation.marker"
+    rogue_cat = fake_bin / "cat"
+    rogue_cat.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_CAT_INVOKED' > {shlex.quote(str(marker))}\n"
+        "echo \"print('rogue cat intercepted authority'); import sys; sys.exit(0)\"\n"
+    )
+    rogue_cat.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_cat_ablation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert marker.exists(), "Ablated mutant must invoke rogue cat on PATH"
+    assert "rogue cat intercepted authority" in result.stdout
+    assert not target.exists(), "Target must not be created when rogue cat intercepts authority"
+
+
+def test_ablation_ambient_rm_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Proves anti-vacuity for OC-AMBIENT-EXECUTABLE-IDENTITY / OC-ENFORCEMENT-CLOSURE (Finding 4174769894):
+    Ablating staging cleanup back to ambient `rm` without postcondition absence check causes
+    a failed install to invoke ambient `rm` and falsely report teardown=COMPLETE while
+    staging directory remains leaked on disk.
+    """
+    import shlex
+    fixed_cleanup = (
+        '                cleanup_status = run_phase([bootstrap, "-I", "-S", "-c", CLEANUP_CODE, stage_dir], cleanup=True)\n'
+        '                if cleanup_status:\n'
+        '                    raise RuntimeError(f"cleanup status {cleanup_status}")\n'
+        '                if os.path.lexists(stage_dir):\n'
+        '                    raise RuntimeError(f"staging directory still exists after cleanup: {stage_dir}")\n'
+    )
+    ablated_cleanup = (
+        '                cleanup_status = run_phase(["rm", "-rf", "--", stage_dir], cleanup=True)\n'
+        '                if cleanup_status:\n'
+        '                    raise RuntimeError(f"cleanup status {cleanup_status}")\n'
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_cleanup, ablated_cleanup)
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "rm_ablation.marker"
+    rogue_rm = fake_bin / "rm"
+    rogue_rm.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_RM_INVOKED' > {shlex.quote(str(marker))}\n"
+        "exit 0\n"
+    )
+    rogue_rm.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path, "sys.exit(66)\n")
+    target = tmp_path / "target_rm_ablation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    remaining_stages = list(tmp_path.glob(".agent_review_stage.*"))
+    assert marker.exists(), "Ablated mutant must invoke rogue rm on PATH"
+    assert len(remaining_stages) > 0, "Staging directory must leak when rogue rm fails to delete"
+    assert "teardown=COMPLETE" in result.stderr, "Ablated mutant must falsely report teardown=COMPLETE despite leak"
+
+
+def test_positive_ambient_cat_and_rm_eliminated(tmp_path: Path) -> None:
+    """Positive control for OC-AMBIENT-EXECUTABLE-IDENTITY:
+    With rogue `cat` and `rm` on PATH that would exit 1 or record invocation if called,
+    both normal successful installation and teardown on failure proceed cleanly without
+    ever invoking the ambient helpers.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+
+    cat_marker = tmp_path / "cat_called.marker"
+    rogue_cat = fake_bin / "cat"
+    rogue_cat.write_text(f"#!/bin/sh\necho CAT > {shlex.quote(str(cat_marker))}\nexit 1\n")
+    rogue_cat.chmod(0o755)
+
+    rm_marker = tmp_path / "rm_called.marker"
+    rogue_rm = fake_bin / "rm"
+    rogue_rm.write_text(f"#!/bin/sh\necho RM > {shlex.quote(str(rm_marker))}\nexit 1\n")
+    rogue_rm.chmod(0o755)
+
+    # 1. Successful installation run
+    ok_dir = tmp_path / "ok"
+    ok_dir.mkdir()
+    bootstrap_ok = _controlled_bootstrap(ok_dir)
+    target_ok = ok_dir / "target_ok"
+    env_ok = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap_ok))
+    env_ok["PATH"] = f"{fake_bin}:{env_ok.get('PATH', '')}"
+
+    result_ok = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_ok)],
+        env=env_ok,
+        capture_output=True,
+        text=True,
+    )
+    assert result_ok.returncode == 0, f"Install failed:\nstdout: {result_ok.stdout}\nstderr: {result_ok.stderr}"
+    assert "publication=COMMITTED" in result_ok.stderr
+    assert target_ok.exists()
+    assert not cat_marker.exists(), "Ambient cat must not be invoked during successful install"
+    assert not rm_marker.exists(), "Ambient rm must not be invoked during successful install"
+
+    # 2. Failed installation with clean teardown
+    fail_dir = tmp_path / "fail"
+    fail_dir.mkdir()
+    bootstrap_fail = _controlled_bootstrap(fail_dir, "sys.exit(66)\n")
+    target_fail = fail_dir / "target_fail"
+    env_fail = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap_fail))
+    env_fail["PATH"] = f"{fake_bin}:{env_fail.get('PATH', '')}"
+
+    result_fail = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target_fail)],
+        env=env_fail,
+        capture_output=True,
+        text=True,
+    )
+    assert result_fail.returncode == 66
+    assert "publication=NOT_PUBLISHED" in result_fail.stderr
+    assert "teardown=COMPLETE" in result_fail.stderr
+    assert not target_fail.exists()
+    assert not list(fail_dir.glob(".agent_review_stage.*"))
+    assert not cat_marker.exists(), "Ambient cat must not be invoked during failed install"
+    assert not rm_marker.exists(), "Ambient rm must not be invoked during teardown"

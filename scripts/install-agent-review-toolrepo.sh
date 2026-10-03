@@ -22,7 +22,9 @@ render_path() {
     printf '<%q>' "$1"
 }
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ] && SCRIPT_DIR="."
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LOCK_FILE="$ROOT_DIR/requirements-agent-review.lock"
 
 if [ $# -lt 1 ]; then
@@ -78,14 +80,16 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         # Git HEAD is authoritative whenever Git identity is available
         ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
         if [ -f "$ROOT_DIR/.source-commit" ]; then
-            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+            SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
+            SC_SHA="${SC_SHA//[[:space:]]/}"
             if [ "$SC_SHA" != "$ACTUAL_SHA" ]; then
                 echo "Blocked: .source-commit ($SC_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
                 exit 2
             fi
         fi
         if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
-            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+            TS_SHA="$(< "$ROOT_DIR/.toolrepo-sha")" || true
+            TS_SHA="${TS_SHA//[[:space:]]/}"
             if [ "$TS_SHA" != "$ACTUAL_SHA" ]; then
                 echo "Blocked: .toolrepo-sha ($TS_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
                 exit 2
@@ -96,10 +100,12 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         SC_SHA=""
         TS_SHA=""
         if [ -f "$ROOT_DIR/.source-commit" ]; then
-            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+            SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
+            SC_SHA="${SC_SHA//[[:space:]]/}"
         fi
         if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
-            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+            TS_SHA="$(< "$ROOT_DIR/.toolrepo-sha")" || true
+            TS_SHA="${TS_SHA//[[:space:]]/}"
         fi
 
         if [ -n "$SC_SHA" ] && [ -n "$TS_SHA" ]; then
@@ -229,7 +235,7 @@ if [ ! -f "$INSTALL_AUTHORITY" ]; then
     echo "Blocked: installation authority missing: $(render_path "$INSTALL_AUTHORITY")" >&2
     exit 2
 fi
-AUTHORITY_CODE="$(cat "$INSTALL_AUTHORITY")" || {
+AUTHORITY_CODE="$(< "$INSTALL_AUTHORITY")" || {
     echo "Blocked: cannot read installation authority: $(render_path "$INSTALL_AUTHORITY")" >&2
     exit 2
 }
