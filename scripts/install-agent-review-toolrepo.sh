@@ -210,13 +210,7 @@ if [ -z "$VENV_TARGET" ]; then
     exit 2
 fi
 
-VENV_PARENT="$(dirname "$VENV_TARGET")"
-if [ ! -d "$VENV_PARENT" ]; then
-    mkdir -p "$VENV_PARENT" || {
-        echo "Blocked: failed to create parent directory for target: $(render_path "$VENV_PARENT")" >&2
-        exit 2
-    }
-fi
+# Parent creation belongs to the authority, after capability admission.
 
 if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then

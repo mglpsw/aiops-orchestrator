@@ -3067,3 +3067,113 @@ def test_unqualified_interpreter_path_is_rendered_without_using_it(tmp_path: Pat
     assert b'selected Python interpreter' in result.stderr
     assert b'\x1b' not in result.stderr and b'\t' not in result.stderr and '\u202e'.encode() not in result.stderr
     assert not (tmp_path / 'target').exists()
+
+
+@pytest.mark.parametrize("capability", ["absent", "present"])
+def test_proc_children_admission_precedes_filesystem_mutation(tmp_path: Path, capability: str) -> None:
+    """Real procfs refusal/positive pair; venv/pip are local harness workers."""
+    import json
+
+    probe = subprocess.run(
+        ["unshare", "-U", "-r", "-m", "-p", "-f", "-n", "--mount-proc", "true"],
+        capture_output=True,
+    )
+    if probe.returncode:
+        pytest.skip("EVIDENCE_LIMITATION_PRIVATE_PROCFS: " + probe.stderr.decode())
+    parent = tmp_path / "missing" / "parent"
+    target = parent / "target"
+    worker = tmp_path / "worker-admitted.json"
+    bootstrap = _controlled_bootstrap(tmp_path,
+        f"Path({str(worker)!r}).write_text(__import__('json').dumps(dict(pid=os.getpid(),stage=str(stage))))\n")
+    assert not parent.exists() and not target.exists()
+    command = ("mount -t tmpfs -o mode=755 tmpfs /proc; " if capability == "absent" else "")
+    command += 'exec bash "$1" "$2"'
+    result = subprocess.run(
+        ["unshare", "-U", "-r", "-m", "-p", "-f", "-n", "--mount-proc",
+         "sh", "-ec", command, "proc-capability", str(INSTALL_SCRIPT), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)), capture_output=True, timeout=30,
+    )
+    (tmp_path / "installer.stdout").write_bytes(result.stdout)
+    (tmp_path / "installer.stderr").write_bytes(result.stderr)
+    receipt = dict(capability=capability, exit_status=result.returncode,
+        parent_created=parent.exists(), final_created=target.exists(), worker_created=worker.exists(),
+        stage_remaining=list(map(str, parent.glob(".agent_review_stage.*"))),
+        mechanism="real production authority and procfs read; controlled local venv/pip only")
+    (tmp_path / "proc-capability-receipt.json").write_text(json.dumps(receipt, indent=2))
+    print(json.dumps(receipt))
+    if capability == "absent":
+        assert result.returncode == 2, result.stderr
+        assert b"STOP_UNQUALIFIED_PROC_CHILDREN" in result.stderr
+        assert b"publication=NOT_PUBLISHED" in result.stderr
+        assert not parent.exists(), "capability refusal must precede parent mkdir"
+        assert not worker.exists(), "no installation worker may be admitted"
+        assert not (tmp_path / "pip-arguments.txt").exists()
+        assert not target.exists() and not receipt["stage_remaining"]
+    else:
+        assert result.returncode == 0, result.stderr
+        assert worker.exists() and (tmp_path / "pip-arguments.txt").exists()
+        stage = Path(json.loads(worker.read_text())["stage"])
+        assert stage.parent == parent and not stage.exists()
+        assert target.is_dir() and (target / "pyvenv.cfg").is_file()
+        assert b"publication=COMMITTED" in result.stderr and b"teardown=COMPLETE" in result.stderr
+        assert not receipt["stage_remaining"]
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "nonnumeric", "zero", "overflow"])
+def test_proc_children_reader_failure_refuses_before_mutation(tmp_path: Path, failure: str) -> None:
+    """Identified stream-boundary faults in a disposable copy, no product hooks."""
+    observed = tmp_path / "reader-consumed.txt"
+    prefix = (
+        "_production_open = open\n"
+        "def open(path, *args, **kwargs):\n"
+        '    if path == f"/proc/self/task/{os.getpid()}/children":\n'
+        f"        with _production_open({str(observed)!r}, 'a') as observation:\n"
+        "            observation.write(str(path) + '\\n')\n"
+    )
+    if failure == "unreadable":
+        prefix += "        raise PermissionError(errno.EACCES, 'injected child-list read denial', path)\n"
+    else:
+        contents = {"nonnumeric": b"not-a-pid\n", "zero": b"0\n", "overflow": b"2147483648\n"}[failure]
+        prefix += f"        return __import__('io').BytesIO({contents!r})\n"
+    prefix += "    return _production_open(path, *args, **kwargs)\n\n"
+    installer = _disposable_authority(tmp_path, "def read_proc_children():\n", prefix + "def read_proc_children():\n")
+    bootstrap = _controlled_bootstrap(tmp_path, "raise AssertionError('worker must not be admitted')\n")
+    parent = tmp_path / "missing" / "parent"
+    target = parent / "target"
+    result = subprocess.run(["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)), capture_output=True, timeout=30)
+    (tmp_path / "installer.stderr").write_bytes(result.stderr)
+    assert observed.read_text().strip().endswith("/children"), "real shared reader was not consumed"
+    assert result.returncode == 2, result.stderr
+    assert b"STOP_UNQUALIFIED_PROC_CHILDREN" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not parent.exists() and not target.exists()
+    assert not (tmp_path / "pip-arguments.txt").exists()
+    assert not list(tmp_path.rglob(".agent_review_stage.*"))
+    # No failed-capability drain/cleanup retry: exactly one startup read.
+    assert len(observed.read_text().splitlines()) == 1
+
+
+def test_proc_children_reader_observes_current_owned_children(tmp_path: Path) -> None:
+    """Empty startup result is valid and is not cached for live consumers."""
+    code = r"""
+import json,runpy,subprocess,sys
+ns=runpy.run_path(sys.argv[1])
+ns['qualify_subreaper']()
+ns['qualify_proc_children']()
+assert ns['owned_children']()==[]
+child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])
+try:
+    direct=ns['owned_children']()
+    assert direct==[child.pid]
+    assert ns['read_proc_children']()==direct
+    print(json.dumps(dict(startup_empty=True,owned_children=direct,child=child.pid)))
+finally:
+    child.terminate()
+    child.wait(timeout=10)
+assert ns['owned_children']()==[]
+"""
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(INSTALL_AUTHORITY)],
+        capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    (tmp_path / "reader-observation.stdout").write_bytes(result.stdout)

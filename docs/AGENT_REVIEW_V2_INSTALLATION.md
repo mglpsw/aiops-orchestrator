@@ -28,6 +28,26 @@ Canonical toolrepo target platform: **CPython 3.11 on Linux x86_64 (64-bit word 
 
 `requirements-agent-review.lock` is platform/interpreter specific; binary wheels (`pydantic-core`, `PyYAML`) are compiled for `manylinux2014_x86_64`. The installer validates the complete platform and interpreter specification (CPython, 3.11, 64-bit pointer width via `struct.calcsize("P") == 8`, Linux, x86_64, glibc >= 2.17) in an isolated probe before venv creation, refusing incompatible environments (e.g. Python 3.12, 32-bit interpreters, ARM64, musl, macOS) fail-closed.
 
+Additional installer capabilities are distinct from that platform identity. The
+same qualified bootstrap authority must admit Linux subreaper SET/GET and a
+readable, consumable `/proc/self/task/<tid>/children` interface before its first
+installation filesystem mutation: parent creation, private staging or workers.
+Admission and runtime discovery use one structural reader. Empty contents are
+valid; tokens must be positive decimal PIDs representable by the signal consumer.
+Missing, unreadable or invalid contents refuse admission with exit 2 and
+`STOP_UNQUALIFIED_PROC_CHILDREN`, without creating a parent, staging environment,
+worker or final target. The startup list is not cached for later discovery.
+
+This procfs interface supplies current first-level children of the single-thread
+subreaper authority, including descendants subsequently adopted by it. Reading
+it is an operational discovery mechanism, not proof of an immutable/exhaustive
+process-tree snapshot under concurrent exit. Admission does not guarantee future
+availability after external mount/permission changes; runtime read failures remain
+operational errors, never an empty-tree observation or presumed success. Existing
+actual wait/reaping and finite-scenario limits below remain applicable. This does
+not change the separate NO_REPLACE environmental precondition: negative discovery
+of that operation is still permitted at publication, without an early probe.
+
 ## Install script
 
 ```bash
@@ -58,11 +78,11 @@ The script:
 3. verifies that the selected interpreter (`$AGENT_REVIEW_PYTHON` or default `python3`)
    matches CPython 3.11 64-bit (`struct.calcsize("P") == 8`) on Linux x86_64 with glibc >= 2.17 via an isolated/no-site probe (`-I -S`), refusing incompatible platforms, 32-bit runtimes, or interpreters fail-closed before creating any venv and immune to ambient `sitecustomize.py`/`PYTHONPATH` hooks;
 4. validates the prospective `<venv-dir>` path under `TargetPathContract`: enforces the admitted project policy of path length <= 4096 bytes and component length <= 255 bytes, and rejects exactly NUL, LF and CR (`\x00`, `\n`, `\r`) fail-closed (exit 2) before creating any staging directory; normalizes the prospective path (removing relative/traversal components) before the freshness check; refuses an existing canonical target or symlink fail-closed (exit 2) without deleting or clearing it, eliminating stale residual `site-packages` survival;
-5. creates a fresh venv in a private, unguessable staging directory (`.agent_review_stage.XXXXXX`) within the target's parent directory using isolated venv execution (`$PYTHON_BIN -I -S -m venv`), completely isolated from ambient `PYTHONPATH`;
-6. installs `requirements-agent-review.lock` strictly inside the private staging venv using isolated pip execution with pip-level isolation and configuration disabled (`PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"`), preventing ambient `PYTHONPATH` from shadowing pip, and ignoring caller environment variables (such as `PIP_TARGET`, `PIP_PREFIX`), caller-exported `PIP_CONFIG_FILE`, and user/global configuration files (`pip.conf`), ensuring locked packages are installed strictly into the private staging environment;
-7. applies `RelocationClosureV1` to the staged venv before publication: removes disposable bytecode (`__pycache__` and `*.pyc`); applies `DiscardAtBoundary` to unconsumed surfaces by discarding unused shell activation scripts (`bin/activate*`, `Activate.ps1`) and console pip scripts (`bin/pip*`), eliminating quoting vulnerabilities on whitespace/unusual paths; safely rewrites verified textual paths referencing the staging directory to the canonical target path; fails closed on any unnormalizable binary or residual staging references; and strictly validates under R4 census that remaining executable shebangs target the canonical venv Python and do not exceed the conservative project shebang policy of 127 bytes (not a universal kernel limit);
-8. commits the transaction via atomic `renameat2(RENAME_NOREPLACE)` from the private staging path to the canonical target; if the target already exists or is created concurrently, publication fails fail-closed (status 2) without mutating or deleting the winner's target;
-9. transfers the installer PID with Bash `exec` to `scripts/agent-review-install-authority.py`, executed by the selected bootstrap with `-I -S`. The authority verifies Linux subreaper SET/GET before staging or workers, supervises preparation workers, performs the actual NO_REPLACE publication and records its result itself. INT/TERM handlers record cancellation requests; workers remain interruptible. Only the short publication/result transition masks INT/TERM. Worker escalation never targets the authority. There is no FIFO witness, separate disposable publisher or Bash KILL timeout. The staging venv's Python still owns isolated pip.
+5. transfers the installer PID with Bash `exec` to `scripts/agent-review-install-authority.py`, executed by the selected bootstrap with `-I -S`. The authority verifies Linux subreaper SET/GET and the shared procfs child reader before parent creation, staging or workers, supervises preparation workers, performs the actual NO_REPLACE publication and records its result itself. INT/TERM handlers record cancellation requests; workers remain interruptible. Only the short publication/result transition masks INT/TERM. Worker escalation never targets the authority. There is no FIFO witness, separate disposable publisher or Bash KILL timeout. The staging venv's Python still owns isolated pip.
+6. after the authority admits subreaper and procfs child-reader capabilities, creates any missing target parent and a fresh venv in a private, unguessable staging directory (`.agent_review_stage.XXXXXX`) within the target's parent directory using isolated venv execution (`$PYTHON_BIN -I -S -m venv`), completely isolated from ambient `PYTHONPATH`;
+7. installs `requirements-agent-review.lock` strictly inside the private staging venv using isolated pip execution with pip-level isolation and configuration disabled (`PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"`), preventing ambient `PYTHONPATH` from shadowing pip, and ignoring caller environment variables (such as `PIP_TARGET`, `PIP_PREFIX`), caller-exported `PIP_CONFIG_FILE`, and user/global configuration files (`pip.conf`), ensuring locked packages are installed strictly into the private staging environment;
+8. applies `RelocationClosureV1` to the staged venv before publication: removes disposable bytecode (`__pycache__` and `*.pyc`); applies `DiscardAtBoundary` to unconsumed surfaces by discarding unused shell activation scripts (`bin/activate*`, `Activate.ps1`) and console pip scripts (`bin/pip*`), eliminating quoting vulnerabilities on whitespace/unusual paths; safely rewrites verified textual paths referencing the staging directory to the canonical target path; fails closed on any unnormalizable binary or residual staging references; and strictly validates under R4 census that remaining executable shebangs target the canonical venv Python and do not exceed the conservative project shebang policy of 127 bytes (not a universal kernel limit);
+9. commits the transaction via atomic `renameat2(RENAME_NOREPLACE)` from the private staging path to the canonical target; if the target already exists or is created concurrently, publication fails fail-closed (status 2) without mutating or deleting the winner's target;
 
 ### Publication, teardown and external result
 

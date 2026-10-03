@@ -210,11 +210,36 @@ def qualify_subreaper():
 
 
 
+def read_proc_children():
+    # One structural reader for admission and runtime discovery. An empty
+    # kernel list is valid; an unavailable/invalid stream is never an empty list.
+    with open(f"/proc/self/task/{os.getpid()}/children", "rb") as stream:
+        tokens = stream.read().split()
+    children = []
+    for token in tokens:
+        if not token.isdigit():
+            raise ValueError("invalid procfs child PID token: " + ascii(token))
+        pid = int(token)
+        if not 0 < pid <= 0x7fffffff:  # positive PID representable by os.kill
+            raise ValueError("invalid procfs child PID domain: " + ascii(token))
+        children.append(pid)
+    return children
+
+
+def qualify_proc_children():
+    try:
+        read_proc_children()
+    except (OSError, ValueError) as error:
+        print("Blocked: STOP_UNQUALIFIED_PROC_CHILDREN: " + ascii(str(error)) +
+              "; publication=NOT_PUBLISHED; workers_admitted=false; stage_created=false.",
+              file=sys.stderr)
+        sys.exit(2)
+
+
 def owned_children():
-    # This single-thread authority owns the Linux subreaper child list. Failure
-    # to observe it is a teardown failure, not an empty-tree observation.
-    with open(f"/proc/self/task/{os.getpid()}/children") as stream:
-        return [int(pid) for pid in stream.read().split()]
+    # Re-read the current direct/adopted children; never cache the startup list.
+    # Runtime failure remains an operational error, not an empty-tree observation.
+    return read_proc_children()
 
 
 def signal_owned(sig):
@@ -280,6 +305,7 @@ def run_phase(argv, *, cleanup=False):
 def main():
     bootstrap, raw_target, final_dir, lock_file, pin = sys.argv[1:]
     qualify_subreaper()
+    qualify_proc_children()
     publication = "NOT_PUBLISHED"
     publication_reason = "not admitted"
     teardown = "COMPLETE"
@@ -291,6 +317,8 @@ def main():
             primary = 128 + cancel_signal
             publication_reason = "cancellation before worker admission"
         else:
+            # First installation filesystem mutation follows both admissions.
+            os.makedirs(os.path.dirname(final_dir), exist_ok=True)
             stage_dir = tempfile.mkdtemp(prefix=".agent_review_stage.", dir=os.path.dirname(final_dir))
             os.chmod(stage_dir, 0o755)
             phases = (
