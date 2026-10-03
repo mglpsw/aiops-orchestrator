@@ -4114,3 +4114,283 @@ def test_positive_ambient_cat_and_rm_eliminated(tmp_path: Path) -> None:
     assert not list(fail_dir.glob(".agent_review_stage.*"))
     assert not cat_marker.exists(), "Ambient cat must not be invoked during failed install"
     assert not rm_marker.exists(), "Ambient rm must not be invoked during teardown"
+
+
+def _isolated_installer(tmp_path: Path) -> Path:
+    """Create an isolated, unmodified copy of the installer and its assets."""
+    scripts = tmp_path / "isolated_installer" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(INSTALL_AUTHORITY, scripts / INSTALL_AUTHORITY.name)
+    shutil.copy2(LOCK_FILE, scripts.parent / LOCK_FILE.name)
+    installer = scripts / INSTALL_SCRIPT.name
+    shutil.copy2(INSTALL_SCRIPT, installer)
+    installer.chmod(0o755)
+    return installer
+
+
+def _disposable_installer_multi(tmp_path: Path, replacements: list[tuple[str, str]]) -> Path:
+    """Instrument a disposable copy of install-agent-review-toolrepo.sh with multiple replacements."""
+    scripts = tmp_path / "instrumented_installer_multi" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(INSTALL_AUTHORITY, scripts / INSTALL_AUTHORITY.name)
+    shutil.copy2(LOCK_FILE, scripts.parent / LOCK_FILE.name)
+    original = INSTALL_SCRIPT.read_text()
+    for old, new in replacements:
+        assert original.count(old) == 1, f"Expected 1 occurrence of {old!r}, found {original.count(old)}"
+        original = original.replace(old, new)
+    installer = scripts / INSTALL_SCRIPT.name
+    installer.write_text(original)
+    installer.chmod(0o755)
+    return installer
+
+
+def test_countermodel_ambient_git_source_identity_rejected(tmp_path: Path) -> None:
+    """Countermodel CM-AMBIENT-GIT-SOURCE-IDENTITY:
+    A rogue `git` on ambient PATH attempting to fabricate source identity by returning
+    --show-toplevel and a forged 40-hex SHA matching --toolrepo-sha is never executed.
+    The installer resolves Git strictly from getconf PATH / os.defpath with an allowlist
+    environment, correctly classifying a non-git checkout fail-closed (exit 2).
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "rogue_git.marker"
+    rogue_git = fake_bin / "git"
+    rogue_git.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_GIT_INVOKED' > {shlex.quote(str(marker))}\n"
+        'target_dir="."\n'
+        'if [ "$1" = "-C" ]; then target_dir="$2"; shift 2; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]; then cd "$target_dir" && pwd -P; exit 0; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; exit 0; fi\n'
+        "exit 1\n"
+    )
+    rogue_git.chmod(0o755)
+
+    installer = _isolated_installer(tmp_path)
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_git_cm"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(installer), str(target), "--toolrepo-sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "unable to resolve source identity" in result.stderr
+    assert not marker.exists(), "Rogue git on ambient PATH must never be invoked"
+    assert not target.exists()
+
+
+def test_ablation_bounded_git_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Anti-vacuity test for bounded Git resolution:
+    Ablating git resolution back to unconfined ambient `command -v git` causes the installer
+    to execute the rogue git from PATH and admit a forged commit SHA on a non-git checkout.
+    """
+    import shlex
+    old_git_search = (
+        '    GIT_SEARCH_PATH="$(getconf PATH 2>/dev/null || echo "/bin:/usr/bin")"\n'
+        '    GIT_BIN="$(PATH="$GIT_SEARCH_PATH" command -v git 2>/dev/null || true)"\n'
+        '    if [ -n "$GIT_BIN" ]; then\n'
+        '        GIT_TOPLEVEL="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"'
+    )
+    new_git_search = (
+        '    if command -v git >/dev/null 2>&1; then\n'
+        '        GIT_TOPLEVEL="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"'
+    )
+    old_sha_eval = (
+        '        ACTUAL_SHA="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"'
+    )
+    new_sha_eval = (
+        '        ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"'
+    )
+
+    installer_ablated = _disposable_installer_multi(
+        tmp_path,
+        [(old_git_search, new_git_search), (old_sha_eval, new_sha_eval)],
+    )
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "git_ablation.marker"
+    rogue_git = fake_bin / "git"
+    rogue_git.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_GIT_INVOKED' > {shlex.quote(str(marker))}\n"
+        'target_dir="."\n'
+        'if [ "$1" = "-C" ]; then target_dir="$2"; shift 2; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]; then cd "$target_dir" && pwd -P; exit 0; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; exit 0; fi\n'
+        "exit 1\n"
+    )
+    rogue_git.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_git_ablation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target), "--toolrepo-sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert marker.exists(), "Ablated mutant must invoke rogue git on PATH"
+    assert result.returncode == 0, f"Ablated install failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "publication=COMMITTED" in result.stderr
+    assert target.exists()
+
+
+def test_countermodel_ambient_python_self_admission(tmp_path: Path) -> None:
+    """Countermodel CM-AMBIENT-PYTHON-SELF-ADMISSION:
+    Demonstrates why fallback `python3` is an admitted ambient TCB assumption rather than
+    hermetic self-qualification: when AGENT_REVIEW_PYTHON is unset, an arbitrary rogue `python3`
+    on ambient PATH can return "OK" to the probe and capture authority code (producer self-admission).
+    This countermodel establishes the scope boundary: callers in untrusted-PATH environments
+    MUST supply explicit AGENT_REVIEW_PYTHON to bind execution to an independently qualified binary.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "rogue_python.marker"
+    rogue_py = fake_bin / "python3"
+    rogue_py.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_PYTHON_INVOKED' > {shlex.quote(str(marker))}\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
+        '    echo "OK"\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    rogue_py.chmod(0o755)
+
+    target = tmp_path / "target_python_cm"
+    env = dict(os.environ)
+    env.pop("AGENT_REVIEW_PYTHON", None)
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    # Rogue python on ambient PATH intercepts the fallback probe
+    assert marker.exists(), "Rogue python on ambient PATH self-admits when AGENT_REVIEW_PYTHON is unset"
+
+
+def test_countermodel_ambient_python_self_admission_bypassed_by_explicit_binding(tmp_path: Path) -> None:
+    """Countermodel boundary resolution for CM-AMBIENT-PYTHON-SELF-ADMISSION:
+    When explicit AGENT_REVIEW_PYTHON is supplied, the installer establishes same-object
+    binding to the qualified interpreter, completely bypassing rogue `python3` on ambient PATH.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    marker = tmp_path / "rogue_python_bound.marker"
+    rogue_py = fake_bin / "python3"
+    rogue_py.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_PYTHON_INVOKED' > {shlex.quote(str(marker))}\n"
+        "exit 1\n"
+    )
+    rogue_py.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_python_bound"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), str(target)],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "publication=COMMITTED" in result.stderr
+    assert not marker.exists(), "Rogue python3 on ambient PATH must never be invoked when AGENT_REVIEW_PYTHON is specified"
+
+
+def test_positive_bounded_git_and_same_object_python(tmp_path: Path) -> None:
+    """Positive control for OC-AMBIENT-EXECUTABLE-IDENTITY (Git and Python):
+    In a real Git checkout with verified commit SHA, with rogue `git` and rogue `python3`
+    prepended to ambient PATH, the installer:
+      1. Resolves genuine Git via system TCB search path, verifies the real commit SHA,
+         and never executes rogue git on PATH;
+      2. Ingests AGENT_REVIEW_PYTHON specified as a relative path, canonicalizes it to an
+         absolute path, preserves same-object binding across probe, normalization, exec,
+         and worker phases, and never executes rogue python on PATH;
+      3. Completes installation with publication=COMMITTED.
+    """
+    import shlex
+    repo = tmp_path / "genuine_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test Committer"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INSTALL_SCRIPT, scripts_dir / INSTALL_SCRIPT.name)
+    shutil.copy2(INSTALL_AUTHORITY, scripts_dir / INSTALL_AUTHORITY.name)
+    shutil.copy2(LOCK_FILE, repo / LOCK_FILE.name)
+
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial genuine commit"], check=True, capture_output=True)
+    genuine_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    git_marker = tmp_path / "rogue_git_positive.marker"
+    rogue_git = fake_bin / "git"
+    rogue_git.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_GIT_INVOKED' > {shlex.quote(str(git_marker))}\n"
+        'if [ "$1" = "-C" ]; then shift 2; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]; then pwd -P; exit 0; fi\n'
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then echo "ffffffffffffffffffffffffffffffffffffffff"; exit 0; fi\n'
+        "exit 1\n"
+    )
+    rogue_git.chmod(0o755)
+
+    py_marker = tmp_path / "rogue_py_positive.marker"
+    rogue_py = fake_bin / "python3"
+    rogue_py.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_PYTHON_INVOKED' > {shlex.quote(str(py_marker))}\n"
+        "exit 1\n"
+    )
+    rogue_py.chmod(0o755)
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    rel_bootstrap = f"./{os.path.relpath(bootstrap, tmp_path)}"
+
+    target = tmp_path / "target_positive"
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=rel_bootstrap)
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(scripts_dir / INSTALL_SCRIPT.name), str(target), "--toolrepo-sha", genuine_sha],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, f"Positive control install failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert "publication=COMMITTED" in result.stderr
+    assert target.exists()
+    assert not git_marker.exists(), "Rogue git must not be invoked during genuine git install"
+    assert not py_marker.exists(), "Rogue python must not be invoked during genuine git install"

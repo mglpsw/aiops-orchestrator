@@ -55,8 +55,10 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     fi
     ACTUAL_SHA=""
     IS_GIT=0
-    if command -v git >/dev/null 2>&1; then
-        GIT_TOPLEVEL="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    GIT_SEARCH_PATH="$(getconf PATH 2>/dev/null || echo "/bin:/usr/bin")"
+    GIT_BIN="$(PATH="$GIT_SEARCH_PATH" command -v git 2>/dev/null || true)"
+    if [ -n "$GIT_BIN" ]; then
+        GIT_TOPLEVEL="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
         if [ -n "$GIT_TOPLEVEL" ]; then
             ROOT_DIR_REAL="$(cd "$ROOT_DIR" && pwd -P)"
             GIT_TOPLEVEL_REAL="$(cd "$GIT_TOPLEVEL" && pwd -P)"
@@ -78,7 +80,7 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 
     if [ "$IS_GIT" = "1" ]; then
         # Git HEAD is authoritative whenever Git identity is available
-        ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+        ACTUAL_SHA="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
         if [ -f "$ROOT_DIR/.source-commit" ]; then
             SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
             SC_SHA="${SC_SHA//[[:space:]]/}"
@@ -140,10 +142,25 @@ if [ ! -f "$LOCK_FILE" ]; then
     exit 2
 fi
 
-PYTHON_BIN="${AGENT_REVIEW_PYTHON:-python3}"
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "Blocked: selected Python interpreter '$(render_path "$PYTHON_BIN")' not found." >&2
-    exit 2
+if [ -n "${AGENT_REVIEW_PYTHON:-}" ]; then
+    PYTHON_BIN="$(command -v "$AGENT_REVIEW_PYTHON" 2>/dev/null || true)"
+    if [ -z "$PYTHON_BIN" ]; then
+        echo "Blocked: selected Python interpreter '$(render_path "$AGENT_REVIEW_PYTHON")' not found." >&2
+        exit 2
+    fi
+    if [[ "$PYTHON_BIN" != /* ]]; then
+        if [[ "$PYTHON_BIN" == */* ]]; then
+            PYTHON_BIN="$(cd "${PYTHON_BIN%/*}" 2>/dev/null && pwd -P)/${PYTHON_BIN##*/}"
+        else
+            PYTHON_BIN="$PWD/$PYTHON_BIN"
+        fi
+    fi
+else
+    PYTHON_BIN="python3"
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        echo "Blocked: selected Python interpreter '$(render_path "$PYTHON_BIN")' not found." >&2
+        exit 2
+    fi
 fi
 
 PLATFORM_STATUS="$("$PYTHON_BIN" -I -S -c '
