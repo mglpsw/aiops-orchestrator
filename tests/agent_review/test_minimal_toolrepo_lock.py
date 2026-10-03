@@ -907,8 +907,6 @@ def test_install_script_produces_a_working_minimal_venv(tmp_path: Path, pathname
     env = os.environ.copy()
     if "AGENT_REVIEW_PYTHON" not in env:
         py311 = shutil.which("python3.11")
-        if not py311 and Path("/tmp/test-venv311/bin/python3.11").is_file():
-            py311 = "/tmp/test-venv311/bin/python3.11"
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
         elif sys.version_info[:2] != (3, 11):
