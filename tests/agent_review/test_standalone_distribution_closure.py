@@ -711,6 +711,12 @@ def test_countermodel_m5_missing_install_contract() -> None:
     """Countermodel M5: Required install contract artifacts cannot be omitted from the manifest, and declared files must exist."""
     manifest = validator.load_manifest()
 
+    # The new bootstrap dependency cannot be silently omitted from standalone.
+    omit_authority = copy.deepcopy(manifest)
+    omit_authority["distribution_boundary"]["install_boundary"].remove("scripts/agent-review-install-authority.py")
+    errors = validator.validate_manifest(omit_authority, repo_root=REPO_ROOT)
+    assert any("scripts/agent-review-install-authority.py" in error for error in errors)
+
     # Case A: Omit requirements-agent-review.lock from install_boundary
     mutated_omit_lock = copy.deepcopy(manifest)
     mutated_omit_lock["distribution_boundary"]["install_boundary"].remove(
@@ -2572,12 +2578,19 @@ def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: 
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
 
-    install_result = subprocess.run(
-        ["bash", str(install_script), str(venv_dir)],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    # C7: hide the hosting checkout only inside a private mount namespace.
+    # The real materialized installer must consume its own new stdlib helper.
+    assert (standalone / "scripts" / "agent-review-install-authority.py").is_file()
+    namespace_command = [
+        "unshare", "-U", "-r", "-m", "sh", "-c",
+        'mount -t tmpfs tmpfs "$1" && shift && exec "$@"',
+        "standalone-isolation", str(REPO_ROOT), "bash", str(install_script), str(venv_dir),
+        "--toolrepo-sha", head_sha,
+    ]
+    install_result = subprocess.run(namespace_command, capture_output=True, text=True, env=env)
+    (tmp_path / "standalone-install.stdout").write_text(install_result.stdout)
+    (tmp_path / "standalone-install.stderr").write_text(install_result.stderr)
+    (tmp_path / "standalone-install-command.json").write_text(json.dumps(namespace_command))
     assert install_result.returncode == 0, f"Installer failed with returncode {install_result.returncode}:\n{install_result.stderr}\n{install_result.stdout}"
 
     venv_python = str(venv_dir / "bin" / "python3")

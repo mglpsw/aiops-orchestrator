@@ -82,6 +82,7 @@ REQUIRED_INSTALL_BOUNDARY_V1: frozenset[str] = frozenset(
     {
         "requirements-agent-review.lock",
         "scripts/install-agent-review-toolrepo.sh",
+        "scripts/agent-review-install-authority.py",
         "docs/AGENT_REVIEW_V2_INSTALLATION.md",
     }
 )

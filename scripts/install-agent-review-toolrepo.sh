@@ -16,11 +16,17 @@
 # never treats a moving ref as a valid consumption pin.
 set -euo pipefail
 
+# ASCII shell-escaped, delimited display only; caller values remain unchanged.
+render_path() {
+    local LC_ALL=C
+    printf '<%q>' "$1"
+}
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCK_FILE="$ROOT_DIR/requirements-agent-review.lock"
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <venv-dir> [--toolrepo-sha <40-hex-sha>]" >&2
+    echo "Usage: $(render_path "$0") <venv-dir> [--toolrepo-sha <40-hex-sha>]" >&2
     exit 2
 fi
 
@@ -60,11 +66,11 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 
     # Reject symlinked attestation files fail-closed
     if [ -L "$ROOT_DIR/.source-commit" ]; then
-        echo "Blocked: attestation file in '$ROOT_DIR/.source-commit' cannot be a symlink." >&2
+        echo "Blocked: attestation file in '$(render_path "$ROOT_DIR")/.source-commit' cannot be a symlink." >&2
         exit 2
     fi
     if [ -L "$ROOT_DIR/.toolrepo-sha" ]; then
-        echo "Blocked: attestation file in '$ROOT_DIR/.toolrepo-sha' cannot be a symlink." >&2
+        echo "Blocked: attestation file in '$(render_path "$ROOT_DIR")/.toolrepo-sha' cannot be a symlink." >&2
         exit 2
     fi
 
@@ -107,7 +113,7 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         elif [ -n "$TS_SHA" ]; then
             ACTUAL_SHA="$TS_SHA"
         else
-            echo "Blocked: unable to resolve source identity in '$ROOT_DIR' (not a git repository and no source attestation found)." >&2
+            echo "Blocked: unable to resolve source identity in '$(render_path "$ROOT_DIR")' (not a git repository and no source attestation found)." >&2
             exit 2
         fi
     fi
@@ -124,13 +130,13 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 fi
 
 if [ ! -f "$LOCK_FILE" ]; then
-    echo "Blocked: $LOCK_FILE not found." >&2
+    echo "Blocked: $(render_path "$LOCK_FILE") not found." >&2
     exit 2
 fi
 
 PYTHON_BIN="${AGENT_REVIEW_PYTHON:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "Blocked: selected Python interpreter '$PYTHON_BIN' not found." >&2
+    echo "Blocked: selected Python interpreter '$(render_path "$PYTHON_BIN")' not found." >&2
     exit 2
 fi
 
@@ -200,527 +206,41 @@ print(target)
 ' "$VENV_DIR" 2>/dev/null || true)"
 
 if [ -z "$VENV_TARGET" ]; then
-    echo "Blocked: target venv directory '$VENV_DIR' is invalid or cannot be normalized." >&2
+    echo "Blocked: target venv directory '$(render_path "$VENV_DIR")' is invalid or cannot be normalized." >&2
     exit 2
 fi
 
 VENV_PARENT="$(dirname "$VENV_TARGET")"
 if [ ! -d "$VENV_PARENT" ]; then
     mkdir -p "$VENV_PARENT" || {
-        echo "Blocked: failed to create parent directory for target: $VENV_PARENT" >&2
+        echo "Blocked: failed to create parent directory for target: $(render_path "$VENV_PARENT")" >&2
         exit 2
     }
 fi
 
 if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$(render_path "$VENV_DIR")', canonical target: '$(render_path "$VENV_TARGET")')." >&2
     else
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $(render_path "$VENV_TARGET")" >&2
     fi
     exit 2
 fi
 
-# Enable monitor mode for process group isolation and signal tracking
-set -m
-
-PRIVATE_STAGE=""
-COMMITTED=0
-ACTIVE_PID=""
-ACTIVE_PGID=""
-
-cleanup_stage() {
-    local primary_status="$1"
-    if [ "$COMMITTED" -eq 1 ] || has_commit_witness; then
-        return 0
-    fi
-    if [ -n "${PRIVATE_STAGE:-}" ] && [ -d "$PRIVATE_STAGE" ]; then
-        if rm -rf "$PRIVATE_STAGE"; then
-            :
-        else
-            local cleanup_status=$?
-            echo "Warning: AgentReview toolrepo cleanup failed with status $cleanup_status for target '$PRIVATE_STAGE'; preserving original install failure $primary_status." >&2
-        fi
-        PRIVATE_STAGE=""
-    fi
-}
-
-has_commit_witness() {
-    if [ "$COMMITTED" -eq 1 ]; then
-        return 0
-    fi
-    if read -t 0 -u 3 2>/dev/null; then
-        local token=""
-        read -u 3 token 2>/dev/null || true
-        if [ "$token" = "COMMITTED" ]; then
-            COMMITTED=1
-            return 0
-        fi
-    fi
-    return 1
-}
-
-close_commit_witness() {
-    exec 3>&- || true
-}
-
-kill_active_group() {
-    local sig="$1"
-    if [ -n "${ACTIVE_PID:-}" ]; then
-        if [ -n "${ACTIVE_PGID:-}" ]; then
-            kill -"$sig" -"$ACTIVE_PGID" 2>/dev/null || true
-        fi
-        kill -"$sig" "$ACTIVE_PID" 2>/dev/null || true
-        local waited=0
-        while kill -0 "$ACTIVE_PID" 2>/dev/null && [ "$waited" -lt 30 ]; do
-            sleep 0.1
-            waited=$((waited + 1))
-        done
-        if kill -0 "$ACTIVE_PID" 2>/dev/null; then
-            if [ -n "${ACTIVE_PGID:-}" ]; then
-                kill -9 -"$ACTIVE_PGID" 2>/dev/null || true
-            fi
-            kill -9 "$ACTIVE_PID" 2>/dev/null || true
-        fi
-        wait "$ACTIVE_PID" 2>/dev/null || true
-        ACTIVE_PID=""
-        ACTIVE_PGID=""
-    fi
-}
-
-handle_exit() {
-    local original_status=$?
-    trap - EXIT INT TERM
-    kill_active_group TERM
-    if has_commit_witness; then
-        COMMITTED=1
-        original_status=0
-    fi
-    if [ "$original_status" -eq 0 ] && [ "$COMMITTED" -ne 1 ]; then
-        original_status=1
-    fi
-    cleanup_stage "$original_status"
-    close_commit_witness
-    exit "$original_status"
-}
-
-handle_int() {
-    trap - EXIT INT TERM
-    kill_active_group INT
-    if has_commit_witness; then
-        COMMITTED=1
-        cleanup_stage 0
-        echo "Signal observed after transaction commit; installation already committed." >&2
-        echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
-        echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
-        if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
-            echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
-        fi
-        close_commit_witness
-        exit 0
-    fi
-    cleanup_stage 130
-    close_commit_witness
-    exit 130
-}
-
-handle_term() {
-    trap - EXIT INT TERM
-    kill_active_group TERM
-    if has_commit_witness; then
-        COMMITTED=1
-        cleanup_stage 0
-        echo "Signal observed after transaction commit; installation already committed." >&2
-        echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
-        echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
-        if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
-            echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
-        fi
-        close_commit_witness
-        exit 0
-    fi
-    cleanup_stage 143
-    close_commit_witness
-    exit 143
-}
-
-trap handle_exit EXIT
-trap handle_int INT
-trap handle_term TERM
-
-read -r -d '' SUBREAPER_WRAPPER << 'EOF' || true
-import ctypes, os, sys, signal, subprocess, time
-
-PR_SET_CHILD_SUBREAPER = 36
-PR_GET_CHILD_SUBREAPER = 37
-
-libc = ctypes.CDLL(None, use_errno=True)
-
-# Ablation hooks for qualification testing
-ablate_set = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_SET") == "1"
-ablate_get = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_GET") == "1"
-ablate_val = os.environ.get("_AIOPS_TEST_ABLATE_SUBREAPER_VAL") == "0"
-
-if ablate_set:
-    rc_set = -1
-    err_set = 1
-else:
-    rc_set = libc.prctl(
-        ctypes.c_int(PR_SET_CHILD_SUBREAPER),
-        ctypes.c_ulong(1),
-        ctypes.c_ulong(0),
-        ctypes.c_ulong(0),
-        ctypes.c_ulong(0),
-    )
-    err_set = ctypes.get_errno()
-
-if rc_set != 0:
-    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_SET_CHILD_SUBREAPER failed (rc={rc_set}, errno={err_set})\n")
-    sys.exit(2)
-
-val_get = ctypes.c_int(0)
-if ablate_get:
-    rc_get = -1
-    err_get = 1
-else:
-    rc_get = libc.prctl(
-        ctypes.c_int(PR_GET_CHILD_SUBREAPER),
-        ctypes.byref(val_get),
-        ctypes.c_ulong(0),
-        ctypes.c_ulong(0),
-        ctypes.c_ulong(0),
-    )
-    err_get = ctypes.get_errno()
-
-if rc_get != 0:
-    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_GET_CHILD_SUBREAPER failed (rc={rc_get}, errno={err_get})\n")
-    sys.exit(2)
-
-if ablate_val:
-    val_get.value = 0
-
-if val_get.value != 1:
-    sys.stderr.write(f"Blocked: STOP_UNQUALIFIED_SUBREAPER: PR_GET_CHILD_SUBREAPER returned {val_get.value} (expected 1)\n")
-    sys.exit(2)
-
-cmd = sys.argv[1:]
-proc = subprocess.Popen(cmd, close_fds=False)
-
-def get_adopted_children():
-    my_pid = os.getpid()
-    ch_path = f"/proc/self/task/{my_pid}/children"
-    if os.path.exists(ch_path):
-        try:
-            with open(ch_path, "r") as f:
-                return [int(p) for p in f.read().split()]
-        except Exception:
-            pass
-    return []
-
-def terminate_and_reap_all(sig_code):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-
-    my_pid = os.getpid()
-
-    try:
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
-    except Exception:
-        pass
-
-    for child in get_adopted_children():
-        try:
-            os.kill(child, signal.SIGTERM)
-        except Exception:
-            pass
-
-    grace_deadline = time.time() + 1.0
-    all_reaped = False
-    while time.time() < grace_deadline:
-        while True:
-            try:
-                wpid, _ = os.waitpid(-1, os.WNOHANG)
-                if wpid == 0:
-                    break
-            except ChildProcessError:
-                all_reaped = True
-                break
-        if all_reaped:
-            break
-        time.sleep(0.05)
-
-    if not all_reaped:
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            pass
-
-        for child in get_adopted_children():
-            try:
-                os.kill(child, signal.SIGKILL)
-            except Exception:
-                pass
-
-    while True:
-        try:
-            os.waitpid(-1, 0)
-        except ChildProcessError:
-            break
-
-    sys.exit(sig_code)
-
-def handle_sig(sig, frame):
-    terminate_and_reap_all(143 if sig == signal.SIGTERM else 130)
-
-signal.signal(signal.SIGINT, handle_sig)
-signal.signal(signal.SIGTERM, handle_sig)
-
-rc = proc.wait()
-if rc == 0:
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
-        while True:
-            try:
-                wpid, _ = os.waitpid(-1, os.WNOHANG)
-                if wpid == 0:
-                    break
-            except ChildProcessError:
-                sys.exit(0)
-        time.sleep(0.05)
-    terminate_and_reap_all(0)
-else:
-    terminate_and_reap_all(rc)
-EOF
-
-run_tracked_step() {
-    # Reuse the bootstrap interpreter admitted by the platform preflight.
-    "$PYTHON_BIN" -I -S -c "$SUBREAPER_WRAPPER" "$@" &
-    ACTIVE_PID=$!
-    ACTIVE_PGID="$(ps -o pgid= -p "$ACTIVE_PID" 2>/dev/null | tr -d ' ' || true)"
-    if [ -z "$ACTIVE_PGID" ]; then
-        ACTIVE_PGID="$ACTIVE_PID"
-    fi
-    local step_status=0
-    wait "$ACTIVE_PID" || step_status=$?
-    ACTIVE_PID=""
-    ACTIVE_PGID=""
-    if [ "$step_status" -eq 130 ]; then
-        handle_int
-    elif [ "$step_status" -eq 143 ]; then
-        handle_term
-    fi
-    return "$step_status"
-}
-
-PRIVATE_STAGE="$(mktemp -d "$VENV_PARENT/.agent_review_stage.XXXXXX")" || {
-    echo "Blocked: failed to create private staging directory in $VENV_PARENT" >&2
+# Transfer the installer PID and signal destination to the sole authority.
+# The selected/qualified bootstrap executes the complete stdlib helper. No
+# background reaper, Bash KILL timeout, FIFO witness or second commit classifier.
+INSTALL_AUTHORITY="$ROOT_DIR/scripts/agent-review-install-authority.py"
+if [ ! -f "$INSTALL_AUTHORITY" ]; then
+    echo "Blocked: installation authority missing: $(render_path "$INSTALL_AUTHORITY")" >&2
+    exit 2
+fi
+AUTHORITY_CODE="$(cat "$INSTALL_AUTHORITY")" || {
+    echo "Blocked: cannot read installation authority: $(render_path "$INSTALL_AUTHORITY")" >&2
     exit 2
 }
-chmod 755 "$PRIVATE_STAGE" 2>/dev/null || true
-
-COMMIT_WITNESS_FIFO="$PRIVATE_STAGE/.commit_witness.fifo"
-mkfifo -m 600 "$COMMIT_WITNESS_FIFO" || {
-    echo "Blocked: failed to create commit witness fifo in $PRIVATE_STAGE" >&2
+if [ -z "$AUTHORITY_CODE" ]; then
+    echo "Blocked: empty installation authority: $(render_path "$INSTALL_AUTHORITY")" >&2
     exit 2
-}
-exec 3<>"$COMMIT_WITNESS_FIFO" || {
-    echo "Blocked: failed to open commit witness descriptor" >&2
-    exit 2
-}
-if command -v unlink >/dev/null 2>&1; then
-    unlink "$COMMIT_WITNESS_FIFO"
-else
-    /bin/rm -f "$COMMIT_WITNESS_FIFO" 2>/dev/null || rm -f "$COMMIT_WITNESS_FIFO"
 fi
-
-# Step 1: Create venv in private staging directory
-run_tracked_step "$PYTHON_BIN" -I -S -m venv "$PRIVATE_STAGE"
-
-# Step 2: Install pinned dependencies into private staging venv
-run_tracked_step env PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
-
-# Step 3: RelocationClosureV1 and atomic NO_REPLACE publication
-PUBLISH_STATUS=0
-run_tracked_step "$PYTHON_BIN" -I -S -c '
-import os, sys, errno, ctypes, platform, shutil, signal
-
-stage_dir = sys.argv[1]
-final_dir = sys.argv[2]
-
-def rename_noreplace(src, dst):
-    libc = ctypes.CDLL(None, use_errno=True)
-    AT_FDCWD = -100
-    RENAME_NOREPLACE = 1
-    src_bytes = os.fsencode(src)
-    dst_bytes = os.fsencode(dst)
-    if hasattr(libc, "renameat2"):
-        rc = libc.renameat2(
-            ctypes.c_int(AT_FDCWD),
-            src_bytes,
-            ctypes.c_int(AT_FDCWD),
-            dst_bytes,
-            ctypes.c_uint(RENAME_NOREPLACE)
-        )
-    else:
-        mach = platform.machine()
-        sys_renameat2 = 316 if mach in ("x86_64", "AMD64") else 276
-        rc = libc.syscall(
-            ctypes.c_long(sys_renameat2),
-            ctypes.c_int(AT_FDCWD),
-            src_bytes,
-            ctypes.c_int(AT_FDCWD),
-            dst_bytes,
-            ctypes.c_uint(RENAME_NOREPLACE)
-        )
-    if rc != 0:
-        err = ctypes.get_errno()
-        raise OSError(err, os.strerror(err))
-
-# R1: Remove disposable __pycache__ and *.pyc
-for root, dirs, files in os.walk(stage_dir, topdown=False):
-    for f in files:
-        if f.endswith(".pyc"):
-            try:
-                os.unlink(os.path.join(root, f))
-            except OSError:
-                pass
-    for d in dirs:
-        if d == "__pycache__":
-            shutil.rmtree(os.path.join(root, d), ignore_errors=True)
-
-# DiscardAtBoundary:
-# Remove activation scripts (bin/activate*) and pip console scripts (bin/pip*)
-bin_dir = os.path.join(stage_dir, "bin")
-if os.path.isdir(bin_dir):
-    for f in list(os.listdir(bin_dir)):
-        p = os.path.join(bin_dir, f)
-        if os.path.isfile(p) and not os.path.islink(p):
-            f_lower = f.lower()
-            if f_lower.startswith("activate") or f_lower.endswith(".ps1") or f_lower.startswith("pip"):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
-# R2: Normalize textual files containing stage path
-stage_bytes = os.fsencode(stage_dir)
-final_bytes = os.fsencode(final_dir)
-
-for root, dirs, files in os.walk(stage_dir):
-    for f in files:
-        p = os.path.join(root, f)
-        if os.path.islink(p):
-            continue
-        try:
-            with open(p, "rb") as fp:
-                data = fp.read()
-        except OSError:
-            continue
-        if stage_bytes in data:
-            if b"\x00" in data:
-                print(f"Blocked: opaque/binary file contains un-normalizable staging path: {p}", file=sys.stderr)
-                sys.exit(2)
-            new_data = data.replace(stage_bytes, final_bytes)
-            try:
-                with open(p, "wb") as fp:
-                    fp.write(new_data)
-            except OSError:
-                sys.exit(2)
-
-# R3: Fail closed on remaining staging references
-for root, dirs, files in os.walk(stage_dir):
-    for f in files:
-        p = os.path.join(root, f)
-        if os.path.islink(p):
-            try:
-                target_link = os.readlink(p)
-                if stage_dir in target_link:
-                    print(f"Blocked: symlink {p} targets staging path {target_link}", file=sys.stderr)
-                    sys.exit(2)
-            except OSError:
-                pass
-            continue
-        try:
-            with open(p, "rb") as fp:
-                content = fp.read()
-        except OSError:
-            continue
-        if stage_bytes in content:
-            print(f"Blocked: staging path reference remains in {p}", file=sys.stderr)
-            sys.exit(2)
-
-# R4: Executable/shebang census & kernel boundary validation (max 127 bytes)
-if os.path.isdir(bin_dir):
-    for f in os.listdir(bin_dir):
-        p = os.path.join(bin_dir, f)
-        if os.path.islink(p) or not os.path.isfile(p):
-            continue
-        try:
-            with open(p, "rb") as fp:
-                first_line = fp.readline()
-        except OSError:
-            continue
-        if first_line.startswith(b"#!"):
-            if stage_bytes in first_line:
-                print(f"Blocked: shebang in {p} refers to staging path", file=sys.stderr)
-                sys.exit(2)
-            shebang_len = len(first_line.rstrip(b"\r\n"))
-            if shebang_len > 127:
-                print(f"Blocked: shebang in {p} exceeds AgentReviewShebangPolicyV1 limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
-                sys.exit(2)
-
-# Atomic publication: point of no return / commit linearization point
-old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT, signal.SIGTERM])
-try:
-    rename_noreplace(stage_dir, final_dir)
-    try:
-        os.write(3, b"COMMITTED\n")
-    except OSError:
-        pass
-except OSError as e:
-    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    if e.errno == errno.EEXIST:
-        sys.exit(10)
-    sys.exit(3)
-except Exception:
-    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-    sys.exit(3)
-
-signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-sys.exit(0)
-' "$PRIVATE_STAGE" "$VENV_TARGET" || PUBLISH_STATUS=$?
-
-if [ "$PUBLISH_STATUS" -eq 10 ]; then
-    if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
-    else
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
-    fi
-    exit 2
-elif [ "$PUBLISH_STATUS" -ne 0 ]; then
-    exit "$PUBLISH_STATUS"
-fi
-
-has_commit_witness || true
-COMMITTED=1
-PRIVATE_STAGE=""
-# Keep commit-aware INT and TERM handlers active through the entire epilogue and exit
-trap - EXIT
-close_commit_witness
-
-if [ -n "${AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER:-}" ]; then
-    echo "READY" > "$AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER"
-    sleep 5 &
-    wait $! 2>/dev/null || true
-fi
-
-echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
-
-
-echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
-if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
-    echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
-fi
-exit 0
+exec "$PYTHON_BIN" -I -S -c "$AUTHORITY_CODE" "$PYTHON_BIN" "$VENV_DIR" "$VENV_TARGET" "$LOCK_FILE" "$TOOLREPO_SHA"

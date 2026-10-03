@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_FILE = ROOT / "requirements-agent-review.lock"
 INSTALL_SCRIPT = ROOT / "scripts" / "install-agent-review-toolrepo.sh"
+INSTALL_AUTHORITY = ROOT / "scripts" / "agent-review-install-authority.py"
 
 _FORBIDDEN_PACKAGES = (
     "fastapi",
@@ -456,10 +457,9 @@ def test_countermodel_l2_ambient_pythonpath_cannot_shadow_pip(tmp_path: Path) ->
 
 def test_install_script_invokes_pip_in_isolated_mode() -> None:
     """M3: scripts/install-agent-review-toolrepo.sh invokes pip with PIP_CONFIG_FILE=/dev/null and --isolated."""
-    script_text = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    assert 'PIP_CONFIG_FILE=/dev/null "$PRIVATE_STAGE/bin/python3" -I -m pip --isolated install' in script_text, (
-        "scripts/install-agent-review-toolrepo.sh must invoke pip with PIP_CONFIG_FILE=/dev/null and --isolated"
-    )
+    script_text = INSTALL_AUTHORITY.read_text(encoding="utf-8")
+    assert '"PIP_CONFIG_FILE=/dev/null", os.path.join(stage_dir, "bin/python3")' in script_text
+    assert '"-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps"' in script_text
 
 
 def test_countermodel_m3_pip_isolation_ignores_pip_target(tmp_path: Path) -> None:
@@ -826,8 +826,16 @@ def test_supervisor_uses_qualified_bootstrap_runtime(tmp_path: Path, explicit_ov
         ambient_python.symlink_to(sys.executable)
 
     target = tmp_path / "runtime"
+    # Observe actual Popen argument vectors in a disposable copy; delegate the
+    # unchanged real worker execution, never a successful fake supervisor.
+    argv_log = tmp_path / "phase-arguments.jsonl"
+    installer = _disposable_authority(tmp_path,
+        "    proc = subprocess.Popen(argv, start_new_session=True)\n",
+        f"    with open({str(argv_log)!r}, 'a') as observation:\n"
+        "        observation.write(__import__('json').dumps(argv) + '\\n')\n"
+        "    proc = subprocess.Popen(argv, start_new_session=True)\n")
     result = subprocess.run(
-        ["bash", "-x", str(INSTALL_SCRIPT), str(target)],
+        ["bash", "-x", str(installer), str(target)],
         env=env, capture_output=True, text=True, check=False,
     )
     (tmp_path / "installer.stdout").write_text(result.stdout, encoding="utf-8")
@@ -839,7 +847,10 @@ def test_supervisor_uses_qualified_bootstrap_runtime(tmp_path: Path, explicit_ov
     # real interpreter; a double returning OK cannot satisfy this control.
     assert f"+ {selected} -I -S -c '" in result.stderr
     assert "PR_SET_CHILD_SUBREAPER" in result.stderr
-    assert re.search(r"/\.agent_review_stage\.[^ /]+/bin/python3 -I -m pip --isolated install", result.stderr)
+    phases = [json.loads(line) for line in argv_log.read_text().splitlines()]
+    pip_phase = next(argv for argv in phases if argv[:2] == ["env", "PIP_CONFIG_FILE=/dev/null"])
+    assert re.search(r"/\.agent_review_stage\.[^ /]+/bin/python3$", pip_phase[2])
+    assert pip_phase[3:10] == ["-I", "-m", "pip", "--isolated", "install", "--require-hashes", "--no-deps"]
     runtime = subprocess.run(
         [str(target / "bin" / "python3"), "-c",
          "import json,sys,pydantic,yaml; print(json.dumps({'prefix':sys.prefix,'base_prefix':sys.base_prefix}))"],
@@ -879,7 +890,7 @@ def test_incompatible_override_does_not_fall_back_to_valid_default(tmp_path: Pat
     assert result.returncode == 2, result.stderr
     assert "INCOMPATIBLE" in result.stderr
     assert marker.read_text(encoding="utf-8").splitlines()[:3] == ["-I", "-S", "-c"]
-    assert "+ run_tracked_step" not in result.stderr
+    assert "PR_SET_CHILD_SUBREAPER" not in result.stderr
     assert not target.exists()
     assert not list(tmp_path.glob(".agent_review_stage.*"))
 
@@ -1705,12 +1716,14 @@ def test_relocation_closure_v1_console_script_and_census(tmp_path: Path) -> None
     """
     import zipfile
 
-    script_content = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    marker_start = 'run_tracked_step "$PYTHON_BIN" -I -S -c ' + chr(39)
-    marker_end = chr(39) + ' "$PRIVATE_STAGE" "$VENV_TARGET"'
-    start_idx = script_content.find(marker_start) + len(marker_start)
-    end_idx = script_content.find(marker_end, start_idx)
-    py_step3 = script_content[start_idx:end_idx]
+    # Consume the actual projection and syscall code; publication authority is
+    # exercised separately through the real launcher in the composition controls.
+    py_step3 = (
+        "import runpy, sys; "
+        f"ns=runpy.run_path({str(INSTALL_AUTHORITY)!r},run_name='projection_fixture'); "
+        "exec(ns['PREPARATION_CODE']); "
+        "ns['rename_noreplace'](sys.argv[1], sys.argv[2])"
+    )
 
     stage_venv = tmp_path / "stage_venv"
     final_venv = tmp_path / "final_venv"
@@ -1798,12 +1811,14 @@ def test_relocation_closure_v1_rejects_unnormalizable_binary_reference(tmp_path:
     normalization cannot safely rewrite it; R2 detects the binary content, fails closed with status 2,
     and target is never committed or published.
     """
-    script_content = INSTALL_SCRIPT.read_text(encoding="utf-8")
-    marker_start = 'run_tracked_step "$PYTHON_BIN" -I -S -c ' + chr(39)
-    marker_end = chr(39) + ' "$PRIVATE_STAGE" "$VENV_TARGET"'
-    start_idx = script_content.find(marker_start) + len(marker_start)
-    end_idx = script_content.find(marker_end, start_idx)
-    py_step3 = script_content[start_idx:end_idx]
+    # Consume the actual projection and syscall code; publication authority is
+    # exercised separately through the real launcher in the composition controls.
+    py_step3 = (
+        "import runpy, sys; "
+        f"ns=runpy.run_path({str(INSTALL_AUTHORITY)!r},run_name='projection_fixture'); "
+        "exec(ns['PREPARATION_CODE']); "
+        "ns['rename_noreplace'](sys.argv[1], sys.argv[2])"
+    )
 
     stage_venv = tmp_path / "stage_binary"
     final_venv = tmp_path / "final_binary"
@@ -1823,190 +1838,13 @@ def test_relocation_closure_v1_rejects_unnormalizable_binary_reference(tmp_path:
 
 
 def test_countermodel_k1_signal_after_publish_before_parent_commit_observation(tmp_path: Path) -> None:
-    """K1-B / Causal Countermodel: When renameat2 commits the environment to VENV_TARGET and writes
-    the commit witness, but a signal (SIGTERM) arrives at the parent installer before parent assigns
-    COMMITTED=1, transaction outcome linearization ensures CommitWins: the parent installer observes
-    the commit witness on inherited descriptor 3, adjudicates committed success (exit 0), preserves
-    the committed target, and leaves zero ambiguous or stranded cancellation state.
-    """
-    host_py = sys.executable
-    target_venv = tmp_path / "venv_k1_post_commit"
-    barrier = tmp_path / "barrier_post_commit.txt"
-
-    fake_py = tmp_path / "fake_py_k1.sh"
-    fake_py.write_text(
-        f"#!/bin/bash\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    if [[ "$4" == *"rename_noreplace"* ]]; then\n'
-        f'        exec "{host_py}" -I -S -c \x27\n'
-        "import os, sys, errno, ctypes, platform, shutil, time, signal\n"
-        "stage_dir = sys.argv[1]\n"
-        "final_dir = sys.argv[2]\n"
-        "barrier_file = sys.argv[3]\n"
-        "def rename_noreplace(src, dst):\n"
-        "    libc = ctypes.CDLL(None, use_errno=True)\n"
-        "    AT_FDCWD = -100\n"
-        "    RENAME_NOREPLACE = 1\n"
-        "    src_bytes = os.fsencode(src)\n"
-        "    dst_bytes = os.fsencode(dst)\n"
-        '    if hasattr(libc, "renameat2"):\n'
-        "        rc = libc.renameat2(ctypes.c_int(AT_FDCWD), src_bytes, ctypes.c_int(AT_FDCWD), dst_bytes, ctypes.c_uint(RENAME_NOREPLACE))\n"
-        "    else:\n"
-        "        mach = platform.machine()\n"
-        '        sys_renameat2 = 316 if mach in ("x86_64", "AMD64") else 276\n'
-        "        rc = libc.syscall(ctypes.c_long(sys_renameat2), ctypes.c_int(AT_FDCWD), src_bytes, ctypes.c_int(AT_FDCWD), dst_bytes, ctypes.c_uint(RENAME_NOREPLACE))\n"
-        "    if rc != 0:\n"
-        "        err = ctypes.get_errno()\n"
-        "        raise OSError(err, os.strerror(err))\n"
-        "old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT, signal.SIGTERM])\n"
-        "try:\n"
-        "    rename_noreplace(stage_dir, final_dir)\n"
-        "    try:\n"
-        '        os.write(3, b"COMMITTED\\n")\n'
-        "    except OSError:\n"
-        "        pass\n"
-        "finally:\n"
-        "    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)\n"
-        'with open(barrier_file, "w") as f:\n'
-        '    f.write("RENAME_SUCCESS")\n'
-        "time.sleep(30)\n"
-        "sys.exit(0)\n"
-        '\x27 "$5" "$6" "' + str(barrier) + '"\n'
-        "    fi\n"
-        '    if [ -n "${5:-}" ]; then\n'
-        f'        exec "{host_py}" "$@"\n'
-        "    fi\n"
-        '    echo "OK"\n'
-        "    exit 0\n"
-        "fi\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
-        '    stage="$5"\n'
-        '    mkdir -p "$stage/bin"\n'
-        '    touch "$stage/pyvenv.cfg"\n'
-        '    cat << "EOF" > "$stage/bin/python3"\n'
-        "#!/bin/bash\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
-        "    exit 0\n"
-        "fi\n"
-        'exec python3 "$@"\n'
-        "EOF\n"
-        '    chmod 755 "$stage/bin/python3"\n'
-        "    exit 0\n"
-        "fi\n"
-        f'exec "{host_py}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_py.chmod(0o755)
-
-    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
-    p = subprocess.Popen(
-        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    for _ in range(50):
-        if barrier.exists():
-            break
-        time.sleep(0.05)
-    assert barrier.exists(), "Barrier after rename was not reached"
-
-    # Pre-signal verification: filesystem commit has already occurred
-    assert target_venv.exists(), "Target venv must exist on disk after renameat2"
-    assert (target_venv / "pyvenv.cfg").exists(), "Target venv must contain committed environment artifacts"
-
-    # Send SIGTERM to the parent installer process
-    os.kill(p.pid, signal.SIGTERM)
-    stdout, stderr = p.communicate(timeout=5)
-
-    # Outcome verification: CommitWins
-    assert p.returncode == 0, f"Installer must report committed outcome (exit 0), got {p.returncode}; stderr: {stderr}"
-    assert "Signal observed after transaction commit; installation already committed." in stderr
-    assert target_venv.exists(), "Committed target venv must be preserved"
-
-    # Verify subsequent retry is cleanly refused with code 2, proving no stranded or corrupt state
-    retry_res = subprocess.run(
-        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert retry_res.returncode == 2
-    assert "refusing to reuse or mutate an existing path" in retry_res.stderr
+    """C1: actual rename, pause BEFORE result update; internal cancellation cannot kill authority."""
+    _run_publication_pause(tmp_path, after_commit=True)
 
 
 def test_countermodel_k1_cancellation_before_commit_aborts(tmp_path: Path) -> None:
-    """K1-A: When a signal (SIGTERM) arrives before the atomic commit point (during publication step
-    before renameat2), CancellationWins: active worker group is terminated/reaped, commit witness is
-    absent, private staging directory is cleaned up, VENV_TARGET does not exist, and installer exits 143.
-    """
-    host_py = sys.executable
-    target_venv = tmp_path / "venv_k1_cancellation_before_commit"
-    barrier = tmp_path / "barrier_pre_commit.txt"
-
-    fake_py = tmp_path / "fake_py_k1_pre.sh"
-    fake_py.write_text(
-        f"#!/bin/bash\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-c" ]; then\n'
-        '    if [[ "$4" == *"rename_noreplace"* ]]; then\n'
-        f'        exec "{host_py}" -I -S -c \x27\n'
-        "import os, sys, time\n"
-        "barrier_file = sys.argv[3]\n"
-        'with open(barrier_file, "w") as f:\n'
-        '    f.write("BEFORE_RENAME")\n'
-        "time.sleep(30)\n"
-        "sys.exit(0)\n"
-        '\x27 "$5" "$6" "' + str(barrier) + '"\n'
-        "    fi\n"
-        '    if [ -n "${5:-}" ]; then\n'
-        f'        exec "{host_py}" "$@"\n'
-        "    fi\n"
-        '    echo "OK"\n'
-        "    exit 0\n"
-        "fi\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-S" ] && [ "$3" = "-m" ] && [ "$4" = "venv" ]; then\n'
-        '    stage="$5"\n'
-        '    mkdir -p "$stage/bin"\n'
-        '    cat << "EOF" > "$stage/bin/python3"\n'
-        "#!/bin/bash\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-m" ] && [ "$3" = "pip" ]; then\n'
-        "    exit 0\n"
-        "fi\n"
-        'exec python3 "$@"\n'
-        "EOF\n"
-        '    chmod 755 "$stage/bin/python3"\n'
-        "    exit 0\n"
-        "fi\n"
-        f'exec "{host_py}" "$@"\n',
-        encoding="utf-8",
-    )
-    fake_py.chmod(0o755)
-
-    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(fake_py))
-    p = subprocess.Popen(
-        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    for _ in range(50):
-        if barrier.exists():
-            break
-        time.sleep(0.05)
-    assert barrier.exists(), "Barrier before rename was not reached"
-
-    # Send SIGTERM before commit occurs
-    os.kill(p.pid, signal.SIGTERM)
-    stdout, stderr = p.communicate(timeout=5)
-
-    # CancellationWins: exit 143, target absent, staging cleaned
-    assert p.returncode == 143, f"Installer must exit 143 on cancellation before commit, got {p.returncode}; stderr: {stderr}"
-    assert not target_venv.exists(), "Target venv must not exist"
-    assert len(list(tmp_path.glob(".agent_review_stage.*"))) == 0, "Private staging directory must be cleaned"
+    """C3: cancel private preparation; a concurrent final target remains unchanged."""
+    _run_publication_pause(tmp_path, after_commit=False)
 
 
 def test_countermodel_k1_competition_eexist_remains_abort(tmp_path: Path) -> None:
@@ -2272,77 +2110,8 @@ sys.exit(1)
 
 
 def test_countermodel_t1_postcommit_signal_trap_preserves_committed_outcome(tmp_path: Path) -> None:
-    """T1: When a signal (SIGTERM) arrives in the post-commit epilogue (after COMMITTED=1 is set),
-    the commit-aware signal handler remains disarmed from rollback, preserves the committed target,
-    reports the committed outcome to stderr, and exits with status 0 cleanly without retry ambiguity.
-    """
-    host_py = sys.executable
-    target_venv = tmp_path / "venv_t1_postcommit_signal"
-    barrier_file = tmp_path / "postcommit_barrier.txt"
-
-    fake_py = tmp_path / "fake_py_t1.py"
-    fake_py.write_text(
-        f"""#!{host_py}
-import sys, os
-
-if sys.argv[1:4] == ["-I", "-S", "-c"]:
-    if "PR_SET_CHILD_SUBREAPER" in sys.argv[4]:
-        os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-    if len(sys.argv) == 5:
-        print("OK")
-        sys.exit(0)
-    if len(sys.argv) == 6:
-        script = sys.argv[4]
-        sys.argv = ["<norm>", sys.argv[5]]
-        exec(script)
-        sys.exit(0)
-    if len(sys.argv) == 7:
-        script = sys.argv[4]
-        sys.argv = ["<publish>", sys.argv[5], sys.argv[6]]
-        exec(script)
-        sys.exit(0)
-
-if sys.argv[1:5] == ["-I", "-S", "-m", "venv"]:
-    stage = sys.argv[5]
-    os.makedirs(os.path.join(stage, "bin"), exist_ok=True)
-    py_bin = os.path.join(stage, "bin", "python3")
-    with open(py_bin, "w") as f:
-        f.write("#!/bin/sh\\nexit 0\\n")
-    os.chmod(py_bin, 0o755)
-    sys.exit(0)
-
-sys.exit(1)
-""",
-        encoding="utf-8",
-    )
-    fake_py.chmod(0o755)
-
-    env = dict(
-        os.environ,
-        AGENT_REVIEW_PYTHON=str(fake_py),
-        AGENT_REVIEW_TEST_POSTCOMMIT_BARRIER=str(barrier_file),
-    )
-    p = subprocess.Popen(
-        ["bash", str(INSTALL_SCRIPT), str(target_venv)],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    # Wait for the postcommit barrier to be reached
-    for _ in range(50):
-        if barrier_file.exists():
-            break
-        time.sleep(0.05)
-    assert barrier_file.exists(), "Post-commit barrier was not reached"
-
-    # Deliver SIGTERM in the postcommit epilogue
-    os.kill(p.pid, signal.SIGTERM)
-    stdout, stderr = p.communicate(timeout=5)
-    assert p.returncode == 0, f"Installer must exit 0 on post-commit signal, got {p.returncode}; stderr: {stderr}"
-    assert "Signal observed after transaction commit; installation already committed." in stderr
-    assert target_venv.exists(), "Target venv must remain intact on post-commit signal"
+    """T1: request cancellation after known commit but before terminal result, without a product hook."""
+    _run_publication_pause(tmp_path, after_commit=True, classified=True)
 
 
 def test_countermodel_r1_target_path_contract_and_activation_discarded(tmp_path: Path) -> None:
@@ -2631,14 +2400,15 @@ def test_pid1_environment_qualification_u0_and_u1(tmp_path: Path, outcome: str, 
         disposable = tmp_path / "ablated"
         (disposable / "scripts").mkdir(parents=True)
         shutil.copy2(LOCK_FILE, disposable / LOCK_FILE.name)
-        original = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        set_call = "ctypes.c_int(PR_SET_CHILD_SUBREAPER),\n        ctypes.c_ulong(1),"
+        original = INSTALL_AUTHORITY.read_text(encoding="utf-8")
+        set_call = "ctypes.c_int(PR_SET_CHILD_SUBREAPER),\n            ctypes.c_ulong(1),"
         get_oracle = "if val_get.value != 1:"
         assert original.count(set_call) == original.count(get_oracle) == 1
         changed = original.replace(set_call, set_call.replace("c_ulong(1)", "c_ulong(0)"))
         changed = changed.replace(get_oracle, "if val_get.value != 0:")
         installer = disposable / "scripts" / INSTALL_SCRIPT.name
-        installer.write_text(changed, encoding="utf-8")
+        shutil.copy2(INSTALL_SCRIPT, installer)
+        (disposable / "scripts" / INSTALL_AUTHORITY.name).write_text(changed, encoding="utf-8")
         (tmp_path / "ablation.diff").write_text(
             "PR_SET_CHILD_SUBREAPER argument: 1 -> 0\nGET acceptance: 1 -> 0\n",
             encoding="utf-8",
@@ -2718,7 +2488,7 @@ def test_pid1_environment_qualification_u0_and_u1(tmp_path: Path, outcome: str, 
                 adopted = state(descendant["pid"])
             assert descendant["birth_parent"] not in (1, worker["supervisor"])
             assert adopted and adopted["ppid"] == expected_parent, (worker, descendant, adopted)
-            assert state(worker["supervisor"])["ppid"] == proc.pid
+            assert worker["supervisor"] == proc.pid
             supervisor_cmd = Path(f"/proc/{worker['supervisor']}/cmdline").read_bytes()
             assert b"PR_SET_CHILD_SUBREAPER" in supervisor_cmd
             if outcome == "cancellation":
@@ -2971,3 +2741,329 @@ sys.exit(1)
     assert pth_file.exists()
     assert str(target_venv) in pth_file.read_text(encoding="utf-8")
     assert ".agent_review_stage" not in pth_file.read_text(encoding="utf-8")
+
+
+def _disposable_authority(tmp_path: Path, old: str, new: str) -> Path:
+    """Instrument a disposable production copy; retain exact delta as evidence."""
+    import difflib
+    scripts = tmp_path / "instrumented" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(INSTALL_SCRIPT, scripts / INSTALL_SCRIPT.name)
+    shutil.copy2(LOCK_FILE, scripts.parent / LOCK_FILE.name)
+    original = INSTALL_AUTHORITY.read_text()
+    assert original.count(old) == 1
+    changed = original.replace(old, new)
+    (scripts / INSTALL_AUTHORITY.name).write_text(changed)
+    (tmp_path / "instrumentation.diff").write_text("".join(difflib.unified_diff(
+        original.splitlines(True), changed.splitlines(True), fromfile="production", tofile="instrumented")))
+    return scripts / INSTALL_SCRIPT.name
+
+
+def _controlled_bootstrap(tmp_path: Path, before_prepare: str = "") -> Path:
+    """Only venv/pip are controlled. Real CPython executes the complete authority."""
+    import shlex
+    code = (
+        "import os,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:5] != ['-I','-S','-m','venv']:\n"
+        "    os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n"
+        "stage=Path(sys.argv[5])\n(stage/'bin').mkdir(exist_ok=True)\n"
+        f"(stage/'bin'/'python3').write_text({_path_harness_python(sys.executable, tmp_path/'pip-arguments.txt')!r})\n"
+        "(stage/'bin'/'python3').chmod(0o755)\n"
+        "(stage/'pyvenv.cfg').write_text('controlled projection; not a real venv')\n" + before_prepare
+    )
+    worker = tmp_path / "controlled-bootstrap.py"
+    worker.write_text(code)
+    wrapper = tmp_path / "bootstrap"
+    wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(worker)) + ' "$@"\n')
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _await_file(path: Path, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while (not path.exists() or not path.stat().st_size) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert path.exists(), f"Missing observation: {path}"
+
+
+def _run_publication_pause(tmp_path: Path, after_commit: bool, classified: bool = False) -> None:
+    import json
+    barrier = tmp_path / "barrier.json"
+    target = tmp_path / "target"
+    bootstrap = _controlled_bootstrap(tmp_path)
+    if after_commit:
+        old = '                        publication = "COMMITTED"\n' if classified else '                        rename_noreplace(stage_dir, final_dir)\n'
+        pause = (f"                        open({str(barrier)!r},'w').write(__import__('json').dumps({{'pid':os.getpid(),'stage':stage_dir,'final':final_dir}}))\n"
+                 "                        os.kill(os.getpid(), signal.SIGSTOP)\n")
+        new = old + pause
+    else:
+        # Preparation remains a cancellable worker. Observe before it prepares,
+        # not inside the protected publication transition.
+        bootstrap = _controlled_bootstrap(tmp_path,
+            f"Path({str(barrier)!r}).write_text('preparation admitted')\nimport time\ntime.sleep(60)\n")
+        old = "def main():\n"
+        new = old + "    # observation copy; no semantic modification\n"
+    installer = _disposable_authority(tmp_path, old, new)
+    proc = subprocess.Popen(["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        _await_file(barrier)
+        if after_commit:
+            deadline = time.monotonic() + 5
+            while Path(f"/proc/{proc.pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "T" and time.monotonic() < deadline:
+                time.sleep(0.02)
+            receipt = json.loads(barrier.read_text())
+            assert receipt["pid"] == proc.pid  # exec transfer, no disposable publicador
+            assert target.exists()
+            identity = (target.stat().st_dev, target.stat().st_ino)
+        else:
+            target.mkdir()
+            (target / "competitor").write_bytes(b"FOREIGN\n")
+        proc.send_signal(signal.SIGTERM)
+        if after_commit:
+            time.sleep(3.3)  # cross OLD external KILL boundary; not a terminal oracle
+            state = Path(f"/proc/{proc.pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            assert state == "T", "authority must survive its own cancellation protocol"
+            os.kill(proc.pid, signal.SIGCONT)
+        out, err = proc.communicate(timeout=15)
+        (tmp_path / "stdout.bin").write_bytes(out)
+        (tmp_path / "stderr.bin").write_bytes(err)
+        assert proc.returncode == (0 if after_commit else 143), err
+        assert b"teardown=COMPLETE" in err
+        if after_commit:
+            assert b"publication=COMMITTED" in err
+            assert (target.stat().st_dev, target.stat().st_ino) == identity
+            assert b"installation already committed" in err
+        else:
+            assert b"publication=NOT_PUBLISHED" in err
+            assert (target / "competitor").read_bytes() == b"FOREIGN\n"
+        assert not list(tmp_path.glob(".agent_review_stage.*"))
+        (tmp_path / "composition-receipt.json").write_text(json.dumps({
+            "after_actual_rename": after_commit, "classified_before_pause": classified,
+            "authority_pid": proc.pid, "exit_status": proc.returncode,
+            "target_preserved": True, "teardown_complete": True}, indent=2))
+    finally:
+        if proc.poll() is None:
+            os.kill(proc.pid, signal.SIGCONT)
+            proc.terminate()
+            proc.wait(timeout=15)
+
+
+def test_committed_teardown_failure_is_distinct_and_preserves_final(tmp_path: Path) -> None:
+    """C5: finite fault injection after actual commit, no product fault hook."""
+    bootstrap = _controlled_bootstrap(tmp_path)
+    installer = _disposable_authority(tmp_path,
+        "        try:\n            drain_children(force=True)\n            teardown_reason",
+        "        try:\n            if publication == 'COMMITTED':\n                raise OSError('injected teardown observation failure')\n            drain_children(force=True)\n            teardown_reason")
+    target = tmp_path / "target"
+    result = subprocess.run(["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)), capture_output=True)
+    assert result.returncode == 4, result.stderr
+    assert b"publication=COMMITTED" in result.stderr
+    assert b"teardown=FAILED" in result.stderr
+    assert b"automatic_retry=false" in result.stderr
+    assert b"venv ready at:" not in result.stdout
+    assert target.is_dir() and (target / "pyvenv.cfg").is_file()
+    assert not list(tmp_path.glob(".agent_review_stage.*"))
+    (tmp_path / "stdout.bin").write_bytes(result.stdout)
+    (tmp_path / "stderr.bin").write_bytes(result.stderr)
+
+
+@pytest.mark.parametrize("pathname", ["ordinary", "venv\x1b[31mred", "venv\nforged", "venv\rforged", "venv\ttext", r"venv\ntext", "venv\u202espoof", "venv_ñ_λ_🚀"])
+def test_installer_path_rendering_preserves_operational_value(tmp_path: Path, pathname: str) -> None:
+    """C6: captured bytes, accepted-object identity, rejection and success diagnostics."""
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / pathname
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    rejected = '\n' in pathname or '\r' in pathname
+    if not rejected:
+        target.mkdir()
+        (target / "sentinel").write_bytes(b"FOREIGN")
+    refusal = subprocess.run(["bash", str(INSTALL_SCRIPT), str(target)], env=env, capture_output=True)
+    assert refusal.returncode == 2
+    for control in (b'\x1b', b'\r', b'\t', '\u202e'.encode()):
+        assert control not in refusal.stderr
+    if rejected:
+        assert os.fsencode(str(target)) not in refusal.stderr
+        assert not target.exists()
+    else:
+        assert (target / "sentinel").read_bytes() == b"FOREIGN"
+        # The test alone removes its own foreign fixture, then checks success
+        # using the identical operational pathname (harness, not real venv).
+        shutil.rmtree(target)
+        success = subprocess.run(["bash", str(INSTALL_SCRIPT), str(target)], env=env, capture_output=True)
+        assert success.returncode == 0, success.stderr
+        assert target.exists() and (target / "pyvenv.cfg").exists()
+        for control in (b'\x1b', b'\r', b'\t', '\u202e'.encode()):
+            assert control not in success.stdout + success.stderr
+        (tmp_path / "success.stdout.bin").write_bytes(success.stdout)
+    (tmp_path / "refusal.stderr.bin").write_bytes(refusal.stderr)
+
+
+def test_noreplace_unavailable_fails_at_publication_without_fallback(tmp_path: Path) -> None:
+    """1092: injected ENOSYS tests late negative handling, not platform qualification."""
+    installer = _disposable_authority(tmp_path,
+        "def rename_noreplace(src, dst):\n",
+        "def rename_noreplace(src, dst):\n    raise OSError(errno.ENOSYS, 'injected unavailable NO_REPLACE')\n")
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+    result = subprocess.run(["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)), capture_output=True)
+    assert result.returncode == 3, result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert b"NO_REPLACE failed errno=38" in result.stderr
+    assert b"teardown=COMPLETE" in result.stderr
+    assert not target.exists() and not list(tmp_path.glob(".agent_review_stage.*"))
+    assert (tmp_path / "pip-arguments.txt").exists()  # no new early capability probe
+
+
+def test_surviving_reaper_paused_after_adoption_crosses_old_kill_window(tmp_path: Path) -> None:
+    """C2: actual adopted zombie, real KILL/wait, census before namespace exit."""
+    import json
+    import textwrap
+    probe = subprocess.run(["unshare", "-U", "-r", "-p", "-f", "--mount-proc", "sh", "-c", "echo PID=$$"], capture_output=True)
+    if probe.returncode or probe.stdout.strip() != b"PID=1":
+        pytest.skip("EVIDENCE_LIMITATION_NON_REAPING_PID1: " + probe.stderr.decode())
+    barrier = tmp_path / "reaper-barrier.json"
+    reaped = tmp_path / "reaped.json"
+    observation = f'''                children = owned_children()
+                if children and not os.path.exists({str(barrier)!r}):
+                    observation_deadline = time.monotonic() + 5
+                    while children and time.monotonic() < observation_deadline:
+                        states = [open(f"/proc/{{pid}}/stat").read().rsplit(")",1)[1].split()[0] for pid in children]
+                        if all(state == "Z" for state in states):
+                            break
+                        time.sleep(0.01)
+                    open({str(barrier)!r}, "w").write(__import__("json").dumps({{"authority":os.getpid(),"children":children}}))
+                    os.kill(os.getpid(), signal.SIGSTOP)
+                waited = os.waitpid(-1, 0)
+                open({str(reaped)!r}, "w").write(__import__("json").dumps({{"authority":os.getpid(),"waited":waited}}))
+'''
+    installer = _disposable_authority(tmp_path, "                os.waitpid(-1, 0)\n", observation)
+    bootstrap = _controlled_bootstrap(tmp_path, f'''
+import signal,subprocess,time,json
+child_code="import os,signal,time,json;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path("+repr({str(tmp_path/'descendant.json')!r})+").write_text(json.dumps(dict(pid=os.getpid(),birth_parent=os.getppid())));time.sleep(60)"
+child=subprocess.Popen([sys.executable,"-c",child_code])
+Path({str(tmp_path/'worker.json')!r}).write_text(json.dumps(dict(pid=os.getpid(),authority=os.getppid(),descendant=child.pid)))
+time.sleep(60)
+''')
+    driver = tmp_path / "pid1.py"
+    driver.write_text(textwrap.dedent(r'''
+        import json,os,signal,subprocess,sys,time
+        from pathlib import Path
+        root,installer,bootstrap=sys.argv[1:]
+        root=Path(root)
+        assert os.getpid()==1
+        def read(name):
+            end=time.monotonic()+10
+            while time.monotonic()<end:
+                try:return json.loads((root/name).read_text())
+                except (FileNotFoundError,json.JSONDecodeError):time.sleep(.02)
+            raise AssertionError(name)
+        def state(pid):
+            try:
+                fields=Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()
+                return dict(state=fields[0],ppid=int(fields[1]),start_ticks=int(fields[19]))
+            except FileNotFoundError:return None
+        with (root/'installer.stdout').open('w') as out,(root/'installer.stderr').open('w') as err:
+            p=subprocess.Popen(['bash',installer,str(root/'target')],env=dict(os.environ,AGENT_REVIEW_PYTHON=bootstrap),stdout=out,stderr=err,start_new_session=True)
+            worker=read('worker.json');desc=read('descendant.json')
+            assert worker['authority']==p.pid
+            p.send_signal(signal.SIGTERM)
+            barrier=read('reaper-barrier.json')
+            end=time.monotonic()+5
+            while state(p.pid)['state']!='T' and time.monotonic()<end:time.sleep(.01)
+            before=dict(authority=state(p.pid),descendant=state(desc['pid']))
+            assert before['authority']['state']=='T'
+            assert before['descendant']['state']=='Z' and before['descendant']['ppid']==p.pid
+            assert desc['pid'] in barrier['children']
+            p.send_signal(signal.SIGTERM)
+            time.sleep(3.3)
+            assert state(p.pid)==before['authority'], 'authority killed by internal escalation'
+            assert state(desc['pid'])==before['descendant']
+            os.kill(p.pid,signal.SIGCONT)
+            rc=p.wait(timeout=15) # PID1 waits only for direct installer
+        wait=read('reaped.json')
+        assert wait['authority']==p.pid and wait['waited']==[desc['pid'],9]
+        remaining={int(q.name):state(int(q.name)) for q in Path('/proc').iterdir() if q.name.isdigit() and q.name!='1'}
+        receipt=dict(authority=p.pid,worker=worker,descendant=desc,adopted_zombie_before=before,actual_wait=wait,exit_status=rc,remaining_before_namespace_exit=remaining)
+        (root/'c2-receipt.json').write_text(json.dumps(receipt,indent=2))
+        print(json.dumps(receipt))
+        assert rc==143 and remaining=={}
+        assert not (root/'target').exists() and not list(root.glob('.agent_review_stage.*'))
+        assert 'teardown=COMPLETE' in (root/'installer.stderr').read_text()
+    '''))
+    result = subprocess.run(["unshare", "-U", "-r", "-p", "-f", "--mount-proc", sys.executable,
+        str(driver), str(tmp_path), str(installer), str(bootstrap)], capture_output=True, text=True, timeout=40)
+    print(result.stdout)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "c2-receipt.json").read_text())["remaining_before_namespace_exit"] == {}
+
+
+def test_cancel_during_resistant_cleanup_preserves_primary_and_classifies_teardown(tmp_path: Path) -> None:
+    """Cleanup remains a supervised child; its cancellation cannot hide primary failure."""
+    import shlex
+    bootstrap = _controlled_bootstrap(tmp_path, "sys.exit(66)\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "cleanup.pid"
+    rm = bin_dir / "rm"
+    rm.write_text("#!" + sys.executable + "\nimport os,signal,time\nfrom pathlib import Path\n"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n")
+    rm.chmod(0o755)
+    proc = subprocess.Popen(["bash", str(INSTALL_SCRIPT), str(tmp_path / "target")],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap), PATH=str(bin_dir)+os.pathsep+os.environ['PATH']),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _await_file(marker)
+    cleanup_pid = int(marker.read_text())
+    proc.send_signal(signal.SIGTERM)
+    out, err = proc.communicate(timeout=10)
+    assert proc.returncode == 66, err
+    assert b'publication=NOT_PUBLISHED' in err and b'teardown=FAILED' in err
+    assert b'cleanup status 137' in err
+    assert not Path(f'/proc/{cleanup_pid}').exists()
+    assert not (tmp_path / 'target').exists()
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["missing", "empty"])
+def test_install_authority_dependency_cannot_disappear_as_success(tmp_path: Path, empty: bool) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(INSTALL_SCRIPT, scripts / INSTALL_SCRIPT.name)
+    shutil.copy2(LOCK_FILE, tmp_path / LOCK_FILE.name)
+    if empty:
+        (scripts / INSTALL_AUTHORITY.name).write_text("")
+    result = subprocess.run(["bash", str(scripts / INSTALL_SCRIPT.name), str(tmp_path / 'target')],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=sys.executable), capture_output=True)
+    assert result.returncode == 2
+    assert b'installation authority' in result.stderr
+    assert not (tmp_path / 'target').exists()
+    assert not list(tmp_path.glob('.agent_review_stage.*'))
+
+
+def test_unestablished_publication_is_inconclusive_not_safe_cancellation(tmp_path: Path) -> None:
+    """A classification fault cannot turn absent terminal knowledge into rollback."""
+    installer = _disposable_authority(tmp_path,
+        "                        rename_noreplace(stage_dir, final_dir)\n",
+        "                        rename_noreplace(stage_dir, final_dir)\n                        raise RuntimeError('injected loss of classification')\n")
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / 'target'
+    result = subprocess.run(['bash', str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)), capture_output=True)
+    assert result.returncode == 5, result.stderr
+    assert b'publication=UNKNOWN' in result.stderr and b'automatic_retry=false' in result.stderr
+    assert b'venv ready at:' not in result.stdout
+    assert target.exists() and (target / 'pyvenv.cfg').exists()
+
+
+def test_unqualified_interpreter_path_is_rendered_without_using_it(tmp_path: Path) -> None:
+    unavailable = tmp_path / 'python\x1b[31m\t\u202efake'
+    result = subprocess.run(['bash', str(INSTALL_SCRIPT), str(tmp_path / 'target')],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(unavailable)), capture_output=True)
+    assert result.returncode == 2
+    assert b'selected Python interpreter' in result.stderr
+    assert b'\x1b' not in result.stderr and b'\t' not in result.stderr and '\u202e'.encode() not in result.stderr
+    assert not (tmp_path / 'target').exists()
