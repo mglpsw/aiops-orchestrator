@@ -2581,6 +2581,16 @@ def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: 
     # C7: hide the hosting checkout only inside a private mount namespace.
     # The real materialized installer must consume its own new stdlib helper.
     assert (standalone / "scripts" / "agent-review-install-authority.py").is_file()
+    if shutil.which("unshare") is None:
+        pytest.skip("EVIDENCE_LIMITATION_UNSHARE_UNAVAILABLE: unshare binary not found on PATH")
+    probe = subprocess.run(
+        ["unshare", "-U", "-r", "-m", "sh", "-c", "true"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"EVIDENCE_LIMITATION_USER_MOUNT_NAMESPACE: {probe.stderr.strip()}")
     namespace_command = [
         "unshare", "-U", "-r", "-m", "sh", "-c",
         'mount -t tmpfs tmpfs "$1" && shift && exec "$@"',

@@ -4194,17 +4194,16 @@ def test_ablation_bounded_git_proves_anti_vacuity(tmp_path: Path) -> None:
     """
     import shlex
     old_git_search = (
-        '    GIT_SEARCH_PATH="$(getconf PATH 2>/dev/null || echo "/bin:/usr/bin")"\n'
         '    GIT_BIN="$(PATH="$GIT_SEARCH_PATH" command -v git 2>/dev/null || true)"\n'
-        '    if [ -n "$GIT_BIN" ]; then\n'
-        '        GIT_TOPLEVEL="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"'
+        '    if [ -n "$GIT_BIN" ] && [ -n "$ENV_BIN" ]; then\n'
+        '        GIT_TOPLEVEL="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"'
     )
     new_git_search = (
         '    if command -v git >/dev/null 2>&1; then\n'
         '        GIT_TOPLEVEL="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"'
     )
     old_sha_eval = (
-        '        ACTUAL_SHA="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"'
+        '        ACTUAL_SHA="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"'
     )
     new_sha_eval = (
         '        ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"'
@@ -4374,6 +4373,24 @@ def test_positive_bounded_git_and_same_object_python(tmp_path: Path) -> None:
     )
     rogue_py.chmod(0o755)
 
+    getconf_marker = tmp_path / "rogue_getconf_positive.marker"
+    rogue_getconf = fake_bin / "getconf"
+    rogue_getconf.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_GETCONF_INVOKED' > {shlex.quote(str(getconf_marker))}\n"
+        "exit 1\n"
+    )
+    rogue_getconf.chmod(0o755)
+
+    env_marker = tmp_path / "rogue_env_positive.marker"
+    rogue_env = fake_bin / "env"
+    rogue_env.write_text(
+        "#!/bin/sh\n"
+        f"echo 'ROGUE_ENV_INVOKED' > {shlex.quote(str(env_marker))}\n"
+        "exit 1\n"
+    )
+    rogue_env.chmod(0o755)
+
     bootstrap = _controlled_bootstrap(tmp_path)
     rel_bootstrap = f"./{os.path.relpath(bootstrap, tmp_path)}"
 
@@ -4394,3 +4411,95 @@ def test_positive_bounded_git_and_same_object_python(tmp_path: Path) -> None:
     assert target.exists()
     assert not git_marker.exists(), "Rogue git must not be invoked during genuine git install"
     assert not py_marker.exists(), "Rogue python must not be invoked during genuine git install"
+    assert not getconf_marker.exists(), "Rogue getconf must not be invoked during genuine git install"
+    assert not env_marker.exists(), "Rogue env must not be invoked during genuine git install"
+
+
+def test_countermodel_ambient_git_helpers_rejected(tmp_path: Path) -> None:
+    """Countermodel CM-AMBIENT-GIT-HELPERS:
+    Rogue `getconf`, `env`, and `git` binaries on ambient PATH attempting to poison
+    search paths or launcher execution are never executed. The installer binds getconf
+    and env to trusted absolute executables, preventing ambient PATH interception.
+    """
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    getconf_marker = tmp_path / "rogue_getconf.marker"
+    (fake_bin / "getconf").write_text(
+        f"#!/bin/sh\necho 'ROGUE_GETCONF' > {shlex.quote(str(getconf_marker))}\nexit 1\n"
+    )
+    (fake_bin / "getconf").chmod(0o755)
+
+    env_marker = tmp_path / "rogue_env.marker"
+    (fake_bin / "env").write_text(
+        f"#!/bin/sh\necho 'ROGUE_ENV' > {shlex.quote(str(env_marker))}\nexit 1\n"
+    )
+    (fake_bin / "env").chmod(0o755)
+
+    git_marker = tmp_path / "rogue_git.marker"
+    (fake_bin / "git").write_text(
+        f"#!/bin/sh\necho 'ROGUE_GIT' > {shlex.quote(str(git_marker))}\nexit 1\n"
+    )
+    (fake_bin / "git").chmod(0o755)
+
+    installer = _isolated_installer(tmp_path)
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_helpers_cm"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    result = subprocess.run(
+        ["bash", str(installer), str(target), "--toolrepo-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Blocked: unable to resolve source identity" in result.stderr
+    assert not getconf_marker.exists(), "Rogue getconf on ambient PATH must never be executed"
+    assert not env_marker.exists(), "Rogue env on ambient PATH must never be executed"
+    assert not git_marker.exists(), "Rogue git on ambient PATH must never be executed"
+
+
+def test_ablation_git_helpers_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Ablation proving that unconfined ambient `getconf` and `env` are interceptable on PATH."""
+    import shlex
+    fake_bin = tmp_path / "fake_bin"
+    fake_bin.mkdir()
+    getconf_marker = tmp_path / "ablated_getconf.marker"
+    (fake_bin / "getconf").write_text(
+        f"#!/bin/sh\necho 'ABLATED_GETCONF' > {shlex.quote(str(getconf_marker))}\necho /bin:/usr/bin\n"
+    )
+    (fake_bin / "getconf").chmod(0o755)
+
+    env_marker = tmp_path / "ablated_env.marker"
+    (fake_bin / "env").write_text(
+        f"#!/bin/sh\necho 'ABLATED_ENV' > {shlex.quote(str(env_marker))}\nexec /usr/bin/env \"$@\"\n"
+    )
+    (fake_bin / "env").chmod(0o755)
+
+    # Ablate installer by replacing absolute getconf and env resolution with ambient calls
+    ablated_installer = _disposable_installer_multi(
+        tmp_path,
+        [
+            ('GIT_SEARCH_PATH="$("$GETCONF_BIN" PATH 2>/dev/null || echo "/usr/bin:/bin")"', 'GIT_SEARCH_PATH="$(getconf PATH 2>/dev/null || echo "/usr/bin:/bin")"'),
+            ('GIT_TOPLEVEL="$("$ENV_BIN" -i', 'GIT_TOPLEVEL="$(env -i'),
+        ],
+    )
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target_helpers_ablation"
+
+    env = dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap))
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+
+    subprocess.run(
+        ["bash", str(ablated_installer), str(target), "--toolrepo-sha", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert getconf_marker.exists(), "Ablated installer must consult ambient getconf on PATH"
+    assert env_marker.exists(), "Ablated installer must consult ambient env on PATH"

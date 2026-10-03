@@ -55,10 +55,30 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     fi
     ACTUAL_SHA=""
     IS_GIT=0
-    GIT_SEARCH_PATH="$(getconf PATH 2>/dev/null || echo "/bin:/usr/bin")"
+    GETCONF_BIN=""
+    for candidate in /usr/bin/getconf /bin/getconf; do
+        if [ -x "$candidate" ]; then
+            GETCONF_BIN="$candidate"
+            break
+        fi
+    done
+    if [ -n "$GETCONF_BIN" ]; then
+        GIT_SEARCH_PATH="$("$GETCONF_BIN" PATH 2>/dev/null || echo "/usr/bin:/bin")"
+    else
+        GIT_SEARCH_PATH="/usr/bin:/bin"
+    fi
+
+    ENV_BIN=""
+    for candidate in /usr/bin/env /bin/env; do
+        if [ -x "$candidate" ]; then
+            ENV_BIN="$candidate"
+            break
+        fi
+    done
+
     GIT_BIN="$(PATH="$GIT_SEARCH_PATH" command -v git 2>/dev/null || true)"
-    if [ -n "$GIT_BIN" ]; then
-        GIT_TOPLEVEL="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$GIT_BIN" ] && [ -n "$ENV_BIN" ]; then
+        GIT_TOPLEVEL="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
         if [ -n "$GIT_TOPLEVEL" ]; then
             ROOT_DIR_REAL="$(cd "$ROOT_DIR" && pwd -P)"
             GIT_TOPLEVEL_REAL="$(cd "$GIT_TOPLEVEL" && pwd -P)"
@@ -80,7 +100,7 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 
     if [ "$IS_GIT" = "1" ]; then
         # Git HEAD is authoritative whenever Git identity is available
-        ACTUAL_SHA="$(env -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+        ACTUAL_SHA="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
         if [ -f "$ROOT_DIR/.source-commit" ]; then
             SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
             SC_SHA="${SC_SHA//[[:space:]]/}"
