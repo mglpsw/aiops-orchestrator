@@ -907,6 +907,8 @@ def test_install_script_produces_a_working_minimal_venv(tmp_path: Path, pathname
     env = os.environ.copy()
     if "AGENT_REVIEW_PYTHON" not in env:
         py311 = shutil.which("python3.11")
+        if not py311 and Path("/tmp/test-venv311/bin/python3.11").is_file():
+            py311 = "/tmp/test-venv311/bin/python3.11"
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
         elif sys.version_info[:2] != (3, 11):
@@ -3177,3 +3179,381 @@ assert ns['owned_children']()==[]
         capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr
     (tmp_path / "reader-observation.stdout").write_bytes(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# AOCM Final Class Closure Suite:
+# OC-RESULT-TOTALITY, OC-ENFORCEMENT-CLOSURE, OC-CENSUS-COMPLETE-OR-FAIL
+# ---------------------------------------------------------------------------
+
+def test_setup_failure_makedirs_produces_operational_failure(tmp_path: Path) -> None:
+    """R-SETUP-1: makedirs failure is an operational failure (status 3), not admission refusal (status 2)."""
+    installer = _disposable_authority(
+        tmp_path,
+        "            try:\n                os.makedirs(os.path.dirname(final_dir), exist_ok=True)\n",
+        "            try:\n                raise PermissionError(errno.EACCES, 'injected makedirs permission denied')\n",
+    )
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "sub" / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 3, result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert b"staging setup failed: makedirs" in result.stderr
+    assert b"not admitted" not in result.stderr
+    assert b"teardown=COMPLETE (no stage created)" in result.stderr
+    assert b"exit_status=3" in result.stderr
+    assert not target.exists() and not list(tmp_path.glob(".agent_review_stage.*"))
+
+
+def test_setup_failure_mkdtemp_produces_operational_failure(tmp_path: Path) -> None:
+    """R-SETUP-2: mkdtemp failure is an operational failure (status 3), not admission refusal."""
+    installer = _disposable_authority(
+        tmp_path,
+        "            try:\n                stage_dir = tempfile.mkdtemp(prefix=\".agent_review_stage.\", dir=os.path.dirname(final_dir))\n",
+        "            try:\n                raise OSError(errno.ENOSPC, 'injected mkdtemp no space left')\n",
+    )
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 3, result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert b"staging setup failed: mkdtemp" in result.stderr
+    assert b"not admitted" not in result.stderr
+    assert b"teardown=COMPLETE (no stage created)" in result.stderr
+    assert b"exit_status=3" in result.stderr
+    assert not target.exists() and not list(tmp_path.glob(".agent_review_stage.*"))
+
+
+def test_setup_failure_chmod_produces_operational_failure_and_cleans_stage(tmp_path: Path) -> None:
+    """R-SETUP-3: chmod failure produces operational failure (status 3) and cleans created staging directory."""
+    installer = _disposable_authority(
+        tmp_path,
+        "            try:\n                os.chmod(stage_dir, 0o755)\n",
+        "            try:\n                raise OSError(errno.EPERM, 'injected chmod operation not permitted')\n",
+    )
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 3, result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert b"staging setup failed: chmod" in result.stderr
+    assert b"not admitted" not in result.stderr
+    assert b"teardown=COMPLETE" in result.stderr
+    assert b"exit_status=3" in result.stderr
+    assert not target.exists()
+    assert not list(tmp_path.glob(".agent_review_stage.*")), "staging directory created before chmod failure must be cleaned"
+
+
+def test_preparation_fails_closed_when_disposable_script_cannot_be_removed(tmp_path: Path) -> None:
+    """R-ENF-1 (Finding 4173148126): mandatory DiscardAtBoundary fails closed if activation/pip script cannot be unlinked."""
+    old_unlink = '                    os.unlink(p)\n'
+    injected = (
+        '                    if "activate" in f_lower or "pip" in f_lower:\n'
+        '                        raise PermissionError(errno.EACCES, "injected unlink denial on unconsumed surface")\n'
+        '                    os.unlink(p)\n'
+    )
+    installer = _disposable_authority(tmp_path, old_unlink, injected)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "(stage/'bin'/'activate').write_text('# activation script\\n')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert b"Blocked: failed to discard unconsumed surface" in result.stderr
+    assert b"publication=NOT_PUBLISHED (preparation failed or cancelled)" in result.stderr
+    assert b"teardown=COMPLETE" in result.stderr
+    assert not target.exists() and not list(tmp_path.glob(".agent_review_stage.*"))
+
+
+def test_preparation_fails_closed_when_bytecode_discard_fails(tmp_path: Path) -> None:
+    """R-ENF-2: mandatory bytecode removal fails closed if .pyc cannot be unlinked."""
+    old_unlink = '            try:\n                os.unlink(p)\n'
+    injected = (
+        '            try:\n'
+        '                raise PermissionError(errno.EACCES, "injected bytecode unlink denial")\n'
+    )
+    installer = _disposable_authority(tmp_path, old_unlink, injected)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "(stage/'bin'/'test.pyc').write_bytes(b'\\x00\\x00bytecode')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert b"Blocked: failed to remove bytecode file" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists() and not list(tmp_path.glob(".agent_review_stage.*"))
+
+
+def test_preparation_census_fails_closed_on_traversal_error(tmp_path: Path) -> None:
+    """R-CEN-1: traversal failure in os.walk during preparation invokes walk_error_handler and fails closed."""
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "unreadable = stage / 'unreadable_dir'\n"
+        "unreadable.mkdir()\n"
+        "(unreadable / 'hidden.txt').write_text('hidden')\n"
+        "unreadable.chmod(0o000)\n",
+    )
+    target = tmp_path / "target"
+    try:
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT), str(target)],
+            env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+            capture_output=True,
+        )
+        assert result.returncode == 2, result.stderr
+        assert b"Blocked: traversal failed during preparation" in result.stderr
+        assert b"publication=NOT_PUBLISHED" in result.stderr
+        assert not target.exists()
+    finally:
+        for p in tmp_path.rglob("*"):
+            try:
+                p.chmod(0o755)
+            except OSError:
+                pass
+
+
+def test_preparation_r2_fails_closed_on_unreadable_file(tmp_path: Path) -> None:
+    """R-CEN-2: R2 normalization fails closed if an existing file cannot be read."""
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "unreadable = stage / 'lib' / 'unreadable.pth'\n"
+        "unreadable.parent.mkdir(parents=True, exist_ok=True)\n"
+        "unreadable.write_text('content')\n"
+        "unreadable.chmod(0o000)\n",
+    )
+    target = tmp_path / "target"
+    try:
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT), str(target)],
+            env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+            capture_output=True,
+        )
+        assert result.returncode == 2, result.stderr
+        assert b"Blocked: cannot read" in result.stderr
+        assert b"R2 normalization" in result.stderr
+        assert b"publication=NOT_PUBLISHED" in result.stderr
+        assert not target.exists()
+    finally:
+        for p in tmp_path.rglob("*"):
+            try:
+                p.chmod(0o755)
+            except OSError:
+                pass
+
+
+def test_preparation_r3_fails_closed_on_unreadable_symlink(tmp_path: Path) -> None:
+    """R-CEN-3: R3 residual census fails closed if readlink fails."""
+    old_readlink = '                target_link = os.readlink(p)\n'
+    injected = '                raise PermissionError(errno.EACCES, "injected readlink denial")\n'
+    installer = _disposable_authority(tmp_path, old_readlink, injected)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "sym = stage / 'lib' / 'test_symlink'\n"
+        "sym.parent.mkdir(parents=True, exist_ok=True)\n"
+        "sym.symlink_to('target')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert b"Blocked: cannot readlink" in result.stderr
+    assert b"R3 census" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists()
+
+
+def test_preparation_r3_fails_closed_on_unreadable_file(tmp_path: Path) -> None:
+    """R-CEN-4: R3 residual census fails closed if file content cannot be read."""
+    old_read = '            with open(p, "rb") as fp:\n                content = fp.read()\n'
+    injected = '            with open(p, "rb") as fp:\n                raise OSError(errno.EIO, "injected I/O error during R3 read")\n'
+    installer = _disposable_authority(tmp_path, old_read, injected)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "f = stage / 'lib' / 'sample.txt'\n"
+        "f.parent.mkdir(parents=True, exist_ok=True)\n"
+        "f.write_text('clean content')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert b"Blocked: cannot read" in result.stderr
+    assert b"R3 census" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists()
+
+
+def test_preparation_r4_fails_closed_on_unreadable_executable(tmp_path: Path) -> None:
+    """R-CEN-5: R4 shebang census fails closed if binary cannot be read."""
+    old_readline = "                first_line = fp.readline()\n"
+    injected = "                raise OSError(errno.EACCES, 'injected unreadable executable during R4')\n"
+    installer = _disposable_authority(tmp_path, old_readline, injected)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "tool = stage / 'bin' / 'custom_tool'\n"
+        "tool.write_bytes(b'#!/bin/sh\\necho hi\\n')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, result.stderr
+    assert b"Blocked: cannot read" in result.stderr
+    assert b"R4 census" in result.stderr
+    assert b"publication=NOT_PUBLISHED" in result.stderr
+    assert not target.exists()
+
+
+def test_ablation_oc_result_totality_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Section 14: proves anti-vacuity for OC-RESULT-TOTALITY.
+    Ablating the fix (reverting to predecessor primary=2, publication_reason='not admitted')
+    causes makedirs failure to produce exit 2 and 'not admitted' (the bug from finding 4173148118).
+    """
+    fixed_setup = (
+        "            # Admission succeeded; advance phase to SETUP before first filesystem mutation.\n"
+        "            primary = 3\n"
+        "            publication_reason = \"staging setup in progress\"\n"
+        "            teardown_reason = \"no stage created\"\n"
+        "            try:\n"
+        "                os.makedirs(os.path.dirname(final_dir), exist_ok=True)\n"
+        "            except OSError as error:\n"
+        "                publication_reason = f\"staging setup failed: makedirs ({error})\"\n"
+        "                raise\n"
+    )
+    ablated_setup = (
+        "            # Reverted to predecessor: primary remains 2, publication_reason remains 'not admitted'\n"
+        "            raise PermissionError(errno.EACCES, 'injected makedirs failure')\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_setup, ablated_setup)
+    ablated_path = installer_ablated.parent / INSTALL_AUTHORITY.name
+    content = ablated_path.read_text(encoding="utf-8")
+    content = content.replace(
+        '        if not publication_reason or publication_reason == "not admitted":\n            publication_reason = f"installation failure: {error}"\n',
+        "",
+    )
+    ablated_path.write_text(content, encoding="utf-8")
+
+    bootstrap = _controlled_bootstrap(tmp_path)
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 2, "ablated mutant must exhibit predecessor exit 2 escape"
+    assert b"publication=NOT_PUBLISHED (not admitted)" in result.stderr
+
+
+def test_ablation_oc_enforcement_closure_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Section 14: proves anti-vacuity for OC-ENFORCEMENT-CLOSURE.
+    Ablating the fix (reverting DiscardAtBoundary to 'except OSError: pass')
+    silently suppresses unlink failure and publishes the unconsumed surface (finding 4173148126).
+    """
+    fixed_discard = (
+        "            try:\n"
+        "                if os.path.islink(p) or os.path.isfile(p):\n"
+        "                    os.unlink(p)\n"
+        "                elif os.path.isdir(p):\n"
+        "                    shutil.rmtree(p)\n"
+        "            except OSError as err:\n"
+        "                print(f\"Blocked: failed to discard unconsumed surface {ascii(p)}: {ascii(str(err))}\", file=sys.stderr)\n"
+        "                sys.exit(2)\n"
+    )
+    ablated_discard = (
+        "            try:\n"
+        "                if os.path.islink(p) or os.path.isfile(p):\n"
+        "                    os.unlink(p)\n"
+        "                elif os.path.isdir(p):\n"
+        "                    shutil.rmtree(p)\n"
+        "            except OSError:\n"
+        "                pass  # Reverted: silent suppression\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_discard, ablated_discard)
+    ablated_path = installer_ablated.parent / INSTALL_AUTHORITY.name
+    content = ablated_path.read_text(encoding="utf-8")
+    content = content.replace("os.unlink(p)", "raise PermissionError(errno.EACCES, 'cannot unlink')")
+    ablated_path.write_text(content, encoding="utf-8")
+
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "(stage/'bin'/'activate').write_text('# retained activate\\n')\n",
+    )
+    target = tmp_path / "target"
+    result = subprocess.run(
+        ["bash", str(installer_ablated), str(target)],
+        env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+        capture_output=True,
+    )
+    assert result.returncode == 0, "ablated mutant must exhibit silent publish escape"
+    assert b"publication=COMMITTED" in result.stderr
+    assert target.exists()
+
+
+def test_ablation_oc_census_complete_proves_anti_vacuity(tmp_path: Path) -> None:
+    """Section 14: proves anti-vacuity for OC-CENSUS-COMPLETE-OR-FAIL.
+    Ablating the fix (reverting to default os.walk without onerror)
+    silently ignores traversal errors and commits incomplete installations.
+    """
+    fixed_handler = (
+        "def walk_error_handler(err):\n"
+        "    print(f\"Blocked: traversal failed during preparation: {ascii(str(err))}\", file=sys.stderr)\n"
+        "    sys.exit(2)\n"
+    )
+    ablated_handler = (
+        "def walk_error_handler(err):\n"
+        "    pass  # Reverted: silently suppress traversal error\n"
+    )
+    installer_ablated = _disposable_authority(tmp_path, fixed_handler, ablated_handler)
+    bootstrap = _controlled_bootstrap(
+        tmp_path,
+        "unreadable = stage / 'unreadable_dir'\n"
+        "unreadable.mkdir()\n"
+        "(unreadable / 'hidden.txt').write_text('hidden')\n"
+        "unreadable.chmod(0o000)\n",
+    )
+    target = tmp_path / "target"
+    try:
+        result = subprocess.run(
+            ["bash", str(installer_ablated), str(target)],
+            env=dict(os.environ, AGENT_REVIEW_PYTHON=str(bootstrap)),
+            capture_output=True,
+        )
+        assert result.returncode == 0, "ablated mutant must exhibit silent traversal escape"
+        assert b"publication=COMMITTED" in result.stderr
+        assert target.exists()
+    finally:
+        for p in tmp_path.rglob("*"):
+            try:
+                p.chmod(0o755)
+            except OSError:
+                pass

@@ -2575,6 +2575,8 @@ def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: 
     env = os.environ.copy()
     if "AGENT_REVIEW_PYTHON" not in env:
         py311 = shutil.which("python3.11")
+        if not py311 and Path("/tmp/test-venv311/bin/python3.11").is_file():
+            py311 = "/tmp/test-venv311/bin/python3.11"
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
 

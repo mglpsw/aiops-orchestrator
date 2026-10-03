@@ -44,39 +44,59 @@ def rename_noreplace(src, dst):
 
 
 PREPARATION_CODE = r"""
-import os, sys, shutil
+import errno, os, sys, shutil
 stage_dir, final_dir = sys.argv[1:]
+
+def walk_error_handler(err):
+    print(f"Blocked: traversal failed during preparation: {ascii(str(err))}", file=sys.stderr)
+    sys.exit(2)
+
 # R1: Remove disposable __pycache__ and *.pyc
-for root, dirs, files in os.walk(stage_dir, topdown=False):
+for root, dirs, files in os.walk(stage_dir, topdown=False, onerror=walk_error_handler):
     for f in files:
         if f.endswith(".pyc"):
+            p = os.path.join(root, f)
             try:
-                os.unlink(os.path.join(root, f))
-            except OSError:
-                pass
+                os.unlink(p)
+            except OSError as err:
+                print(f"Blocked: failed to remove bytecode file {ascii(p)}: {ascii(str(err))}", file=sys.stderr)
+                sys.exit(2)
     for d in dirs:
         if d == "__pycache__":
-            shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+            p = os.path.join(root, d)
+            try:
+                shutil.rmtree(p)
+            except OSError as err:
+                print(f"Blocked: failed to remove bytecode cache {ascii(p)}: {ascii(str(err))}", file=sys.stderr)
+                sys.exit(2)
 
 # DiscardAtBoundary:
 # Remove activation scripts (bin/activate*) and pip console scripts (bin/pip*)
 bin_dir = os.path.join(stage_dir, "bin")
 if os.path.isdir(bin_dir):
-    for f in list(os.listdir(bin_dir)):
+    try:
+        bin_entries = list(os.listdir(bin_dir))
+    except OSError as err:
+        print(f"Blocked: cannot list bin directory {ascii(bin_dir)}: {ascii(str(err))}", file=sys.stderr)
+        sys.exit(2)
+    for f in bin_entries:
         p = os.path.join(bin_dir, f)
-        if os.path.isfile(p) and not os.path.islink(p):
-            f_lower = f.lower()
-            if f_lower.startswith("activate") or f_lower.endswith(".ps1") or f_lower.startswith("pip"):
-                try:
+        f_lower = f.lower()
+        if f_lower.startswith("activate") or f_lower.endswith(".ps1") or f_lower.startswith("pip"):
+            try:
+                if os.path.islink(p) or os.path.isfile(p):
                     os.unlink(p)
-                except OSError:
-                    pass
+                elif os.path.isdir(p):
+                    shutil.rmtree(p)
+            except OSError as err:
+                print(f"Blocked: failed to discard unconsumed surface {ascii(p)}: {ascii(str(err))}", file=sys.stderr)
+                sys.exit(2)
 
 # R2: Normalize textual files containing stage path
 stage_bytes = os.fsencode(stage_dir)
 final_bytes = os.fsencode(final_dir)
 
-for root, dirs, files in os.walk(stage_dir):
+for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):
     for f in files:
         p = os.path.join(root, f)
         if os.path.islink(p):
@@ -84,8 +104,9 @@ for root, dirs, files in os.walk(stage_dir):
         try:
             with open(p, "rb") as fp:
                 data = fp.read()
-        except OSError:
-            continue
+        except OSError as err:
+            print(f"Blocked: cannot read {ascii(p)} during R2 normalization: {ascii(str(err))}", file=sys.stderr)
+            sys.exit(2)
         if stage_bytes in data:
             if b"\x00" in data:
                 print(f"Blocked: opaque/binary file contains un-normalizable staging path: {ascii(p)}", file=sys.stderr)
@@ -94,42 +115,51 @@ for root, dirs, files in os.walk(stage_dir):
             try:
                 with open(p, "wb") as fp:
                     fp.write(new_data)
-            except OSError:
+            except OSError as err:
+                print(f"Blocked: failed to write normalized path to {ascii(p)}: {ascii(str(err))}", file=sys.stderr)
                 sys.exit(2)
 
 # R3: Fail closed on remaining staging references
-for root, dirs, files in os.walk(stage_dir):
+for root, dirs, files in os.walk(stage_dir, onerror=walk_error_handler):
     for f in files:
         p = os.path.join(root, f)
         if os.path.islink(p):
             try:
                 target_link = os.readlink(p)
-                if stage_dir in target_link:
-                    print(f"Blocked: symlink {ascii(p)} targets staging path {ascii(target_link)}", file=sys.stderr)
-                    sys.exit(2)
-            except OSError:
-                pass
+            except OSError as err:
+                print(f"Blocked: cannot readlink {ascii(p)} during R3 census: {ascii(str(err))}", file=sys.stderr)
+                sys.exit(2)
+            if stage_dir in target_link:
+                print(f"Blocked: symlink {ascii(p)} targets staging path {ascii(target_link)}", file=sys.stderr)
+                sys.exit(2)
             continue
         try:
             with open(p, "rb") as fp:
                 content = fp.read()
-        except OSError:
-            continue
+        except OSError as err:
+            print(f"Blocked: cannot read {ascii(p)} during R3 census: {ascii(str(err))}", file=sys.stderr)
+            sys.exit(2)
         if stage_bytes in content:
             print(f"Blocked: staging path reference remains in {ascii(p)}", file=sys.stderr)
             sys.exit(2)
 
 # R4: Executable/shebang census & kernel boundary validation (max 127 bytes)
 if os.path.isdir(bin_dir):
-    for f in os.listdir(bin_dir):
+    try:
+        bin_files = os.listdir(bin_dir)
+    except OSError as err:
+        print(f"Blocked: cannot list bin directory {ascii(bin_dir)} during R4 census: {ascii(str(err))}", file=sys.stderr)
+        sys.exit(2)
+    for f in bin_files:
         p = os.path.join(bin_dir, f)
         if os.path.islink(p) or not os.path.isfile(p):
             continue
         try:
             with open(p, "rb") as fp:
                 first_line = fp.readline()
-        except OSError:
-            continue
+        except OSError as err:
+            print(f"Blocked: cannot read {ascii(p)} during R4 census: {ascii(str(err))}", file=sys.stderr)
+            sys.exit(2)
         if first_line.startswith(b"#!"):
             if stage_bytes in first_line:
                 print(f"Blocked: shebang in {ascii(p)} refers to staging path", file=sys.stderr)
@@ -138,7 +168,6 @@ if os.path.isdir(bin_dir):
             if shebang_len > 127:
                 print(f"Blocked: shebang in {ascii(p)} exceeds AgentReviewShebangPolicyV1 limit ({shebang_len} bytes > 127 bytes)", file=sys.stderr)
                 sys.exit(2)
-
 """
 
 cancel_signal = 0
@@ -317,10 +346,26 @@ def main():
             primary = 128 + cancel_signal
             publication_reason = "cancellation before worker admission"
         else:
-            # First installation filesystem mutation follows both admissions.
-            os.makedirs(os.path.dirname(final_dir), exist_ok=True)
-            stage_dir = tempfile.mkdtemp(prefix=".agent_review_stage.", dir=os.path.dirname(final_dir))
-            os.chmod(stage_dir, 0o755)
+            # Admission succeeded; advance phase to SETUP before first filesystem mutation.
+            primary = 3
+            publication_reason = "staging setup in progress"
+            teardown_reason = "no stage created"
+            try:
+                os.makedirs(os.path.dirname(final_dir), exist_ok=True)
+            except OSError as error:
+                publication_reason = f"staging setup failed: makedirs ({error})"
+                raise
+            try:
+                stage_dir = tempfile.mkdtemp(prefix=".agent_review_stage.", dir=os.path.dirname(final_dir))
+            except OSError as error:
+                publication_reason = f"staging setup failed: mkdtemp ({error})"
+                raise
+            try:
+                os.chmod(stage_dir, 0o755)
+            except OSError as error:
+                publication_reason = f"staging setup failed: chmod ({error})"
+                raise
+
             phases = (
                 [bootstrap, "-I", "-S", "-m", "venv", stage_dir],
                 ["env", "PIP_CONFIG_FILE=/dev/null", os.path.join(stage_dir, "bin/python3"),
@@ -366,11 +411,13 @@ def main():
     except Exception as error:
         if not primary:
             primary = 3
+        if not publication_reason or publication_reason == "not admitted":
+            publication_reason = f"installation failure: {error}"
         print("Blocked: installation failure: " + ascii(str(error)), file=sys.stderr)
     finally:
         try:
             drain_children(force=True)
-            teardown_reason = "all admitted children reaped"
+            teardown_reason = "no stage created" if stage_dir is None else "all admitted children reaped"
         except Exception as error:
             teardown = "FAILED"
             teardown_reason = ascii(str(error))
