@@ -1,86 +1,143 @@
 {
-  "artifact_type": "PR372_POST_READY_FINDINGS_QUALIFICATION",
-  "status": "systemically_qualified_second_post_ready_findings_closed",
+  "artifact_type": "PR372_FINAL_PRE_READY_CLOSURE_RECEIPT",
+  "status": "systemically_qualified_final_pre_ready_closure_complete",
   "gate": "Gate A",
   "owner": "#221",
   "slice": "V1-C2 / Gate A (C2ExecutableContract)",
   "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
   "predecessor": {
-    "head": "3539096948cef5eefd6f509bd24634b774b5d494",
-    "tree": "98aeca918db84eef35e2fff396157bb2593c8043",
+    "head": "3c15ecd4d05555d9baa6a15127a4e5f9aaf73ec1",
+    "tree": "42e45377e52cba06ae4cf833a9038d237ee9dee4",
     "review_id": "5408162653"
   },
   "successor": {
     "branch": "fix/221-v1-c2-gate-a-executable-contract",
     "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f"
   },
-  "S1_typed_declaration_admission_totality": {
-    "findings": [
-      "4179272317",
-      "4179272328",
-      "4179272330"
+  "R1_declared_shape_totality": {
+    "field_registry": {
+      "identity_fields": ["id"],
+      "scalar_fields": [
+        "description",
+        "scope",
+        "is_global",
+        "canonical_authority",
+        "display_authority",
+        "path",
+        "file_path",
+        "required"
+      ],
+      "list_of_paths": [
+        "paths",
+        "files",
+        "source_files",
+        "related_files",
+        "patterns"
+      ],
+      "named_string_sections": [
+        "critical_constraints",
+        "review_checklist",
+        "response_model_rules"
+      ],
+      "rule_dict_sections": [
+        "rules",
+        "slot_rules",
+        "response_models",
+        "orm_models"
+      ],
+      "rule_dict_carriers": [
+        "rule",
+        "text",
+        "description",
+        "id",
+        "name",
+        "model"
+      ],
+      "rule_dict_optional_fields": [
+        "invariant",
+        "rationale",
+        "field",
+        "expected_value"
+      ],
+      "reserved_metadata": [
+        "$schema",
+        "schema_version",
+        "meta",
+        "metadata",
+        "version",
+        "revision"
+      ],
+      "unknown_modern_field_policy": "ModernStrictness != LegacyStrictness; unknown fields in modern mapping fail closed with SOURCE_STATE_INVALID and SUBTYPE_UNSUPPORTED_NONEMPTY"
+    },
+    "empty_member_controls": [
+      "CM-R1-DOMAIN-PATHS-EMPTY-MEMBER",
+      "CM-R1-DOMAIN-PATTERNS-WHITESPACE-MEMBER",
+      "CM-R1-PACK-PATHS-EMPTY-MEMBER",
+      "CM-R1-PACK-PATTERNS-WHITESPACE-MEMBER"
     ],
-    "mechanism": "Pre-sanitization type validation _validate_contract_declared_field_types fails closed with SOURCE_STATE_INVALID and SUBTYPE_MALFORMED_SHAPE when declared fields have malformed scalar or non-string collection types. Empty or whitespace-only domain_contract identities in review packs fail closed with INVALID_IDENTITY. Explicit contract reference containers (contracts, contract_refs) require list[str] of nonempty identities, emitting typed limitations unresolved_contract_reference:MALFORMED_CONTAINER, MALFORMED_MEMBER, or EMPTY_IDENTITY and degrading chunk plan status.",
-    "countermodels": [
-      "CM-S1-DOMAIN-PATHS-SCALAR",
-      "CM-S1-DOMAIN-PATHS-NONSTRING-MEMBER",
-      "CM-S1-DOMAIN-PATTERNS-SCALAR",
-      "CM-S1-EMPTY-DOMAIN-CONTRACT",
-      "CM-S1-WHITESPACE-DOMAIN-CONTRACT",
-      "CM-S1-CONTRACT-REF-CONTAINER-SCALAR",
-      "CM-S1-CONTRACT-REF-CONTAINER-MIXED",
-      "CM-S1-CONTRACT-REF-EMPTY-IDENTITY"
+    "named_section_controls": [
+      "CM-R1-NAMED-SECTION-NONSTRING-MEMBER",
+      "CM-R1-NAMED-SECTION-EMPTY-STRING",
+      "CM-R1-NAMED-SECTION-NESTED-DICT-WHERE-STRING-REQUIRED"
     ],
+    "rule_dict_controls": [
+      "CM-R1-RULE-DICT-TEXT-WRONG-TYPE",
+      "CM-R1-RULE-DICT-TEXT-EMPTY",
+      "CM-R1-RULE-DICT-NO-TEXT-CARRIER"
+    ],
+    "unknown_modern_field_controls": [
+      "CM-R1-UNKNOWN-MODERN-FIELD"
+    ],
+    "RED": "all 11 countermodels fail closed with MALFORMED_SHAPE, INVALID_IDENTITY, or UNSUPPORTED_NONEMPTY",
+    "GREEN": "valid empty collections [] preserved; valid non-empty string members and valid rule dicts preserved",
     "ablations": [
-      "AB-S1-PATHS-SCALAR-ABLATION",
-      "AB-S1-EMPTY-DOMAIN-CONTRACT-ABLATION",
-      "AB-S1-CONTRACT-REF-CONTAINER-ABLATION"
-    ],
-    "positives": [
-      "PC-S1-ABSENT-PATHS-VALID",
-      "PC-S1-EXPLICIT-GLOBAL-VALID",
-      "PC-S1-KNOWN-CONTRACT-REF-VALID"
+      "AB-R1-EMPTY-PATH-MEMBER-VALIDATION",
+      "AB-R1-NAMED-SECTION-MEMBER-VALIDATION",
+      "AB-R1-RULE-DICT-VALIDATION"
     ]
   },
-  "S2_required_pack_context_closure": {
-    "findings": [
-      "4179272322",
-      "4179272324"
-    ],
-    "mechanism": "Explicitly selected review packs (selected_contract_pack) are marked required=True with required_reasons=['explicit_selection'] even when effective_contracts is empty. Bounded single authority is_required_context_loss recognizes all required context loss prefixes (required_contract_context_lost:, required_contract_pack_context_lost:). The routing guard in _build_chunk_payload checks is_required_context_loss, blocking payload routing (payload_path=None, status='limited') whenever forced shrinking drops any required context. clean_contracts_context_for_payload strips internal discriminant testing annotations and empty effective_contracts for public payload emission.",
-    "countermodels": [
-      "CM-S2-SELECTED-PACK-BUDGET-LOSS",
-      "CM-S2-BINDING-PACK-BUDGET-LOSS"
-    ],
+  "R1_format_classification": {
+    "cartesian_matrix": "4 container forms (raw_list, envelope_list, mapping, absent) x 4 binding states (absent, empty, nonempty_valid, malformed) x 2 sources (document-local, extra/profile) evaluated exhaustively",
+    "raw_list_external_bindings_adjudication": "Supported Hybrid A (raw review_packs list + non-empty external bindings detects FORMAT_MODERN_MAPPING with explicit binding semantics)",
+    "legacy_differential": "Preserved against baseline 6bbd2f949989da3e90e1d9c527e37059c0b628ff: trailing * is prefix match, otherwise substring match; modern is case-sensitive fnmatchcase",
+    "RED": "empty bindings or wrong pattern syntax fails closed / falls back to proper format mode",
+    "GREEN": "verified across all cartesian matrix combinations",
     "ablations": [
-      "AB-S2-SELECTED-PACK-OPTIONAL-ABLATION",
-      "AB-S2-ROUTING-GUARD-PACK-LOSS-ABLATION"
-    ],
-    "positives": [
-      "PC-S2-SELECTED-PACK-PRESERVED",
-      "PC-S2-OPTIONAL-PACK-DROPPED-SAFELY"
+      "AB-S3-FORMAT-MODE-REAL-PATH",
+      "AB-S3-LEGACY-PATTERN-DISPATCH-REAL-PATH"
     ]
   },
-  "S3_legacy_modern_semantic_boundary": {
-    "findings": [
-      "4179272326",
-      "4179272331"
+  "R2_causal_ablations": {
+    "total": 8,
+    "real_production_mutants": [
+      "AB-R1-EMPTY-PATH-MEMBER-VALIDATION (monkeypatch _validate_contract_declared_field_types to accept empty string)",
+      "AB-R1-NAMED-SECTION-MEMBER-VALIDATION (monkeypatch _validate_contract_declared_field_types to accept non-string section members)",
+      "AB-R1-RULE-DICT-VALIDATION (monkeypatch _is_valid_rule_dict to accept empty text carrier)",
+      "AB-S1-CONTRACT-REF-CONTAINER-REAL-PATH (monkeypatch parse_contract_refs to accept scalar/invalid ref containers)",
+      "AB-S2-SELECTED-PACK-REQUIREDNESS-REAL-PATH (monkeypatch contracts_context to treat selected pack as optional)",
+      "AB-S2-REQUIRED-LOSS-ROUTING-REAL-PATH (monkeypatch is_required_context_loss to ignore pack context loss in routing guard)",
+      "AB-S3-FORMAT-MODE-REAL-PATH (monkeypatch detect_review_packs_format to treat empty bindings as modern)",
+      "AB-S3-LEGACY-PATTERN-DISPATCH-REAL-PATH (monkeypatch _matches_legacy_pattern to use fnmatchcase instead of substring)"
     ],
-    "mechanism": "Semantically empty contract_bindings ({}) does not trigger mode switch from FORMAT_LEGACY_FLAT to FORMAT_MODERN_MAPPING. Pattern matching is split by format: _matches_modern_pattern uses case-sensitive fnmatchcase, while _matches_legacy_pattern preserves baseline literal substring/prefix matching for legacy flat contracts. Matchers are dispatched format-specifically across all contract and review pack callsites.",
-    "countermodels": [
-      "CM-S3-EMPTY-BINDINGS-LEGACY-MODE",
-      "CM-S3-EXTRA-EMPTY-BINDINGS-LEGACY-MODE",
-      "CM-S3-LEGACY-SUBSTRING-PATTERN-MATCH",
-      "CM-S3-MODERN-EXACT-PATTERN-MATCH"
+    "pseudo_ablations_remaining": 0
+  },
+  "critical_limitation_consumption": {
+    "families": 11,
+    "classes": [
+      "required_contract_context_lost:",
+      "required_contract_pack_context_lost:",
+      "unresolved_contract_binding:",
+      "unresolved_contract_reference:",
+      "orphan_contract_binding:",
+      "invalid_source_contract:",
+      "invalid_source_domain_contracts:",
+      "invalid_source_review_packs:",
+      "malformed_contract_bindings:",
+      "required_source_absent:",
+      "selected_contract_pack_missing:"
     ],
-    "ablations": [
-      "AB-S3-EMPTY-BINDINGS-MODE-ABLATION",
-      "AB-S3-LEGACY-PATTERN-FNMATCH-ABLATION"
-    ],
-    "positives": [
-      "PC-S3-NONEMPTY-BINDINGS-MODERN-MODE",
-      "PC-S3-MODERN-GLOB-PATTERN-MATCH"
-    ]
+    "orphan_producers": 0,
+    "all_classes_degrade_plan_status": true
   },
   "prior_cycle_families": {
     "F1_identity_admission_totality": [
@@ -99,6 +156,21 @@
     ],
     "F4_required_semantic_context_closure": [
       "4178603209"
+    ]
+  },
+  "second_cycle_families": {
+    "S1_typed_declaration_admission_totality": [
+      "4179272317",
+      "4179272328",
+      "4179272330"
+    ],
+    "S2_required_pack_context_closure": [
+      "4179272322",
+      "4179272324"
+    ],
+    "S3_legacy_modern_semantic_boundary": [
+      "4179272326",
+      "4179272331"
     ]
   },
   "finding_dispositions": {
@@ -120,26 +192,28 @@
     "4179272331": "FIXED"
   },
   "qualification": {
-    "focal": "89 passed in 0.53s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
-    "affected_core": "196 passed in 1.99s (core cost model, chunk builder, semantic chunker, brief, quality gate)",
-    "CLI": "142 passed in 17.12s (all test_aiops_review_*_cli.py suites)",
-    "C1": "22 passed in 1.17s (test_semantic_chunker_232_coverage_truth.py)",
+    "focal": "103 passed in 0.62s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
+    "affected_core": "189 passed in 1.04s (tests/agent_review/test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_pr_brief.py, test_quality_gate.py)",
+    "CLI": "142 passed in 21.16s (all test_aiops_review_*_cli.py suites)",
+    "C1": "22 passed in 1.47s (test_semantic_chunker_232_coverage_truth.py)",
     "repository": "passed (bash scripts/ci_validate.sh --repository)",
     "generated": "passed (bash scripts/ci_validate.sh --generated)",
     "static": "passed (bash scripts/ci_validate.sh --static)",
     "CAEM_pin": "passed (scripts/verify-caem-f0-pin.py)",
     "git_diff_check": "passed (git diff --check)",
     "CI": "clean local qualification, awaiting push",
-    "independent_pre_ready_review": "verified against all 3 second-cycle families (S1, S2, S3) and prior 4 families with zero regressions"
+    "independent_pre_ready_review": "verified against all R1/R2 bounded shape criteria, 3 second-cycle families (S1, S2, S3), and prior 4 families with zero regressions"
   },
   "dispositions": {
     "first_cycle": {
       "expected": 9,
-      "current_head_bound": 9
+      "current_head_bound": 9,
+      "repair_commit": "3539096948cef5eefd6f509bd24634b774b5d494"
     },
     "second_cycle": {
       "expected": 7,
-      "current_head_bound": 7
+      "current_head_bound": 7,
+      "repair_commit": "3c15ecd4d05555d9baa6a15127a4e5f9aaf73ec1"
     },
     "total": {
       "expected": 16,
@@ -161,5 +235,5 @@
     "release": "NOT_AUTHORIZED"
   },
   "PR_state": "DRAFT",
-  "terminal": "V1_C2_GATE_A_SECOND_FINDINGS_CLOSED_DRAFT_AWAITING_READY_REGRANT"
+  "terminal": "V1_C2_GATE_A_FINAL_PRE_READY_CLOSURE_COMPLETE_AWAITING_READY_REGRANT"
 }

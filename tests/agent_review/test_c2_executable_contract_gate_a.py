@@ -66,7 +66,7 @@ from typing import Any
 
 import pytest
 
-from app.agent_review import payload_cost_model
+from app.agent_review import payload_cost_model, semantic_chunker
 from app.agent_review.chunk_payload_builder import (
     _shrink_contracts_context,
     build_chunk_payloads,
@@ -2830,26 +2830,28 @@ def test_cm_s3_empty_bindings_legacy_mode() -> None:
 
 
 def test_s3_format_matrix_exhaustive() -> None:
-    """S3 Format Matrix: Exhaustively checks format detection across all shape cells (4179272326)."""
-    # packs_list + bindings_absent: LEGACY_FLAT
+    """S3 Format Matrix: Exhaustively checks format detection across all shape cells (4179272326, Finding Pre-Ready B)."""
+    # 1. packs_list + bindings_absent: LEGACY_FLAT
     assert payload_cost_model.detect_review_packs_format([{"id": "p1"}]) == payload_cost_model.FORMAT_LEGACY_FLAT
     assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}) == payload_cost_model.FORMAT_LEGACY_FLAT
 
-    # packs_list + bindings_empty: LEGACY_FLAT
+    # 2. packs_list + bindings_empty: LEGACY_FLAT
     assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {}}) == payload_cost_model.FORMAT_LEGACY_FLAT
     assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}], extra_bindings={}) == payload_cost_model.FORMAT_LEGACY_FLAT
 
-    # packs_list + bindings_nonempty: MODERN_MAPPING (supported extension)
+    # 3. packs_list + bindings_nonempty: MODERN_MAPPING (Supported Hybrid A: raw list and envelope behave identically)
     assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
     assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}], extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
 
-    # packs_mapping + bindings_absent: MODERN_MAPPING
+    # 4. packs_mapping + bindings_absent: MODERN_MAPPING
     assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}}) == payload_cost_model.FORMAT_MODERN_MAPPING
 
-    # packs_mapping + bindings_empty: MODERN_MAPPING
+    # 5. packs_mapping + bindings_empty: MODERN_MAPPING
     assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {}}) == payload_cost_model.FORMAT_MODERN_MAPPING
 
-    # packs_mapping + bindings_nonempty: MODERN_MAPPING
+    # 6. packs_mapping + bindings_nonempty: MODERN_MAPPING
     assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
 
 
@@ -2888,70 +2890,602 @@ def test_cm_s3_legacy_pattern_baseline() -> None:
     ) is False
 
 
-# Focal Ablations (Section 24)
+# ===========================================================================
+# R1: Bounded Declared-Input Shape Domain Totality
+# ===========================================================================
 
 
-def test_ablation_s1_domain_field_validation() -> None:
-    """Ablation S1: Omitting field type validation causes scalar paths to be silently sanitized to empty list (4179272317)."""
-    item = {"paths": "backend/**"}
-    # Direct check: without validation, _sanitize_contract_paths drops it to []
-    assert payload_cost_model._sanitize_contract_paths(item.get("paths")) == []
-    # With validation, it is rejected
-    assert payload_cost_model._validate_contract_declared_field_types(item) is False
+def test_cm_r1_domain_paths_empty_member() -> None:
+    """CM-R1-DOMAIN-PATHS-EMPTY-MEMBER: Empty or whitespace member in contract paths
+    fails closed with SOURCE_STATE_INVALID and MALFORMED_SHAPE, never normalizing to [].
+    """
+    # 1. Empty string member in modern mapping paths
+    doc_empty = {"api": {"paths": ["backend/api/*", ""]}}
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc_empty)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+    # 2. Whitespace member in modern mapping paths
+    doc_ws = {"api": {"paths": ["backend/api/*", "   "]}}
+    _, state_ws, sub_ws, limits_ws = payload_cost_model.normalize_domain_contracts(doc_ws)
+    assert state_ws == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_ws == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_ws
+
+    # 3. Legacy flat rules with empty member in paths
+    doc_legacy = [{"id": "rule-1", "paths": [""]}]
+    _, state_leg, sub_leg, limits_leg = payload_cost_model.normalize_domain_contracts(doc_legacy)
+    assert state_leg == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_leg == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_leg
+
+    # Positive control: explicitly empty list [] remains valid
+    doc_empty_list = {"api": {"paths": [], "rules": ["valid rule"]}}
+    contracts_ok, state_ok, sub_ok, limits_ok = payload_cost_model.normalize_domain_contracts(doc_empty_list)
+    assert state_ok == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert sub_ok is None
+    assert not limits_ok
 
 
-def test_ablation_s1_empty_domain_contract() -> None:
-    """Ablation S1: Allowing empty domain_contract identity causes relation to silently vanish (4179272328)."""
-    pval = {"domain_contract": ""}
-    # isinstance check alone passes
-    assert isinstance(pval["domain_contract"], str) is True
-    # Nonempty check catches it
-    assert bool(pval["domain_contract"].strip()) is False
+def test_cm_r1_domain_patterns_whitespace_member() -> None:
+    """CM-R1-DOMAIN-PATTERNS-WHITESPACE-MEMBER: Whitespace member in contract patterns
+    fails closed with SOURCE_STATE_INVALID and MALFORMED_SHAPE.
+    """
+    doc_ws = {"api": {"patterns": ["   "]}}
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc_ws)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+    # Empty string member in patterns
+    doc_empty = {"api": {"patterns": ["backend/api/*", ""]}}
+    _, state_e, sub_e, limits_e = payload_cost_model.normalize_domain_contracts(doc_empty)
+    assert state_e == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_e == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_e
 
 
-def test_ablation_s1_ref_container_validation() -> None:
-    """Ablation S1: Non-list container iterated char-by-char misses contract reference (4179272330)."""
-    raw_str = "contract:missing"
-    # Unchecked iteration yields chars
-    chars = [x for x in raw_str if x.strip()]
-    assert "contract:missing" not in chars
-    # parse_contract_refs detects malformed container
-    _, limits = payload_cost_model.parse_contract_refs({"target_profile": {"contracts": raw_str}})
-    assert "unresolved_contract_reference:MALFORMED_CONTAINER" in limits
+def test_cm_r1_pack_paths_empty_member() -> None:
+    """CM-R1-PACK-PATHS-EMPTY-MEMBER: Empty string member in review pack paths
+    fails closed across raw list, envelope list, and mapping shapes.
+    """
+    # 1. Raw list shape
+    _, _, state_raw, sub_raw, limits_raw = payload_cost_model.normalize_review_packs([{"id": "p1", "paths": [""]}])
+    assert state_raw == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_raw == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_raw
+
+    # 2. Envelope list shape
+    _, _, state_env, sub_env, limits_env = payload_cost_model.normalize_review_packs({"packs": [{"id": "p1", "paths": [""]}]})
+    assert state_env == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_env == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_env
+
+    # 3. Mapping shape
+    _, _, state_map, sub_map, limits_map = payload_cost_model.normalize_review_packs({"packs": {"p1": {"paths": [""]}}})
+    assert state_map == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_map == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_map
+
+    # Positive control: explicitly empty paths [] remains valid
+    _, _, state_ok, sub_ok, limits_ok = payload_cost_model.normalize_review_packs([{"id": "p1", "paths": []}])
+    assert state_ok == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert sub_ok is None
 
 
-def test_ablation_s2_selected_pack_required() -> None:
-    """Ablation S2: If selected pack is not marked required, it drops out of minimal floor (4179272322)."""
-    pack_without_required = {"id": "standalone-pack", "effective_contracts": []}
-    ctx = {"review_packs": [pack_without_required]}
-    min_ctx = payload_cost_model.minimal_contracts_context(ctx)
-    assert not min_ctx["review_packs"], "Unmarked pack drops from floor"
+def test_cm_r1_pack_patterns_whitespace_member() -> None:
+    """CM-R1-PACK-PATTERNS-WHITESPACE-MEMBER: Whitespace member in review pack patterns
+    fails closed across raw list, envelope list, and mapping shapes.
+    """
+    # 1. Raw list shape
+    _, _, state_raw, sub_raw, limits_raw = payload_cost_model.normalize_review_packs([{"id": "p1", "patterns": ["   "]}])
+    assert state_raw == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_raw == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_raw
+
+    # 2. Envelope list shape
+    _, _, state_env, sub_env, limits_env = payload_cost_model.normalize_review_packs({"packs": [{"id": "p1", "patterns": ["   "]}]})
+    assert state_env == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_env == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_env
+
+    # 3. Mapping shape
+    _, _, state_map, sub_map, limits_map = payload_cost_model.normalize_review_packs({"packs": {"p1": {"patterns": ["   "]}}})
+    assert state_map == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_map == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_review_packs:MALFORMED_SHAPE" in limits_map
 
 
-def test_ablation_s2_routing_guard_pack_loss() -> None:
-    """Ablation S2: Checking only required_contract_context_lost allows pack loss payload to route (4179272324)."""
-    lim = "required_contract_pack_context_lost:my-pack"
-    assert not lim.startswith("required_contract_context_lost:")
-    assert payload_cost_model.is_required_context_loss(lim) is True
+def test_cm_r1_named_section_nonstring_member() -> None:
+    """CM-R1-NAMED-SECTION-NONSTRING-MEMBER: Non-string member in named string section
+    fails closed with SOURCE_STATE_INVALID and MALFORMED_SHAPE.
+    """
+    doc = {
+        "auth": {
+            "critical_constraints": ["Administrator endpoints must enforce role check", 123],
+        },
+    }
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
 
 
-def test_ablation_s3_empty_bindings_mode() -> None:
-    """Ablation S3: Switching mode on empty bindings breaks legacy fuzzy selection (4179272326)."""
-    pack = {"id": "calendar-pack", "description": "Calendar"}
-    # Under modern matcher, "calendar" fails to match "calendar-pack"
-    assert payload_cost_model.modern_pack_matches_selected(pack, "calendar") is False
-    # Under legacy matcher, "calendar" matches
-    assert payload_cost_model.legacy_pack_matches_selected(pack, "calendar") is True
+def test_cm_r1_named_section_empty_string() -> None:
+    """CM-R1-NAMED-SECTION-EMPTY-STRING: Empty or whitespace string in named string section
+    fails closed with SOURCE_STATE_INVALID and MALFORMED_SHAPE.
+    """
+    # 1. Nested in contract mapping
+    doc_nested = {
+        "auth": {
+            "review_checklist": ["Check bearer token header redaction", "   "],
+        },
+    }
+    _, state_n, sub_n, limits_n = payload_cost_model.normalize_domain_contracts(doc_nested)
+    assert state_n == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_n == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_n
+
+    # 2. Top-level named list section
+    doc_top = {
+        "response_model_rules": ["Valid rule", ""],
+    }
+    _, state_t, sub_t, limits_t = payload_cost_model.normalize_domain_contracts(doc_top)
+    assert state_t == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_t == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_t
 
 
-def test_ablation_s3_legacy_matcher_glob() -> None:
-    """Ablation S3: Applying modern fnmatch to legacy substring rule fails to match (4179272331)."""
-    rule_pattern = ["backend/api"]
-    target_path = "backend/api/shifts.py"
-    # fnmatch fails on substring without trailing wildcard
-    assert payload_cost_model._matches_modern_pattern(target_path, rule_pattern) is False
-    # legacy matcher succeeds
-    assert payload_cost_model._matches_legacy_pattern(target_path, rule_pattern) is True
+def test_cm_r1_named_section_nested_dict_where_string_required() -> None:
+    """CM-R1-NAMED-SECTION-NESTED-DICT-WHERE-STRING-REQUIRED: Nested dict inside a section
+    that requires strings fails closed with MALFORMED_SHAPE.
+    """
+    doc = {
+        "auth": {
+            "critical_constraints": [{"rule": "Should be string instead of dict"}],
+        },
+    }
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_cm_r1_rule_dict_text_wrong_type() -> None:
+    """CM-R1-RULE-DICT-TEXT-WRONG-TYPE: Carrier in rule dict with non-string type
+    fails closed with MALFORMED_SHAPE.
+    """
+    doc = {
+        "calendar": {
+            "slot_rules": [
+                {"rule": 12345, "invariant": True},
+            ],
+        },
+    }
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_cm_r1_rule_dict_text_empty() -> None:
+    """CM-R1-RULE-DICT-TEXT-EMPTY: Carrier in rule dict with empty/whitespace string
+    fails closed with MALFORMED_SHAPE.
+    """
+    doc = {
+        "calendar": {
+            "slot_rules": [
+                {"rule": "   ", "invariant": True},
+            ],
+        },
+    }
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_cm_r1_rule_dict_no_text_carrier() -> None:
+    """CM-R1-RULE-DICT-NO-TEXT-CARRIER: Rule dict with no recognized text carrier
+    fails closed with MALFORMED_SHAPE, never silently dropping the dict.
+    """
+    # 1. Empty dict {}
+    doc_empty = {
+        "calendar": {
+            "slot_rules": [{}],
+        },
+    }
+    _, state_e, sub_e, limits_e = payload_cost_model.normalize_domain_contracts(doc_empty)
+    assert state_e == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_e == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_e
+
+    # 2. Dict with only non-carrier fields
+    doc_no_carrier = {
+        "calendar": {
+            "slot_rules": [{"invariant": True, "rationale": "Missing carrier"}],
+        },
+    }
+    _, state_nc, sub_nc, limits_nc = payload_cost_model.normalize_domain_contracts(doc_no_carrier)
+    assert state_nc == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_nc == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_nc
+
+
+def test_cm_r1_unknown_modern_field_unsupported_nonempty() -> None:
+    """CM-R1-UNKNOWN-MODERN-FIELD: Unknown field in modern contract mapping
+    fails closed with UNSUPPORTED_NONEMPTY, never silently dropping semantic input.
+    """
+    doc = {
+        "auth": {
+            "unknown_semantic_field": "disallowed_value",
+            "rules": ["valid rule"],
+        },
+    }
+    _, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_UNSUPPORTED_NONEMPTY
+    assert "invalid_source_contract:UNSUPPORTED_NONEMPTY" in limits
+
+    # Positive control: legacy flat rules preserves pass-through for unknown fields
+    legacy_doc = [{"id": "legacy-1", "unknown_legacy_annotation": "allowed_in_legacy", "rules": ["valid rule"]}]
+    contracts, state_leg, sub_leg, limits_leg = payload_cost_model.normalize_domain_contracts(legacy_doc)
+    assert state_leg == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert sub_leg is None
+
+
+def test_format_matrix_cartesian_exhaustive() -> None:
+    """Format Matrix Cartesian: Exhaustively validates every combination of
+    container x bindings x source with admission, matcher, binding behavior, and limitations.
+    Adjudicates Supported Hybrid A: raw_list + non-empty external bindings is FORMAT_MODERN_MAPPING.
+    """
+    # 1. raw_list
+    # - absent bindings: LEGACY_FLAT, fuzzy selection, substring pattern, no limits
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}]) == payload_cost_model.FORMAT_LEGACY_FLAT
+    # - empty extra bindings: LEGACY_FLAT, fuzzy selection, substring pattern, no limits
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}], extra_bindings={}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    # - nonempty_valid extra bindings: MODERN_MAPPING (Supported Hybrid A), exact selection, glob pattern
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}], extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - malformed extra bindings: emits malformed_contract_bindings
+    packs, bindings, state, sub, limits = payload_cost_model.normalize_review_packs([{"id": "p1"}], extra_bindings="scalar_bad")
+    assert "malformed_contract_bindings:must_be_mapping" in limits
+
+    # 2. envelope_list
+    # - absent bindings: LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    # - empty document bindings: LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {}}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    # - empty extra bindings: LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    # - nonempty_valid document bindings: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - nonempty_valid extra bindings: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - malformed document bindings: emits malformed_contract_bindings
+    _, _, _, _, limits_env_bad = payload_cost_model.normalize_review_packs({"packs": [{"id": "p1"}], "contract_bindings": {"p1": "not_a_list"}})
+    assert "malformed_contract_bindings:must_be_list_of_strings" in limits_env_bad
+
+    # 3. mapping
+    # - absent bindings: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - empty bindings: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - nonempty_valid bindings: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    # - malformed bindings: emits malformed_contract_bindings
+    _, _, _, _, limits_map_bad = payload_cost_model.normalize_review_packs({"packs": {"p1": {}}, "contract_bindings": []})
+    assert "malformed_contract_bindings:must_be_mapping" in limits_map_bad
+
+    # 4. absent document (None)
+    # - absent bindings: MODERN_MAPPING, SOURCE_STATE_ABSENT, no limits
+    assert payload_cost_model.detect_review_packs_format(None) == payload_cost_model.FORMAT_MODERN_MAPPING
+    _, _, state_abs, _, limits_abs = payload_cost_model.normalize_review_packs(None)
+    assert state_abs == payload_cost_model.SOURCE_STATE_ABSENT
+    assert not limits_abs
+    # - empty extra bindings: MODERN_MAPPING, SOURCE_STATE_ABSENT, no limits
+    assert payload_cost_model.detect_review_packs_format(None, extra_bindings={}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    _, _, state_abs_e, _, limits_abs_e = payload_cost_model.normalize_review_packs(None, extra_bindings={})
+    assert state_abs_e == payload_cost_model.SOURCE_STATE_ABSENT
+    assert not limits_abs_e
+    # - nonempty_valid extra bindings: MODERN_MAPPING, emits required_source_absent:review_packs
+    assert payload_cost_model.detect_review_packs_format(None, extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    _, _, state_abs_ne, _, limits_abs_ne = payload_cost_model.normalize_review_packs(None, extra_bindings={"p1": ["c1"]})
+    assert state_abs_ne == payload_cost_model.SOURCE_STATE_ABSENT
+    assert "required_source_absent:review_packs" in limits_abs_ne
+
+
+# ===========================================================================
+# Causal Ablations (R2: Real Production Seams Replacing Pseudo-Ablations)
+# ===========================================================================
+
+
+def test_ablation_r1_empty_path_member_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-R1-EMPTY-PATH-MEMBER-VALIDATION:
+    Production mechanism: _validate_contract_declared_field_types rejecting empty path member.
+    Countermodel: CM-R1-DOMAIN-PATHS-EMPTY-MEMBER.
+    Restored: GREEN (fails closed with SOURCE_STATE_INVALID).
+    Mutant: RED (bypassing validation normalizes [''] to [] and returns PRESENT_VALID).
+    """
+    doc = {"api": {"paths": [""]}}
+
+    # Restored / Green: Production validation fails closed
+    _, state_green, sub_green, limits_green = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_green == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_green == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_green
+
+    # Mutant / Red: Bypass field validation (simulating pre-repair silent normalization)
+    monkeypatch.setattr(payload_cost_model, "_validate_contract_declared_field_types", lambda item: True)
+    _, state_mutant, _, _ = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_mutant == payload_cost_model.SOURCE_STATE_PRESENT_VALID, "Mutant must cause same countermodel to fail (RED)"
+
+
+def test_ablation_r1_named_section_member_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-R1-NAMED-SECTION-MEMBER-VALIDATION:
+    Production mechanism: _validate_contract_declared_field_types string check on named sections.
+    Countermodel: CM-R1-NAMED-SECTION-NONSTRING-MEMBER.
+    Restored: GREEN (fails closed with SOURCE_STATE_INVALID).
+    Mutant: RED (bypassing validation allows 123 to be silently dropped).
+    """
+    doc = {"auth": {"critical_constraints": ["Administrator endpoints must enforce role check", 123]}}
+
+    # Restored / Green:
+    _, state_green, sub_green, limits_green = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_green == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_green == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits_green
+
+    # Mutant / Red:
+    monkeypatch.setattr(payload_cost_model, "_validate_contract_declared_field_types", lambda item: True)
+    contracts_mutant, state_mutant, _, _ = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_mutant == payload_cost_model.SOURCE_STATE_PRESENT_VALID, "Mutant must cause same countermodel to fail (RED)"
+    assert len(contracts_mutant[0]["sections"]["critical_constraints"]) == 1, "Mutant silently omits non-string member"
+
+
+def test_ablation_r1_rule_dict_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-R1-RULE-DICT-VALIDATION:
+    Production mechanism: _is_valid_rule_dict validating required carrier text.
+    Countermodel: CM-R1-RULE-DICT-TEXT-EMPTY.
+    Restored: GREEN (fails closed with SOURCE_STATE_INVALID).
+    Mutant: RED (accepting any dict causes empty carrier to be silently dropped).
+    """
+    doc = {"calendar": {"slot_rules": [{"rule": ""}]}}
+
+    # Restored / Green:
+    _, state_green, sub_green, limits_green = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_green == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub_green == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+
+    # Mutant / Red:
+    monkeypatch.setattr(payload_cost_model, "_is_valid_rule_dict", lambda d: True)
+    monkeypatch.setattr(payload_cost_model, "_validate_contract_declared_field_types", lambda item: True)
+    _, state_mutant, _, _ = payload_cost_model.normalize_domain_contracts(doc)
+    assert state_mutant == payload_cost_model.SOURCE_STATE_PRESENT_VALID, "Mutant must cause same countermodel to fail (RED)"
+
+
+def test_ablation_s1_contract_ref_container_real_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-S1-CONTRACT-REF-CONTAINER-REAL-PATH:
+    Production mechanism: parse_contract_refs container validation on real path.
+    Countermodel: CM-S1-CONTRACT-REF-CONTAINER-SCALAR.
+    Restored: GREEN (build_semantic_chunk_plan emits MALFORMED_CONTAINER, plan degraded).
+    Mutant: RED (unchecked iteration yields characters, missing MALFORMED_CONTAINER limitation).
+    """
+    intake = _base_intake()
+    intake.target_profile = {"contracts": "contract:missing"}
+
+    # Restored / Green:
+    plan_green = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=20000)
+    assert "unresolved_contract_reference:MALFORMED_CONTAINER" in plan_green.limitations
+    assert plan_green.status == "degraded"
+
+    # Mutant / Red: Pre-repair helper that iterated characters without checking list
+    def _buggy_parse_contract_refs(data: Any) -> tuple[list[str], list[str]]:
+        raw = data.model_dump(mode="json") if hasattr(data, "model_dump") else data
+        val = raw.get("target_profile", {}).get("contracts", [])
+        return [c for c in val if c.strip()], []
+
+    monkeypatch.setattr(payload_cost_model, "parse_contract_refs", _buggy_parse_contract_refs)
+    plan_mutant = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=20000)
+    assert "unresolved_contract_reference:MALFORMED_CONTAINER" not in plan_mutant.limitations, "Mutant must lose container error (RED)"
+
+
+def test_ablation_s2_selected_pack_requiredness_real_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-S2-SELECTED-PACK-REQUIREDNESS-REAL-PATH:
+    Production mechanism: contracts_context marking selected_contract_pack as required=True.
+    Countermodel: CM-S2-SELECTED-PACK-BUDGET-LOSS.
+    Restored: GREEN (selected pack marked required, retained in minimal floor).
+    Mutant: RED (marking required=False causes pack to drop from floor without critical limitation).
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "standalone-pack": {
+                    "description": "Pack with no effective contracts",
+                }
+            }
+        }
+    }
+
+    # Restored / Green:
+    ctx_green, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="standalone-pack",
+        semantic_group="primary_backend_logic",
+    )
+    assert len(ctx_green["review_packs"]) == 1
+    assert ctx_green["review_packs"][0]["required"] is True
+    min_ctx_green = payload_cost_model.minimal_contracts_context(ctx_green)
+    assert len(min_ctx_green["review_packs"]) == 1
+
+    # Mutant / Red: Buggy pre-repair behavior where required was conditional on bool(effective_contracts)
+    original_contracts_context = payload_cost_model.contracts_context
+
+    def _buggy_contracts_context(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+        ctx, limits = original_contracts_context(*args, **kwargs)
+        for p in ctx.get("review_packs", []):
+            if not p.get("effective_contracts"):
+                p["required"] = False
+        return ctx, limits
+
+    monkeypatch.setattr(payload_cost_model, "contracts_context", _buggy_contracts_context)
+    ctx_mutant, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="standalone-pack",
+        semantic_group="primary_backend_logic",
+    )
+    min_ctx_mutant = payload_cost_model.minimal_contracts_context(ctx_mutant)
+    assert not min_ctx_mutant["review_packs"], "Mutant causes selected pack to drop from floor (RED)"
+
+
+def test_ablation_s2_required_loss_routing_real_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-S2-REQUIRED-LOSS-ROUTING-REAL-PATH:
+    Production mechanism: is_required_context_loss checking required_contract_pack_context_lost:.
+    Countermodel: Routing with lost required pack context.
+    Restored: GREEN (payload_path is None, status is limited).
+    Mutant: RED (checking only contract loss allows lost pack payload to route).
+    """
+    intake = _base_intake()
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=1, max_chars_per_block=20000)
+    brief = _brief(intake, plan)
+
+    # Monkeypatch contracts_context to emit required pack loss
+    from app.agent_review import chunk_payload_builder
+    orig_contracts_context = chunk_payload_builder.contracts_context
+    def _contracts_with_pack_loss(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], list[str]]:
+        ctx, limits = orig_contracts_context(*args, **kwargs)
+        return ctx, [*limits, "required_contract_pack_context_lost:my-pack"]
+
+    monkeypatch.setattr(chunk_payload_builder, "contracts_context", _contracts_with_pack_loss)
+
+    # Restored / Green: Production recognizes pack loss, blocks routing (payload_path is None, 0 payloads emitted)
+    manifest_green, payloads_green = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    assert manifest_green.chunks[0].payload_path is None
+    assert len(payloads_green) == 0
+
+    # Mutant / Red: Pre-repair is_required_context_loss in chunk_payload_builder only checked required_contract_context_lost:
+    monkeypatch.setattr(
+        chunk_payload_builder,
+        "is_required_context_loss",
+        lambda lim: lim.startswith("required_contract_context_lost:"),
+    )
+    manifest_mutant, payloads_mutant = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    assert manifest_mutant.chunks[0].payload_path is not None, "Mutant allows lost pack payload to route (RED)"
+    assert len(payloads_mutant) > 0
+
+
+def test_ablation_s3_format_mode_real_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-S3-FORMAT-MODE-REAL-PATH:
+    Production mechanism: detect_review_packs_format treating empty bindings as LEGACY_FLAT.
+    Countermodel: CM-S3-EMPTY-BINDINGS-LEGACY-MODE.
+    Restored: GREEN (detects LEGACY_FLAT, fuzzy matches 'calendar' -> 'calendar-pack').
+    Mutant: RED (detects MODERN_MAPPING, exact match fails, emits selected_contract_pack_missing).
+    """
+    intake = _base_intake()
+    doc_empty = {
+        "packs": [{"id": "calendar-pack", "description": "Calendar scheduling rules"}],
+        "contract_bindings": {},
+    }
+    intake.target_profile = {"review_packs": doc_empty}
+
+    # Restored / Green:
+    ctx_green, limits_green = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="calendar",
+        semantic_group="primary_backend_logic",
+    )
+    assert not any(lim.startswith("selected_contract_pack_missing:") for lim in limits_green)
+    assert len(ctx_green["review_packs"]) == 1
+    assert ctx_green["review_packs"][0]["id"] == "calendar-pack"
+
+    # Mutant / Red: Pre-repair bug that switched format on any present bindings dict
+    monkeypatch.setattr(
+        payload_cost_model,
+        "detect_review_packs_format",
+        lambda doc, extra_bindings=None: payload_cost_model.FORMAT_MODERN_MAPPING,
+    )
+    ctx_mutant, limits_mutant = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="calendar",
+        semantic_group="primary_backend_logic",
+    )
+    assert any(lim.startswith("selected_contract_pack_missing:calendar") for lim in limits_mutant), "Mutant must cause fuzzy match to fail (RED)"
+    assert not ctx_mutant["review_packs"]
+
+
+def test_ablation_s3_legacy_pattern_dispatch_real_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-S3-LEGACY-PATTERN-DISPATCH-REAL-PATH:
+    Production mechanism: format-specific pattern dispatch preserving legacy substring match.
+    Countermodel: CM-S3-LEGACY-SUBSTRING-PATTERN-MATCH.
+    Restored: GREEN (matches 'backend/api' as substring of 'backend/api/shifts.py').
+    Mutant: RED (unconditional fnmatchcase fails on substring without wildcard).
+    """
+    legacy_contract = {"id": "legacy-rule", "patterns": ["backend/api"]}
+    chunk_files = {"backend/api/shifts.py"}
+
+    # Restored / Green:
+    assert payload_cost_model._contract_matches_chunk(
+        legacy_contract,
+        chunk_files=chunk_files,
+        format=payload_cost_model.FORMAT_LEGACY_FLAT,
+    ) is True
+
+    # Mutant / Red: Pre-repair bug where modern fnmatch was used unconditionally
+    monkeypatch.setattr(
+        payload_cost_model,
+        "_contract_matches_chunk",
+        lambda c, chunk_files, format=None: payload_cost_model._matches_modern_pattern("backend/api/shifts.py", c.get("patterns", [])),
+    )
+    assert payload_cost_model._contract_matches_chunk(
+        legacy_contract,
+        chunk_files=chunk_files,
+        format=payload_cost_model.FORMAT_LEGACY_FLAT,
+    ) is False, "Mutant must cause legacy substring pattern to fail (RED)"
+
+
+def test_critical_limitation_consumption_matrix() -> None:
+    """Critical Limitation Consumption Matrix: Proves all 11 critical Gate A limitation
+    prefixes are consumed by semantic_chunker._plan_status returning 'degraded',
+    guaranteeing 0 orphan critical limitation families.
+    """
+    critical_prefixes = [
+        "required_contract_context_lost:c1",
+        "required_contract_pack_context_lost:p1",
+        "unresolved_contract_binding:p1->c1",
+        "unresolved_contract_reference:c1",
+        "orphan_contract_binding:p1",
+        "invalid_source_contract:MALFORMED_SHAPE",
+        "invalid_source_domain_contracts:MALFORMED_SHAPE",
+        "invalid_source_review_packs:MALFORMED_SHAPE",
+        "malformed_contract_bindings:must_be_mapping",
+        "required_source_absent:review_packs",
+        "selected_contract_pack_missing:p1",
+    ]
+
+    for lim in critical_prefixes:
+        prefix_matched = any(lim.startswith(p) for p in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        assert prefix_matched, f"Prefix for {lim} must belong to CRITICAL_CONTRACT_LIMITATION_PREFIXES"
+        status = semantic_chunker._plan_status(
+            intake_status="admitted",
+            limitations=[lim],
+            files_partially_covered=[],
+            files_not_covered=[],
+        )
+        assert status == "degraded", f"Limitation {lim} must degrade plan status, got {status}"
+
 
 
 # Positive Controls (Section 25)

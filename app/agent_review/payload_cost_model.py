@@ -115,13 +115,21 @@ def detect_domain_contracts_format(document: Any) -> str:
 
 def detect_review_packs_format(document: Any, extra_bindings: Any = None) -> str:
     """Detect whether review_packs follows legacy flat packs list or modern pack mapping / explicit bindings."""
+    raw_bindings = None
+    if isinstance(document, dict) and "contract_bindings" in document:
+        raw_bindings = document.get("contract_bindings")
+    elif extra_bindings is not None:
+        raw_bindings = extra_bindings
+
+    has_nonempty_bindings = bool(raw_bindings) if isinstance(raw_bindings, dict) else (raw_bindings is not None)
+
     if isinstance(document, list):
+        if has_nonempty_bindings:
+            return FORMAT_MODERN_MAPPING
         return FORMAT_LEGACY_FLAT
     if isinstance(document, dict):
         if isinstance(document.get("packs"), dict):
             return FORMAT_MODERN_MAPPING
-        raw_bindings = document.get("contract_bindings") if "contract_bindings" in document else extra_bindings
-        has_nonempty_bindings = bool(raw_bindings) if isinstance(raw_bindings, dict) else (raw_bindings is not None)
         if isinstance(document.get("packs"), list):
             # Finding 4179272326: Semantically empty bindings {} do not switch legacy list to modern mapping
             if has_nonempty_bindings:
@@ -130,6 +138,7 @@ def detect_review_packs_format(document: Any, extra_bindings: Any = None) -> str
         if has_nonempty_bindings:
             return FORMAT_MODERN_MAPPING
     return FORMAT_MODERN_MAPPING
+
 
 
 
@@ -1093,32 +1102,163 @@ def _is_valid_reserved_metadata(key: str, value: Any) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Modern Domain Contract Grammar & Bounded Shape Registry
+# ---------------------------------------------------------------------------
+
+MODERN_CONTRACT_IDENTITY_FIELDS: frozenset[str] = frozenset({"id"})
+
+MODERN_CONTRACT_SCALAR_FIELDS: frozenset[str] = frozenset({
+    "description",
+    "scope",
+    "is_global",
+    "canonical_authority",
+    "display_authority",
+    "path",
+    "file_path",
+    "required",
+})
+
+MODERN_CONTRACT_PATH_LIST_FIELDS: frozenset[str] = frozenset({
+    "paths",
+    "files",
+    "source_files",
+    "related_files",
+    "patterns",
+})
+
+# Sections whose members MUST be non-empty strings
+MODERN_CONTRACT_NAMED_STRING_SECTIONS: frozenset[str] = frozenset({
+    "critical_constraints",
+    "review_checklist",
+    "response_model_rules",
+})
+
+# Sections whose members are bounded rule dicts (or strings for 'rules')
+MODERN_CONTRACT_RULE_DICT_SECTIONS: frozenset[str] = frozenset({
+    "rules",
+    "slot_rules",
+    "response_models",
+    "orm_models",
+})
+
+ALL_MODERN_CONTRACT_ADMITTED_FIELDS: frozenset[str] = (
+    MODERN_CONTRACT_IDENTITY_FIELDS
+    | MODERN_CONTRACT_SCALAR_FIELDS
+    | MODERN_CONTRACT_PATH_LIST_FIELDS
+    | MODERN_CONTRACT_NAMED_STRING_SECTIONS
+    | MODERN_CONTRACT_RULE_DICT_SECTIONS
+)
+
+# Rule dict bounded grammar
+RULE_DICT_TEXT_CARRIERS: frozenset[str] = frozenset({
+    "rule",
+    "text",
+    "description",
+    "id",
+    "name",
+    "model",
+})
+
+RULE_DICT_OPTIONAL_FIELDS: frozenset[str] = frozenset({
+    "invariant",
+    "rationale",
+    "field",
+    "expected_value",
+})
+
+ALL_RULE_DICT_ADMITTED_FIELDS: frozenset[str] = RULE_DICT_TEXT_CARRIERS | RULE_DICT_OPTIONAL_FIELDS
+
+
+def _is_valid_rule_dict(d: Any) -> bool:
+    """Validates that a rule dict matches the bounded rule dict shape."""
+    if not isinstance(d, dict):
+        return False
+    if any(k not in ALL_RULE_DICT_ADMITTED_FIELDS for k in d.keys()):
+        return False
+    has_valid_carrier = False
+    for carrier in RULE_DICT_TEXT_CARRIERS:
+        if carrier in d:
+            val = d[carrier]
+            if isinstance(val, str) and val.strip():
+                has_valid_carrier = True
+            else:
+                return False
+    if not has_valid_carrier:
+        return False
+    if "invariant" in d and not isinstance(d["invariant"], bool):
+        return False
+    if "rationale" in d and (not isinstance(d["rationale"], str) or not d["rationale"].strip()):
+        return False
+    if "field" in d and (not isinstance(d["field"], str) or not d["field"].strip()):
+        return False
+    if "expected_value" in d and d["expected_value"] is None:
+        return False
+    return True
+
+
 def _validate_contract_declared_field_types(item: dict[str, Any]) -> bool:
     """Validates that declared fields on a contract or rule dict match expected types.
-    Prevents malformed types (e.g. scalar strings for paths/patterns) from being
-    silently sanitized away.
+    Prevents malformed types (e.g. scalar strings for paths/patterns, empty list members,
+    invalid section members) from being silently sanitized away.
     """
-    list_str_fields = ("paths", "files", "source_files", "related_files", "patterns")
-    for f in list_str_fields:
+    for f in MODERN_CONTRACT_PATH_LIST_FIELDS:
         if f in item:
             val = item[f]
-            if not isinstance(val, list) or any(not isinstance(elem, str) for elem in val):
+            if not isinstance(val, list) or any(not isinstance(elem, str) or not elem.strip() for elem in val):
                 return False
 
-    str_fields = ("path", "file_path", "scope", "description", "canonical_authority", "display_authority")
+    str_fields = ("path", "file_path", "scope", "canonical_authority", "display_authority")
     for f in str_fields:
         if f in item:
             val = item[f]
             if not isinstance(val, str):
                 return False
 
+    if "description" in item:
+        val = item["description"]
+        if not isinstance(val, str) or not val.strip():
+            return False
+
+    if "id" in item:
+        val = item["id"]
+        if not isinstance(val, str) or not val.strip():
+            return False
+
     if "is_global" in item and not isinstance(item["is_global"], bool):
         return False
 
+    if "required" in item and not isinstance(item["required"], bool):
+        return False
+
+    for sec in MODERN_CONTRACT_NAMED_STRING_SECTIONS:
+        if sec in item:
+            val = item[sec]
+            if not isinstance(val, list) or any(not isinstance(elem, str) or not elem.strip() for elem in val):
+                return False
+
     if "rules" in item:
         val = item["rules"]
-        if not isinstance(val, list) or any(not isinstance(elem, (str, dict)) for elem in val):
+        if not isinstance(val, list):
             return False
+        for elem in val:
+            if isinstance(elem, str):
+                if not elem.strip():
+                    return False
+            elif isinstance(elem, dict):
+                if not _is_valid_rule_dict(elem):
+                    return False
+            else:
+                return False
+
+    for sec in ("slot_rules", "response_models", "orm_models"):
+        if sec in item:
+            val = item[sec]
+            if not isinstance(val, list):
+                return False
+            for elem in val:
+                if not isinstance(elem, dict) or not _is_valid_rule_dict(elem):
+                    return False
 
     return True
 
@@ -1272,7 +1412,9 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
             if not value:
                 rows.append({"id": clean_key, "description": clean_key, "rules": []})
             elif all(isinstance(rule_str, str) for rule_str in value):
-                rules_list = [r.strip() for r in value if r.strip()]
+                if any(not rule_str.strip() for rule_str in value):
+                    return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+                rules_list = [r.strip() for r in value]
                 sec_items = [{"text": r} for r in rules_list]
                 rows.append({
                     "id": clean_key,
@@ -1282,12 +1424,15 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
                 })
             elif all(isinstance(rule_dict, dict) for rule_dict in value):
                 for rdict in value:
-                    if not _validate_contract_declared_field_types(rdict):
+                    if not _is_valid_rule_dict(rdict):
                         return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
                 rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key))
             else:
-                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+                return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
         elif isinstance(value, dict):
+            # Unknown modern fields check (ModernContractFieldRegistry)
+            if any(k not in ALL_MODERN_CONTRACT_ADMITTED_FIELDS for k in value.keys()):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
             # Nested id conflict check (Finding 4178603188)
             if "id" in value:
                 nested_id = _clean_text(value.get("id"))
@@ -1358,9 +1503,9 @@ def normalize_review_packs(
         if all(isinstance(item, dict) for item in document):
             rows = []
             for item in document:
-                if "paths" in item and (not isinstance(item["paths"], list) or any(not isinstance(p, str) for p in item["paths"])):
+                if "paths" in item and (not isinstance(item["paths"], list) or any(not isinstance(p, str) or not p.strip() for p in item["paths"])):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                if "patterns" in item and (not isinstance(item["patterns"], list) or any(not isinstance(p, str) for p in item["patterns"])):
+                if "patterns" in item and (not isinstance(item["patterns"], list) or any(not isinstance(p, str) or not p.strip() for p in item["patterns"])):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
                 if "domain_contract" in item:
                     if not isinstance(item["domain_contract"], str):
@@ -1395,9 +1540,9 @@ def normalize_review_packs(
         if all(isinstance(item, dict) for item in raw_packs):
             rows = []
             for item in raw_packs:
-                if "paths" in item and (not isinstance(item["paths"], list) or any(not isinstance(p, str) for p in item["paths"])):
+                if "paths" in item and (not isinstance(item["paths"], list) or any(not isinstance(p, str) or not p.strip() for p in item["paths"])):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                if "patterns" in item and (not isinstance(item["patterns"], list) or any(not isinstance(p, str) for p in item["patterns"])):
+                if "patterns" in item and (not isinstance(item["patterns"], list) or any(not isinstance(p, str) or not p.strip() for p in item["patterns"])):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
                 if "domain_contract" in item:
                     if not isinstance(item["domain_contract"], str):
@@ -1431,9 +1576,9 @@ def normalize_review_packs(
             if not isinstance(pval, dict):
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
             # Finding 4178603193: Validate declared field types before sanitizing
-            if "paths" in pval and (not isinstance(pval["paths"], list) or any(not isinstance(p, str) for p in pval["paths"])):
+            if "paths" in pval and (not isinstance(pval["paths"], list) or any(not isinstance(p, str) or not p.strip() for p in pval["paths"])):
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-            if "patterns" in pval and (not isinstance(pval["patterns"], list) or any(not isinstance(p, str) for p in pval["patterns"])):
+            if "patterns" in pval and (not isinstance(pval["patterns"], list) or any(not isinstance(p, str) or not p.strip() for p in pval["patterns"])):
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
             if "domain_contract" in pval:
                 if not isinstance(pval["domain_contract"], str):
