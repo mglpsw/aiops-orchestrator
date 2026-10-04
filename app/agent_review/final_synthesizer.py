@@ -28,6 +28,7 @@ from app.agent_review.schemas import (
     ReviewIntake,
     SemanticChunkPlan,
 )
+from app.agent_review.payload_cost_model import CRITICAL_CONTRACT_LIMITATION_PREFIXES
 from app.agent_review.semantic_chunker import IntakeValidationError, validate_intake_schema_envelope
 
 
@@ -651,7 +652,12 @@ def _coverage_overlaps(*groups: list[str]) -> set[str]:
 
 
 def _has_critical_limitation(limitations: list[str]) -> bool:
-    return any(limitation in CRITICAL_LIMITATIONS for limitation in limitations)
+    if any(limitation in CRITICAL_LIMITATIONS for limitation in limitations):
+        return True
+    return any(
+        any(str(lim).startswith(prefix) for prefix in CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        for lim in limitations
+    )
 
 
 def _append_unique(values: list[Any], value: Any) -> None:

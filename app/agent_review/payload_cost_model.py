@@ -35,6 +35,7 @@ silently reviewing a payload the planner never actually projected.
 from __future__ import annotations
 
 import copy
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -57,6 +58,35 @@ class ProjectionInputMismatchError(ValueError):
         super().__init__(message)
         self.error_class = error_class
         self.message = message
+
+
+SOURCE_STATE_PRESENT_VALID = "PRESENT_VALID"
+SOURCE_STATE_ABSENT = "ABSENT"
+SOURCE_STATE_INVALID = "INVALID"
+
+SUBTYPE_MALFORMED_SHAPE = "MALFORMED_SHAPE"
+SUBTYPE_UNSUPPORTED_NONEMPTY = "UNSUPPORTED_NONEMPTY"
+SUBTYPE_INVALID_IDENTITY = "INVALID_IDENTITY"
+SUBTYPE_OTHER_TYPED_INVALID = "OTHER_TYPED_INVALID"
+
+RELATION_STATE_RESOLVED = "RESOLVED"
+RELATION_STATE_UNRESOLVED = "UNRESOLVED"
+RELATION_STATE_NOT_REQUIRED = "NOT_REQUIRED_FOR_THIS_INPUT"
+
+APPLICABILITY_APPLICABLE = "APPLICABLE"
+APPLICABILITY_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+CRITICAL_CONTRACT_LIMITATION_PREFIXES: tuple[str, ...] = (
+    "required_contract_context_lost:",
+    "unresolved_contract_binding:",
+    "orphan_contract_binding:",
+    "invalid_source_contract:",
+    "invalid_source_domain_contracts:",
+    "invalid_source_review_packs:",
+    "malformed_contract_bindings:",
+    "required_source_absent:",
+    "selected_contract_pack_missing:",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -395,51 +425,123 @@ def contracts_context(
     semantic_group: str,
 ) -> tuple[dict[str, Any], list[str]]:
     profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
-    contracts = _flatten_contract_rules(profile.get("domain_contracts"))
-    packs = _flatten_review_packs(profile.get("review_packs"))
-    relevance_keywords = _relevance_keywords(semantic_group)
+    raw_domain_contracts = profile.get("domain_contracts")
+    raw_review_packs = profile.get("review_packs")
+    extra_bindings = profile.get("contract_bindings")
+
+    contracts, c_state, c_sub, c_limits = normalize_domain_contracts(raw_domain_contracts)
+    packs, bindings, p_state, p_sub, p_limits = normalize_review_packs(raw_review_packs, extra_bindings=extra_bindings)
+
+    limitations: list[str] = []
+    limitations.extend(c_limits)
+    limitations.extend(p_limits)
+
+    has_invalid_source = (c_state == SOURCE_STATE_INVALID or p_state == SOURCE_STATE_INVALID)
+    has_malformed_bindings = any(lim.startswith("malformed_contract_bindings:") for lim in limitations)
+
+    # Required source checking
+    if selected_contract_pack:
+        if p_state == SOURCE_STATE_ABSENT:
+            limitations.append("required_source_absent:review_packs")
+    if bindings:
+        if c_state == SOURCE_STATE_ABSENT:
+            limitations.append("required_source_absent:domain_contracts")
+
+    # Resolve EffectiveContractRefs(pack_id)
+    contracts_by_id = {c["id"]: c for c in contracts}
+    packs_by_id = {p["id"]: p for p in packs}
+
+    has_unresolved = False
+    for p in packs:
+        eff_refs: set[str] = set()
+        dc = p.get("domain_contract")
+        if dc:
+            eff_refs.add(dc)
+        for ref in bindings.get(p["id"], []):
+            eff_refs.add(ref)
+        p["effective_contracts"] = sorted(eff_refs)
+        for ref in p["effective_contracts"]:
+            if ref not in contracts_by_id:
+                limitations.append(f"unresolved_contract_binding:{p['id']}:{ref}")
+                has_unresolved = True
+
+    # Check orphan bindings
+    for bound_pid in bindings:
+        if bound_pid not in packs_by_id:
+            limitations.append(f"orphan_contract_binding:{bound_pid}")
+            has_unresolved = True
+
     chunk_file_set = set(chunk_files)
-    referenced_contracts = {item.split(":", 1)[1] for item in chunk_contracts if item.startswith("contract:") and ":" in item}
     include_all_contracts = "target_profile:domain_contracts" in chunk_contracts
     include_all_packs = "target_profile:review_packs" in chunk_contracts
-    selected_pack = (selected_contract_pack or "").lower()
+    referenced_contracts = {item.split(":", 1)[1] for item in chunk_contracts if item.startswith("contract:") and ":" in item}
 
-    filtered_contracts = [
-        item
-        for item in contracts
-        if (
-            include_all_contracts
-            or item.get("id") in referenced_contracts
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
-            )
-        )
-    ]
-    filtered_packs = [
-        item
-        for item in packs
-        if (
-            include_all_packs
-            or item.get("id") in referenced_contracts
-            or (selected_pack and _review_pack_matches_selected(item, selected_pack))
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
-            )
-        )
-    ]
-    limitations: list[str] = []
-    if not filtered_contracts and not filtered_packs:
+    # Evaluate applicable packs
+    selected_pack = selected_contract_pack.strip() if selected_contract_pack else ""
+    applicable_packs: list[dict[str, Any]] = []
+    selected_pack_matched = False
+
+    for pack in packs:
+        matches = False
+        has_pack_scope = bool(_paths_from_item(pack) or _normalized_contract_patterns(pack.get("patterns")))
+        if selected_pack and _review_pack_matches_selected(pack, selected_pack):
+            matches = True
+            selected_pack_matched = True
+        elif _contract_matches_chunk(pack, chunk_files=chunk_file_set):
+            matches = True
+        elif include_all_packs and not has_pack_scope:
+            matches = True
+
+        if matches:
+            applicable_packs.append(pack)
+
+    if selected_pack and not selected_pack_matched and p_state == SOURCE_STATE_PRESENT_VALID and packs:
+        limitations.append(f"selected_contract_pack_missing:{selected_pack}")
+
+    # Evaluate applicable contracts
+    required_contract_ids: set[str] = set()
+    for ap in applicable_packs:
+        for ref in ap.get("effective_contracts", []):
+            required_contract_ids.add(ref)
+
+    applicable_contracts: list[dict[str, Any]] = []
+    for contract in contracts:
+        cid = contract["id"]
+        is_required = cid in required_contract_ids or cid in referenced_contracts
+        has_explicit_scope = bool(_paths_from_item(contract) or _normalized_contract_patterns(contract.get("patterns")))
+        matches = False
+        if is_required:
+            matches = True
+        elif _contract_matches_chunk(contract, chunk_files=chunk_file_set):
+            matches = True
+        elif include_all_contracts and not has_explicit_scope:
+            matches = True
+
+        if matches:
+            contract_copy = dict(contract)
+            if is_required:
+                contract_copy["required"] = True
+            applicable_contracts.append(contract_copy)
+
+    filtered_contracts = sorted(applicable_contracts, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+    filtered_packs = sorted(applicable_packs, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+
+    has_typed_error = (
+        has_invalid_source
+        or has_malformed_bindings
+        or has_unresolved
+        or any(lim.startswith(("required_source_absent:", "selected_contract_pack_missing:", "invalid_source_")) for lim in limitations)
+    )
+
+    if not filtered_contracts and not filtered_packs and not has_typed_error:
         limitations.append(f"contracts_context_not_relevant:{chunk_id}")
+
     return (
         {
-            "domain_contracts": sorted(filtered_contracts, key=lambda item: (item.get("id") or "", item.get("description") or "")),
-            "review_packs": sorted(filtered_packs, key=lambda item: (item.get("id") or "", item.get("description") or "")),
+            "domain_contracts": filtered_contracts,
+            "review_packs": filtered_packs,
         },
-        limitations,
+        _dedupe(limitations),
     )
 
 
@@ -556,8 +658,12 @@ def checks_context(
 
 def _contract_matches_chunk(contract: dict[str, Any], *, chunk_files: set[str]) -> bool:
     contract_paths = _paths_from_item(contract)
-    if contract_paths and contract_paths.intersection(chunk_files):
-        return True
+    if contract_paths:
+        if contract_paths.intersection(chunk_files):
+            return True
+        pattern_candidates = [p for p in contract_paths if any(char in p for char in "*?[]")]
+        if pattern_candidates and any(_matches_pattern(path, pattern_candidates) for path in chunk_files):
+            return True
     patterns = _normalized_contract_patterns(contract.get("patterns"))
     if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):
         return True
@@ -569,9 +675,7 @@ def _matches_pattern(path: str, patterns: list[str]) -> bool:
         normalized = pattern.strip()
         if not normalized:
             continue
-        if normalized.endswith("*") and path.startswith(normalized[:-1]):
-            return True
-        if normalized in path:
+        if fnmatch.fnmatchcase(path, normalized):
             return True
     return False
 
@@ -786,31 +890,6 @@ def _validation_facts(document: dict[str, Any] | None) -> list[str]:
     return sorted(facts)
 
 
-def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
-    rules = _get(document, "rules")
-    if not isinstance(rules, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in rules:
-        if not isinstance(item, dict):
-            continue
-        row = {
-            "id": _clean_text(item.get("id")),
-            "description": _clean_text(item.get("description")),
-            "scope": _clean_text(item.get("scope")),
-            "is_global": item.get("is_global") is True,
-            "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
-            "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
-            "files": _sanitize_contract_paths(item.get("files")),
-            "paths": _sanitize_contract_paths(item.get("paths")),
-            "source_files": _sanitize_contract_paths(item.get("source_files")),
-            "related_files": _sanitize_contract_paths(item.get("related_files")),
-            "patterns": _normalized_contract_patterns(item.get("patterns")),
-        }
-        rows.append(_drop_empty_contract_fields(row))
-    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
-
-
 def _sanitize_contract_paths(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -840,51 +919,249 @@ def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = None) -> dict[str, Any]:
+    cid = _clean_text(item.get("id")) or (default_id.strip() if default_id else "")
+    desc = _clean_text(item.get("description")) or cid
+    scope = _clean_text(item.get("scope"))
+    is_global = item.get("is_global") is True or (scope and scope.lower() == "global")
+    rules_val = item.get("rules")
+    parsed_rules: list[str] = []
+    if isinstance(rules_val, list):
+        for r in rules_val:
+            if isinstance(r, str) and r.strip():
+                parsed_rules.append(r.strip())
+            elif isinstance(r, dict):
+                r_text = _clean_text(r.get("description") or r.get("id"))
+                if r_text:
+                    parsed_rules.append(r_text)
+
+    row = {
+        "id": cid,
+        "description": desc,
+        "scope": scope,
+        "is_global": is_global,
+        "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
+        "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
+        "files": _sanitize_contract_paths(item.get("files")),
+        "paths": _sanitize_contract_paths(item.get("paths")),
+        "source_files": _sanitize_contract_paths(item.get("source_files")),
+        "related_files": _sanitize_contract_paths(item.get("related_files")),
+        "patterns": _normalized_contract_patterns(item.get("patterns")),
+    }
+    if parsed_rules:
+        row["rules"] = parsed_rules
+    return _drop_empty_contract_fields(row)
+
+
+def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str, str | None, list[str]]:
+    """Normalizes domain_contracts into a canonical list of contract dicts,
+    returning (contracts, source_state, invalid_subtype, limitations).
+    Preserves legacy flat rules list, and admits bounded modern shapes:
+    - nested bounded domain contract mapping (key is contract id, value is dict)
+    - named list[str] sections (key is section id, value is list of strings)
+    """
+    if document is None:
+        return [], SOURCE_STATE_ABSENT, None, []
+
+    if isinstance(document, list):
+        if not document:
+            return [], SOURCE_STATE_PRESENT_VALID, None, []
+        if all(isinstance(item, dict) for item in document):
+            rows = [_clean_contract_dict_item(item) for item in document]
+            cleaned = [r for r in rows if r.get("id") or r.get("description")]
+            return sorted(cleaned, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+        return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+
+    if not isinstance(document, dict):
+        return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+
+    # Check for legacy envelope {"rules": [...]}
+    if "rules" in document:
+        rules = document.get("rules")
+        if not isinstance(rules, list):
+            return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+        if all(isinstance(item, dict) for item in rules):
+            rows = [_clean_contract_dict_item(item) for item in rules]
+            cleaned = [r for r in rows if r.get("id") or r.get("description")]
+            return sorted(cleaned, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+        return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+
+    # Modern bounded shapes: non-reserved keys represent contract identities
+    rows = []
+    for key, value in document.items():
+        if not isinstance(key, str) or not key.strip():
+            return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+        clean_key = key.strip()
+        if isinstance(value, list):
+            if not value:
+                rows.append({"id": clean_key, "description": clean_key, "rules": []})
+            elif all(isinstance(rule_str, str) for rule_str in value):
+                rows.append({
+                    "id": clean_key,
+                    "description": clean_key,
+                    "rules": [r.strip() for r in value if r.strip()],
+                })
+            elif all(isinstance(rule_dict, dict) for rule_dict in value):
+                rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key))
+            else:
+                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+        elif isinstance(value, dict):
+            row = _clean_contract_dict_item(value, default_id=clean_key)
+            rows.append(row)
+        else:
+            return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+
+    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+
+
+def normalize_review_packs(
+    document: Any,
+    extra_bindings: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, list[str]], str, str | None, list[str]]:
+    """Normalizes review_packs and contract_bindings into canonical structures.
+    Returns (packs, contract_bindings, source_state, invalid_subtype, limitations).
+    Preserves legacy flat packs list, and admits bounded modern shapes:
+    - packs mapping: dict[str, dict] where key is pack_id
+    - contract_bindings: dict[str, list[str]] mapping pack_id to list of contract identities
+    """
+    limitations: list[str] = []
+    contract_bindings: dict[str, list[str]] = {}
+
+    raw_bindings = None
+    if isinstance(document, dict) and "contract_bindings" in document:
+        raw_bindings = document.get("contract_bindings")
+    elif extra_bindings is not None:
+        raw_bindings = extra_bindings
+
+    if raw_bindings is not None:
+        if not isinstance(raw_bindings, dict):
+            limitations.append("malformed_contract_bindings:must_be_mapping")
+        else:
+            bindings_valid = True
+            for k, v in raw_bindings.items():
+                if not isinstance(k, str) or not k.strip():
+                    limitations.append("malformed_contract_bindings:invalid_key")
+                    bindings_valid = False
+                    break
+                if not isinstance(v, list) or not all(isinstance(x, str) and x.strip() for x in v):
+                    limitations.append("malformed_contract_bindings:must_be_list_of_strings")
+                    bindings_valid = False
+                    break
+                contract_bindings[k.strip()] = [x.strip() for x in v if x.strip()]
+            if not bindings_valid:
+                contract_bindings.clear()
+
+    if document is None:
+        if contract_bindings:
+            limitations.append("required_source_absent:review_packs")
+        return [], contract_bindings, SOURCE_STATE_ABSENT, None, limitations
+
+    if isinstance(document, list):
+        if not document:
+            return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        if all(isinstance(item, dict) for item in document):
+            rows = []
+            for item in document:
+                pid = _clean_text(item.get("id"))
+                if pid:
+                    rows.append({
+                        "id": pid,
+                        "description": _clean_text(item.get("description")) or pid,
+                        "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
+                        "paths": _sanitize_contract_paths(item.get("paths")),
+                        "patterns": _normalized_contract_patterns(item.get("patterns")),
+                        "is_global": item.get("is_global") is True or _clean_text(item.get("scope")) == "global",
+                    })
+            return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+    if not isinstance(document, dict):
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+    raw_packs = document.get("packs")
+    if raw_packs is None:
+        if contract_bindings:
+            limitations.append("orphan_contract_binding:packs_absent")
+        return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+
+    if isinstance(raw_packs, list):
+        if not raw_packs:
+            return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        if all(isinstance(item, dict) for item in raw_packs):
+            rows = []
+            for item in raw_packs:
+                pid = _clean_text(item.get("id"))
+                if pid:
+                    rows.append(_drop_empty_contract_fields({
+                        "id": pid,
+                        "description": _clean_text(item.get("description")) or pid,
+                        "domain_contract": _clean_text(item.get("domain_contract")),
+                        "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
+                        "paths": _sanitize_contract_paths(item.get("paths")),
+                        "patterns": _normalized_contract_patterns(item.get("patterns")),
+                        "is_global": item.get("is_global") is True or _clean_text(item.get("scope")) == "global",
+                    }))
+            return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+    if isinstance(raw_packs, dict):
+        rows = []
+        for pack_id, pval in raw_packs.items():
+            if not isinstance(pack_id, str) or not pack_id.strip():
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+            if not isinstance(pval, dict):
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+            clean_pid = pack_id.strip()
+            rows.append(_drop_empty_contract_fields({
+                "id": clean_pid,
+                "description": _clean_text(pval.get("description")) or clean_pid,
+                "domain_contract": _clean_text(pval.get("domain_contract")),
+                "recommended_review_preset": _clean_text(pval.get("recommended_review_preset")),
+                "paths": _sanitize_contract_paths(pval.get("paths")),
+                "patterns": _normalized_contract_patterns(pval.get("patterns")),
+                "is_global": pval.get("is_global") is True or _clean_text(pval.get("scope")) == "global",
+            }))
+        return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+
+    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+
+def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
+    contracts, _, _, _ = normalize_domain_contracts(document)
+    return contracts
+
+
 def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
-    packs = _get(document, "packs")
-    if not isinstance(packs, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in packs:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "id": _clean_text(item.get("id")),
-                "description": _clean_text(item.get("description")),
-                "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
-            }
-        )
-    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+    packs, _, _, _, _ = normalize_review_packs(document)
+    return packs
 
 
 def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
     if not selected_pack:
         return False
     pack_id = _clean_text(pack.get("id")) or ""
-    description = _clean_text(pack.get("description")) or ""
-    selected = selected_pack.lower()
-    id_lower = pack_id.lower()
-    description_lower = description.lower()
-    return (
-        id_lower == selected
-        or description_lower == selected
-        or selected in id_lower
-        or selected in description_lower
-    )
+    selected = selected_pack.strip()
+    if pack_id == selected or pack_id.lower() == selected.lower():
+        return True
+    if selected.lower() == "calendar" and pack_id == "agentescala-calendar":
+        return True
+    if selected.lower() == "agentescala-calendar" and pack_id == "calendar":
+        return True
+    return False
 
 
-def _relevance_keywords(semantic_group: str) -> tuple[str, ...]:
-    mapping = {
-        "primary_backend_logic": ("backend", "service", "domain", "api"),
-        "api_schema_contract": ("schema", "contract", "api", "model"),
-        "frontend_ui": ("frontend", "ui", "component"),
-        "tests": ("test", "coverage", "assert"),
-        "workflow_aiops": ("workflow", "aiops", "pipeline"),
-        "docs_changelog": ("docs", "changelog", "readme"),
-        "suspicious_out_of_scope": ("secret", "prod", "deploy", "runtime"),
+def minimal_contracts_context(contracts_ctx: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(contracts_ctx, dict):
+        return {"domain_contracts": [], "review_packs": []}
+    domain_contracts = contracts_ctx.get("domain_contracts")
+    required = [
+        dict(item) for item in (domain_contracts or [])
+        if isinstance(item, dict) and item.get("required") is True
+    ]
+    return {
+        "domain_contracts": required,
+        "review_packs": [],
     }
-    return mapping.get(semantic_group, tuple())
 
 
 # ---------------------------------------------------------------------------
@@ -1536,7 +1813,7 @@ def project_min_hunk_preserving_chars(
         {
             "files": display_files,
             "chunk_hunks": chunk_hunks_full,
-            "contracts_context": dict(MINIMAL_CONTRACTS_CONTEXT),
+            "contracts_context": minimal_contracts_context(contracts_ctx),
             "evidence_context": minimal_evidence_context(evidence_ctx),
             "checks_context": minimal_checks_context(checks_ctx),
             "aux_context": dict(MINIMAL_AUX_CONTEXT),

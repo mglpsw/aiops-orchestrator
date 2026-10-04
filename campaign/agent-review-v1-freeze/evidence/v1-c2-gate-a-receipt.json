@@ -1,0 +1,49 @@
+{
+  "artifact_type": "V1_C2_GATE_A_IMPLEMENTATION_RECEIPT",
+  "status": "implemented_candidate",
+  "gate": "Gate A",
+  "owner": "#221",
+  "slice": "V1-C2 / Gate A (C2ExecutableContract)",
+  "source_commit_base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
+  "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
+  "normative_obligations": [
+    "OBL-CL2-01",
+    "OBL-CL2-02",
+    "OBL-CL2-03",
+    "OBL-CL2-04",
+    "OBL-CL2-05",
+    "OBL-CL2-06",
+    "OBL-CL2-07"
+  ],
+  "invariants_verified": [
+    "INV-C2-01",
+    "INV-C2-02",
+    "INV-C2-03",
+    "INV-C2-04",
+    "INV-C2-05"
+  ],
+  "test_suite": "tests/agent_review/test_c2_executable_contract_gate_a.py",
+  "verified_countermodels": [
+    "CM-A1-MALFORMED-SOURCE",
+    "CM-A1-UNSUPPORTED-NONEMPTY",
+    "CM-A2-LEGACY-FLAT-COMPAT",
+    "CM-A2-NAMED-STRING-LIST",
+    "CM-A2-MALFORMED-CONTRACT_BINDINGS",
+    "CM-A3-BINDING-AUTH-ADMIN",
+    "CM-A3-BINDING-RESPONSE-MODEL-RULES",
+    "CM-A3-UNRELATED-PACK",
+    "CM-A3-UNKNOWN-BINDING",
+    "CM-A3-CASE-SENSITIVE-PATTERN",
+    "CM-GA-A4-COST",
+    "CM-GA-A4-REPACK",
+    "CM-A5-REQUIRED-CONTEXT-DROPPED",
+    "CM-A5-BUDGET-LOSS",
+    "CM-A5-LIMITATION-DROPPED-BEFORE-GATE"
+  ],
+  "terminal_state": "V1_C2_GATE_A_IMPLEMENTED_DRAFT_AWAITING_REVIEW_GRANT",
+  "nonclaims": [
+    "Gate A qualifies executable engine capability only; it does not claim Gate B (AgentEscala#869 target projection).",
+    "Gate A does not qualify Gate C (exact pair qualification).",
+    "Gate A does not claim release, repin, deploy, or provider execution."
+  ]
+}
