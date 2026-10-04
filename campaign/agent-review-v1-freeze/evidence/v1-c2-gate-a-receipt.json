@@ -1,49 +1,109 @@
 {
-  "artifact_type": "V1_C2_GATE_A_IMPLEMENTATION_RECEIPT",
-  "status": "implemented_candidate",
+  "artifact_type": "PR372_GATE_A_CORRECTIVE_RECEIPT",
+  "status": "corrected_candidate_qualified",
   "gate": "Gate A",
   "owner": "#221",
   "slice": "V1-C2 / Gate A (C2ExecutableContract)",
-  "source_commit_base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
   "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
-  "normative_obligations": [
-    "OBL-CL2-01",
-    "OBL-CL2-02",
-    "OBL-CL2-03",
-    "OBL-CL2-04",
-    "OBL-CL2-05",
-    "OBL-CL2-06",
-    "OBL-CL2-07"
-  ],
-  "invariants_verified": [
-    "INV-C2-01",
-    "INV-C2-02",
-    "INV-C2-03",
-    "INV-C2-04",
-    "INV-C2-05"
-  ],
-  "test_suite": "tests/agent_review/test_c2_executable_contract_gate_a.py",
-  "verified_countermodels": [
-    "CM-A1-MALFORMED-SOURCE",
-    "CM-A1-UNSUPPORTED-NONEMPTY",
-    "CM-A2-LEGACY-FLAT-COMPAT",
-    "CM-A2-NAMED-STRING-LIST",
-    "CM-A2-MALFORMED-CONTRACT_BINDINGS",
-    "CM-A3-BINDING-AUTH-ADMIN",
-    "CM-A3-BINDING-RESPONSE-MODEL-RULES",
-    "CM-A3-UNRELATED-PACK",
-    "CM-A3-UNKNOWN-BINDING",
-    "CM-A3-CASE-SENSITIVE-PATTERN",
-    "CM-GA-A4-COST",
-    "CM-GA-A4-REPACK",
-    "CM-A5-REQUIRED-CONTEXT-DROPPED",
-    "CM-A5-BUDGET-LOSS",
-    "CM-A5-LIMITATION-DROPPED-BEFORE-GATE"
-  ],
-  "terminal_state": "V1_C2_GATE_A_IMPLEMENTED_DRAFT_AWAITING_REVIEW_GRANT",
-  "nonclaims": [
-    "Gate A qualifies executable engine capability only; it does not claim Gate B (AgentEscala#869 target projection).",
-    "Gate A does not qualify Gate C (exact pair qualification).",
-    "Gate A does not claim release, repin, deploy, or provider execution."
-  ]
+  "predecessor": {
+    "head": "99d42fab8c732efdc7b39c06b48dd800caa91801"
+  },
+  "successor": {
+    "branch": "fix/221-v1-c2-gate-a-executable-contract",
+    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f"
+  },
+  "findings": {
+    "A2_REAL_TARGET_SHAPE": "Predecessor failed on top-level reserved metadata envelope (version, updated, system) with SOURCE_STATE_INVALID/SUBTYPE_UNSUPPORTED_NONEMPTY and zero parsed contracts. Corrected with RESERVED_DOMAIN_CONTRACT_METADATA_KEYS envelope validation, parsing all 4 domain contracts cleanly.",
+    "A2_SECTION_IDENTITY": "Predecessor collapsed contract content into flat rules, losing section names. Corrected by preserving sections dictionary with named lists and item dicts, proving critical_constraints != review_checklist.",
+    "A2_RULE_DICT_TEXT": "Predecessor looked only for description/id in dict rules, dropping rule: '...' text. Corrected by extracting rule, text, description, id, name, model and preserving bounded fields (invariant, rationale, field, expected_value).",
+    "A3_OWNER_FOCAL_RELATIONS": "Exercised genuine owner relations: auth_admin -> security + auth_admin, backend_schema_contract -> response_model_rules, unrelated pack isolation, and unknown binding typed limitations.",
+    "A4_COST_CONTROL_VACUITY": "Predecessor test was vacuous without calling projection or comparing actual payload. Corrected by measuring actual payload length A, projected floor P, and admitted budget B, proving A <= P <= B across 5 variations.",
+    "A4_REPACK_CONTROL_VACUITY": "Predecessor only called planner twice without budget pressure. Corrected by constructing 5000-char budget pressure forcing 4 files to split across multiple chunks with deterministic output across 5 runs.",
+    "A5_SHRINK_CONTROL_VACUITY": "Predecessor used oversized budget where no shrink occurred. Corrected by establishing budget where full context exceeds budget but required fits, proving optional contracts are dropped while required contracts are retained.",
+    "A5_POST_PLAN_BUDGET_MUTATION": "Reclassified post-hoc budget reduction as DEFENSIVE_PLAN_BUILDER_MISMATCH_CONTROL. Added canonical flow CM-A5-REQUIRED-FLOOR-EXCEEDS-BUDGET where budget is constrained from the start, yielding degraded non-conclusive plan without post-hoc mutation.",
+    "A5_CARRIER_E2E_GAP": "Predecessor fabricated intermediate ChunkResults objects. Corrected by executing full carrier graph: intake -> plan -> brief -> payload -> synthetic responses -> parser -> synthesizer -> quality_gate.",
+    "QUALIFICATION_ABLATION_GAP": "Predecessor lacked causal ablations. Corrected by adding 9 focal causal ablations across A1..A5.",
+    "GATE_MANUAL_REVIEW_OVERCLAIM": "Corrected universal manual_review_required overclaim: confirmed reliable blockers take precedence (status=degraded, normalized_verdict=changes_requested, manual_review_required=false), while in all cases status != passed."
+  },
+  "normalized_contract_representation": {
+    "contract_id": "non-reserved top-level mapping key",
+    "description": "explicit description or contract_id",
+    "scope": "optional scope string",
+    "is_global": "boolean",
+    "canonical_authority": "optional authority string",
+    "display_authority": "optional authority string",
+    "sections": "dictionary of section_name to list of section item dictionaries with text and bounded fields",
+    "rules": "backwards-compatible list of strings for rule/slot_rules sections",
+    "path_fields": ["file_path", "path", "files", "paths", "source_files", "related_files", "patterns"]
+  },
+  "actual_carrier_graph": {
+    "admission": "intake.target_profile -> normalize_domain_contracts / normalize_review_packs -> contracts_context",
+    "planning": "contracts_context -> semantic_chunker (project_chunk_cost via project_min_hunk_preserving_chars, FFD packing, plan limitations)",
+    "payload_building": "SemanticChunkPlan.limitations -> pr_brief -> build_chunk_payloads",
+    "parsing": "ChunkResponse JSONs -> parse_chunk_results -> ChunkResults.limitations + status",
+    "synthesis": "synthesize_final_review -> FinalReview.limitations + verdict + status",
+    "gate": "evaluate_review_quality_gate -> ReviewQualityGate (status != passed on contract loss; changes_requested with reliable blocker, manual_review_required without blocker)"
+  },
+  "baseline_classification": {
+    "RED_REQUIRED": [
+      "CM-A2-REAL-TARGET-DOMAIN-SHAPE",
+      "CM-A2-NESTED-SECTION-IDENTITY",
+      "CM-A2-RULE-DICT-TEXT-PRESERVATION",
+      "CM-A3-EXACT-IDENTITY-BOUNDARY",
+      "CM-GA-A4-COST",
+      "CM-GA-A4-REPACK",
+      "CM-A5-REQUIRED-CONTEXT-DROPPED",
+      "CM-A5-REQUIRED-FLOOR-EXCEEDS-BUDGET",
+      "CM-A5-CARRIER-GRAPH-E2E"
+    ],
+    "GREEN_PRESERVATION": [
+      "CM-A1-MALFORMED-SOURCE",
+      "CM-A1-UNSUPPORTED-NONEMPTY",
+      "CM-A2-LEGACY-FLAT-COMPAT",
+      "CM-A2-NAMED-STRING-LIST",
+      "CM-A2-MALFORMED-CONTRACT_BINDINGS",
+      "CM-A3-OWNER-FOCAL-RELATIONS",
+      "CM-A3-UNRELATED-PACK",
+      "CM-A3-UNKNOWN-BINDING",
+      "CM-A3-CASE-SENSITIVE-PATTERN"
+    ],
+    "DEFENSIVE_CONTROL": [
+      "DEFENSIVE_PLAN_BUILDER_MISMATCH_CONTROL"
+    ],
+    "POSITIVE_CONTROL": [
+      "PC-A1-MALFORMED-SOURCE",
+      "PC-A2-CONTRACT-BINDINGS",
+      "PC-GA-A4-COST"
+    ],
+    "ABLATION_CONTROL": [
+      "AB-A1-STATE-SEPARATION",
+      "AB-A2-SECTION-IDENTITY",
+      "AB-A2-RULE-DICT-TEXT",
+      "AB-A3-EXPLICIT-BINDING",
+      "AB-A3-EXACT-IDENTITY",
+      "AB-A3-FNMATCHCASE",
+      "AB-GA-A4-COST",
+      "AB-GA-A4-REPACK",
+      "AB-A5-SHRINK-ORDER"
+    ]
+  },
+  "qualification": {
+    "Gate_A_suite": "31 passed in 0.37s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
+    "affected_v1": "371 passed in 6.30s (core cost model, chunk builder, semantic chunker, brief, quality gate)",
+    "CLI": "142 passed in 23.30s (all test_aiops_review_*_cli.py suites)",
+    "C1_regression": "passed (test_semantic_chunker_232_coverage_truth.py passed)",
+    "repository": "passed (bash scripts/ci_validate.sh --repository)",
+    "generated": "passed (bash scripts/ci_validate.sh --generated)",
+    "CI": "clean local qualification, awaiting push"
+  },
+  "nonclaims": {
+    "Gate_B": "NOT_CLAIMED",
+    "Gate_C": "NOT_CLAIMED",
+    "Control_A": "NOT_CLAIMED",
+    "Control_B": "NOT_CLAIMED",
+    "release": "NOT_CLAIMED",
+    "V1_FINAL_FREEZE": "NOT_CLAIMED"
+  },
+  "PR_state": "DRAFT",
+  "terminal": "V1_C2_GATE_A_CORRECTED_DRAFT_READY_FOR_HUMAN_READY_GRANT"
 }

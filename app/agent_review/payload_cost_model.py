@@ -919,27 +919,97 @@ def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+RESERVED_DOMAIN_CONTRACT_METADATA_KEYS: frozenset[str] = frozenset(
+    {"version", "schema_version", "updated", "system", "metadata"}
+)
+
+
+def _is_valid_reserved_metadata(key: str, value: Any) -> bool:
+    if isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str) or not k.strip():
+                return False
+            if not isinstance(v, (str, int, float, bool, dict, list)):
+                return False
+        return True
+    return False
+
+
 def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = None) -> dict[str, Any]:
     cid = _clean_text(item.get("id")) or (default_id.strip() if default_id else "")
     desc = _clean_text(item.get("description")) or cid
     scope = _clean_text(item.get("scope"))
     is_global = item.get("is_global") is True or (scope and scope.lower() == "global")
-    rules_val = item.get("rules")
-    parsed_rules: list[str] = []
-    if isinstance(rules_val, list):
-        for r in rules_val:
-            if isinstance(r, str) and r.strip():
-                parsed_rules.append(r.strip())
-            elif isinstance(r, dict):
-                r_text = _clean_text(r.get("description") or r.get("id"))
-                if r_text:
-                    parsed_rules.append(r_text)
+    canonical_authority = _clean_text(item.get("canonical_authority"))
+    display_authority = _clean_text(item.get("display_authority"))
+
+    non_section_keys = {
+        "id",
+        "description",
+        "scope",
+        "is_global",
+        "canonical_authority",
+        "display_authority",
+        "file_path",
+        "path",
+        "files",
+        "paths",
+        "source_files",
+        "related_files",
+        "patterns",
+        "required",
+    }
+
+    sections: dict[str, list[dict[str, Any]]] = {}
+    all_rule_texts: list[str] = []
+
+    for sec_name, sec_val in item.items():
+        if sec_name in non_section_keys or not isinstance(sec_val, list):
+            continue
+        cleaned_sec_items: list[dict[str, Any]] = []
+        for elem in sec_val:
+            if isinstance(elem, str):
+                elem_text = elem.strip()
+                if elem_text:
+                    cleaned_sec_items.append({"text": elem_text})
+            elif isinstance(elem, dict):
+                elem_text = _clean_text(
+                    elem.get("rule")
+                    or elem.get("text")
+                    or elem.get("description")
+                    or elem.get("id")
+                    or elem.get("name")
+                    or elem.get("model")
+                )
+                sec_dict: dict[str, Any] = {}
+                if elem_text:
+                    sec_dict["text"] = elem_text
+                if "invariant" in elem and isinstance(elem["invariant"], bool):
+                    sec_dict["invariant"] = elem["invariant"]
+                if "rationale" in elem and isinstance(elem["rationale"], str) and elem["rationale"].strip():
+                    sec_dict["rationale"] = elem["rationale"].strip()
+                if "field" in elem and isinstance(elem["field"], str) and elem["field"].strip():
+                    sec_dict["field"] = elem["field"].strip()
+                if "expected_value" in elem and elem["expected_value"] is not None:
+                    sec_dict["expected_value"] = elem["expected_value"]
+                if sec_dict:
+                    cleaned_sec_items.append(sec_dict)
+        if cleaned_sec_items:
+            sections[sec_name] = cleaned_sec_items
+            if sec_name in ("rules", "slot_rules"):
+                for si in cleaned_sec_items:
+                    if "text" in si:
+                        all_rule_texts.append(si["text"])
 
     row = {
         "id": cid,
         "description": desc,
         "scope": scope,
         "is_global": is_global,
+        "canonical_authority": canonical_authority,
+        "display_authority": display_authority,
         "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
         "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
         "files": _sanitize_contract_paths(item.get("files")),
@@ -948,8 +1018,10 @@ def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = Non
         "related_files": _sanitize_contract_paths(item.get("related_files")),
         "patterns": _normalized_contract_patterns(item.get("patterns")),
     }
-    if parsed_rules:
-        row["rules"] = parsed_rules
+    if all_rule_texts:
+        row["rules"] = all_rule_texts
+    if sections:
+        row["sections"] = sections
     return _drop_empty_contract_fields(row)
 
 
@@ -959,6 +1031,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
     Preserves legacy flat rules list, and admits bounded modern shapes:
     - nested bounded domain contract mapping (key is contract id, value is dict)
     - named list[str] sections (key is section id, value is list of strings)
+    - reserved top-level metadata envelope (version, schema_version, updated, system, metadata)
     """
     if document is None:
         return [], SOURCE_STATE_ABSENT, None, []
@@ -992,14 +1065,22 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
         if not isinstance(key, str) or not key.strip():
             return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
         clean_key = key.strip()
+        if clean_key in RESERVED_DOMAIN_CONTRACT_METADATA_KEYS:
+            if not _is_valid_reserved_metadata(clean_key, value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+            continue
+
         if isinstance(value, list):
             if not value:
                 rows.append({"id": clean_key, "description": clean_key, "rules": []})
             elif all(isinstance(rule_str, str) for rule_str in value):
+                rules_list = [r.strip() for r in value if r.strip()]
+                sec_items = [{"text": r} for r in rules_list]
                 rows.append({
                     "id": clean_key,
                     "description": clean_key,
-                    "rules": [r.strip() for r in value if r.strip()],
+                    "rules": rules_list,
+                    "sections": {clean_key: sec_items},
                 })
             elif all(isinstance(rule_dict, dict) for rule_dict in value):
                 rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key))
@@ -1141,11 +1222,11 @@ def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> b
         return False
     pack_id = _clean_text(pack.get("id")) or ""
     selected = selected_pack.strip()
-    if pack_id == selected or pack_id.lower() == selected.lower():
+    if pack_id == selected:
         return True
-    if selected.lower() == "calendar" and pack_id == "agentescala-calendar":
-        return True
-    if selected.lower() == "agentescala-calendar" and pack_id == "calendar":
+    if (selected == "calendar" and pack_id == "agentescala-calendar") or (
+        selected == "agentescala-calendar" and pack_id == "calendar"
+    ):
         return True
     return False
 
