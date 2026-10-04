@@ -42,8 +42,20 @@ def _clean_env(standalone_root: Path, **updates: str) -> dict[str, str]:
     return env
 
 
+def _populate_standalone_manifest(dest_dir: Path) -> Path:
+    """Ensure a synthetic standalone source directory contains the canonical manifest."""
+    manifest_dest = dest_dir / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    manifest_dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+        manifest_dest,
+    )
+    return manifest_dest
+
+
 def _init_git_in_standalone(standalone_dir: Path) -> str:
     """Initialize a git repo inside standalone_dir, commit all files, and return HEAD sha."""
+    _populate_standalone_manifest(standalone_dir)
     subprocess.run(["git", "init"], cwd=standalone_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "CI"], cwd=standalone_dir, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=standalone_dir, check=True, capture_output=True)
@@ -698,6 +710,12 @@ print("ALL_PASSED")
 def test_countermodel_m5_missing_install_contract() -> None:
     """Countermodel M5: Required install contract artifacts cannot be omitted from the manifest, and declared files must exist."""
     manifest = validator.load_manifest()
+
+    # The new bootstrap dependency cannot be silently omitted from standalone.
+    omit_authority = copy.deepcopy(manifest)
+    omit_authority["distribution_boundary"]["install_boundary"].remove("scripts/agent-review-install-authority.py")
+    errors = validator.validate_manifest(omit_authority, repo_root=REPO_ROOT)
+    assert any("scripts/agent-review-install-authority.py" in error for error in errors)
 
     # Case A: Omit requirements-agent-review.lock from install_boundary
     mutated_omit_lock = copy.deepcopy(manifest)
@@ -1830,6 +1848,104 @@ def test_countermodel_p11_refuse_materialize_from_dirty_boundary(tmp_path: Path)
     assert not (dest / "scratch_outside").exists()
 
 
+def test_countermodel_p2_a_cli_authority_ordering_git_materialize(tmp_path: Path) -> None:
+    """P2-A: CLI --materialize-to must not let mutable working-tree validation defeat immutable Git commit authority.
+
+    Verifies that:
+    1. Working-tree mutation with forbidden runtime import ('import fastapi') is present in working tree;
+    2. Git index marks the file with --assume-unchanged;
+    3. Live-tree validation (--check) strictly detects and rejects this invalid working tree (discriminator);
+    4. Authoritative Git commit HEAD remains valid and unchanged;
+    5. CLI --materialize-to succeeds and extracts strictly from Git commit tree, omitting the forbidden import.
+    """
+    fake_repo = tmp_path / "fake_repo_p2a"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+
+    (fake_repo / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_VALIDATOR_PATH, fake_repo / "scripts" / "verify-agent-review-standalone-closure.py")
+    (fake_repo / "config" / "agent-review").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+        fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json",
+    )
+
+    _init_git_in_standalone(fake_repo)
+    head_sha_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=fake_repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    tracked_file = fake_repo / "app" / "agent_review" / "contracts_v2.py"
+    orig_text = tracked_file.read_text(encoding="utf-8")
+    assert "import fastapi" not in orig_text
+
+    # Introduce working-tree-only forbidden runtime import
+    tracked_file.write_text(orig_text + "\nimport fastapi\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "update-index", "--assume-unchanged", "app/agent_review/contracts_v2.py"],
+        cwd=fake_repo,
+        check=True,
+    )
+
+    try:
+        # 1. Establish the live-tree mutation is real
+        assert "import fastapi" in tracked_file.read_text(encoding="utf-8")
+
+        # 2. Discriminator: Live-tree check mode must detect and reject the invalid working tree
+        cli_script = fake_repo / "scripts" / "verify-agent-review-standalone-closure.py"
+        proc_check = subprocess.run(
+            [sys.executable, str(cli_script), "--check"],
+            cwd=fake_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert proc_check.returncode == 1
+        assert "Forbidden runtime package 'fastapi' imported by app/agent_review/contracts_v2.py" in proc_check.stderr
+
+        # 3. Establish HEAD did not change and remains clean
+        head_sha_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=fake_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        assert head_sha_after == head_sha_before
+        head_text = subprocess.run(
+            ["git", "show", "HEAD:app/agent_review/contracts_v2.py"],
+            cwd=fake_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "import fastapi" not in head_text
+        assert head_text == orig_text
+
+        # 4. Materialize CLI must succeed
+        target_out = tmp_path / "target_out_p2a"
+        proc_mat = subprocess.run(
+            [sys.executable, str(cli_script), "--materialize-to", str(target_out)],
+            cwd=fake_repo,
+            capture_output=True,
+            text=True,
+        )
+        assert proc_mat.returncode == 0, f"Materialize CLI failed unexpectedly:\n{proc_mat.stderr}\n{proc_mat.stdout}"
+        assert "OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid." in proc_mat.stdout
+        assert "OK: Materialized standalone distribution to:" in proc_mat.stdout
+
+        # 5. Output bytes come from HEAD, not from the dirty working tree
+        mat_file = target_out / "app" / "agent_review" / "contracts_v2.py"
+        assert mat_file.exists()
+        mat_text = mat_file.read_text(encoding="utf-8")
+        assert "import fastapi" not in mat_text
+        assert mat_text == orig_text
+
+    finally:
+        tracked_file.write_text(orig_text, encoding="utf-8")
+        subprocess.run(
+            ["git", "update-index", "--no-assume-unchanged", "app/agent_review/contracts_v2.py"],
+            cwd=fake_repo,
+            check=True,
+        )
+
+
 def test_countermodel_f4_unrelated_non_utf8_path_ignored(tmp_path: Path) -> None:
     """F4 (PRRT_kwDOSM6MSM6nt3s-): Non-UTF-8 paths outside declared boundary do not block materialization."""
     fake_repo = tmp_path / "fake_repo_f4"
@@ -1859,6 +1975,7 @@ def test_countermodel_p13_reject_special_files_before_target_creation(tmp_path: 
 
     fake_source = tmp_path / "fake_source_p13"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     fifo_path = fake_source / "app" / "agent_review" / "test_fifo"
     try:
         os.mkfifo(fifo_path)
@@ -1898,6 +2015,7 @@ def test_countermodel_p14_verify_explicit_source_sha_against_source(tmp_path: Pa
 
     fake_source = tmp_path / "fake_source_p14"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     (fake_source / ".source-commit").unlink()
     (fake_source / ".toolrepo-sha").unlink()
     target_c = tmp_path / "target_sha_c"
@@ -1997,6 +2115,7 @@ def test_countermodel_p16_prefer_git_head_over_local_attestation(tmp_path: Path)
     # 4. Standalone mode (non-git): conflicting, malformed, or valid attestations
     standalone_dir = tmp_path / "standalone_p16"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=standalone_dir)
+    _populate_standalone_manifest(standalone_dir)
     # Conflicting attestations
     (standalone_dir / ".source-commit").write_text(f"{'a'*40}\n", encoding="utf-8")
     (standalone_dir / ".toolrepo-sha").write_text(f"{'b'*40}\n", encoding="utf-8")
@@ -2086,6 +2205,7 @@ def test_finding_s1_attestation_symlink_fails_closed(tmp_path: Path) -> None:
     """Finding S1: Attestation file as symlink is refused fail-closed."""
     fake_source = tmp_path / "fake_source_s1"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_source)
+    _populate_standalone_manifest(fake_source)
     valid_commit = (fake_source / ".source-commit").read_text(encoding="utf-8").strip()
 
     outside_commit = tmp_path / "outside_commit.txt"
@@ -2167,6 +2287,7 @@ def test_finding_s3_parent_git_repo_capture_refused(tmp_path: Path) -> None:
 
     nested_standalone = parent_repo / "nested_standalone"
     validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=nested_standalone)
+    _populate_standalone_manifest(nested_standalone)
     valid_commit = (nested_standalone / ".source-commit").read_text(encoding="utf-8").strip()
 
     # The nested directory is NOT a git repo itself; its git top level would be parent_repo
@@ -2327,6 +2448,120 @@ def test_finding_r5_git_sources_validated_from_commit_tree(tmp_path: Path) -> No
         subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd=fake_repo, check=True)
 
 
+def test_countermodel_g2_default_manifest_sources_from_git_commit_not_dirty_worktree(tmp_path: Path) -> None:
+    """G2: Default manifest must source from authoritative Git commit during git materialization.
+
+    When the default manifest file in the working tree is locally mutated (dirty):
+    1. --check fails observing the working tree's invalid manifest;
+    2. --materialize-to without --manifest succeeds and materializes strictly using the committed Git manifest;
+    3. --materialize-to with explicit --manifest respects the caller-specified manifest path.
+    """
+    fake_repo = tmp_path / "fake_repo_g2"
+    validator.materialize_standalone_distribution(repo_root=REPO_ROOT, target_dir=fake_repo)
+    (fake_repo / ".source-commit").unlink()
+    (fake_repo / ".toolrepo-sha").unlink()
+
+    (fake_repo / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_VALIDATOR_PATH, fake_repo / "scripts" / "verify-agent-review-standalone-closure.py")
+    (fake_repo / "config" / "agent-review").mkdir(parents=True, exist_ok=True)
+    manifest_src = REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    shutil.copy2(manifest_src, fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json")
+
+    _init_git_in_standalone(fake_repo)
+
+    manifest_file = fake_repo / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+    data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    data["distribution_boundary"]["core_packages"].append("app/non_existent_package_probe")
+    manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    cli_script = fake_repo / "scripts" / "verify-agent-review-standalone-closure.py"
+
+    # 1. Live check (--check) must fail observing working-tree drift
+    res_check = subprocess.run(
+        [sys.executable, str(cli_script), "--check"],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_check.returncode == 1
+    assert "non_existent_package_probe" in res_check.stderr
+
+    # 2. Materialize without --manifest must succeed using committed Git manifest
+    target_clean = tmp_path / "target_g2_clean"
+    res_mat = subprocess.run(
+        [sys.executable, str(cli_script), "--materialize-to", str(target_clean)],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_mat.returncode == 0, f"Git materialization must succeed using commit manifest:\n{res_mat.stderr}"
+    assert "OK: Materialized standalone distribution" in res_mat.stdout
+    assert target_clean.exists()
+    assert (target_clean / "app" / "agent_review").exists()
+
+    # 3. Materialize with explicit --manifest must respect the caller's explicit manifest
+    explicit_manifest_file = tmp_path / "custom_manifest.json"
+    explicit_manifest_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    target_explicit = tmp_path / "target_g2_explicit"
+    res_mat_exp = subprocess.run(
+        [
+            sys.executable,
+            str(cli_script),
+            "--materialize-to",
+            str(target_explicit),
+            "--manifest",
+            str(explicit_manifest_file),
+        ],
+        cwd=fake_repo,
+        capture_output=True,
+        text=True,
+    )
+    assert res_mat_exp.returncode == 1
+    assert "non_existent_package_probe" in res_mat_exp.stderr
+    assert not target_explicit.exists()
+
+
+def test_countermodel_h2_a_foreign_git_repo_missing_default_manifest_fails_closed(tmp_path: Path) -> None:
+    """H2-A: A Git repository whose selected commit does not contain the default manifest fails closed and does not fall back to the host repo."""
+    foreign_repo = tmp_path / "foreign_git_repo"
+    foreign_repo.mkdir()
+    (foreign_repo / "README.md").write_text("# foreign repo without manifest\n", encoding="utf-8")
+    (foreign_repo / "app").mkdir()
+    (foreign_repo / "app" / "__init__.py").write_text("# app root\n", encoding="utf-8")
+
+    subprocess.run(["git", "init"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "CI"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ci@example.com"], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "add", "."], cwd=foreign_repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "foreign initial"], cwd=foreign_repo, check=True, capture_output=True)
+
+    target_dir = tmp_path / "target_h2a_out"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc:
+        validator.materialize_standalone_distribution(repo_root=foreign_repo, target_dir=target_dir, manifest=None)
+
+    assert "Failed to read default manifest" in str(exc.value)
+    assert "standalone-distribution-manifest.v1.json" in str(exc.value)
+    assert not target_dir.exists(), "Target directory must not be created when default manifest is missing"
+
+
+def test_countermodel_h2_b_non_git_source_missing_default_manifest_fails_closed(tmp_path: Path) -> None:
+    """H2-B: A non-Git source directory without its default manifest fails closed and does not fall back to the host repo."""
+    non_git_source = tmp_path / "non_git_source"
+    non_git_source.mkdir()
+    (non_git_source / ".source-commit").write_text(f"{'d'*40}\n", encoding="utf-8")
+    (non_git_source / ".toolrepo-sha").write_text(f"{'d'*40}\n", encoding="utf-8")
+    (non_git_source / "app").mkdir()
+    (non_git_source / "app" / "__init__.py").write_text("# app root\n", encoding="utf-8")
+
+    target_dir = tmp_path / "target_h2b_out"
+    with pytest.raises(validator.StandaloneClosureValidationError) as exc:
+        validator.materialize_standalone_distribution(repo_root=non_git_source, target_dir=target_dir, manifest=None)
+
+    assert "Distribution manifest not found at:" in str(exc.value)
+    assert "standalone-distribution-manifest.v1.json" in str(exc.value)
+    assert not target_dir.exists(), "Target directory must not be created when default manifest is missing"
+
+
 @pytest.mark.requires_network
 def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: Path) -> None:
     """F-02 (Layer E x Layer I Composed Gate): Materialized AgentReview executes under interpreter built from requirements-agent-review.lock."""
@@ -2343,12 +2578,29 @@ def test_lock_built_venv_executes_materialized_standalone_agentreview(tmp_path: 
         if py311:
             env["AGENT_REVIEW_PYTHON"] = py311
 
-    install_result = subprocess.run(
-        ["bash", str(install_script), str(venv_dir)],
+    # C7: hide the hosting checkout only inside a private mount namespace.
+    # The real materialized installer must consume its own new stdlib helper.
+    assert (standalone / "scripts" / "agent-review-install-authority.py").is_file()
+    if shutil.which("unshare") is None:
+        pytest.skip("EVIDENCE_LIMITATION_UNSHARE_UNAVAILABLE: unshare binary not found on PATH")
+    probe = subprocess.run(
+        ["unshare", "-U", "-r", "-m", "sh", "-c", "true"],
         capture_output=True,
         text=True,
-        env=env,
+        timeout=10,
     )
+    if probe.returncode != 0:
+        pytest.skip(f"EVIDENCE_LIMITATION_USER_MOUNT_NAMESPACE: {probe.stderr.strip()}")
+    namespace_command = [
+        "unshare", "-U", "-r", "-m", "sh", "-c",
+        'mount -t tmpfs tmpfs "$1" && shift && exec "$@"',
+        "standalone-isolation", str(REPO_ROOT), "bash", str(install_script), str(venv_dir),
+        "--toolrepo-sha", head_sha,
+    ]
+    install_result = subprocess.run(namespace_command, capture_output=True, text=True, env=env)
+    (tmp_path / "standalone-install.stdout").write_text(install_result.stdout)
+    (tmp_path / "standalone-install.stderr").write_text(install_result.stderr)
+    (tmp_path / "standalone-install-command.json").write_text(json.dumps(namespace_command))
     assert install_result.returncode == 0, f"Installer failed with returncode {install_result.returncode}:\n{install_result.stderr}\n{install_result.stdout}"
 
     venv_python = str(venv_dir / "bin" / "python3")

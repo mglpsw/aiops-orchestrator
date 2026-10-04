@@ -35,9 +35,10 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST_PATH = (
-    REPO_ROOT / "config" / "agent-review" / "standalone-distribution-manifest.v1.json"
+DEFAULT_MANIFEST_RELATIVE_PATH = Path(
+    "config/agent-review/standalone-distribution-manifest.v1.json"
 )
+DEFAULT_MANIFEST_PATH = REPO_ROOT / DEFAULT_MANIFEST_RELATIVE_PATH
 
 
 SUPPORTED_SCHEMA_IDS = frozenset({"agent-review.standalone-distribution-manifest.v1"})
@@ -81,6 +82,7 @@ REQUIRED_INSTALL_BOUNDARY_V1: frozenset[str] = frozenset(
     {
         "requirements-agent-review.lock",
         "scripts/install-agent-review-toolrepo.sh",
+        "scripts/agent-review-install-authority.py",
         "docs/AGENT_REVIEW_V2_INSTALLATION.md",
     }
 )
@@ -874,7 +876,7 @@ def validate_manifest(
 def materialize_standalone_distribution(
     repo_root: Path,
     target_dir: Path,
-    manifest: dict[str, Any] | None = None,
+    manifest: Path | dict[str, Any] | None = None,
     source_sha: str | None = None,
 ) -> Path:
     """Materialize strictly the declared standalone AgentReview distribution into target_dir.
@@ -882,8 +884,6 @@ def materialize_standalone_distribution(
     No files outside the declared boundary are copied. Any attempt to copy a forbidden
     surface raises StandaloneClosureValidationError.
     """
-    manifest_data = load_manifest() if manifest is None else manifest
-
     repo_resolved = repo_root.resolve()
     target_resolved = target_dir.resolve()
 
@@ -914,6 +914,44 @@ def materialize_standalone_distribution(
                         is_git_repo = True
         except Exception:
             pass
+
+    if manifest is not None:
+        if isinstance(manifest, Path):
+            manifest_data = load_manifest(manifest)
+        elif isinstance(manifest, dict):
+            manifest_data = manifest
+        else:
+            raise TypeError(f"manifest must be None, Path, or dict, got {type(manifest).__name__}")
+    elif is_git_repo:
+        assert resolved_sha is not None
+        proc_show = subprocess.run(
+            ["git", "-C", str(repo_resolved), "show", f"{resolved_sha}:{DEFAULT_MANIFEST_RELATIVE_PATH.as_posix()}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc_show.returncode == 0:
+            try:
+                manifest_data = json.loads(proc_show.stdout)
+            except Exception as exc:
+                raise StandaloneClosureValidationError(
+                    f"Failed to parse default manifest from git commit {resolved_sha}: {exc}"
+                )
+            if not isinstance(manifest_data, dict):
+                raise StandaloneClosureValidationError(
+                    f"Default manifest from git commit {resolved_sha} must be a JSON object"
+                )
+        else:
+            raise StandaloneClosureValidationError(
+                f"Failed to read default manifest '{DEFAULT_MANIFEST_RELATIVE_PATH.as_posix()}' from git commit {resolved_sha}: {proc_show.stderr.strip()}"
+            )
+    else:
+        manifest_rel_file = repo_root / DEFAULT_MANIFEST_RELATIVE_PATH
+        if not manifest_rel_file.is_file():
+            raise StandaloneClosureValidationError(
+                f"Distribution manifest not found at: {manifest_rel_file}"
+            )
+        manifest_data = load_manifest(manifest_rel_file)
 
     src_commit_file = repo_root / ".source-commit"
     toolrepo_sha_file = repo_root / ".toolrepo-sha"
@@ -1230,7 +1268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=DEFAULT_MANIFEST_PATH,
+        default=None,
         help="Path to standalone distribution manifest JSON",
     )
     parser.add_argument(
@@ -1258,13 +1296,38 @@ def main(argv: list[str] | None = None) -> int:
             "argument --check: not allowed with argument --materialize-to (validation and dry-run are strictly write-zero)"
         )
 
-    try:
-        manifest = load_manifest(args.manifest)
-    except Exception as exc:
-        print(f"Error loading manifest {args.manifest}: {exc}", file=sys.stderr)
-        return 1
+    manifest_data: dict[str, Any] | None = None
+    if args.manifest is not None:
+        try:
+            manifest_data = load_manifest(args.manifest)
+        except Exception as exc:
+            print(f"Error loading manifest {args.manifest}: {exc}", file=sys.stderr)
+            return 1
 
-    errors = validate_manifest(manifest, repo_root=REPO_ROOT)
+    if args.materialize_to:
+        try:
+            dest = materialize_standalone_distribution(
+                repo_root=REPO_ROOT,
+                target_dir=args.materialize_to,
+                manifest=manifest_data,
+                source_sha=args.source_sha,
+            )
+            print("OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid.")
+            print("NOTE: Executable isolation evidence is certified by Layer E test suite.")
+            print(f"OK: Materialized standalone distribution to: {dest}")
+        except Exception as exc:
+            print(f"FAILED to materialize distribution: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if manifest_data is None:
+        try:
+            manifest_data = load_manifest(DEFAULT_MANIFEST_PATH)
+        except Exception as exc:
+            print(f"Error loading manifest {DEFAULT_MANIFEST_PATH}: {exc}", file=sys.stderr)
+            return 1
+
+    errors = validate_manifest(manifest_data, repo_root=REPO_ROOT)
     if errors:
         print(f"FAILED: Distribution closure validation found {len(errors)} error(s):", file=sys.stderr)
         for err in errors:
@@ -1273,20 +1336,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print("OK: Layer S (Static Boundary Contract) and Layer M (Materialization Contract) are valid.")
     print("NOTE: Executable isolation evidence is certified by Layer E test suite.")
-
-    if args.materialize_to:
-        try:
-            dest = materialize_standalone_distribution(
-                repo_root=REPO_ROOT,
-                target_dir=args.materialize_to,
-                manifest=manifest,
-                source_sha=args.source_sha,
-            )
-            print(f"OK: Materialized standalone distribution to: {dest}")
-        except Exception as exc:
-            print(f"FAILED to materialize distribution: {exc}", file=sys.stderr)
-            return 1
-
     return 0
 
 

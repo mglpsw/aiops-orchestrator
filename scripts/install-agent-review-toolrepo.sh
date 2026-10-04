@@ -16,11 +16,19 @@
 # never treats a moving ref as a valid consumption pin.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ASCII shell-escaped, delimited display only; caller values remain unchanged.
+render_path() {
+    local LC_ALL=C
+    printf '<%q>' "$1"
+}
+
+SCRIPT_DIR="${BASH_SOURCE[0]%/*}"
+[ "$SCRIPT_DIR" = "${BASH_SOURCE[0]}" ] && SCRIPT_DIR="."
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LOCK_FILE="$ROOT_DIR/requirements-agent-review.lock"
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <venv-dir> [--toolrepo-sha <40-hex-sha>]" >&2
+    echo "Usage: $(render_path "$0") <venv-dir> [--toolrepo-sha <40-hex-sha>]" >&2
     exit 2
 fi
 
@@ -47,8 +55,30 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     fi
     ACTUAL_SHA=""
     IS_GIT=0
-    if command -v git >/dev/null 2>&1; then
-        GIT_TOPLEVEL="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    GETCONF_BIN=""
+    for candidate in /usr/bin/getconf /bin/getconf; do
+        if [ -x "$candidate" ]; then
+            GETCONF_BIN="$candidate"
+            break
+        fi
+    done
+    if [ -n "$GETCONF_BIN" ]; then
+        GIT_SEARCH_PATH="$("$GETCONF_BIN" PATH 2>/dev/null || echo "/usr/bin:/bin")"
+    else
+        GIT_SEARCH_PATH="/usr/bin:/bin"
+    fi
+
+    ENV_BIN=""
+    for candidate in /usr/bin/env /bin/env; do
+        if [ -x "$candidate" ]; then
+            ENV_BIN="$candidate"
+            break
+        fi
+    done
+
+    GIT_BIN="$(PATH="$GIT_SEARCH_PATH" command -v git 2>/dev/null || true)"
+    if [ -n "$GIT_BIN" ] && [ -n "$ENV_BIN" ]; then
+        GIT_TOPLEVEL="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
         if [ -n "$GIT_TOPLEVEL" ]; then
             ROOT_DIR_REAL="$(cd "$ROOT_DIR" && pwd -P)"
             GIT_TOPLEVEL_REAL="$(cd "$GIT_TOPLEVEL" && pwd -P)"
@@ -60,26 +90,28 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 
     # Reject symlinked attestation files fail-closed
     if [ -L "$ROOT_DIR/.source-commit" ]; then
-        echo "Blocked: attestation file in '$ROOT_DIR/.source-commit' cannot be a symlink." >&2
+        echo "Blocked: attestation file in '$(render_path "$ROOT_DIR")/.source-commit' cannot be a symlink." >&2
         exit 2
     fi
     if [ -L "$ROOT_DIR/.toolrepo-sha" ]; then
-        echo "Blocked: attestation file in '$ROOT_DIR/.toolrepo-sha' cannot be a symlink." >&2
+        echo "Blocked: attestation file in '$(render_path "$ROOT_DIR")/.toolrepo-sha' cannot be a symlink." >&2
         exit 2
     fi
 
     if [ "$IS_GIT" = "1" ]; then
         # Git HEAD is authoritative whenever Git identity is available
-        ACTUAL_SHA="$(git -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+        ACTUAL_SHA="$("$ENV_BIN" -i PATH="$GIT_SEARCH_PATH" LC_ALL=C LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0 "$GIT_BIN" -C "$ROOT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
         if [ -f "$ROOT_DIR/.source-commit" ]; then
-            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+            SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
+            SC_SHA="${SC_SHA//[[:space:]]/}"
             if [ "$SC_SHA" != "$ACTUAL_SHA" ]; then
                 echo "Blocked: .source-commit ($SC_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
                 exit 2
             fi
         fi
         if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
-            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+            TS_SHA="$(< "$ROOT_DIR/.toolrepo-sha")" || true
+            TS_SHA="${TS_SHA//[[:space:]]/}"
             if [ "$TS_SHA" != "$ACTUAL_SHA" ]; then
                 echo "Blocked: .toolrepo-sha ($TS_SHA) does not match Git HEAD ($ACTUAL_SHA)." >&2
                 exit 2
@@ -90,10 +122,12 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         SC_SHA=""
         TS_SHA=""
         if [ -f "$ROOT_DIR/.source-commit" ]; then
-            SC_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.source-commit")"
+            SC_SHA="$(< "$ROOT_DIR/.source-commit")" || true
+            SC_SHA="${SC_SHA//[[:space:]]/}"
         fi
         if [ -f "$ROOT_DIR/.toolrepo-sha" ]; then
-            TS_SHA="$(tr -d '[:space:]' < "$ROOT_DIR/.toolrepo-sha")"
+            TS_SHA="$(< "$ROOT_DIR/.toolrepo-sha")" || true
+            TS_SHA="${TS_SHA//[[:space:]]/}"
         fi
 
         if [ -n "$SC_SHA" ] && [ -n "$TS_SHA" ]; then
@@ -107,7 +141,7 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
         elif [ -n "$TS_SHA" ]; then
             ACTUAL_SHA="$TS_SHA"
         else
-            echo "Blocked: unable to resolve source identity in '$ROOT_DIR' (not a git repository and no source attestation found)." >&2
+            echo "Blocked: unable to resolve source identity in '$(render_path "$ROOT_DIR")' (not a git repository and no source attestation found)." >&2
             exit 2
         fi
     fi
@@ -124,14 +158,29 @@ if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
 fi
 
 if [ ! -f "$LOCK_FILE" ]; then
-    echo "Blocked: $LOCK_FILE not found." >&2
+    echo "Blocked: $(render_path "$LOCK_FILE") not found." >&2
     exit 2
 fi
 
-PYTHON_BIN="${AGENT_REVIEW_PYTHON:-python3}"
-if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    echo "Blocked: selected Python interpreter '$PYTHON_BIN' not found." >&2
-    exit 2
+if [ -n "${AGENT_REVIEW_PYTHON:-}" ]; then
+    PYTHON_BIN="$(command -v "$AGENT_REVIEW_PYTHON" 2>/dev/null || true)"
+    if [ -z "$PYTHON_BIN" ]; then
+        echo "Blocked: selected Python interpreter '$(render_path "$AGENT_REVIEW_PYTHON")' not found." >&2
+        exit 2
+    fi
+    if [[ "$PYTHON_BIN" != /* ]]; then
+        if [[ "$PYTHON_BIN" == */* ]]; then
+            PYTHON_BIN="$(cd "${PYTHON_BIN%/*}" 2>/dev/null && pwd -P)/${PYTHON_BIN##*/}"
+        else
+            PYTHON_BIN="$PWD/$PYTHON_BIN"
+        fi
+    fi
+else
+    PYTHON_BIN="python3"
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        echo "Blocked: selected Python interpreter '$(render_path "$PYTHON_BIN")' not found." >&2
+        exit 2
+    fi
 fi
 
 PLATFORM_STATUS="$("$PYTHON_BIN" -I -S -c '
@@ -184,33 +233,51 @@ import os, sys
 raw = sys.argv[1]
 if not raw or not raw.strip():
     sys.exit(2)
-print(os.path.abspath(raw))
+if "\x00" in raw or "\n" in raw or "\r" in raw:
+    sys.exit(2)
+raw_bytes = os.fsencode(raw)
+if len(raw_bytes) > 4096:
+    sys.exit(2)
+target = os.path.abspath(raw)
+target_bytes = os.fsencode(target)
+if len(target_bytes) > 4096:
+    sys.exit(2)
+for part in target.split(os.sep):
+    if len(os.fsencode(part)) > 255:
+        sys.exit(2)
+print(target)
 ' "$VENV_DIR" 2>/dev/null || true)"
 
 if [ -z "$VENV_TARGET" ]; then
-    echo "Blocked: target venv directory '$VENV_DIR' is invalid or cannot be normalized." >&2
+    echo "Blocked: target venv directory '$(render_path "$VENV_DIR")' is invalid or cannot be normalized." >&2
     exit 2
 fi
 
+# Parent creation belongs to the authority, after capability admission.
+
 if [ -e "$VENV_TARGET" ] || [ -L "$VENV_TARGET" ]; then
     if [ "$VENV_DIR" != "$VENV_TARGET" ]; then
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$VENV_DIR', canonical target: '$VENV_TARGET')." >&2
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path (requested: '$(render_path "$VENV_DIR")', canonical target: '$(render_path "$VENV_TARGET")')." >&2
     else
-        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $VENV_TARGET" >&2
+        echo "Blocked: AgentReview toolrepo venv target must be absent; refusing to reuse or mutate an existing path: $(render_path "$VENV_TARGET")" >&2
     fi
     exit 2
 fi
 
-"$PYTHON_BIN" -I -S -m venv "$VENV_TARGET"
-# Deliberately does NOT run `pip install --upgrade pip` first: that step
-# would fetch whatever pip version happens to be latest at install time,
-# an unpinned, unverified download that undermines reproducibility between
-# two installs of the same lock file. The venv's own bundled pip (from
-# Python's ensurepip) already supports --require-hashes.
-PIP_CONFIG_FILE=/dev/null "$VENV_TARGET/bin/python3" -I -m pip --isolated install --require-hashes --no-deps -r "$LOCK_FILE"
-
-echo "AgentReview toolrepo venv ready at: $VENV_TARGET"
-echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
-if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
-    echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
+# Transfer the installer PID and signal destination to the sole authority.
+# The selected/qualified bootstrap executes the complete stdlib helper. No
+# background reaper, Bash KILL timeout, FIFO witness or second commit classifier.
+INSTALL_AUTHORITY="$ROOT_DIR/scripts/agent-review-install-authority.py"
+if [ ! -f "$INSTALL_AUTHORITY" ]; then
+    echo "Blocked: installation authority missing: $(render_path "$INSTALL_AUTHORITY")" >&2
+    exit 2
 fi
+AUTHORITY_CODE="$(< "$INSTALL_AUTHORITY")" || {
+    echo "Blocked: cannot read installation authority: $(render_path "$INSTALL_AUTHORITY")" >&2
+    exit 2
+}
+if [ -z "$AUTHORITY_CODE" ]; then
+    echo "Blocked: empty installation authority: $(render_path "$INSTALL_AUTHORITY")" >&2
+    exit 2
+fi
+exec "$PYTHON_BIN" -I -S -c "$AUTHORITY_CODE" "$PYTHON_BIN" "$VENV_DIR" "$VENV_TARGET" "$LOCK_FILE" "$TOOLREPO_SHA"

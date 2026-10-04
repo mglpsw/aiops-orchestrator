@@ -30,6 +30,7 @@
     "install_boundary": [
       "requirements-agent-review.lock",
       "scripts/install-agent-review-toolrepo.sh",
+      "scripts/agent-review-install-authority.py",
       "docs/AGENT_REVIEW_V2_INSTALLATION.md"
     ],
     "distribution_clis": [
