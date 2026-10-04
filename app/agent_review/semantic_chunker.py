@@ -340,6 +340,33 @@ def build_semantic_chunk_plan(
 
     assert pack_result is not None
     limitations.extend(pack_result.plan_limitations)
+
+    if pack_result.chunks:
+        for chunk in pack_result.chunks:
+            _, chunk_contract_limits = payload_cost_model.contracts_context(
+                review_intake,
+                chunk_files=chunk.files,
+                chunk_contracts=chunk.contracts,
+                chunk_id=chunk.chunk_id,
+                selected_contract_pack=review_metadata["contract_pack"],
+                semantic_group=chunk.semantic_group,
+            )
+            for lim in chunk_contract_limits:
+                if not lim.startswith("contracts_context_not_relevant:"):
+                    limitations.append(lim)
+    else:
+        _, plan_contract_limits = payload_cost_model.contracts_context(
+            review_intake,
+            chunk_files=canonical_files,
+            chunk_contracts=contract_refs,
+            chunk_id="chunk_plan",
+            selected_contract_pack=review_metadata["contract_pack"],
+            semantic_group="plan",
+        )
+        for lim in plan_contract_limits:
+            if not lim.startswith("contracts_context_not_relevant:"):
+                limitations.append(lim)
+
     files_not_covered = _dedupe([*identity_not_covered, *hunk_unavailable, *pack_result.files_not_covered])
 
     status = _plan_status(
@@ -754,6 +781,11 @@ def _plan_status(
         return "degraded"
     if files_not_covered:
         return "degraded"
+    if any(
+        any(lim.startswith(prefix) for prefix in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        for lim in limitations
+    ):
+        return "degraded"
     if files_partially_covered:
         return "partial"
     if "file_context_fallback_used" in limitations:
@@ -781,9 +813,13 @@ def _artifact_refs(artifacts: dict[str, Any]) -> list[str]:
 
 def _contract_refs(intake: dict[str, Any]) -> list[str]:
     profile = intake.get("target_profile")
-    if isinstance(profile, dict) and profile.get("domain_contracts"):
-        return ["target_profile:domain_contracts"]
-    return []
+    refs: list[str] = []
+    if isinstance(profile, dict):
+        if profile.get("domain_contracts"):
+            refs.append("target_profile:domain_contracts")
+        if profile.get("review_packs"):
+            refs.append("target_profile:review_packs")
+    return refs
 
 
 def _sanitize_output_string(value: str) -> str:

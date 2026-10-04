@@ -287,7 +287,11 @@ def _build_chunk_payload(
 
     filename, filename_limitations = _payload_filename(chunk)
 
-    if reduced_paths or omitted_paths:
+    required_contracts_lost = [
+        lim for lim in payload.limitations if lim.startswith("required_contract_context_lost:")
+    ]
+
+    if reduced_paths or omitted_paths or required_contracts_lost:
         guard_limitations = [
             f"chunk_hunk_material_not_transported:{path}" for path in sorted({*reduced_paths, *omitted_paths})
         ]
@@ -628,10 +632,28 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
     contracts = _get(_get(payload, "chunk_context"), "contracts_context")
     if not isinstance(contracts, dict):
         return False
-    for key in ("review_packs", "domain_contracts"):
-        items = contracts.get(key)
-        if isinstance(items, list) and items:
-            items.pop()
+    # 1. Pop from review_packs first (packs are optional review context)
+    packs = contracts.get("review_packs")
+    if isinstance(packs, list) and packs:
+        packs.pop()
+        return True
+    # 2. Pop optional domain contracts next
+    domain_contracts = contracts.get("domain_contracts")
+    if isinstance(domain_contracts, list):
+        for i, item in enumerate(domain_contracts):
+            if isinstance(item, dict) and not item.get("required"):
+                domain_contracts.pop(i)
+                return True
+        # 3. If only required contracts remain and shrink is forced:
+        if domain_contracts:
+            popped = domain_contracts.pop()
+            if isinstance(popped, dict):
+                contract_id = popped.get("id") or "unknown"
+                limitations = _get(payload, "limitations")
+                if isinstance(limitations, list):
+                    loss_code = f"required_contract_context_lost:{contract_id}"
+                    if loss_code not in limitations:
+                        limitations.append(loss_code)
             return True
     minimal = {"domain_contracts": [], "review_packs": []}
     if contracts != minimal:

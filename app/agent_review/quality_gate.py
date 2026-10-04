@@ -235,6 +235,10 @@ def evaluate_review_quality_gate(
     input_degraded = (
         final_status in {"partial", "degraded", "failed"}
         or chunk_results.status in {"partial", "degraded", "failed"}
+        or any(
+            any(str(lim).startswith(prefix) for prefix in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+            for lim in limitations
+        )
     )
     has_critical_gap = bool(coverage_gaps)
     has_untrusted_blocker_candidate = any(warning.startswith("untrusted_blocker:") for warning in warnings)
