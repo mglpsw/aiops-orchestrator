@@ -14,6 +14,7 @@ from app.agent_review.payload_cost_model import (
     checks_context,
     contracts_context,
     evidence_context,
+    is_required_context_loss,
     materialize_payload,
     sanitize_display_path as _sanitize_relative_path,
     stabilize_payload_truncation,
@@ -218,7 +219,7 @@ def _build_chunk_payload(
         "chunk_context": {
             "files": chunk_files,
             "chunk_hunks": chunk_hunks,
-            "contracts_context": contracts_ctx,
+            "contracts_context": payload_cost_model.clean_contracts_context_for_payload(contracts_ctx),
             "evidence_context": evidence_ctx,
             "checks_context": checks_ctx,
             "aux_context": payload_cost_model.aux_context(intake, chunk_files=chunk.files),
@@ -287,11 +288,11 @@ def _build_chunk_payload(
 
     filename, filename_limitations = _payload_filename(chunk)
 
-    required_contracts_lost = [
-        lim for lim in payload.limitations if lim.startswith("required_contract_context_lost:")
+    required_context_lost = [
+        lim for lim in payload.limitations if is_required_context_loss(lim)
     ]
 
-    if reduced_paths or omitted_paths or required_contracts_lost:
+    if reduced_paths or omitted_paths or required_context_lost:
         guard_limitations = [
             f"chunk_hunk_material_not_transported:{path}" for path in sorted({*reduced_paths, *omitted_paths})
         ]

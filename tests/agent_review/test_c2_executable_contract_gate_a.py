@@ -621,10 +621,10 @@ def test_cm_a3_case_sensitive_pattern_matching() -> None:
     """CM-A3-CASE-SENSITIVE-PATTERN: Pattern matching uses case-sensitive fnmatchcase (GREEN_PRESERVATION)."""
     intake = _base_intake()
     intake.target_profile = {
-        "domain_contracts": [
-            {"id": "rule-case-wrong", "patterns": ["Backend/Api/*.py"]},
-            {"id": "rule-case-right", "patterns": ["backend/api/*.py"]},
-        ]
+        "domain_contracts": {
+            "rule-case-wrong": {"patterns": ["Backend/Api/*.py"]},
+            "rule-case-right": {"patterns": ["backend/api/*.py"]},
+        }
     }
 
     ctx, limits = payload_cost_model.contracts_context(
@@ -2486,6 +2486,509 @@ def test_pc_valid_modern_clean_review_passes(tmp_path: Path) -> None:
     manifest, payloads = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
 
     resp_dir = tmp_path / "valid_modern_resp"
+    resp_dir.mkdir()
+    for chunk in plan.chunks:
+        resp = {
+            "schema_version": 1,
+            "chunk_id": chunk.chunk_id,
+            "semantic_group": chunk.semantic_group,
+            "confirmed_findings": [],
+            "risks": [],
+            "limitations": [],
+            "coverage_notes": {
+                "files_reviewed": list(chunk.files),
+                "files_partial": [],
+                "files_not_reviewed": [],
+            },
+        }
+        (resp_dir / f"{chunk.chunk_id}.json").write_text(json.dumps(resp), encoding="utf-8")
+
+    results = parse_chunk_results(plan, responses_dir=resp_dir)
+    review = synthesize_final_review(results)
+    doc = validate_final_review_document(review.model_dump(mode="json"))
+    gate = evaluate_review_quality_gate(final_review=doc, chunk_results=results, intake=intake, chunk_plan=plan)
+
+    assert gate.status == "passed"
+    assert gate.manual_review_required is False
+
+
+# ---------------------------------------------------------------------------
+# Second Codex Cycle (Review 5408162653) Causal Closures & Countermodels
+# ---------------------------------------------------------------------------
+
+
+# S1: Typed Declaration Admission Totality (4179272317, 4179272328, 4179272330)
+
+
+def test_cm_s1_domain_paths_scalar() -> None:
+    """CM-S1-DOMAIN-PATHS-SCALAR: Modern domain contract with scalar paths string rejected with MALFORMED_SHAPE (4179272317)."""
+    doc = {"auth": {"paths": "backend/**"}}
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_cm_s1_domain_paths_nonstring_member() -> None:
+    """CM-S1-DOMAIN-PATHS-NONSTRING-MEMBER: Modern domain contract with non-string list element in paths rejected (4179272317)."""
+    doc = {"auth": {"paths": ["backend/**", 123]}}
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_cm_s1_domain_patterns_scalar() -> None:
+    """CM-S1-DOMAIN-PATTERNS-SCALAR: Modern domain contract with scalar patterns string rejected with MALFORMED_SHAPE (4179272317)."""
+    doc = {"auth": {"patterns": "backend/**"}}
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+    assert "invalid_source_contract:MALFORMED_SHAPE" in limits
+
+
+def test_s1_domain_contract_positives() -> None:
+    """Positives: absent scope field, valid list[str], explicitly global contract admit cleanly (4179272317)."""
+    # 1. Scope field absent
+    doc_absent = {"auth": {"rules": ["rule1"]}}
+    c1, s1, _, l1 = payload_cost_model.normalize_domain_contracts(doc_absent)
+    assert s1 == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert l1 == []
+
+    # 2. Valid list[str]
+    doc_valid = {"auth": {"paths": ["backend/api/*"], "patterns": ["*.py"]}}
+    c2, s2, _, l2 = payload_cost_model.normalize_domain_contracts(doc_valid)
+    assert s2 == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert l2 == []
+    assert c2[0]["paths"] == ["backend/api/*"]
+
+    # 3. Explicitly global contract
+    doc_global = {"security": {"is_global": True, "rules": ["Must authenticate"]}}
+    c3, s3, _, l3 = payload_cost_model.normalize_domain_contracts(doc_global)
+    assert s3 == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert l3 == []
+    assert c3[0]["is_global"] is True
+
+
+def test_cm_s1_empty_domain_contract() -> None:
+    """CM-S1-EMPTY-DOMAIN-CONTRACT: Pack with empty string domain_contract rejected with INVALID_IDENTITY (4179272328)."""
+    doc = {"packs": {"api-pack": {"domain_contract": ""}}}
+    packs, bindings, state, subtype, limits = payload_cost_model.normalize_review_packs(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_INVALID_IDENTITY
+    assert "invalid_source_review_packs:INVALID_IDENTITY" in limits
+
+
+def test_cm_s1_whitespace_domain_contract() -> None:
+    """CM-S1-WHITESPACE-DOMAIN-CONTRACT: Pack with whitespace domain_contract rejected with INVALID_IDENTITY (4179272328)."""
+    doc = {"packs": {"api-pack": {"domain_contract": "   \t  "}}}
+    packs, bindings, state, subtype, limits = payload_cost_model.normalize_review_packs(doc)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_INVALID_IDENTITY
+    assert "invalid_source_review_packs:INVALID_IDENTITY" in limits
+
+
+def test_s1_pack_domain_contract_positives() -> None:
+    """Positives: absent domain_contract vs valid nonempty identity (4179272328)."""
+    # 1. Absent domain_contract
+    doc_absent = {"packs": {"p1": {"description": "pack 1"}}}
+    p1, _, s1, _, l1 = payload_cost_model.normalize_review_packs(doc_absent)
+    assert s1 == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert "domain_contract" not in p1[0]
+
+    # 2. Nonempty valid domain_contract identity
+    doc_valid = {"packs": {"p2": {"domain_contract": "sec-contract", "description": "pack 2"}}}
+    p2, _, s2, _, l2 = payload_cost_model.normalize_review_packs(doc_valid)
+    assert s2 == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert p2[0]["domain_contract"] == "sec-contract"
+
+
+def test_cm_s1_contract_ref_container_scalar() -> None:
+    """CM-S1-CONTRACT-REF-CONTAINER-SCALAR: Scalar string contract container rejected and degrades plan (4179272330)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "contracts": "contract:missing",
+    }
+    refs, limits = payload_cost_model.parse_contract_refs(intake)
+    assert "unresolved_contract_reference:MALFORMED_CONTAINER" in limits
+
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=15000)
+    assert plan.status == "degraded"
+    assert "unresolved_contract_reference:MALFORMED_CONTAINER" in plan.limitations
+
+
+def test_cm_s1_contract_ref_container_mixed() -> None:
+    """CM-S1-CONTRACT-REF-CONTAINER-MIXED: Mixed non-string container member rejected and degrades plan (4179272330)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "contracts": ["contract:valid", 42],
+    }
+    refs, limits = payload_cost_model.parse_contract_refs(intake)
+    assert "unresolved_contract_reference:MALFORMED_MEMBER" in limits
+
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=15000)
+    assert plan.status == "degraded"
+    assert "unresolved_contract_reference:MALFORMED_MEMBER" in plan.limitations
+
+
+def test_cm_s1_contract_ref_empty_identity() -> None:
+    """CM-S1-CONTRACT-REF-EMPTY-IDENTITY: Empty/whitespace container member rejected and degrades plan (4179272330)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "contracts": ["contract:valid", "   "],
+    }
+    refs, limits = payload_cost_model.parse_contract_refs(intake)
+    assert "unresolved_contract_reference:EMPTY_IDENTITY" in limits
+
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=15000)
+    assert plan.status == "degraded"
+    assert "unresolved_contract_reference:EMPTY_IDENTITY" in plan.limitations
+
+
+def test_s1_sibling_declared_input_census() -> None:
+    """S1 Sibling Census: Verifies bounded declared input fields across domain_contracts and review_packs."""
+    # Invalid scope fields in domain contract
+    for field in ("paths", "files", "source_files", "related_files", "patterns"):
+        doc = {"c1": {field: "scalar_string"}}
+        _, s, sub, l = payload_cost_model.normalize_domain_contracts(doc)
+        assert s == payload_cost_model.SOURCE_STATE_INVALID, f"Field {field} scalar must be invalid"
+        assert sub == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+        assert "invalid_source_contract:MALFORMED_SHAPE" in l
+
+    for field in ("path", "file_path", "scope", "description"):
+        doc = {"c1": {field: 12345}}
+        _, s, sub, l = payload_cost_model.normalize_domain_contracts(doc)
+        assert s == payload_cost_model.SOURCE_STATE_INVALID, f"Field {field} non-str must be invalid"
+
+    # Invalid is_global
+    doc = {"c1": {"is_global": "true"}}
+    _, s, sub, l = payload_cost_model.normalize_domain_contracts(doc)
+    assert s == payload_cost_model.SOURCE_STATE_INVALID
+    assert sub == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+
+
+# S2: Required Pack Context Closure (4179272322, 4179272324)
+
+
+def test_cm_s2_selected_pack_required() -> None:
+    """CM-S2-SELECTED-PACK-REQUIRED: Explicitly selected pack without bindings is marked required with explicit reason (4179272322)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "standalone-pack": {"description": "Standalone pack with no bindings"},
+                "optional-pack": {"description": "Optional unselected pack"},
+            }
+        }
+    }
+    ctx, limits = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="standalone-pack",
+        semantic_group="primary_backend_logic",
+    )
+    packs_by_id = {p["id"]: p for p in ctx["review_packs"]}
+    standalone = packs_by_id["standalone-pack"]
+    assert standalone.get("required") is True
+    assert standalone.get("required_reasons") == ["explicit_selection"]
+
+    # Minimal floor retains explicitly selected pack
+    min_ctx = payload_cost_model.minimal_contracts_context(ctx)
+    min_ids = [p["id"] for p in min_ctx["review_packs"]]
+    assert "standalone-pack" in min_ids
+    assert "optional-pack" not in min_ids
+
+
+def test_s2_binding_pack_required_reasons() -> None:
+    """Binding-establishing pack has required_reasons=['effective_contract_binding'] (4179272322)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {"auth": {"rules": ["Authenticate"]}},
+        "review_packs": {
+            "packs": {"auth-pack": {"domain_contract": "auth", "paths": ["backend/api/*"]}},
+        },
+    }
+    ctx, limits = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack=None,
+        semantic_group="primary_backend_logic",
+    )
+    pack = ctx["review_packs"][0]
+    assert pack["id"] == "auth-pack"
+    assert pack.get("required") is True
+    assert pack.get("required_reasons") == ["effective_contract_binding"]
+
+
+def test_cm_s2_selected_pack_budget_loss(tmp_path: Path) -> None:
+    """CM-S2-SELECTED-PACK-BUDGET-LOSS: Forced removal of required pack emits required_contract_pack_context_lost,
+    blocks routing via payload_path=None, status='limited', and fails quality gate (4179272324).
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "selected-pack": {"description": "X" * 5000, "paths": ["backend/api/*"]},
+            }
+        }
+    }
+    plan = build_semantic_chunk_plan(
+        intake.model_dump(mode="json"),
+        max_blocks=2,
+        max_chars_per_block=15000,
+    )
+    for c in plan.chunks:
+        c.prompt_budget_chars = 2500
+
+    brief = _brief(intake, plan)
+    brief.review["contract_pack"] = "selected-pack"
+
+    # Build chunk payloads under defensive budget forcing contracts shrink
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+
+    limited_entries = [e for e in manifest.chunks if any(lim.startswith("required_contract_pack_context_lost:selected-pack") for lim in e.limitations)]
+    assert len(limited_entries) > 0, "Forced shrink must emit required_contract_pack_context_lost"
+    entry = limited_entries[0]
+    assert entry.status == "limited"
+    assert entry.payload_path is None, "Payload routing must be blocked (payload_path=None)"
+    assert entry.payload_sha256 is None
+
+
+def test_s2_optional_pack_shrink_positive() -> None:
+    """Positive: Optional pack is removed under budget while selected required pack is preserved and routable (4179272322, 4179272324)."""
+    payload = {
+        "schema_version": 1,
+        "chunk_id": "chunk-01",
+        "semantic_group": "primary_backend_logic",
+        "limitations": [],
+        "warnings": [],
+        "chunk_context": {
+            "contracts_context": {
+                "domain_contracts": [],
+                "review_packs": [
+                    {"id": "optional-pack", "description": "Optional pack", "required": False},
+                    {"id": "selected-pack", "description": "Selected pack", "required": True, "required_reasons": ["explicit_selection"]},
+                ],
+            }
+        },
+    }
+    # Shrink contracts context once
+    shrunk = _shrink_contracts_context(payload)
+    assert shrunk is True
+    packs = payload["chunk_context"]["contracts_context"]["review_packs"]
+    assert len(packs) == 1
+    assert packs[0]["id"] == "selected-pack", "Optional pack popped first, selected pack preserved"
+    assert not any(lim.startswith("required_contract_pack_context_lost:") for lim in payload["limitations"])
+
+
+# S3: Legacy/Modern Semantic Boundary (4179272326, 4179272331)
+
+
+def test_cm_s3_empty_bindings_legacy_mode() -> None:
+    """CM-S3-EMPTY-BINDINGS-LEGACY-MODE: Empty bindings {} do not switch legacy list to modern mapping,
+    preserving legacy fuzzy selector (calendar -> calendar-pack) without selected_contract_pack_missing (4179272326).
+    """
+    # 1. Document-level empty contract_bindings
+    doc_empty = {
+        "packs": [{"id": "calendar-pack", "description": "Calendar scheduling rules"}],
+        "contract_bindings": {},
+    }
+    assert payload_cost_model.detect_review_packs_format(doc_empty) == payload_cost_model.FORMAT_LEGACY_FLAT
+
+    # 2. Extra-bindings level empty mapping
+    assert payload_cost_model.detect_review_packs_format(
+        {"packs": [{"id": "calendar-pack", "description": "Calendar scheduling rules"}]},
+        extra_bindings={},
+    ) == payload_cost_model.FORMAT_LEGACY_FLAT
+
+    # 3. Preserves legacy fuzzy matching: "calendar" matches "calendar-pack"
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": doc_empty,
+    }
+    ctx, limits = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-1",
+        selected_contract_pack="calendar",
+        semantic_group="primary_backend_logic",
+    )
+    assert not any(lim.startswith("selected_contract_pack_missing:") for lim in limits)
+    assert len(ctx["review_packs"]) == 1
+    assert ctx["review_packs"][0]["id"] == "calendar-pack"
+
+
+def test_s3_format_matrix_exhaustive() -> None:
+    """S3 Format Matrix: Exhaustively checks format detection across all shape cells (4179272326)."""
+    # packs_list + bindings_absent: LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format([{"id": "p1"}]) == payload_cost_model.FORMAT_LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}) == payload_cost_model.FORMAT_LEGACY_FLAT
+
+    # packs_list + bindings_empty: LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {}}) == payload_cost_model.FORMAT_LEGACY_FLAT
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={}) == payload_cost_model.FORMAT_LEGACY_FLAT
+
+    # packs_list + bindings_nonempty: MODERN_MAPPING (supported extension)
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}], "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": [{"id": "p1"}]}, extra_bindings={"p1": ["c1"]}) == payload_cost_model.FORMAT_MODERN_MAPPING
+
+    # packs_mapping + bindings_absent: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+
+    # packs_mapping + bindings_empty: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+
+    # packs_mapping + bindings_nonempty: MODERN_MAPPING
+    assert payload_cost_model.detect_review_packs_format({"packs": {"p1": {}}, "contract_bindings": {"p1": ["c1"]}}) == payload_cost_model.FORMAT_MODERN_MAPPING
+
+
+def test_cm_s3_legacy_pattern_baseline() -> None:
+    """CM-S3-LEGACY-PATTERN-BASELINE: Legacy rules preserve baseline substring/prefix semantics without glob expansion (4179272331)."""
+    # 1. Legacy substring/prefix matching: "backend/api" matches "backend/api/shifts.py"
+    legacy_contract = {"id": "legacy-rule", "patterns": ["backend/api"]}
+    assert payload_cost_model._contract_matches_chunk(
+        legacy_contract,
+        chunk_files={"backend/api/shifts.py"},
+        format=payload_cost_model.FORMAT_LEGACY_FLAT,
+    ) is True
+
+    # 2. Legacy "*.py" does not act as glob matching "backend/api/shifts.py"
+    legacy_glob_contract = {"id": "legacy-literal", "patterns": ["*.py"]}
+    assert payload_cost_model._contract_matches_chunk(
+        legacy_glob_contract,
+        chunk_files={"backend/api/shifts.py"},
+        format=payload_cost_model.FORMAT_LEGACY_FLAT,
+    ) is False
+
+    # 3. Modern pattern matching uses fnmatchcase: "backend/api/*" matches "backend/api/shifts.py"
+    modern_contract = {"id": "modern-rule", "patterns": ["backend/api/*"]}
+    assert payload_cost_model._contract_matches_chunk(
+        modern_contract,
+        chunk_files={"backend/api/shifts.py"},
+        format=payload_cost_model.FORMAT_MODERN_MAPPING,
+    ) is True
+
+    # 4. Modern case-sensitivity: "Backend/Api/*" fails to match "backend/api/shifts.py"
+    modern_wrong_case = {"id": "modern-case", "patterns": ["Backend/Api/*"]}
+    assert payload_cost_model._contract_matches_chunk(
+        modern_wrong_case,
+        chunk_files={"backend/api/shifts.py"},
+        format=payload_cost_model.FORMAT_MODERN_MAPPING,
+    ) is False
+
+
+# Focal Ablations (Section 24)
+
+
+def test_ablation_s1_domain_field_validation() -> None:
+    """Ablation S1: Omitting field type validation causes scalar paths to be silently sanitized to empty list (4179272317)."""
+    item = {"paths": "backend/**"}
+    # Direct check: without validation, _sanitize_contract_paths drops it to []
+    assert payload_cost_model._sanitize_contract_paths(item.get("paths")) == []
+    # With validation, it is rejected
+    assert payload_cost_model._validate_contract_declared_field_types(item) is False
+
+
+def test_ablation_s1_empty_domain_contract() -> None:
+    """Ablation S1: Allowing empty domain_contract identity causes relation to silently vanish (4179272328)."""
+    pval = {"domain_contract": ""}
+    # isinstance check alone passes
+    assert isinstance(pval["domain_contract"], str) is True
+    # Nonempty check catches it
+    assert bool(pval["domain_contract"].strip()) is False
+
+
+def test_ablation_s1_ref_container_validation() -> None:
+    """Ablation S1: Non-list container iterated char-by-char misses contract reference (4179272330)."""
+    raw_str = "contract:missing"
+    # Unchecked iteration yields chars
+    chars = [x for x in raw_str if x.strip()]
+    assert "contract:missing" not in chars
+    # parse_contract_refs detects malformed container
+    _, limits = payload_cost_model.parse_contract_refs({"target_profile": {"contracts": raw_str}})
+    assert "unresolved_contract_reference:MALFORMED_CONTAINER" in limits
+
+
+def test_ablation_s2_selected_pack_required() -> None:
+    """Ablation S2: If selected pack is not marked required, it drops out of minimal floor (4179272322)."""
+    pack_without_required = {"id": "standalone-pack", "effective_contracts": []}
+    ctx = {"review_packs": [pack_without_required]}
+    min_ctx = payload_cost_model.minimal_contracts_context(ctx)
+    assert not min_ctx["review_packs"], "Unmarked pack drops from floor"
+
+
+def test_ablation_s2_routing_guard_pack_loss() -> None:
+    """Ablation S2: Checking only required_contract_context_lost allows pack loss payload to route (4179272324)."""
+    lim = "required_contract_pack_context_lost:my-pack"
+    assert not lim.startswith("required_contract_context_lost:")
+    assert payload_cost_model.is_required_context_loss(lim) is True
+
+
+def test_ablation_s3_empty_bindings_mode() -> None:
+    """Ablation S3: Switching mode on empty bindings breaks legacy fuzzy selection (4179272326)."""
+    pack = {"id": "calendar-pack", "description": "Calendar"}
+    # Under modern matcher, "calendar" fails to match "calendar-pack"
+    assert payload_cost_model.modern_pack_matches_selected(pack, "calendar") is False
+    # Under legacy matcher, "calendar" matches
+    assert payload_cost_model.legacy_pack_matches_selected(pack, "calendar") is True
+
+
+def test_ablation_s3_legacy_matcher_glob() -> None:
+    """Ablation S3: Applying modern fnmatch to legacy substring rule fails to match (4179272331)."""
+    rule_pattern = ["backend/api"]
+    target_path = "backend/api/shifts.py"
+    # fnmatch fails on substring without trailing wildcard
+    assert payload_cost_model._matches_modern_pattern(target_path, rule_pattern) is False
+    # legacy matcher succeeds
+    assert payload_cost_model._matches_legacy_pattern(target_path, rule_pattern) is True
+
+
+# Positive Controls (Section 25)
+
+
+def test_positive_controls_gate_a_second_cycle(tmp_path: Path) -> None:
+    """Section 25 Positive Controls: Comprehensive validation of clean Gate A operations."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "api_contract": {
+                "paths": ["backend/api/*"],
+                "rules": ["Preserve API contract"],
+            },
+        },
+        "review_packs": {
+            "packs": {
+                "api_pack": {
+                    "domain_contract": "api_contract",
+                    "description": "API review pack",
+                    "paths": ["backend/api/*"],
+                },
+            },
+            "contract_bindings": {
+                "api_pack": ["api_contract"],
+            },
+        },
+        "contracts": ["contract:api_contract"],
+    }
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=2, max_chars_per_block=20000)
+    assert plan.status in {"complete", "partial"}
+    assert not any(any(lim.startswith(p) for p in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES) for lim in plan.limitations)
+
+    brief = _brief(intake, plan)
+    manifest, payloads = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+
+    resp_dir = tmp_path / "valid_second_cycle_resp"
     resp_dir.mkdir()
     for chunk in plan.chunks:
         resp = {

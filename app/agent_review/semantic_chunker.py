@@ -202,7 +202,8 @@ def build_semantic_chunk_plan(
     # `required_files` above, which is the canonicalized *identity* set used
     # for must_review membership/priority/oversize classification only.
     required_files_wire = payload_cost_model.required_files_wire(review_intake)
-    contract_refs = _contract_refs(intake)
+    contract_refs, contract_limitations = _contract_refs(intake)
+    limitations.extend(contract_limitations)
     available_refs = _artifact_refs(artifacts)
 
     # A file with no observable hunk material (binary, metadata-only such as
@@ -815,21 +816,8 @@ def _artifact_refs(artifacts: dict[str, Any]) -> list[str]:
     return _dedupe(refs)
 
 
-def _contract_refs(intake: dict[str, Any]) -> list[str]:
-    profile = intake.get("target_profile")
-    refs: list[str] = []
-    if isinstance(profile, dict):
-        if profile.get("domain_contracts"):
-            refs.append("target_profile:domain_contracts")
-        if profile.get("review_packs"):
-            refs.append("target_profile:review_packs")
-        for item in profile.get("contracts") or profile.get("contract_refs") or []:
-            if isinstance(item, str) and item.strip():
-                refs.append(item.strip())
-    for item in intake.get("contracts") or intake.get("contract_refs") or []:
-        if isinstance(item, str) and item.strip():
-            refs.append(item.strip())
-    return _dedupe(refs)
+def _contract_refs(intake: dict[str, Any]) -> tuple[list[str], list[str]]:
+    return payload_cost_model.parse_contract_refs(intake)
 
 
 def _sanitize_output_string(value: str) -> str:

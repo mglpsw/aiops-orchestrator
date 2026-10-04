@@ -1,81 +1,104 @@
 {
   "artifact_type": "PR372_POST_READY_FINDINGS_QUALIFICATION",
-  "status": "systemically_qualified_post_ready_findings_closed",
+  "status": "systemically_qualified_second_post_ready_findings_closed",
   "gate": "Gate A",
   "owner": "#221",
   "slice": "V1-C2 / Gate A (C2ExecutableContract)",
   "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
   "predecessor": {
-    "head": "2f77c12dadbce63cfe1bdf3778d7c48a80394288",
-    "tree": "3d912efd60815e4c32fb467bd4af99176419a7b1"
+    "head": "3539096948cef5eefd6f509bd24634b774b5d494",
+    "tree": "98aeca918db84eef35e2fff396157bb2593c8043",
+    "review_id": "5408162653"
   },
   "successor": {
     "branch": "fix/221-v1-c2-gate-a-executable-contract",
     "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f"
   },
-  "F1_identity_admission_totality": {
+  "S1_typed_declaration_admission_totality": {
     "findings": [
+      "4179272317",
+      "4179272328",
+      "4179272330"
+    ],
+    "mechanism": "Pre-sanitization type validation _validate_contract_declared_field_types fails closed with SOURCE_STATE_INVALID and SUBTYPE_MALFORMED_SHAPE when declared fields have malformed scalar or non-string collection types. Empty or whitespace-only domain_contract identities in review packs fail closed with INVALID_IDENTITY. Explicit contract reference containers (contracts, contract_refs) require list[str] of nonempty identities, emitting typed limitations unresolved_contract_reference:MALFORMED_CONTAINER, MALFORMED_MEMBER, or EMPTY_IDENTITY and degrading chunk plan status.",
+    "countermodels": [
+      "CM-S1-DOMAIN-PATHS-SCALAR",
+      "CM-S1-DOMAIN-PATHS-NONSTRING-MEMBER",
+      "CM-S1-DOMAIN-PATTERNS-SCALAR",
+      "CM-S1-EMPTY-DOMAIN-CONTRACT",
+      "CM-S1-WHITESPACE-DOMAIN-CONTRACT",
+      "CM-S1-CONTRACT-REF-CONTAINER-SCALAR",
+      "CM-S1-CONTRACT-REF-CONTAINER-MIXED",
+      "CM-S1-CONTRACT-REF-EMPTY-IDENTITY"
+    ],
+    "ablations": [
+      "AB-S1-PATHS-SCALAR-ABLATION",
+      "AB-S1-EMPTY-DOMAIN-CONTRACT-ABLATION",
+      "AB-S1-CONTRACT-REF-CONTAINER-ABLATION"
+    ],
+    "positives": [
+      "PC-S1-ABSENT-PATHS-VALID",
+      "PC-S1-EXPLICIT-GLOBAL-VALID",
+      "PC-S1-KNOWN-CONTRACT-REF-VALID"
+    ]
+  },
+  "S2_required_pack_context_closure": {
+    "findings": [
+      "4179272322",
+      "4179272324"
+    ],
+    "mechanism": "Explicitly selected review packs (selected_contract_pack) are marked required=True with required_reasons=['explicit_selection'] even when effective_contracts is empty. Bounded single authority is_required_context_loss recognizes all required context loss prefixes (required_contract_context_lost:, required_contract_pack_context_lost:). The routing guard in _build_chunk_payload checks is_required_context_loss, blocking payload routing (payload_path=None, status='limited') whenever forced shrinking drops any required context. clean_contracts_context_for_payload strips internal discriminant testing annotations and empty effective_contracts for public payload emission.",
+    "countermodels": [
+      "CM-S2-SELECTED-PACK-BUDGET-LOSS",
+      "CM-S2-BINDING-PACK-BUDGET-LOSS"
+    ],
+    "ablations": [
+      "AB-S2-SELECTED-PACK-OPTIONAL-ABLATION",
+      "AB-S2-ROUTING-GUARD-PACK-LOSS-ABLATION"
+    ],
+    "positives": [
+      "PC-S2-SELECTED-PACK-PRESERVED",
+      "PC-S2-OPTIONAL-PACK-DROPPED-SAFELY"
+    ]
+  },
+  "S3_legacy_modern_semantic_boundary": {
+    "findings": [
+      "4179272326",
+      "4179272331"
+    ],
+    "mechanism": "Semantically empty contract_bindings ({}) does not trigger mode switch from FORMAT_LEGACY_FLAT to FORMAT_MODERN_MAPPING. Pattern matching is split by format: _matches_modern_pattern uses case-sensitive fnmatchcase, while _matches_legacy_pattern preserves baseline literal substring/prefix matching for legacy flat contracts. Matchers are dispatched format-specifically across all contract and review pack callsites.",
+    "countermodels": [
+      "CM-S3-EMPTY-BINDINGS-LEGACY-MODE",
+      "CM-S3-EXTRA-EMPTY-BINDINGS-LEGACY-MODE",
+      "CM-S3-LEGACY-SUBSTRING-PATTERN-MATCH",
+      "CM-S3-MODERN-EXACT-PATTERN-MATCH"
+    ],
+    "ablations": [
+      "AB-S3-EMPTY-BINDINGS-MODE-ABLATION",
+      "AB-S3-LEGACY-PATTERN-FNMATCH-ABLATION"
+    ],
+    "positives": [
+      "PC-S3-NONEMPTY-BINDINGS-MODERN-MODE",
+      "PC-S3-MODERN-GLOB-PATTERN-MATCH"
+    ]
+  },
+  "prior_cycle_families": {
+    "F1_identity_admission_totality": [
       "4178603188",
       "4178603193",
       "4178603213",
       "4178603218"
     ],
-    "mechanism": "Modern mapping key authority enforces key as contract identity (nested id conflict fails closed with INVALID_IDENTITY). Strict field validation fails closed on malformed types for paths, patterns, domain_contract, recommended_review_preset, description, is_global, and scope prior to sanitization. Mapping key normalization collision detection across domain contracts, review packs, and contract_bindings keys prevents last-write-wins. Legacy description-only rules are indexed without ID fabrication, participating as advisory content without crashing contracts_context.",
-    "countermodels": [
-      "CM-A2-MAPPING-KEY-ID-CONFLICT",
-      "CM-A3-MALFORMED-PACK-SCOPE",
-      "CM-A3-BINDING-KEY-NORMALIZATION-COLLISION",
-      "CM-A2-CONTRACT-KEY-NORMALIZATION-COLLISION",
-      "CM-A2-PACK-KEY-NORMALIZATION-COLLISION",
-      "CM-A2-LEGACY-DESCRIPTION-ONLY-NO-CRASH"
-    ],
-    "ablations": [
-      "AB-F1-MAPPING-KEY-COLLISION-ABLATION",
-      "AB-F1-MAPPING-KEY-ID-CONFLICT-ABLATION"
-    ]
-  },
-  "F2_explicit_requirement_and_compatibility_closure": {
-    "findings": [
+    "F2_explicit_requirement_and_compatibility_closure": [
       "4178603183",
       "4178603197",
       "4178603200"
     ],
-    "mechanism": "Explicit selected_contract_pack emits typed selected_contract_pack_missing:<name> when pack cannot be resolved across absent, present-valid empty, or present-valid no-match source states, without requiring non-empty packs. Matcher split: modern_pack_matches_selected strictly requires exact pack identity (plus frozen calendar alias), while legacy_pack_matches_selected preserves extensional baseline fuzzy substring matching for legacy flat sources. Explicit chunk contract references (contract:<id>) emit typed critical limitation unresolved_contract_reference:<id> when target contract is absent, degrading plan and forcing quality gate != passed E2E.",
-    "countermodels": [
-      "CM-A3-SELECTED-PACK-SOURCE-ABSENT-AND-EMPTY",
-      "CM-A3-MODERN-EXACT-SELECTION",
-      "PC-A3-LEGACY-SELECTION-EQUIVALENCE",
-      "CM-A3-EXPLICIT-CONTRACT-REFERENCE-MISSING-E2E"
-    ],
-    "ablations": [
-      "AB-F2-LEGACY-MATCHER-ABLATION",
-      "AB-F2-EXPLICIT-CONTRACT-REF-ABLATION"
-    ]
-  },
-  "F3_projection_fixed_point_closure": {
-    "findings": [
+    "F3_projection_fixed_point_closure": [
       "4178603205"
     ],
-    "mechanism": "Candidate contract limitations derived during candidate evaluation are included directly into the monotonic ascent fixed-point packing loop, ensuring all limitation strings that alter terminal payload size participate in projection before admission, guaranteeing projected min hunk chars bounds real builder chars.",
-    "countermodels": [
-      "CM-A4-CONTRACT-LIMITATION-FIXED-POINT"
-    ],
-    "ablations": [
-      "AB-F3-CONTRACT-LIMITATION-FIXED-POINT-ABLATION"
-    ]
-  },
-  "F4_required_semantic_context_closure": {
-    "findings": [
+    "F4_required_semantic_context_closure": [
       "4178603209"
-    ],
-    "mechanism": "Applicable packs establishing explicit relations/bindings to required contracts are marked required=True and preserved in the required semantic floor. The payload shrink ladder pops optional packs without bindings first, then optional domain contracts; if required packs cannot fit under extreme budget pressure, it pops them and emits typed critical loss required_contract_pack_context_lost:<id>, degrading results and forcing quality gate != passed.",
-    "countermodels": [
-      "CM-A5-REQUIRED-BINDING-PACK-PRESERVED",
-      "CM-A5-OPTIONAL-PACK-DROPPED-SAFELY",
-      "CM-A5-REQUIRED-BINDING-PACK-LOSS"
-    ],
-    "ablations": [
-      "AB-F4-REQUIRED-PACK-OPTIONAL-ABLATION"
     ]
   },
   "finding_dispositions": {
@@ -87,20 +110,42 @@
     "4178603205": "FIXED",
     "4178603209": "FIXED",
     "4178603213": "FIXED",
-    "4178603218": "FIXED"
+    "4178603218": "FIXED",
+    "4179272317": "FIXED",
+    "4179272322": "FIXED",
+    "4179272324": "FIXED",
+    "4179272326": "FIXED",
+    "4179272328": "FIXED",
+    "4179272330": "FIXED",
+    "4179272331": "FIXED"
   },
   "qualification": {
-    "focal": "63 passed in 0.44s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
-    "affected_core": "220 passed in 2.36s (core cost model, chunk builder, semantic chunker, brief, quality gate)",
-    "CLI": "142 passed in 18.44s (all test_aiops_review_*_cli.py suites)",
-    "C1": "22 passed in 1.33s (test_semantic_chunker_232_coverage_truth.py)",
+    "focal": "89 passed in 0.53s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
+    "affected_core": "196 passed in 1.99s (core cost model, chunk builder, semantic chunker, brief, quality gate)",
+    "CLI": "142 passed in 17.12s (all test_aiops_review_*_cli.py suites)",
+    "C1": "22 passed in 1.17s (test_semantic_chunker_232_coverage_truth.py)",
     "repository": "passed (bash scripts/ci_validate.sh --repository)",
     "generated": "passed (bash scripts/ci_validate.sh --generated)",
     "static": "passed (bash scripts/ci_validate.sh --static)",
     "CAEM_pin": "passed (scripts/verify-caem-f0-pin.py)",
     "git_diff_check": "passed (git diff --check)",
     "CI": "clean local qualification, awaiting push",
-    "independent_pre_ready_review": "verified against all 4 families with zero regressions"
+    "independent_pre_ready_review": "verified against all 3 second-cycle families (S1, S2, S3) and prior 4 families with zero regressions"
+  },
+  "dispositions": {
+    "first_cycle": {
+      "expected": 9,
+      "current_head_bound": 9
+    },
+    "second_cycle": {
+      "expected": 7,
+      "current_head_bound": 7
+    },
+    "total": {
+      "expected": 16,
+      "current_head_bound": 16,
+      "missing": 0
+    }
   },
   "nonclaims": {
     "Gate_B": "NOT_CLAIMED",
@@ -111,10 +156,10 @@
     "freeze": "NOT_CLAIMED"
   },
   "protected_actions": {
-    "Ready": "NOT_AUTHORIZED_THIS_ROUND",
+    "Ready": "NOT_AUTHORIZED",
     "merge": "NOT_AUTHORIZED",
     "release": "NOT_AUTHORIZED"
   },
   "PR_state": "DRAFT",
-  "terminal": "V1_C2_GATE_A_POST_READY_FINDINGS_CLOSED_DRAFT_AWAITING_READY_REGRANT"
+  "terminal": "V1_C2_GATE_A_SECOND_FINDINGS_CLOSED_DRAFT_AWAITING_READY_REGRANT"
 }
