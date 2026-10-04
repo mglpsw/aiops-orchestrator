@@ -113,29 +113,11 @@ def detect_domain_contracts_format(document: Any) -> str:
 
 
 def detect_review_packs_format(document: Any, extra_bindings: Any = None) -> str:
-    """Detect whether review_packs follows legacy flat packs list or modern pack mapping / explicit bindings."""
-    raw_bindings = None
-    if isinstance(document, dict) and "contract_bindings" in document:
-        raw_bindings = document.get("contract_bindings")
-    elif extra_bindings is not None:
-        raw_bindings = extra_bindings
-
-    has_nonempty_bindings = bool(raw_bindings) if isinstance(raw_bindings, dict) else (raw_bindings is not None)
-
+    """Detect whether review_packs follows legacy flat packs list or modern pack mapping."""
     if isinstance(document, list):
-        if has_nonempty_bindings:
-            return FORMAT_MODERN_MAPPING
         return FORMAT_LEGACY_FLAT
-    if isinstance(document, dict):
-        if isinstance(document.get("packs"), dict):
-            return FORMAT_MODERN_MAPPING
-        if isinstance(document.get("packs"), list):
-            # Finding 4179272326: Semantically empty bindings {} do not switch legacy list to modern mapping
-            if has_nonempty_bindings:
-                return FORMAT_MODERN_MAPPING
-            return FORMAT_LEGACY_FLAT
-        if has_nonempty_bindings:
-            return FORMAT_MODERN_MAPPING
+    if isinstance(document, dict) and isinstance(document.get("packs"), list):
+        return FORMAT_LEGACY_FLAT
     return FORMAT_MODERN_MAPPING
 
 
@@ -557,11 +539,12 @@ def contracts_context(
     has_unresolved = False
     for p in packs:
         eff_refs: set[str] = set()
-        dc = p.get("domain_contract")
-        if dc:
-            eff_refs.add(dc)
-        for ref in bindings.get(p.get("id", ""), []):
-            eff_refs.add(ref)
+        if p_format == FORMAT_MODERN_MAPPING:
+            dc = p.get("domain_contract")
+            if dc:
+                eff_refs.add(dc)
+            for ref in bindings.get(p.get("id", ""), []):
+                eff_refs.add(ref)
         p["effective_contracts"] = sorted(eff_refs)
         for ref in p["effective_contracts"]:
             if ref not in contracts_by_id:
@@ -1149,6 +1132,32 @@ ALL_MODERN_RULE_DICT_FIELDS: frozenset[str] = (
     MODERN_RULE_DICT_REQUIRED_FIELDS | MODERN_RULE_DICT_OPTIONAL_FIELDS
 )
 
+MODERN_PACK_IDENTITY_AUTHORITY: str = (
+    "mapping key is the sole authoritative pack identity; nested id is unsupported"
+)
+MODERN_MAPPING_PACK_SEMANTIC_FIELDS: frozenset[str] = frozenset({
+    "description",
+    "domain_contract",
+    "recommended_review_preset",
+    "paths",
+    "patterns",
+    "is_global",
+    "scope",
+})
+TARGET_METADATA_NOT_USED_AS_RELATION: frozenset[str] = frozenset({
+    "critical",
+    "allow_external_review",
+    "require_full_diff",
+    "require_final_files_when_available",
+    "notes",
+})
+MODERN_MAPPING_PACK_VALUE_FIELDS: frozenset[str] = frozenset(
+    MODERN_MAPPING_PACK_SEMANTIC_FIELDS | TARGET_METADATA_NOT_USED_AS_RELATION
+)
+LEGACY_FLAT_PACK_ITEM_FIELDS: frozenset[str] = frozenset(
+    {"id", "description", "paths", "patterns", "recommended_review_preset", "is_global", "scope"}
+    | TARGET_METADATA_NOT_USED_AS_RELATION
+)
 GATE_A_SEMANTIC_PACK_FIELDS: frozenset[str] = frozenset({
     "id",
     "description",
@@ -1160,13 +1169,21 @@ GATE_A_SEMANTIC_PACK_FIELDS: frozenset[str] = frozenset({
     "scope",
 })
 
-TARGET_METADATA_NOT_USED_AS_RELATION: frozenset[str] = frozenset({
-    "critical",
-    "allow_external_review",
-    "require_full_diff",
-    "require_final_files_when_available",
-    "notes",
-})
+GENERIC_NAMED_STRING_SECTION_RULE: str = (
+    "any unknown nested key with list[nonempty str] value is admitted as named string section"
+)
+DOMAIN_CONTRACT_UNKNOWN_FIELD_POLICY: str = (
+    "unknown field not matching generic named string section fails closed with invalid_source_contract:UNSUPPORTED_NONEMPTY"
+)
+REVIEW_PACK_UNKNOWN_FIELD_POLICY: str = (
+    "unknown modern pack value key fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY"
+)
+REVIEW_PACK_LEGACY_INPUT_POLICY: str = (
+    "legacy flat packs list admitted as differential baseline; domain_contract in legacy flat pack is ignored and does not establish EffectiveContractRefs"
+)
+REVIEW_PACK_MIXED_SHAPE_POLICY: str = (
+    "legacy packs list combined with nonempty contract_bindings fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY as INVALID_MIXED_SHAPE"
+)
 
 
 def _is_valid_rule_dict(d: Any) -> bool:
@@ -1312,6 +1329,9 @@ def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = Non
                 for si in cleaned_sec_items:
                     if "text" in si:
                         all_rule_texts.append(si["text"])
+        elif not sec_val:
+            # Preserve empty section identity: present [] != absent (Finding N4 / Section 17)
+            sections[sec_name] = []
 
     row = {
         "id": cid,
@@ -1394,7 +1414,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
 
         if isinstance(value, list):
             if not value:
-                rows.append({"id": clean_key, "description": clean_key, "rules": []})
+                rows.append({"id": clean_key, "description": clean_key, "rules": [], "sections": {"rules": []}})
             elif all(isinstance(rule_str, str) for rule_str in value):
                 if any(not rule_str.strip() for rule_str in value):
                     return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
@@ -1404,7 +1424,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
                     "id": clean_key,
                     "description": clean_key,
                     "rules": rules_list,
-                    "sections": {clean_key: sec_items},
+                    "sections": {"rules": sec_items},
                 })
             elif all(isinstance(rule_dict, dict) for rule_dict in value):
                 for rdict in value:
@@ -1514,6 +1534,8 @@ def normalize_review_packs(
         return [], contract_bindings, SOURCE_STATE_ABSENT, None, limitations
 
     if isinstance(document, list):
+        if raw_bindings:
+            return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
         if not document:
             return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         if all(isinstance(item, dict) for item in document):
@@ -1521,11 +1543,6 @@ def normalize_review_packs(
             for item in document:
                 if not _validate_pack_declared_types(item):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                if "domain_contract" in item:
-                    if not isinstance(item["domain_contract"], str):
-                        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                    if not item["domain_contract"].strip():
-                        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
                 pid = _clean_text(item.get("id"))
                 if pid:
                     rows.append({
@@ -1549,6 +1566,8 @@ def normalize_review_packs(
         return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
 
     if isinstance(raw_packs, list):
+        if raw_bindings:
+            return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
         if not raw_packs:
             return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         if all(isinstance(item, dict) for item in raw_packs):
@@ -1556,17 +1575,11 @@ def normalize_review_packs(
             for item in raw_packs:
                 if not _validate_pack_declared_types(item):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                if "domain_contract" in item:
-                    if not isinstance(item["domain_contract"], str):
-                        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
-                    if not item["domain_contract"].strip():
-                        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
                 pid = _clean_text(item.get("id"))
                 if pid:
                     rows.append(_drop_empty_contract_fields({
                         "id": pid,
                         "description": _clean_text(item.get("description")) or pid,
-                        "domain_contract": _clean_text(item.get("domain_contract")),
                         "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
                         "paths": _sanitize_contract_paths(item.get("paths")),
                         "patterns": _normalized_contract_patterns(item.get("patterns")),
@@ -1587,6 +1600,19 @@ def normalize_review_packs(
             seen_pack_keys.add(clean_pid)
             if not isinstance(pval, dict):
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+            # Section 12: Modern mapping id field adjudication
+            if "id" in pval:
+                nested_id = _clean_text(pval.get("id"))
+                if nested_id and nested_id != clean_pid:
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+            # Section 13: Unknown modern pack fields check
+            for k in pval.keys():
+                if k not in MODERN_MAPPING_PACK_VALUE_FIELDS:
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
             # Validate declared field types before sanitizing
             if not _validate_pack_declared_types(pval):
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
