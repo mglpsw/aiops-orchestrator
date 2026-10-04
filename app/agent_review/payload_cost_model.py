@@ -469,9 +469,6 @@ def contracts_context(
     has_malformed_bindings = any(lim.startswith("malformed_contract_bindings:") for lim in limitations)
 
     # Required source checking
-    if selected_contract_pack:
-        if p_state == SOURCE_STATE_ABSENT:
-            limitations.append("required_source_absent:review_packs")
     if bindings:
         if c_state == SOURCE_STATE_ABSENT:
             limitations.append("required_source_absent:domain_contracts")
