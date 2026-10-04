@@ -13,11 +13,13 @@ Baseline Classification:
   - CM-A2-NESTED-SECTION-IDENTITY
   - CM-A2-RULE-DICT-TEXT-PRESERVATION
   - CM-A3-EXACT-IDENTITY-BOUNDARY
+  - CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY
+  - CM-A3-UNSCOPED-PACK-IS-NOT-GLOBAL
   - CM-GA-A4-COST
   - CM-GA-A4-REPACK
   - CM-A5-REQUIRED-CONTEXT-DROPPED
   - CM-A5-REQUIRED-FLOOR-EXCEEDS-BUDGET
-  - CM-A5-CARRIER-GRAPH-E2E
+  - CM-A5-PRODUCTION-CARRIER-ORIGIN
 - GREEN_PRESERVATION:
   - CM-A1-MALFORMED-SOURCE
   - CM-A1-UNSUPPORTED-NONEMPTY
@@ -25,15 +27,23 @@ Baseline Classification:
   - CM-A2-NAMED-STRING-LIST
   - CM-A2-MALFORMED-CONTRACT_BINDINGS
   - CM-A3-OWNER-FOCAL-RELATIONS
+  - CM-A3-STRUCTURAL-TARGET-LIKE-SHAPE
   - CM-A3-UNRELATED-PACK
   - CM-A3-UNKNOWN-BINDING
   - CM-A3-CASE-SENSITIVE-PATTERN
 - DEFENSIVE_CONTROL:
   - DEFENSIVE_PLAN_BUILDER_MISMATCH_CONTROL
+  - CARRIER_CONSUMPTION_CONTROL
 - POSITIVE_CONTROL:
   - PC-A1-MALFORMED-SOURCE
   - PC-A2-CONTRACT-BINDINGS
+  - PC-A3-APPLICABLE-PACK-BINDS-CONTRACT
+  - PC-A3-EXPLICIT-CONTRACT-REF
+  - PC-A3-EXPLICIT-GLOBAL
+  - PC-A3-EXPLICIT-SELECTED-PACK
+  - PC-A3-LEGACY-FLAT-COMPATIBILITY
   - PC-GA-A4-COST
+  - CM-A5-PRODUCTION-CARRIER-ORIGIN-SELECTED-PACK-MISSING
 - ABLATION_CONTROL:
   - AB-A1-STATE-SEPARATION
   - AB-A2-SECTION-IDENTITY
@@ -41,6 +51,7 @@ Baseline Classification:
   - AB-A3-EXPLICIT-BINDING
   - AB-A3-EXACT-IDENTITY
   - AB-A3-FNMATCHCASE
+  - AB-A3-AVAILABILITY-APPLICABILITY
   - AB-GA-A4-COST
   - AB-GA-A4-REPACK
   - AB-A5-SHRINK-ORDER
@@ -692,6 +703,433 @@ def test_ab_a3_fnmatchcase() -> None:
     assert fnmatch.fnmatchcase(path.lower(), pattern.lower()), "Ablated case-insensitive match succeeds (RED)"
 
 
+def test_cm_a3_availability_is_not_applicability() -> None:
+    """CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY: Source availability does not imply contract applicability (RED_REQUIRED).
+
+    Intake provides:
+    - domain_contracts (modern mapping): calendar, security, unrelated
+    - review_packs (modern mapping): calendar_pack (paths: backend/calendar/**, domain_contract: calendar),
+                                    security_pack (paths: backend/auth/**, domain_contract: security)
+    Subject: backend/calendar/service.py
+    Execution trace:
+    intake -> build_semantic_chunk_plan -> real SemanticChunk.contracts -> contracts_context -> build_chunk_payloads
+    Expected:
+    - calendar_pack: applicable
+    - calendar: applicable (required=True)
+    - security_pack: NOT applicable
+    - security: NOT applicable
+    - unrelated: NOT applicable
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "calendar": {"rules": ["event times in UTC"]},
+            "security": {"rules": ["validate all tokens"]},
+            "unrelated": {"rules": ["unrelated rule"]},
+        },
+        "review_packs": {
+            "packs": {
+                "calendar_pack": {
+                    "paths": ["backend/calendar/**"],
+                    "domain_contract": "calendar",
+                },
+                "security_pack": {
+                    "paths": ["backend/auth/**"],
+                    "domain_contract": "security",
+                },
+            }
+        },
+    }
+    intake.artifacts["full-diff"]["content"] = "\n".join(
+        [
+            "diff --git a/backend/calendar/service.py b/backend/calendar/service.py",
+            "index 111..222 100644",
+            "--- a/backend/calendar/service.py",
+            "+++ b/backend/calendar/service.py",
+            "@@ -10,1 +10,1 @@",
+            "+def schedule_event(): pass",
+        ]
+    )
+    intake.artifacts["file-diff-context"]["content"] = {
+        "files": [{"path": "backend/calendar/service.py", "status": "modified"}],
+        "coverage_requirements": {
+            "must_review_files": ["backend/calendar/service.py"],
+            "should_review_files": [],
+            "may_summarize_files": [],
+        },
+    }
+
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=1, max_chars_per_block=15000)
+    assert len(plan.chunks) == 1
+    chunk = plan.chunks[0]
+    assert chunk.files == ["backend/calendar/service.py"]
+    # Both sources are declared available in chunk contracts
+    assert "target_profile:domain_contracts" in chunk.contracts
+    assert "target_profile:review_packs" in chunk.contracts
+
+    # contracts_context using THAT chunk.contracts and chunk.files
+    ctx, limits = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=chunk.files,
+        chunk_contracts=chunk.contracts,
+        chunk_id=chunk.chunk_id,
+        selected_contract_pack=None,
+        semantic_group=chunk.semantic_group,
+    )
+    assert limits == []
+
+    pack_ids = [p["id"] for p in ctx["review_packs"]]
+    assert pack_ids == ["calendar_pack"]
+    assert "security_pack" not in pack_ids
+
+    contract_ids = [c["id"] for c in ctx["domain_contracts"]]
+    assert contract_ids == ["calendar"]
+    assert "security" not in contract_ids
+    assert "unrelated" not in contract_ids
+
+    # calendar is required
+    cal_contract = next(c for c in ctx["domain_contracts"] if c["id"] == "calendar")
+    assert cal_contract.get("required") is True
+
+    # Payload carries ONLY applicable contracts and packs
+    brief = _brief(intake, plan)
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    payload = list(payloads.values())[0]
+    payload_contracts = payload.chunk_context["contracts_context"]
+    assert [c["id"] for c in payload_contracts["domain_contracts"]] == ["calendar"]
+    assert [p["id"] for p in payload_contracts["review_packs"]] == ["calendar_pack"]
+
+
+def test_cm_a3_unscoped_pack_is_not_global() -> None:
+    """CM-A3-UNSCOPED-PACK-IS-NOT-GLOBAL: Pack without paths/patterns/is_global is not global (RED_REQUIRED).
+
+    NoScope != Global: A pack without scope cannot automatically become global just because
+    the review-packs artifact is available. It is admitted only if explicitly selected.
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "general": {"rules": ["general rule"]},
+        },
+        "review_packs": {
+            "packs": {
+                "_default": {
+                    "description": "Default pack without scope",
+                    "domain_contract": "general",
+                },
+                "explicit_scoped": {
+                    "description": "Explicit scoped pack",
+                    "paths": ["backend/calendar/**"],
+                },
+            }
+        },
+    }
+
+    # Case 1: Without explicit selection, unscoped pack does NOT match
+    ctx_unselected, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/calendar/service.py"],
+        chunk_contracts=["target_profile:review_packs"],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="calendar",
+    )
+    unselected_pack_ids = [p["id"] for p in ctx_unselected["review_packs"]]
+    assert "explicit_scoped" in unselected_pack_ids
+    assert "_default" not in unselected_pack_ids
+
+    # Case 2: With explicit selection, unscoped pack DOES match
+    ctx_selected, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/calendar/service.py"],
+        chunk_contracts=["target_profile:review_packs"],
+        chunk_id="chunk-01",
+        selected_contract_pack="_default",
+        semantic_group="calendar",
+    )
+    selected_pack_ids = [p["id"] for p in ctx_selected["review_packs"]]
+    assert "_default" in selected_pack_ids
+
+
+def test_cm_a3_structural_target_like_shape() -> None:
+    """CM-A3-STRUCTURAL-TARGET-LIKE-SHAPE: Target-like mirror preserves domain isolation across subjects (GREEN_PRESERVATION).
+
+    Domains without own scopes: calendar, security, auth_admin, response_model_rules, unrelated
+    Packs:
+    - calendar_pack: paths backend/calendar/** -> domain_contract: calendar
+    - auth_admin: paths backend/auth/** -> domain_contract: security, bindings: [auth_admin]
+    - backend_schema_contract: paths backend/schema/** -> domain_contract: response_model_rules
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "calendar": {"rules": ["calendar UTC rule"]},
+            "security": {"rules": ["security token rule"]},
+            "auth_admin": {"rules": ["admin role check"]},
+            "response_model_rules": {"rules": ["Pydantic model schema"]},
+            "unrelated": {"rules": ["unrelated property"]},
+        },
+        "review_packs": {
+            "packs": {
+                "calendar_pack": {
+                    "paths": ["backend/calendar/**"],
+                    "domain_contract": "calendar",
+                },
+                "auth_admin": {
+                    "paths": ["backend/auth/**"],
+                    "domain_contract": "security",
+                },
+                "backend_schema_contract": {
+                    "paths": ["backend/schema/**"],
+                    "domain_contract": "response_model_rules",
+                },
+            },
+            "contract_bindings": {
+                "auth_admin": ["auth_admin"],
+            },
+        },
+    }
+    chunk_contracts = ["target_profile:domain_contracts", "target_profile:review_packs"]
+
+    # 1. Calendar subject
+    ctx_cal, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/calendar/service.py"],
+        chunk_contracts=chunk_contracts,
+        chunk_id="cal-01",
+        selected_contract_pack=None,
+        semantic_group="calendar",
+    )
+    cal_contracts = {c["id"]: c.get("required") for c in ctx_cal["domain_contracts"]}
+    assert "calendar" in cal_contracts
+    assert cal_contracts["calendar"] is True
+    assert "security" not in cal_contracts
+    assert "auth_admin" not in cal_contracts
+    assert "response_model_rules" not in cal_contracts
+    assert "unrelated" not in cal_contracts
+
+    # 2. Auth subject
+    ctx_auth, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/auth/login.py"],
+        chunk_contracts=chunk_contracts,
+        chunk_id="auth-01",
+        selected_contract_pack=None,
+        semantic_group="auth",
+    )
+    auth_contracts = {c["id"]: c.get("required") for c in ctx_auth["domain_contracts"]}
+    assert "security" in auth_contracts and auth_contracts["security"] is True
+    assert "auth_admin" in auth_contracts and auth_contracts["auth_admin"] is True
+    assert "calendar" not in auth_contracts
+    assert "response_model_rules" not in auth_contracts
+    assert "unrelated" not in auth_contracts
+
+    # 3. Schema subject
+    ctx_schema, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/schema/models.py"],
+        chunk_contracts=chunk_contracts,
+        chunk_id="schema-01",
+        selected_contract_pack=None,
+        semantic_group="schema",
+    )
+    schema_contracts = {c["id"]: c.get("required") for c in ctx_schema["domain_contracts"]}
+    assert "response_model_rules" in schema_contracts and schema_contracts["response_model_rules"] is True
+    assert "calendar" not in schema_contracts
+    assert "security" not in schema_contracts
+    assert "auth_admin" not in schema_contracts
+    assert "unrelated" not in schema_contracts
+
+
+def test_pc_a3_applicable_pack_binds_contract() -> None:
+    """PC-A3-APPLICABLE-PACK-BINDS-CONTRACT: Applicable pack binds contract to chunk as required (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "api_contract": {"rules": ["must validate input"]},
+        },
+        "review_packs": {
+            "packs": {
+                "api_pack": {"paths": ["backend/api/**"], "domain_contract": "api_contract"},
+            }
+        },
+    }
+    ctx, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=["target_profile:domain_contracts", "target_profile:review_packs"],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="api",
+    )
+    contract_ids = [c["id"] for c in ctx["domain_contracts"]]
+    assert contract_ids == ["api_contract"]
+    assert ctx["domain_contracts"][0]["required"] is True
+
+
+def test_pc_a3_explicit_contract_ref() -> None:
+    """PC-A3-EXPLICIT-CONTRACT-REF: Explicit contract:<id> ref in chunk_contracts marks contract required (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "special_contract": {"rules": ["special constraint"]},
+            "other_contract": {"rules": ["other constraint"]},
+        },
+    }
+    ctx, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=["contract:special_contract"],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="api",
+    )
+    contract_ids = [c["id"] for c in ctx["domain_contracts"]]
+    assert contract_ids == ["special_contract"]
+    assert ctx["domain_contracts"][0]["required"] is True
+    assert "other_contract" not in contract_ids
+
+
+def test_pc_a3_explicit_global() -> None:
+    """PC-A3-EXPLICIT-GLOBAL: Explicit is_global=true or scope='global' makes item applicable to all chunks (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "global_contract": {"is_global": True, "rules": ["applies everywhere"]},
+            "non_global": {"rules": ["applies nowhere without pack"]},
+        },
+        "review_packs": {
+            "packs": {
+                "global_pack": {"is_global": True, "description": "Global pack"},
+                "non_global_pack": {"description": "Unscoped non-global pack"},
+            }
+        },
+    }
+    ctx, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/some/random/file.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="random",
+    )
+    assert [c["id"] for c in ctx["domain_contracts"]] == ["global_contract"]
+    assert [p["id"] for p in ctx["review_packs"]] == ["global_pack"]
+
+
+def test_pc_a3_explicit_selected_pack() -> None:
+    """PC-A3-EXPLICIT-SELECTED-PACK: Selected pack without paths matches if and only if explicitly selected (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "special_pack": {"description": "Pack without paths"},
+            }
+        }
+    }
+    # Unselected -> does not match
+    ctx1, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=["target_profile:review_packs"],
+        chunk_id="c1",
+        selected_contract_pack=None,
+        semantic_group="api",
+    )
+    assert ctx1["review_packs"] == []
+
+    # Selected -> matches
+    ctx2, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=["target_profile:review_packs"],
+        chunk_id="c2",
+        selected_contract_pack="special_pack",
+        semantic_group="api",
+    )
+    assert [p["id"] for p in ctx2["review_packs"]] == ["special_pack"]
+
+
+def test_pc_a3_legacy_flat_compatibility() -> None:
+    """PC-A3-LEGACY-FLAT-COMPATIBILITY: Legacy flat format preserves extensional source availability behavior (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": [
+            {"id": "legacy_rule_1", "description": "legacy rule 1"},
+            {"id": "legacy_rule_2", "description": "legacy rule 2"},
+        ],
+        "review_packs": [
+            {"id": "legacy_pack_1", "description": "legacy pack 1"},
+        ],
+    }
+    # When target_profile references are present, legacy flat contracts match
+    ctx, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=["target_profile:domain_contracts", "target_profile:review_packs"],
+        chunk_id="c1",
+        selected_contract_pack=None,
+        semantic_group="api",
+    )
+    assert [c["id"] for c in ctx["domain_contracts"]] == ["legacy_rule_1", "legacy_rule_2"]
+    assert [p["id"] for p in ctx["review_packs"]] == ["legacy_pack_1"]
+
+
+def test_ab_a3_availability_applicability() -> None:
+    """AB-A3-AVAILABILITY-APPLICABILITY: Conflating source availability with applicability leaks unrelated contracts (ABLATION_CONTROL)."""
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "calendar": {"rules": ["event times in UTC"]},
+            "security": {"rules": ["validate all tokens"]},
+            "unrelated": {"rules": ["unrelated rule"]},
+        },
+        "review_packs": {
+            "packs": {
+                "calendar_pack": {
+                    "paths": ["backend/calendar/**"],
+                    "domain_contract": "calendar",
+                },
+                "security_pack": {
+                    "paths": ["backend/auth/**"],
+                    "domain_contract": "security",
+                },
+            }
+        },
+    }
+    # Normal mechanism: unrelated and security are excluded
+    ctx_normal, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/calendar/service.py"],
+        chunk_contracts=["target_profile:domain_contracts", "target_profile:review_packs"],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="calendar",
+    )
+    normal_ids = [c["id"] for c in ctx_normal["domain_contracts"]]
+    assert normal_ids == ["calendar"]
+    assert "security" not in normal_ids
+    assert "unrelated" not in normal_ids
+
+    # Ablated mechanism: simulate predecessor conflation (availability admitting all unscoped contracts)
+    contracts, _, _, _ = payload_cost_model.normalize_domain_contracts(intake.target_profile["domain_contracts"])
+    ablated_contracts = [
+        c for c in contracts
+        if "target_profile:domain_contracts" in ["target_profile:domain_contracts"] and not payload_cost_model._paths_from_item(c)
+    ]
+    ablated_ids = [c["id"] for c in ablated_contracts]
+    # Under ablation, unrelated and security leak into the chunk! (RED under ablation)
+    assert "unrelated" in ablated_ids
+    assert "security" in ablated_ids
+    assert "calendar" in ablated_ids
+
+
 # ---------------------------------------------------------------------------
 # A4 — Canonical Cost + Deterministic Packing
 # ---------------------------------------------------------------------------
@@ -1032,8 +1470,12 @@ def test_defensive_plan_builder_mismatch_control() -> None:
         assert entry.payload_path is None
 
 
-def test_cm_a5_carrier_graph_e2e(tmp_path: Path) -> None:
-    """CM-A5-CARRIER-GRAPH-E2E: E2E pipeline traces required loss to gate.status != passed across 3 scenarios (RED_REQUIRED)."""
+def test_cm_a5_carrier_consumption_control(tmp_path: Path) -> None:
+    """CARRIER_CONSUMPTION_CONTROL: Injected limitation reaches quality gate across 3 scenarios (DEFENSIVE_CONTROL).
+
+    Proves CarrierConsumed: an injected limitation in plan carrier travels to quality gate and forces gate.status != passed.
+    Note: For natural end-to-end production carrier origin, see CM-A5-PRODUCTION-CARRIER-ORIGIN.
+    """
     intake = _base_intake()
     intake.target_profile = {
         "domain_contracts": [
@@ -1139,3 +1581,210 @@ def test_cm_a5_carrier_graph_e2e(tmp_path: Path) -> None:
     assert gate_3.status == "manual_review_required"
     assert gate_3.manual_review_required is True
     assert gate_3.status != "passed"
+
+
+def test_cm_a5_production_carrier_origin(tmp_path: Path) -> None:
+    """CM-A5-PRODUCTION-CARRIER-ORIGIN: Real production limitation unresolved_contract_binding propagates naturally through carrier graph to gate.status != passed across 3 scenarios (RED_REQUIRED).
+
+    Producer: contracts_context() detects unresolved contract binding from contract_bindings -> missing-contract
+    Carriers: SemanticChunkPlan.limitations -> PRBrief.limitations -> ChunkPayload.limitations -> ChunkResults.limitations -> FinalReview.limitations
+    Terminal consumer: evaluate_review_quality_gate() sets input_degraded=True -> gate.status != passed
+    Zero manual carrier injection.
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "domain_contracts": {
+            "security": {"rules": ["all tokens validated"]},
+        },
+        "review_packs": {
+            "packs": {
+                "pack1": {"paths": ["backend/api/*"]},
+            },
+            "contract_bindings": {
+                "pack1": ["missing-contract"],
+            },
+        },
+    }
+
+    # 1. Producer: build_semantic_chunk_plan calls contracts_context and captures limitation naturally
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=1, max_chars_per_block=15000)
+    expected_limitation = "unresolved_contract_binding:pack1:missing-contract"
+    assert expected_limitation in plan.limitations
+    assert plan.status == "degraded"
+
+    # 2. Carrier 1: PRBrief
+    brief = _brief(intake, plan)
+    assert expected_limitation in brief.limitations
+
+    # 3. Carrier 2: ChunkPayload and ChunkPayloadManifest
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    chunk = plan.chunks[0]
+    payload = payloads[f"{chunk.chunk_id}.json"]
+    assert expected_limitation in payload.limitations
+    assert expected_limitation in manifest.chunks[0].limitations
+
+    # --- Scenario 1: Natural limitation + clean response (no findings) ---
+    resp_dir_1 = tmp_path / "prod_resp1"
+    resp_dir_1.mkdir()
+    resp_1 = {
+        "schema_version": 1,
+        "chunk_id": chunk.chunk_id,
+        "semantic_group": chunk.semantic_group,
+        "confirmed_findings": [],
+        "risks": [],
+        "limitations": [],
+        "coverage_notes": {
+            "files_reviewed": ["backend/api/shifts.py"],
+            "files_partial": [],
+            "files_not_reviewed": [],
+        },
+    }
+    (resp_dir_1 / f"{chunk.chunk_id}.json").write_text(json.dumps(resp_1), encoding="utf-8")
+
+    # Carrier 3: ChunkResults
+    results_1 = parse_chunk_results(plan, responses_dir=resp_dir_1)
+    assert expected_limitation in results_1.limitations
+    assert results_1.status == "degraded"
+
+    # Carrier 4: FinalReview
+    review_1 = synthesize_final_review(results_1)
+    assert expected_limitation in review_1.limitations
+    assert review_1.status == "degraded"
+
+    # Terminal Consumer: QualityGate
+    doc_1 = validate_final_review_document(review_1.model_dump(mode="json"))
+    gate_1 = evaluate_review_quality_gate(final_review=doc_1, chunk_results=results_1, intake=intake, chunk_plan=plan)
+
+    assert gate_1.status == "manual_review_required"
+    assert gate_1.manual_review_required is True
+    assert gate_1.status != "passed"
+
+    # --- Scenario 2: Natural limitation + reliable blocker ---
+    resp_dir_2 = tmp_path / "prod_resp2"
+    resp_dir_2.mkdir()
+    resp_2 = {
+        "schema_version": 1,
+        "chunk_id": chunk.chunk_id,
+        "semantic_group": chunk.semantic_group,
+        "confirmed_findings": [
+            {
+                "severity": "P1",
+                "title": "Unauthenticated admin endpoint exposed",
+                "file_path": "backend/api/shifts.py",
+                "line_or_hunk": "L10-L15",
+                "evidence": "Endpoint token is assigned without role check",
+                "source_artifact": "artifact:file-diff-context",
+                "impact": "Privilege escalation vulnerability",
+                "confidence": "high",
+                "dedupe_key": "admin-unauth",
+            }
+        ],
+        "risks": [],
+        "limitations": [],
+        "coverage_notes": {
+            "files_reviewed": ["backend/api/shifts.py"],
+            "files_partial": [],
+            "files_not_reviewed": [],
+        },
+    }
+    (resp_dir_2 / f"{chunk.chunk_id}.json").write_text(json.dumps(resp_2), encoding="utf-8")
+
+    results_2 = parse_chunk_results(plan, responses_dir=resp_dir_2)
+    review_2 = synthesize_final_review(results_2)
+    doc_2 = validate_final_review_document(review_2.model_dump(mode="json"))
+    gate_2 = evaluate_review_quality_gate(final_review=doc_2, chunk_results=results_2, intake=intake, chunk_plan=plan)
+
+    assert gate_2.status == "degraded"
+    assert gate_2.normalized_verdict == "changes_requested"
+    assert gate_2.manual_review_required is False
+    assert gate_2.status != "passed"
+
+    # --- Scenario 3: Natural limitation + model claims approved ---
+    review_3_raw = review_1.model_dump(mode="json")
+    review_3_raw["verdict"] = "approved"
+    doc_3 = validate_final_review_document(review_3_raw)
+    gate_3 = evaluate_review_quality_gate(final_review=doc_3, chunk_results=results_1, intake=intake, chunk_plan=plan)
+
+    assert gate_3.status == "manual_review_required"
+    assert gate_3.manual_review_required is True
+    assert gate_3.status != "passed"
+
+    # --- Ablation: Dropping limitation from carrier produces unsound pass ---
+    results_ablated = results_1.model_copy(deep=True)
+    results_ablated.limitations = [lim for lim in results_ablated.limitations if not lim.startswith("unresolved_contract_binding:")]
+    results_ablated.status = "complete"
+    review_ablated = synthesize_final_review(results_ablated)
+    plan_ablated = plan.model_copy(deep=True)
+    plan_ablated.limitations = []
+    plan_ablated.status = "complete"
+    doc_ablated = validate_final_review_document(review_ablated.model_dump(mode="json"))
+    gate_ablated = evaluate_review_quality_gate(final_review=doc_ablated, chunk_results=results_ablated, intake=intake, chunk_plan=plan_ablated)
+    assert gate_ablated.status == "passed"
+
+
+def test_cm_a5_production_carrier_origin_selected_pack_missing(tmp_path: Path) -> None:
+    """CM-A5-PRODUCTION-CARRIER-ORIGIN-SELECTED-PACK-MISSING: Second production carrier origin selected_contract_pack_missing propagates to gate (POSITIVE_CONTROL)."""
+    intake = _base_intake()
+    intake.artifacts["review_metadata"] = {
+        "name": "review_metadata",
+        "path": "review_metadata.json",
+        "kind": "json",
+        "content": {"contract_pack": "nonexistent_pack"},
+    }
+    intake.target_profile = {
+        "domain_contracts": {"security": {"rules": ["Validate token"]}},
+        "review_packs": {"packs": {"pack1": {"paths": ["backend/api/*"]}}},
+    }
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=1, max_chars_per_block=15000)
+    expected_limitation = "selected_contract_pack_missing:nonexistent_pack"
+    assert expected_limitation in plan.limitations
+    assert plan.status == "degraded"
+
+    brief = _brief(intake, plan)
+    assert expected_limitation in brief.limitations
+
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    chunk = plan.chunks[0]
+    payload = payloads[f"{chunk.chunk_id}.json"]
+    assert expected_limitation in payload.limitations
+
+    resp_dir = tmp_path / "missing_pack_resp"
+    resp_dir.mkdir()
+    resp = {
+        "schema_version": 1,
+        "chunk_id": chunk.chunk_id,
+        "semantic_group": chunk.semantic_group,
+        "confirmed_findings": [],
+        "risks": [],
+        "limitations": [],
+        "coverage_notes": {
+            "files_reviewed": ["backend/api/shifts.py"],
+            "files_partial": [],
+            "files_not_reviewed": [],
+        },
+    }
+    (resp_dir / f"{chunk.chunk_id}.json").write_text(json.dumps(resp), encoding="utf-8")
+
+    results = parse_chunk_results(plan, responses_dir=resp_dir)
+    assert expected_limitation in results.limitations
+    review = synthesize_final_review(results)
+    assert expected_limitation in review.limitations
+
+    doc = validate_final_review_document(review.model_dump(mode="json"))
+    gate = evaluate_review_quality_gate(final_review=doc, chunk_results=results, intake=intake, chunk_plan=plan)
+
+    assert gate.status == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert gate.status != "passed"

@@ -88,6 +88,33 @@ CRITICAL_CONTRACT_LIMITATION_PREFIXES: tuple[str, ...] = (
     "selected_contract_pack_missing:",
 )
 
+FORMAT_LEGACY_FLAT = "legacy_flat"
+FORMAT_MODERN_MAPPING = "modern_mapping"
+
+
+def detect_domain_contracts_format(document: Any) -> str:
+    """Detect whether domain_contracts artifact follows legacy flat rules list or modern domain mapping."""
+    if isinstance(document, list):
+        return FORMAT_LEGACY_FLAT
+    if isinstance(document, dict) and "rules" in document and isinstance(document.get("rules"), list):
+        return FORMAT_LEGACY_FLAT
+    return FORMAT_MODERN_MAPPING
+
+
+def detect_review_packs_format(document: Any, extra_bindings: Any = None) -> str:
+    """Detect whether review_packs follows legacy flat packs list or modern pack mapping / explicit bindings."""
+    if isinstance(document, list):
+        return FORMAT_LEGACY_FLAT
+    if isinstance(document, dict):
+        if isinstance(document.get("packs"), dict):
+            return FORMAT_MODERN_MAPPING
+        if "contract_bindings" in document or extra_bindings is not None:
+            return FORMAT_MODERN_MAPPING
+        if isinstance(document.get("packs"), list):
+            return FORMAT_LEGACY_FLAT
+    return FORMAT_MODERN_MAPPING
+
+
 
 # ---------------------------------------------------------------------------
 # Path identity (rev.3 Amendment 4 / RED-21): the canonical identity used for
@@ -431,6 +458,8 @@ def contracts_context(
 
     contracts, c_state, c_sub, c_limits = normalize_domain_contracts(raw_domain_contracts)
     packs, bindings, p_state, p_sub, p_limits = normalize_review_packs(raw_review_packs, extra_bindings=extra_bindings)
+    c_format = detect_domain_contracts_format(raw_domain_contracts)
+    p_format = detect_review_packs_format(raw_review_packs, extra_bindings=extra_bindings)
 
     limitations: list[str] = []
     limitations.extend(c_limits)
@@ -489,7 +518,7 @@ def contracts_context(
             selected_pack_matched = True
         elif _contract_matches_chunk(pack, chunk_files=chunk_file_set):
             matches = True
-        elif include_all_packs and not has_pack_scope:
+        elif include_all_packs and not has_pack_scope and p_format == FORMAT_LEGACY_FLAT:
             matches = True
 
         if matches:
@@ -514,7 +543,7 @@ def contracts_context(
             matches = True
         elif _contract_matches_chunk(contract, chunk_files=chunk_file_set):
             matches = True
-        elif include_all_contracts and not has_explicit_scope:
+        elif include_all_contracts and not has_explicit_scope and c_format == FORMAT_LEGACY_FLAT:
             matches = True
 
         if matches:
