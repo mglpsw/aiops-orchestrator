@@ -560,6 +560,10 @@ def test_red26_adversarial_review_metadata_stays_sound() -> None:
     files = ["backend/api/a.py"]
     hunk_lines = {"backend/api/a.py": 30}
     intake_dict = _intake(files, hunk_lines, must=files)
+    pack_name = "adversarially-long-contract-pack-" + ("p" * 2000)
+    intake_dict["target_profile"] = {
+        "review_packs": {"packs": {pack_name: {}}},
+    }
     intake_dict["artifacts"]["checks.json"] = {
         "path": "checks.json",
         "content": {
@@ -568,7 +572,7 @@ def test_red26_adversarial_review_metadata_stays_sound() -> None:
             "pr_number": 999999999,
             "commit_sha": "a" * 40,
             "review_mode": "adversarially-long-review-mode-" + ("m" * 2000),
-            "contract_pack": "adversarially-long-contract-pack-" + ("p" * 2000),
+            "contract_pack": pack_name,
         },
     }
 
@@ -589,7 +593,8 @@ def test_red24_25_26_combined_adversarial_dimensions_stay_sound() -> None:
         item["summary"] = "x" * 3000
     intake_dict["limitations"] = [f"synthetic_intake_limitation_{i}" for i in range(40)]
     intake_dict["target_profile"] = {
-        "artifacts": [{"name": f"optional_artifact_{i}", "required": False} for i in range(20)]
+        "artifacts": [{"name": f"optional_artifact_{i}", "required": False} for i in range(20)],
+        "review_packs": {"packs": {"p" * 2000: {}}},
     }
     intake_dict["artifact_status"] = [
         {

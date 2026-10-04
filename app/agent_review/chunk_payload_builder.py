@@ -632,11 +632,13 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
     contracts = _get(_get(payload, "chunk_context"), "contracts_context")
     if not isinstance(contracts, dict):
         return False
-    # 1. Pop from review_packs first (packs are optional review context)
+    # 1. Pop optional review_packs first
     packs = contracts.get("review_packs")
-    if isinstance(packs, list) and packs:
-        packs.pop()
-        return True
+    if isinstance(packs, list):
+        for i, item in enumerate(packs):
+            if isinstance(item, dict) and not item.get("required"):
+                packs.pop(i)
+                return True
     # 2. Pop optional domain contracts next
     domain_contracts = contracts.get("domain_contracts")
     if isinstance(domain_contracts, list):
@@ -644,17 +646,28 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
             if isinstance(item, dict) and not item.get("required"):
                 domain_contracts.pop(i)
                 return True
-        # 3. If only required contracts remain and shrink is forced:
-        if domain_contracts:
-            popped = domain_contracts.pop()
-            if isinstance(popped, dict):
-                contract_id = popped.get("id") or "unknown"
-                limitations = _get(payload, "limitations")
-                if isinstance(limitations, list):
-                    loss_code = f"required_contract_context_lost:{contract_id}"
-                    if loss_code not in limitations:
-                        limitations.append(loss_code)
-            return True
+    # 3. If only required review packs remain and shrink is forced:
+    if isinstance(packs, list) and packs:
+        popped = packs.pop()
+        if isinstance(popped, dict):
+            pack_id = popped.get("id") or "unknown"
+            limitations = _get(payload, "limitations")
+            if isinstance(limitations, list):
+                loss_code = f"required_contract_pack_context_lost:{pack_id}"
+                if loss_code not in limitations:
+                    limitations.append(loss_code)
+        return True
+    # 4. If only required domain contracts remain and shrink is forced:
+    if isinstance(domain_contracts, list) and domain_contracts:
+        popped = domain_contracts.pop()
+        if isinstance(popped, dict):
+            contract_id = popped.get("id") or "unknown"
+            limitations = _get(payload, "limitations")
+            if isinstance(limitations, list):
+                loss_code = f"required_contract_context_lost:{contract_id}"
+                if loss_code not in limitations:
+                    limitations.append(loss_code)
+        return True
     minimal = {"domain_contracts": [], "review_packs": []}
     if contracts != minimal:
         _get(payload, "chunk_context")["contracts_context"] = minimal
