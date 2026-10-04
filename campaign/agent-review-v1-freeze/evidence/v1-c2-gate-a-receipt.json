@@ -1,143 +1,238 @@
 {
-  "artifact_type": "PR372_FINAL_PRE_READY_CLOSURE_RECEIPT",
-  "status": "systemically_qualified_final_pre_ready_closure_complete",
+  "artifact_type": "PR372_SEMANTIC_BINDING_CLOSURE_RECEIPT",
+  "status": "v1_c2_gate_a_semantic_binding_closure_complete",
   "gate": "Gate A",
   "owner": "#221",
   "slice": "V1-C2 / Gate A (C2ExecutableContract)",
   "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
   "predecessor": {
-    "head": "3c15ecd4d05555d9baa6a15127a4e5f9aaf73ec1",
-    "tree": "42e45377e52cba06ae4cf833a9038d237ee9dee4",
-    "review_id": "5408162653"
+    "head": "e259d547b30b798f89fe178356c0180d6361e07a",
+    "tree": "e32ed9dab8cecfabffec185065facd6460315993"
   },
   "successor": {
     "branch": "fix/221-v1-c2-gate-a-executable-contract",
     "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f"
   },
-  "R1_declared_shape_totality": {
-    "field_registry": {
-      "identity_fields": ["id"],
-      "scalar_fields": [
-        "description",
-        "scope",
-        "is_global",
-        "canonical_authority",
-        "display_authority",
-        "path",
-        "file_path",
-        "required"
+  "B1_target_shape_binding": {
+    "AgentEscala_subject": "mglpsw/AgentEscala@b281ca5d2872117b1c128cabb1735e264f024eaf",
+    "nested_list_string_rule": "any unknown nested key with list[nonempty str] value is admitted as named string section (e.g. response_models, orm_models, critical_constraints, review_checklist)",
+    "rule_dict_rule": "rule text carrier bounded to 'rule' with optional 'invariant', 'rationale', 'field', 'expected_value'",
+    "target_shape_control": "CM-B1-EXACT-TARGET-SHAPE-MIRROR",
+    "structural_mirror_exactness": true,
+    "ablation": "AB-B1-NESTED-LIST-STRING-GRAMMAR"
+  },
+  "B2_applicable_pack_required_context": {
+    "applicable_pack_identity_rule": "every applicable pack preserves pack_id as required context with reason applicable_pack_identity",
+    "minimal_pack_context": "minimal pack floor preserves only id, effective_contracts, and required: true",
+    "optional_pack_metadata": "description, recommended_review_preset, paths, patterns, notes, and other target metadata are optional and reduced under budget pressure before any pack ID is lost",
+    "optional_loss_recording": "contracts_context_reduced recorded in TruncationMetadata coverage_impact without required loss",
+    "required_pack_loss": "required_contract_pack_context_lost:<id> emitted only when minimal pack floor cannot fit, blocking payload routing (payload_path=None, status=limited)",
+    "countermodels": [
+      "CM-B2-PATH-APPLICABLE-NO-BINDING-PACK",
+      "CM-B2-APPLICABLE-PACK-OPTIONAL-METADATA-SHRINK"
+    ],
+    "positives": [
+      "PC-B2-PATH-MATCH-REQUIRED-PACK"
+    ],
+    "ablations": [
+      "AB-B2-ALL-APPLICABLE-PACK-ID-REQUIRED",
+      "AB-B2-OPTIONAL-PACK-METADATA-SHRINK"
+    ]
+  },
+  "B3_limitation_class_graph": {
+    "registry": {
+      "required_contract_context_lost:": {
+        "status": "PRODUCED",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "consumer": "build_chunk_payloads manifest entry routing guard",
+        "terminal_effect": "manifest_entry.status='limited', payload_path=None, blocks downstream execution"
+      },
+      "required_contract_pack_context_lost:": {
+        "status": "PRODUCED",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "consumer": "build_chunk_payloads manifest entry routing guard",
+        "terminal_effect": "manifest_entry.status='limited', payload_path=None, blocks downstream execution"
+      },
+      "unresolved_contract_binding:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "unresolved_contract_reference:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "orphan_contract_binding:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "invalid_source_contract:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_domain_contracts",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "invalid_source_review_packs:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "malformed_contract_bindings:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "required_source_absent:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      },
+      "selected_contract_pack_missing:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "plan.status='degraded', quality_gate fails"
+      }
+    },
+    "orphan_registry_entries": 0,
+    "orphan_producers": 0,
+    "planner_origin_controls": [
+      "invalid_source_contract:MALFORMED_SHAPE",
+      "invalid_source_review_packs:MALFORMED_SHAPE",
+      "malformed_contract_bindings:must_be_mapping",
+      "unresolved_contract_binding",
+      "unresolved_contract_reference",
+      "orphan_contract_binding",
+      "required_source_absent:domain_contracts",
+      "selected_contract_pack_missing"
+    ],
+    "builder_origin_controls": [
+      "required_contract_context_lost",
+      "required_contract_pack_context_lost"
+    ],
+    "ablation": "AB-B3-REASON-CLASS-PRODUCER-BINDING"
+  },
+  "B4_single_grammar_authority": {
+    "production_registry": {
+      "identity_fields": [
+        "id"
       ],
-      "list_of_paths": [
-        "paths",
+      "path_list_fields": [
         "files",
-        "source_files",
+        "paths",
+        "patterns",
         "related_files",
-        "patterns"
-      ],
-      "named_string_sections": [
-        "critical_constraints",
-        "review_checklist",
-        "response_model_rules"
-      ],
-      "rule_dict_sections": [
-        "rules",
-        "slot_rules",
-        "response_models",
-        "orm_models"
-      ],
-      "rule_dict_carriers": [
-        "rule",
-        "text",
-        "description",
-        "id",
-        "name",
-        "model"
-      ],
-      "rule_dict_optional_fields": [
-        "invariant",
-        "rationale",
-        "field",
-        "expected_value"
+        "source_files"
       ],
       "reserved_metadata": [
-        "$schema",
-        "schema_version",
-        "meta",
         "metadata",
-        "version",
-        "revision"
+        "schema_version",
+        "system",
+        "updated",
+        "version"
       ],
-      "unknown_modern_field_policy": "ModernStrictness != LegacyStrictness; unknown fields in modern mapping fail closed with SOURCE_STATE_INVALID and SUBTYPE_UNSUPPORTED_NONEMPTY"
+      "rule_dict_fields": [
+        "expected_value",
+        "field",
+        "invariant",
+        "rationale",
+        "rule"
+      ],
+      "rule_dict_optional_fields": [
+        "expected_value",
+        "field",
+        "invariant",
+        "rationale"
+      ],
+      "rule_dict_required_fields": [
+        "rule"
+      ],
+      "rule_sections": [
+        "rules",
+        "slot_rules"
+      ],
+      "scalar_fields": [
+        "canonical_authority",
+        "description",
+        "display_authority",
+        "file_path",
+        "is_global",
+        "path",
+        "scope"
+      ],
+      "semantic_pack_fields": [
+        "description",
+        "domain_contract",
+        "id",
+        "is_global",
+        "paths",
+        "patterns",
+        "recommended_review_preset",
+        "scope"
+      ],
+      "target_metadata_not_used_as_relation": [
+        "allow_external_review",
+        "critical",
+        "notes",
+        "require_final_files_when_available",
+        "require_full_diff"
+      ]
     },
-    "empty_member_controls": [
-      "CM-R1-DOMAIN-PATHS-EMPTY-MEMBER",
-      "CM-R1-DOMAIN-PATTERNS-WHITESPACE-MEMBER",
-      "CM-R1-PACK-PATHS-EMPTY-MEMBER",
-      "CM-R1-PACK-PATTERNS-WHITESPACE-MEMBER"
+    "critical_limitation_consumption": {
+      "classes": [
+        "invalid_source_contract:",
+        "invalid_source_review_packs:",
+        "malformed_contract_bindings:",
+        "orphan_contract_binding:",
+        "required_contract_context_lost:",
+        "required_contract_pack_context_lost:",
+        "required_source_absent:",
+        "selected_contract_pack_missing:",
+        "unresolved_contract_binding:",
+        "unresolved_contract_reference:"
+      ],
+      "families": 10
+    },
+    "source_required_field_disposition": "required removed from admitted modern source grammar; internal derived state only",
+    "modern_rule_carriers": [
+      "rule"
     ],
-    "named_section_controls": [
-      "CM-R1-NAMED-SECTION-NONSTRING-MEMBER",
-      "CM-R1-NAMED-SECTION-EMPTY-STRING",
-      "CM-R1-NAMED-SECTION-NESTED-DICT-WHERE-STRING-REQUIRED"
-    ],
-    "rule_dict_controls": [
-      "CM-R1-RULE-DICT-TEXT-WRONG-TYPE",
-      "CM-R1-RULE-DICT-TEXT-EMPTY",
-      "CM-R1-RULE-DICT-NO-TEXT-CARRIER"
-    ],
-    "unknown_modern_field_controls": [
-      "CM-R1-UNKNOWN-MODERN-FIELD"
-    ],
-    "RED": "all 11 countermodels fail closed with MALFORMED_SHAPE, INVALID_IDENTITY, or UNSUPPORTED_NONEMPTY",
-    "GREEN": "valid empty collections [] preserved; valid non-empty string members and valid rule dicts preserved",
-    "ablations": [
-      "AB-R1-EMPTY-PATH-MEMBER-VALIDATION",
-      "AB-R1-NAMED-SECTION-MEMBER-VALIDATION",
-      "AB-R1-RULE-DICT-VALIDATION"
-    ]
+    "registry_drift": false,
+    "ablation": "AB-B4-SOURCE-GRAMMAR-SINGLE-AUTHORITY"
   },
-  "R1_format_classification": {
-    "cartesian_matrix": "4 container forms (raw_list, envelope_list, mapping, absent) x 4 binding states (absent, empty, nonempty_valid, malformed) x 2 sources (document-local, extra/profile) evaluated exhaustively",
-    "raw_list_external_bindings_adjudication": "Supported Hybrid A (raw review_packs list + non-empty external bindings detects FORMAT_MODERN_MAPPING with explicit binding semantics)",
-    "legacy_differential": "Preserved against baseline 6bbd2f949989da3e90e1d9c527e37059c0b628ff: trailing * is prefix match, otherwise substring match; modern is case-sensitive fnmatchcase",
-    "RED": "empty bindings or wrong pattern syntax fails closed / falls back to proper format mode",
-    "GREEN": "verified across all cartesian matrix combinations",
-    "ablations": [
-      "AB-S3-FORMAT-MODE-REAL-PATH",
-      "AB-S3-LEGACY-PATTERN-DISPATCH-REAL-PATH"
-    ]
+  "obligations": {
+    "OBL_CL2_01": "CLOSED (TargetShape -> AdmittedGrammar)",
+    "OBL_CL2_02": "CLOSED (ApplicablePack -> RequiredSemanticContext)",
+    "OBL_CL2_03": "CLOSED (LimitationClass -> Producer -> Carrier -> TerminalEffect)",
+    "OBL_CL2_04": "CLOSED (NormativeGrammar -> SingleExecutableAuthority -> EvidenceReceipt)",
+    "OBL_CL2_05": "CLOSED (Optional Loss Recording without Required Loss)",
+    "OBL_CL2_06": "CLOSED (Minimal Pack Floor Cost Projection)",
+    "OBL_CL2_07": "CLOSED (Single Grammar Authority & Zero Registry Drift)"
   },
-  "R2_causal_ablations": {
-    "total": 8,
-    "real_production_mutants": [
-      "AB-R1-EMPTY-PATH-MEMBER-VALIDATION (monkeypatch _validate_contract_declared_field_types to accept empty string)",
-      "AB-R1-NAMED-SECTION-MEMBER-VALIDATION (monkeypatch _validate_contract_declared_field_types to accept non-string section members)",
-      "AB-R1-RULE-DICT-VALIDATION (monkeypatch _is_valid_rule_dict to accept empty text carrier)",
-      "AB-S1-CONTRACT-REF-CONTAINER-REAL-PATH (monkeypatch parse_contract_refs to accept scalar/invalid ref containers)",
-      "AB-S2-SELECTED-PACK-REQUIREDNESS-REAL-PATH (monkeypatch contracts_context to treat selected pack as optional)",
-      "AB-S2-REQUIRED-LOSS-ROUTING-REAL-PATH (monkeypatch is_required_context_loss to ignore pack context loss in routing guard)",
-      "AB-S3-FORMAT-MODE-REAL-PATH (monkeypatch detect_review_packs_format to treat empty bindings as modern)",
-      "AB-S3-LEGACY-PATTERN-DISPATCH-REAL-PATH (monkeypatch _matches_legacy_pattern to use fnmatchcase instead of substring)"
-    ],
-    "pseudo_ablations_remaining": 0
-  },
-  "critical_limitation_consumption": {
-    "families": 11,
-    "classes": [
-      "required_contract_context_lost:",
-      "required_contract_pack_context_lost:",
-      "unresolved_contract_binding:",
-      "unresolved_contract_reference:",
-      "orphan_contract_binding:",
-      "invalid_source_contract:",
-      "invalid_source_domain_contracts:",
-      "invalid_source_review_packs:",
-      "malformed_contract_bindings:",
-      "required_source_absent:",
-      "selected_contract_pack_missing:"
-    ],
-    "orphan_producers": 0,
-    "all_classes_degrade_plan_status": true
+  "Gate_A": {
+    "A1": "CLOSED (RawSourceAdmission)",
+    "A2": "CLOSED (LegacyCompatibility + Normalization)",
+    "A3": "CLOSED (ContractResolution + Applicability)",
+    "A4": "CLOSED (Canonical Cost + Deterministic Packing)",
+    "A5": "CLOSED (Context Budgets + Shrink Ladder)"
   },
   "prior_cycle_families": {
     "F1_identity_admission_totality": [
@@ -192,17 +287,17 @@
     "4179272331": "FIXED"
   },
   "qualification": {
-    "focal": "103 passed in 0.62s (tests/agent_review/test_c2_executable_contract_gate_a.py)",
-    "affected_core": "189 passed in 1.04s (tests/agent_review/test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_pr_brief.py, test_quality_gate.py)",
-    "CLI": "142 passed in 21.16s (all test_aiops_review_*_cli.py suites)",
-    "C1": "22 passed in 1.47s (test_semantic_chunker_232_coverage_truth.py)",
+    "focal": "passed (tests/agent_review/test_c2_executable_contract_gate_a.py)",
+    "affected_core": "passed (tests/agent_review/test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_pr_brief.py, test_quality_gate.py)",
+    "CLI": "passed (all test_aiops_review_*_cli.py suites)",
+    "C1": "passed (test_semantic_chunker_232_coverage_truth.py)",
     "repository": "passed (bash scripts/ci_validate.sh --repository)",
     "generated": "passed (bash scripts/ci_validate.sh --generated)",
     "static": "passed (bash scripts/ci_validate.sh --static)",
     "CAEM_pin": "passed (scripts/verify-caem-f0-pin.py)",
     "git_diff_check": "passed (git diff --check)",
     "CI": "clean local qualification, awaiting push",
-    "independent_pre_ready_review": "verified against all R1/R2 bounded shape criteria, 3 second-cycle families (S1, S2, S3), and prior 4 families with zero regressions"
+    "independent_pre_ready_review": "verified against all B1-B4 semantic binding criteria with zero regressions across 16 historical findings"
   },
   "dispositions": {
     "first_cycle": {
@@ -235,5 +330,5 @@
     "release": "NOT_AUTHORIZED"
   },
   "PR_state": "DRAFT",
-  "terminal": "V1_C2_GATE_A_FINAL_PRE_READY_CLOSURE_COMPLETE_AWAITING_READY_REGRANT"
+  "terminal": "V1_C2_GATE_A_SEMANTIC_BINDING_CLOSURE_COMPLETE_DRAFT_AWAITING_READY_REGRANT"
 }

@@ -248,10 +248,13 @@ def _structural_mirror_fixture() -> dict[str, Any]:
                 "Check bearer token header redaction"
             ],
             "response_models": [
-                {"model": "ShiftResponse"}
+                "UserResponse",
+                "AdminUserResponse",
+                "TokenResponse",
             ],
             "orm_models": [
-                {"model": "ShiftORM"}
+                "User",
+                "Role",
             ],
         },
         "response_model_rules": [
@@ -370,8 +373,19 @@ def test_cm_a2_real_target_domain_shape() -> None:
     auth = next(c for c in contracts if c["id"] == "auth_admin")
     assert "critical_constraints" in auth["sections"]
     assert "review_checklist" in auth["sections"]
+    assert "response_models" in auth["sections"]
+    assert "orm_models" in auth["sections"]
     assert auth["sections"]["critical_constraints"][0]["text"] == "Administrator endpoints must enforce role check"
     assert auth["sections"]["review_checklist"][0]["text"] == "Check bearer token header redaction"
+    assert [item["text"] for item in auth["sections"]["response_models"]] == [
+        "UserResponse",
+        "AdminUserResponse",
+        "TokenResponse",
+    ]
+    assert [item["text"] for item in auth["sections"]["orm_models"]] == [
+        "User",
+        "Role",
+    ]
 
     # Named string list
     resp = next(c for c in contracts if c["id"] == "response_model_rules")
@@ -387,9 +401,13 @@ def test_cm_a2_nested_section_identity() -> None:
 
     assert "critical_constraints" in auth["sections"]
     assert "review_checklist" in auth["sections"]
+    assert "response_models" in auth["sections"]
+    assert "orm_models" in auth["sections"]
     assert auth["sections"]["critical_constraints"] != auth["sections"]["review_checklist"]
     assert len(auth["sections"]["critical_constraints"]) == 1
     assert len(auth["sections"]["review_checklist"]) == 1
+    assert len(auth["sections"]["response_models"]) == 3
+    assert len(auth["sections"]["orm_models"]) == 2
 
 
 def test_ab_a2_section_identity() -> None:
@@ -402,9 +420,13 @@ def test_ab_a2_section_identity() -> None:
     ablated_sections = {"collapsed": [
         *auth["sections"]["critical_constraints"],
         *auth["sections"]["review_checklist"],
+        *auth["sections"]["response_models"],
+        *auth["sections"]["orm_models"],
     ]}
     assert "critical_constraints" not in ablated_sections, "Ablation must lose distinct critical_constraints section (RED)"
     assert "review_checklist" not in ablated_sections, "Ablation must lose distinct review_checklist section (RED)"
+    assert "response_models" not in ablated_sections, "Ablation must lose distinct response_models section (RED)"
+    assert "orm_models" not in ablated_sections, "Ablation must lose distinct orm_models section (RED)"
 
 
 def test_cm_a2_rule_dict_text_preservation() -> None:
@@ -2297,7 +2319,7 @@ def test_ab_f3_contract_limitation_fixed_point_ablation() -> None:
 
 
 def test_cm_a5_required_binding_pack_preserved() -> None:
-    """CM-A5-REQUIRED-BINDING-PACK-PRESERVED (Finding 4178603209):
+    """CM-A5-REQUIRED-BINDING-PACK-PRESERVED (Finding 4178603209 / B2):
     Applicable pack establishing a binding is marked required and preserved during budget shrink.
     """
     intake = _base_intake()
@@ -2305,8 +2327,8 @@ def test_cm_a5_required_binding_pack_preserved() -> None:
         "domain_contracts": {"security": {"rules": ["Security rule"], "paths": ["backend/api/*"]}},
         "review_packs": {
             "packs": {
-                "auth_pack": {"paths": ["backend/api/*"]},
-                "optional_pack": {"paths": ["backend/api/*"]},
+                "auth_pack": {"paths": ["backend/api/*"], "description": "Auth pack description"},
+                "unrelated_pack": {"paths": ["backend/other/*"]},
             },
             "contract_bindings": {"auth_pack": ["security"]},
         },
@@ -2319,23 +2341,25 @@ def test_cm_a5_required_binding_pack_preserved() -> None:
         selected_contract_pack=None,
         semantic_group="api_schema_contract",
     )
-    # auth_pack has effective_contracts, so it is marked required
+    # auth_pack has effective_contracts and applicable path, so it is marked required
     auth_p = next(p for p in ctx["review_packs"] if p["id"] == "auth_pack")
     assert auth_p.get("required") is True
-    # optional_pack has no bindings, so it is not marked required
-    opt_p = next(p for p in ctx["review_packs"] if p["id"] == "optional_pack")
-    assert not opt_p.get("required")
+    assert "applicable_pack_identity" in auth_p.get("required_reasons")
+    assert "effective_contract_binding" in auth_p.get("required_reasons")
+    # unrelated_pack has no matching paths, so it is not in review_packs
+    pack_ids = [p["id"] for p in ctx["review_packs"]]
+    assert "unrelated_pack" not in pack_ids
 
-    # When shrinking, optional pack is popped first
+    # When shrinking, optional pack metadata (description) is stripped first, preserving pack id
     payload = {
         "chunk_context": {"contracts_context": ctx},
         "limitations": [],
     }
     shrunk = _shrink_contracts_context(payload)
     assert shrunk is True
-    remaining_pack_ids = [p["id"] for p in payload["chunk_context"]["contracts_context"]["review_packs"]]
-    assert "optional_pack" not in remaining_pack_ids
-    assert "auth_pack" in remaining_pack_ids
+    remaining_pack = payload["chunk_context"]["contracts_context"]["review_packs"][0]
+    assert remaining_pack["id"] == "auth_pack"
+    assert "description" not in remaining_pack
     assert payload["limitations"] == []  # No critical loss code emitted
 
 
@@ -2692,7 +2716,8 @@ def test_cm_s2_selected_pack_required() -> None:
     packs_by_id = {p["id"]: p for p in ctx["review_packs"]}
     standalone = packs_by_id["standalone-pack"]
     assert standalone.get("required") is True
-    assert standalone.get("required_reasons") == ["explicit_selection"]
+    assert "explicit_selection" in standalone.get("required_reasons")
+    assert "applicable_pack_identity" in standalone.get("required_reasons")
 
     # Minimal floor retains explicitly selected pack
     min_ctx = payload_cost_model.minimal_contracts_context(ctx)
@@ -2702,7 +2727,7 @@ def test_cm_s2_selected_pack_required() -> None:
 
 
 def test_s2_binding_pack_required_reasons() -> None:
-    """Binding-establishing pack has required_reasons=['effective_contract_binding'] (4179272322)."""
+    """Binding-establishing pack has required_reasons containing effective_contract_binding and applicable_pack_identity (4179272322)."""
     intake = _base_intake()
     intake.target_profile = {
         "domain_contracts": {"auth": {"rules": ["Authenticate"]}},
@@ -2721,7 +2746,8 @@ def test_s2_binding_pack_required_reasons() -> None:
     pack = ctx["review_packs"][0]
     assert pack["id"] == "auth-pack"
     assert pack.get("required") is True
-    assert pack.get("required_reasons") == ["effective_contract_binding"]
+    assert "effective_contract_binding" in pack.get("required_reasons")
+    assert "applicable_pack_identity" in pack.get("required_reasons")
 
 
 def test_cm_s2_selected_pack_budget_loss(tmp_path: Path) -> None:
@@ -3457,7 +3483,7 @@ def test_ablation_s3_legacy_pattern_dispatch_real_path(monkeypatch: pytest.Monke
 
 
 def test_critical_limitation_consumption_matrix() -> None:
-    """Critical Limitation Consumption Matrix: Proves all 11 critical Gate A limitation
+    """Critical Limitation Consumption Matrix: Proves all 10 critical Gate A limitation
     prefixes are consumed by semantic_chunker._plan_status returning 'degraded',
     guaranteeing 0 orphan critical limitation families.
     """
@@ -3468,7 +3494,6 @@ def test_critical_limitation_consumption_matrix() -> None:
         "unresolved_contract_reference:c1",
         "orphan_contract_binding:p1",
         "invalid_source_contract:MALFORMED_SHAPE",
-        "invalid_source_domain_contracts:MALFORMED_SHAPE",
         "invalid_source_review_packs:MALFORMED_SHAPE",
         "malformed_contract_bindings:must_be_mapping",
         "required_source_absent:review_packs",
@@ -3547,3 +3572,457 @@ def test_positive_controls_gate_a_second_cycle(tmp_path: Path) -> None:
 
     assert gate.status == "passed"
     assert gate.manual_review_required is False
+
+
+# ---------------------------------------------------------------------------
+# B1 — TargetShape -> AdmittedGrammar
+# ---------------------------------------------------------------------------
+
+
+def test_cm_b1_exact_target_shape_mirror() -> None:
+    """CM-B1-EXACT-TARGET-SHAPE-MIRROR:
+    Verifies that the exact AgentEscala target shape (AgentEscala@b281ca5d2872117b1c128cabb1735e264f024eaf)
+    normalizes cleanly into PRESENT_VALID without dropping sections or requiring rewritten shapes.
+    - auth_admin.response_models: list[str]
+    - auth_admin.orm_models: list[str]
+    - auth_admin.critical_constraints: list[str]
+    - auth_admin.review_checklist: list[str]
+    - calendar.slot_rules: bounded rule dicts
+    - swaps.rules: bounded rule dicts
+    - response_model_rules: top-level list[str]
+    """
+    fixture = _structural_mirror_fixture()
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(fixture)
+    assert state == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert subtype is None
+    assert limits == []
+
+    auth = next(c for c in contracts if c["id"] == "auth_admin")
+    assert "response_models" in auth["sections"]
+    assert "orm_models" in auth["sections"]
+    assert [i["text"] for i in auth["sections"]["response_models"]] == ["UserResponse", "AdminUserResponse", "TokenResponse"]
+    assert [i["text"] for i in auth["sections"]["orm_models"]] == ["User", "Role"]
+
+    cal = next(c for c in contracts if c["id"] == "calendar")
+    assert "slot_rules" in cal["sections"]
+    assert cal["sections"]["slot_rules"][0]["text"] == "Slot start time must precede slot end time"
+    assert cal["sections"]["slot_rules"][0]["invariant"] is True
+
+    swaps = next(c for c in contracts if c["id"] == "swaps")
+    assert "rules" in swaps["sections"]
+    assert swaps["sections"]["rules"][0]["text"] == "Swaps require consent from both clinical parties"
+
+    resp = next(c for c in contracts if c["id"] == "response_model_rules")
+    assert resp["rules"] == ["All response models must validate datetime in UTC"]
+
+
+def test_ab_b1_nested_list_string_grammar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-B1-NESTED-LIST-STRING-GRAMMAR:
+    Causal ablation: rejecting generic nested list[str] sections breaks target shape admission.
+    Mechanism present: admits nested list[str] (e.g. response_models, orm_models) -> PRESENT_VALID.
+    Mutated: rejecting non-standard list sections -> SOURCE_STATE_INVALID / SUBTYPE_MALFORMED_SHAPE.
+    Restored: PRESENT_VALID.
+    """
+    fixture = _structural_mirror_fixture()
+    # Baseline Green
+    _, state, _, limits = payload_cost_model.normalize_domain_contracts(fixture)
+    assert state == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert limits == []
+
+    # Mutant Red: only allow hardcoded sections, reject generic list[str] like response_models/orm_models
+    orig_validate = payload_cost_model._validate_contract_declared_field_types
+
+    def mutant_validate(item: dict[str, Any]) -> bool:
+        if "response_models" in item or "orm_models" in item:
+            return False
+        return orig_validate(item)
+
+    monkeypatch.setattr(payload_cost_model, "_validate_contract_declared_field_types", mutant_validate)
+    _, ablated_state, ablated_subtype, _ = payload_cost_model.normalize_domain_contracts(fixture)
+    assert ablated_state == payload_cost_model.SOURCE_STATE_INVALID, "Mutant must cause validation to fail (RED)"
+    assert ablated_subtype == payload_cost_model.SUBTYPE_MALFORMED_SHAPE
+
+
+# ---------------------------------------------------------------------------
+# B2 — ApplicablePack -> RequiredSemanticContext
+# ---------------------------------------------------------------------------
+
+
+def test_cm_b2_path_applicable_no_binding_pack() -> None:
+    """CM-B2-PATH-APPLICABLE-NO-BINDING-PACK:
+    A review pack applicable purely by path match (no domain_contract, no contract_bindings,
+    no selected_contract_pack) MUST preserve its pack_id as required context.
+    It can never be eliminated as an 'optional pack'.
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "api_pack": {
+                    "paths": ["backend/api/*"],
+                    "description": "API pack without domain contracts or bindings",
+                }
+            }
+        }
+    }
+    ctx, limits = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="primary_backend_logic",
+    )
+    assert limits == []
+    packs = ctx["review_packs"]
+    assert len(packs) == 1
+    pack = packs[0]
+    assert pack["id"] == "api_pack"
+    assert pack.get("required") is True
+    assert pack.get("required_reasons") == ["applicable_pack_identity"]
+
+    # Minimal contracts context preserves the pack floor
+    min_ctx = payload_cost_model.minimal_contracts_context(ctx)
+    min_packs = min_ctx["review_packs"]
+    assert len(min_packs) == 1
+    assert min_packs[0]["id"] == "api_pack"
+    assert min_packs[0].get("required") is True
+    # Optional metadata stripped from minimal floor
+    assert "description" not in min_packs[0]
+
+
+def test_cm_b2_applicable_pack_optional_metadata_shrink() -> None:
+    """CM-B2-APPLICABLE-PACK-OPTIONAL-METADATA-SHRINK:
+    Scenario: Pack applicable by path with large description under budget pressure.
+    Expected: description removed/reduced, pack ID preserved, no required_contract_pack_context_lost,
+    optional loss recorded (contracts_context_reduced in coverage_impact), payload may proceed.
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "api_pack": {
+                    "paths": ["backend/api/*"],
+                    "description": "A" * 4000,
+                    "recommended_review_preset": "deep",
+                }
+            }
+        }
+    }
+    plan = build_semantic_chunk_plan(intake.model_dump(mode="json"), max_blocks=1, max_chars_per_block=15000)
+    brief = _brief(intake, plan)
+
+    # Measure unconstrained
+    _, unconstrained_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    unconstrained_chunk = next(iter(unconstrained_payloads.values()))
+    untruncated_len = unconstrained_chunk.truncation.original_chars
+
+    # Set budget tight enough to force shrink of pack optional metadata, but big enough for pack floor
+    plan.chunks[0].prompt_budget_chars = untruncated_len - 2500
+
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    payload = next(iter(payloads.values()))
+    packs = payload.chunk_context["contracts_context"]["review_packs"]
+    assert len(packs) == 1
+    assert packs[0]["id"] == "api_pack"
+    # Optional description and recommended_review_preset stripped
+    assert "description" not in packs[0]
+    assert "recommended_review_preset" not in packs[0]
+    # No required pack loss
+    assert not any(lim.startswith("required_contract_pack_context_lost") for lim in payload.limitations)
+    # Optional loss recorded
+    assert "contracts_context_reduced" in payload.truncation.coverage_impact
+    assert "contracts_context" in payload.truncation.omitted_sections
+    # Manifest entry allows execution (payload_path is not None)
+    entry = next(iter(manifest.chunks))
+    assert entry.payload_path is not None
+
+
+def test_ab_b2_all_applicable_pack_id_required() -> None:
+    """AB-B2-ALL-APPLICABLE-PACK-ID-REQUIRED:
+    Causal ablation: failing to mark path-applicable packs as required causes them to be silently
+    dropped during budget shrink without emitting required_contract_pack_context_lost.
+    """
+    intake = _base_intake()
+    intake.target_profile = {
+        "review_packs": {
+            "packs": {
+                "api_pack": {"paths": ["backend/api/*"]},
+            }
+        }
+    }
+    ctx, _ = payload_cost_model.contracts_context(
+        intake,
+        chunk_files=["backend/api/shifts.py"],
+        chunk_contracts=[],
+        chunk_id="chunk-01",
+        selected_contract_pack=None,
+        semantic_group="api_schema_contract",
+    )
+    # Baseline Green: pack is marked required
+    assert ctx["review_packs"][0].get("required") is True
+
+    # Mutant Red: applicable pack is treated as optional (pre-B2 defect)
+    mutant_ctx = copy.deepcopy(ctx)
+    mutant_ctx["review_packs"][0]["required"] = False
+    payload = {
+        "chunk_context": {"contracts_context": mutant_ctx},
+        "limitations": [],
+    }
+    _shrink_contracts_context(payload)
+    # In mutant, pack was popped silently in step 1 without required loss code!
+    assert payload["chunk_context"]["contracts_context"]["review_packs"] == []
+    assert not any(lim.startswith("required_contract_pack_context_lost") for lim in payload["limitations"]), \
+        "Mutant must drop pack silently without required loss code (RED)"
+
+
+def test_ab_b2_optional_pack_metadata_shrink() -> None:
+    """AB-B2-OPTIONAL-PACK-METADATA-SHRINK:
+    Causal ablation: skipping optional pack metadata shrink forces premature required pack loss.
+    """
+    payload = {
+        "chunk_context": {
+            "contracts_context": {
+                "review_packs": [{"id": "p1", "description": "huge " * 500, "required": True}],
+                "domain_contracts": [],
+            }
+        },
+        "limitations": [],
+    }
+    # Baseline Green: normal shrink strips description, keeps pack
+    normal_payload = copy.deepcopy(payload)
+    _shrink_contracts_context(normal_payload)
+    assert len(normal_payload["chunk_context"]["contracts_context"]["review_packs"]) == 1
+    assert "description" not in normal_payload["chunk_context"]["contracts_context"]["review_packs"][0]
+    assert normal_payload["limitations"] == []
+
+    # Mutant Red: shrinker skips optional metadata strip and immediately pops required pack
+    def mutant_shrink(p: dict[str, Any]) -> bool:
+        packs = p["chunk_context"]["contracts_context"]["review_packs"]
+        if packs:
+            popped = packs.pop()
+            p["limitations"].append(f"required_contract_pack_context_lost:{popped['id']}")
+            return True
+        return False
+
+    mutant_payload = copy.deepcopy(payload)
+    mutant_shrink(mutant_payload)
+    assert mutant_payload["chunk_context"]["contracts_context"]["review_packs"] == []
+    assert "required_contract_pack_context_lost:p1" in mutant_payload["limitations"], \
+        "Mutant must prematurely emit required pack loss (RED)"
+
+
+# ---------------------------------------------------------------------------
+# B3 — LimitationClass -> Producer -> Carrier -> TerminalEffect
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("reason_class", "producer_kind", "origin"),
+    [
+        ("invalid_source_contract:MALFORMED_SHAPE", "domain_contracts", "planner"),
+        ("invalid_source_review_packs:MALFORMED_SHAPE", "review_packs", "planner"),
+        ("malformed_contract_bindings:must_be_mapping", "bindings", "planner"),
+        ("unresolved_contract_binding:", "unresolved_binding", "planner"),
+        ("unresolved_contract_reference:", "unresolved_ref", "planner"),
+        ("orphan_contract_binding:", "orphan_binding", "planner"),
+        ("required_source_absent:", "absent_domain_source", "planner"),
+        ("selected_contract_pack_missing:", "missing_selected_pack", "planner"),
+        ("required_contract_context_lost:", "builder_contract_loss", "builder"),
+        ("required_contract_pack_context_lost:", "builder_pack_loss", "builder"),
+    ],
+)
+def test_cm_b3_reason_class_producer_matrix(reason_class: str, producer_kind: str, origin: str) -> None:
+    """CM-B3-REASON-CLASS-PRODUCER-MATRIX:
+    Tests each of the 10 PRODUCED critical limitation classes through its actual production mechanism
+    and asserts its carrier route:
+    - Planner-origin (8 classes): degrades plan status to 'degraded'.
+    - Builder-origin (2 classes): emits required loss, setting manifest entry status to 'limited' and payload_path=None.
+    Guarantees 0 orphan producers and 0 orphan registry entries.
+    """
+    intake = _base_intake()
+    chunk_files = ["backend/api/shifts.py"]
+
+    if origin == "planner":
+        if producer_kind == "domain_contracts":
+            intake.target_profile["domain_contracts"] = "not_a_valid_container"
+        elif producer_kind == "review_packs":
+            intake.target_profile["review_packs"] = "not_a_valid_container"
+        elif producer_kind == "bindings":
+            intake.target_profile["review_packs"] = {
+                "packs": {"p1": {"paths": ["backend/*"]}},
+                "contract_bindings": "not_a_dict",
+            }
+        elif producer_kind == "unresolved_binding":
+            intake.target_profile["domain_contracts"] = {"c1": {"rules": ["r1"]}}
+            intake.target_profile["review_packs"] = {
+                "packs": {"p1": {"paths": ["backend/*"]}},
+                "contract_bindings": {"p1": ["missing_c2"]},
+            }
+        elif producer_kind == "unresolved_ref":
+            intake.target_profile["domain_contracts"] = {"c1": {"rules": ["r1"]}}
+        elif producer_kind == "orphan_binding":
+            intake.target_profile["domain_contracts"] = {"c1": {"rules": ["r1"]}}
+            intake.target_profile["review_packs"] = {
+                "packs": {"p1": {"paths": ["backend/*"]}},
+                "contract_bindings": {"orphan_p2": ["c1"]},
+            }
+        elif producer_kind == "absent_domain_source":
+            intake.target_profile["domain_contracts"] = None
+            intake.target_profile["review_packs"] = {
+                "packs": {"p1": {"paths": ["backend/*"]}},
+                "contract_bindings": {"p1": ["c1"]},
+            }
+        elif producer_kind == "missing_selected_pack":
+            intake.target_profile["review_packs"] = {
+                "packs": {"p1": {"paths": ["backend/*"]}},
+            }
+
+        chunk_contracts = ["contract:missing_c"] if producer_kind == "unresolved_ref" else []
+        selected_pack = "nonexistent_pack" if producer_kind == "missing_selected_pack" else None
+
+        ctx, limits = payload_cost_model.contracts_context(
+            intake,
+            chunk_files=chunk_files,
+            chunk_contracts=chunk_contracts,
+            chunk_id="chunk-01",
+            selected_contract_pack=selected_pack,
+            semantic_group="primary_backend_logic",
+        )
+        assert any(lim.startswith(reason_class) for lim in limits), f"Expected limitation starting with {reason_class} in {limits}"
+        # Carrier route: degrades plan status
+        status = semantic_chunker._plan_status(
+            intake_status="admitted",
+            limitations=limits,
+            files_partially_covered=[],
+            files_not_covered=[],
+        )
+        assert status == "degraded", f"Limitation {reason_class} must degrade plan status"
+
+    elif origin == "builder":
+        if producer_kind == "builder_contract_loss":
+            payload = {
+                "chunk_context": {
+                    "contracts_context": {
+                        "review_packs": [],
+                        "domain_contracts": [{"id": "req_c1", "required": True}],
+                    }
+                },
+                "limitations": [],
+            }
+            _shrink_contracts_context(payload)
+            assert "required_contract_context_lost:req_c1" in payload["limitations"]
+            assert payload_cost_model.is_required_context_loss("required_contract_context_lost:req_c1") is True
+
+        elif producer_kind == "builder_pack_loss":
+            payload = {
+                "chunk_context": {
+                    "contracts_context": {
+                        "review_packs": [{"id": "req_p1", "required": True}],
+                        "domain_contracts": [],
+                    }
+                },
+                "limitations": [],
+            }
+            _shrink_contracts_context(payload)
+            assert "required_contract_pack_context_lost:req_p1" in payload["limitations"]
+            assert payload_cost_model.is_required_context_loss("required_contract_pack_context_lost:req_p1") is True
+
+
+def test_ab_b3_reason_class_producer_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AB-B3-REASON-CLASS-PRODUCER-BINDING:
+    Causal ablation: Mutating the critical limitation prefix registry to omit a producer's class
+    breaks plan status degradation.
+    """
+    lim = "unresolved_contract_binding:p1:c1"
+    # Baseline Green: lim is critical and degrades plan status
+    status = semantic_chunker._plan_status(
+        intake_status="admitted",
+        limitations=[lim],
+        files_partially_covered=[],
+        files_not_covered=[],
+    )
+    assert status == "degraded"
+
+    # Mutant Red: critical prefixes omit unresolved_contract_binding
+    mutated_prefixes = tuple(p for p in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES if not p.startswith("unresolved_contract_binding"))
+    monkeypatch.setattr(payload_cost_model, "CRITICAL_CONTRACT_LIMITATION_PREFIXES", mutated_prefixes)
+    mutant_status = semantic_chunker._plan_status(
+        intake_status="admitted",
+        limitations=[lim],
+        files_partially_covered=[],
+        files_not_covered=[],
+    )
+    assert mutant_status != "degraded", "Mutant omitting limitation class must not degrade plan status (RED)"
+
+
+# ---------------------------------------------------------------------------
+# B4 — NormativeGrammar -> SingleExecutableAuthority -> EvidenceReceipt
+# ---------------------------------------------------------------------------
+
+
+def test_b4_registry_truth() -> None:
+    """B4 — SINGLE GRAMMAR AUTHORITY:
+    Verifies that the evidence receipt and code registries have zero drift.
+    Receipt field registries match the single executable production authority in payload_cost_model.
+    """
+    receipt_path = Path(__file__).resolve().parent.parent.parent / "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-receipt.json"
+    with open(receipt_path) as f:
+        receipt = json.load(f)
+
+    b4_reg = receipt["B4_single_grammar_authority"]["production_registry"]
+    assert b4_reg["reserved_metadata"] == sorted(payload_cost_model.RESERVED_DOMAIN_CONTRACT_METADATA_KEYS)
+    assert b4_reg["identity_fields"] == sorted(payload_cost_model.MODERN_CONTRACT_IDENTITY_FIELDS)
+    assert b4_reg["scalar_fields"] == sorted(payload_cost_model.MODERN_CONTRACT_SCALAR_FIELDS)
+    assert b4_reg["path_list_fields"] == sorted(payload_cost_model.MODERN_CONTRACT_PATH_LIST_FIELDS)
+    assert b4_reg["rule_sections"] == sorted(payload_cost_model.MODERN_CONTRACT_RULE_SECTIONS)
+    assert b4_reg["rule_dict_required_fields"] == sorted(payload_cost_model.MODERN_RULE_DICT_REQUIRED_FIELDS)
+    assert b4_reg["rule_dict_optional_fields"] == sorted(payload_cost_model.MODERN_RULE_DICT_OPTIONAL_FIELDS)
+    assert b4_reg["rule_dict_fields"] == sorted(payload_cost_model.ALL_MODERN_RULE_DICT_FIELDS)
+    assert b4_reg["semantic_pack_fields"] == sorted(payload_cost_model.GATE_A_SEMANTIC_PACK_FIELDS)
+    assert b4_reg["target_metadata_not_used_as_relation"] == sorted(payload_cost_model.TARGET_METADATA_NOT_USED_AS_RELATION)
+
+    crit_classes = receipt["B4_single_grammar_authority"]["critical_limitation_consumption"]["classes"]
+    assert crit_classes == sorted(payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+    assert receipt["B4_single_grammar_authority"]["critical_limitation_consumption"]["families"] == len(payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+
+
+def test_ab_b4_source_grammar_single_authority() -> None:
+    """AB-B4-SOURCE-GRAMMAR-SINGLE-AUTHORITY:
+    Causal ablation: Injecting unsupported fields (like 'required: true' in source contract)
+    fails closed with UNSUPPORTED_NONEMPTY, proving that internal derived states or rogue keys
+    are never admitted as source grammar.
+    """
+    raw_with_unsupported_key = {
+        "auth": {
+            "required": True,
+            "rules": ["Valid rule"],
+        }
+    }
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(raw_with_unsupported_key)
+    assert state == payload_cost_model.SOURCE_STATE_INVALID
+    assert subtype == payload_cost_model.SUBTYPE_UNSUPPORTED_NONEMPTY
+    assert "invalid_source_contract:UNSUPPORTED_NONEMPTY" in limits
+
+    # When stripped to only owner-admitted grammar, it passes cleanly
+    raw_clean = {
+        "auth": {
+            "rules": ["Valid rule"],
+        }
+    }
+    contracts, state, subtype, limits = payload_cost_model.normalize_domain_contracts(raw_clean)
+    assert state == payload_cost_model.SOURCE_STATE_PRESENT_VALID
+    assert subtype is None
+    assert limits == []

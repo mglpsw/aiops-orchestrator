@@ -647,7 +647,16 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
             if isinstance(item, dict) and not item.get("required"):
                 domain_contracts.pop(i)
                 return True
-    # 3. If only required review packs remain and shrink is forced:
+    # 3. Strip optional metadata from review_packs before dropping any required pack floor
+    if isinstance(packs, list):
+        for item in packs:
+            if isinstance(item, dict):
+                optional_keys = [k for k in item if k not in {"id", "effective_contracts", "required"}]
+                if optional_keys:
+                    for k in optional_keys:
+                        del item[k]
+                    return True
+    # 4. If only required review packs remain and shrink is forced:
     if isinstance(packs, list) and packs:
         popped = packs.pop()
         if isinstance(popped, dict):
