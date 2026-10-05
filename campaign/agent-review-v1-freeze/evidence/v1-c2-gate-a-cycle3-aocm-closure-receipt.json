@@ -27,8 +27,11 @@
   "successor": {
     "repair_commit": "4544cfdddda602009917f812d86d167d7e63f6f5",
     "repair_tree": "778ca93f39670df877488f143c63638cee81829f",
-    "sibling_closure_commit": "ea24a516cb89988f94e7dabc479b99c1847c3823",
-    "sibling_closure_tree": "455b63863c15bd24aaf28146401a5d4efe6d05a2",
+    "sibling_closure_commits": [
+      "ea24a516cb89988f94e7dabc479b99c1847c3823",
+      "4714dda8fa6cbfbee48f14667c97ef929b0e7350"
+    ],
+    "sibling_closure_tree": "2010be6081072dfc4fad250f7d0fb42c3217075e",
     "final_head": "BOUND_EXTERNALLY: PR.headRefOid (evidence-only commits follow the repair commit)"
   },
   "transversal_property": "Mode -> Grammar -> Normalization -> Identity -> Applicability -> Relation -> RequiredSource -> RequiredContext -> ObservableResult",
@@ -167,7 +170,7 @@
       "rows with neither id nor description (carry no context) are not admitted"
     ],
     "baseline_predicates": {
-      "live": 49,
+      "live": 52,
       "redundant": [
         "P.sel.id_eq",
         "P.sel.desc_eq"
@@ -284,8 +287,8 @@
     "differential_oracle": {
       "fixture": "tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json",
       "generator": "scripts/generate-v1-c2-legacy-differential-oracle.py",
-      "cases": 118,
-      "predicates": 52,
+      "cases": 134,
+      "predicates": 55,
       "shallow_ci_safe": true,
       "regeneration_check": "test_fixture_equals_a_fresh_generation_from_the_frozen_baseline (skipped without history)",
       "intentional_divergences": "unresolved explicit ref / missing selected pack / explicit ref without domain_contracts source: typed fail-closed limitations suppress the baseline's not_relevant (authority: cycle-1 4178603200, 4178603183)",
@@ -322,7 +325,7 @@
       "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
     },
     "identity": {
-      "legacy": "id optional; a description-only row is valid and its identity is never fabricated",
+      "legacy": "id optional; a description-only row is valid and its identity is never fabricated; only projected + adjudicated scope-bearing fields are typed (null = absent)",
       "modern": "mapping key is the sole identity; nested id unsupported",
       "classification": "INTENTIONAL",
       "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); OBL-CL2-02"
@@ -407,7 +410,8 @@
         "test_c2_executable_contract_gate_a.py::test_cm_a2_mapping_key_id_conflict"
       ],
       "4178603193": [
-        "test_c2_executable_contract_gate_a.py::test_cm_a3_malformed_pack_scope"
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_malformed_pack_scope",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c4_legacy_pack_admission_validates_only_projected_and_scope_fields"
       ],
       "4178603197": [
         "test_c2_executable_contract_gate_a.py::test_cm_a3_modern_exact_selection_and_legacy_equivalence"
@@ -511,6 +515,24 @@
       "F5": "fixture provenance is the pinned commit+blob plus the history-gated regeneration test; no in-fixture hash can be self-attesting; regeneration runs in full-history checkouts"
     }
   },
+  "independent_review_round_2": {
+    "subject": "acc53db9ac9947f7756972df325c046750f5f7c3",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (all inside the C4 legacy-firewall interface; no NEW_OBLIGATION_DOMAIN); repaired structurally in commit 4714dda8",
+    "common_cause": "legacy admission and legacy rows were not exactly the frozen baseline's projection",
+    "repaired": {
+      "1": "legacy pack admission validated modern-only/target-metadata fields: now only projected fields and the adjudicated scope-bearing declarations (paths, patterns, scope, is_global; findings 4178603193 / census R1) are typed for legacy packs, null = absent, target metadata ignored",
+      "2": "legacy contract rows are built by one projection equal to the baseline row (no rules/sections/authority fields/derived is_global); the oracle compares WHOLE emitted rows so any gained or lost field is observable; row-leak ablation added",
+      "3": "legacy typed strictness on PROJECTED structure (non-dict members, null envelope rules, malformed projected scalars) is declared INTENTIONAL: authority OBL-CL2-03 (invalid != present_valid), AGENTS.md:37-39 fail-closed schema, S1 4179272317; null projected fields are absent",
+      "4": "oracle completeness: display redaction/backslash normalization predicates, chunk_contracts token grammar, relevance join separator, emitted legacy packs carrying modern fields",
+      "5": "modern admission rejects any leading ~ segment (except the ~$ lock-file prefix) and DEL",
+      "6": "conflicting binding carriers compare order-insensitively"
+    },
+    "unverified_suspicions_not_actioned": [
+      "modern contract literally named 'rules' collides with legacy-envelope detection (predates this PR)",
+      "canonical_authority/display_authority carry no applicability",
+      "bidi/format characters in path identities"
+    ]
+  },
   "amended_predecessor_tests": [
     {
       "test": "test_cm_a3_exact_identity_boundary",
@@ -526,14 +548,14 @@
     }
   ],
   "qualification": {
-    "evidence_subject": "sibling-closure commit ea24a516cb89988f94e7dabc479b99c1847c3823 (tree 455b63863c15bd24aaf28146401a5d4efe6d05a2) on top of repair commit 4544cfdddda602009917f812d86d167d7e63f6f5; the evidence commit that follows changes only campaign/ evidence files",
+    "evidence_subject": "structural-closure commit 4714dda8fa6cbfbee48f14667c97ef929b0e7350 (tree 2010be6081072dfc4fad250f7d0fb42c3217075e) on top of sibling commit ea24a516 and repair commit 4544cfdd; the evidence commit that follows changes only campaign/ evidence files",
     "environment": "plain local clone (not a linked worktree); python 3.11.2, pytest 8.4.2 from the project venv; --basetemp outside any .git-bearing ancestor (sandbox has a stray /tmp/.git that trips the 'no AgentReview artifacts inside Git worktrees' guard: failure class environment)",
-    "focal": "577 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
-    "legacy_differential": "oracle 118 cases / 52 predicates GREEN; 45 of the first 86 observations diverged on the exact predecessor 4d7496a; a 14-variant wrong-implementation ablation turns the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
+    "focal": "633 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
+    "legacy_differential": "oracle 134 cases / 55 predicates GREEN with WHOLE-ROW observation; 45 of the first 86 observations diverged on the exact predecessor 4d7496a; wrong-implementation and row-leak ablations turn the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
     "affected_core": "267 passed (test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_semantic_chunker_225_red.py, test_pr_brief.py, test_quality_gate.py, test_final_synthesizer.py + C1 test_semantic_chunker_232_coverage_truth.py)",
     "CLI": "143 passed (all test_aiops_review_*_cli.py)",
     "C1": "included in affected_core (22 passed, test_semantic_chunker_232_coverage_truth.py)",
-    "full_agent_review_suite": "4137 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
+    "full_agent_review_suite": "4193 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
     "failure_classification": {
       "cli_artifact_guard": "environment (stray /tmp/.git); passes with --basetemp elsewhere",
       "four_uid0_sudo_unreadable": "environment/preexisting; identical at predecessor",
