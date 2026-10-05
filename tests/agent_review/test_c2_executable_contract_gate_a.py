@@ -4456,15 +4456,63 @@ def test_cm_cl2_06_gate_substitution_refused() -> None:
 
 
 def test_pc_cl2_06_gate_a_boundary_exact() -> None:
-    """PC-CL2-06: Gate A candidate qualification retains exact gate label and exact subject."""
+    """PC-CL2-06: Gate A candidate qualification retains exact gate label and declares
+    external exact-head binding contract without false self-authored HEAD.
+    """
     receipt_path = Path(__file__).resolve().parent.parent.parent / "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-receipt.json"
     with open(receipt_path) as f:
         receipt = json.load(f)
 
+    # Exact gate label and status
     assert receipt["gate"] == "Gate A"
     assert receipt["slice"] == "V1-C2 / Gate A (C2ExecutableContract)"
     assert receipt["status"] == "v1_c2_gate_a_normative_bindings_closed"
     assert receipt["terminal"] == "V1_C2_GATE_A_NORMATIVE_BINDINGS_CLOSED_DRAFT_AWAITING_READY_REGRANT"
+
+    # Nonclaims: no substitution for Gate B or Gate C
+    assert receipt["nonclaims"]["Gate_B"] == "NOT_CLAIMED"
+    assert receipt["nonclaims"]["Gate_C"] == "NOT_CLAIMED"
+
+    # External exact subject binding contract
+    sb = receipt["subject_binding"]
+    assert sb["mode"] == "FORGE_EXACT_HEAD"
+    assert sb["self_hash_claimed"] is False
+    assert sb["requirement"] == "all_exact_subject_authorities_must_agree"
+    assert sb["exact_subject_authorities"] == [
+        "PR.headRefOid",
+        "canonical_CI.headSha",
+        "current_head_guard_dispositions",
+        "maintainer_checkpoint",
+    ]
+    # Receipt does NOT falsely self-author its own HEAD or mistake predecessor for current subject
+    assert "subject" not in receipt
+
+
+def test_normative_controls_frozen_crosswalk_totality() -> None:
+    """Proves all 16 frozen crosswalk control IDs are present and bound to exact executable tests."""
+    frozen_control_ids = [
+        "CM-CL2-01", "PC-CL2-01",
+        "CM-C2-MAP-01", "PC-C2-MAP-01",
+        "CM-CL2-03", "PC-CL2-03",
+        "CM-CL2-04", "PC-CL2-04",
+        "CM-CL2-05", "PC-CL2-05",
+        "CM-C2-LOSS-OPTIONAL-01", "PC-C2-LOSS-OPTIONAL-01",
+        "CM-CL2-06", "PC-CL2-06",
+        "CM-CL2-07", "PC-CL2-07",
+    ]
+    assert len(frozen_control_ids) == 16
+
+    receipt_path = Path(__file__).resolve().parent.parent.parent / "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-receipt.json"
+    with open(receipt_path) as f:
+        receipt = json.load(f)
+
+    normative_controls = receipt["normative_controls"]
+    for cid in frozen_control_ids:
+        assert cid in normative_controls, f"Missing control {cid} in receipt"
+        ctrl = normative_controls[cid]
+        assert "executable_equivalent" in ctrl and ctrl["executable_equivalent"]
+        assert "exact_test" in ctrl and ctrl["exact_test"]
+        assert "observation" in ctrl and ctrl["observation"]
 
 
 def test_cm_cl2_07_control_b_exhaustive_claim_coverage_refused() -> None:

@@ -5,14 +5,23 @@
   "owner": "#221",
   "slice": "V1-C2 / Gate A (C2ExecutableContract)",
   "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
-  "subject": {
-    "head": "f2d39c0fbfc2a14f48bc960bbb11b355cd31eabc",
-    "tree": "7545bd6ee45184a6f16168e425ec775aa6e52f78",
-    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f"
-  },
-  "predecessor": {
-    "head": "f2d39c0fbfc2a14f48bc960bbb11b355cd31eabc",
-    "tree": "7545bd6ee45184a6f16168e425ec775aa6e52f78"
+  "subject_binding": {
+    "mode": "FORGE_EXACT_HEAD",
+    "repository": "mglpsw/aiops-orchestrator",
+    "pr": 372,
+    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
+    "source_predecessor": {
+      "head": "f2d39c0fbfc2a14f48bc960bbb11b355cd31eabc",
+      "tree": "7545bd6ee45184a6f16168e425ec775aa6e52f78"
+    },
+    "self_hash_claimed": false,
+    "exact_subject_authorities": [
+      "PR.headRefOid",
+      "canonical_CI.headSha",
+      "current_head_guard_dispositions",
+      "maintainer_checkpoint"
+    ],
+    "requirement": "all_exact_subject_authorities_must_agree"
   },
   "capability": {
     "label": "contract_aware_advisory",
@@ -90,7 +99,7 @@
     "PC-CL2-06": {
       "executable_equivalent": "test_pc_cl2_06_gate_a_boundary_exact",
       "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_06_gate_a_boundary_exact",
-      "observation": "Gate A candidate qualification retains exact gate label and exact subject."
+      "observation": "Gate A candidate qualification retains exact gate label and declares external exact-head binding contract without false self-authored HEAD."
     },
     "CM-CL2-07": {
       "executable_equivalent": "test_cm_cl2_07_control_b_exhaustive_claim_coverage_refused",
