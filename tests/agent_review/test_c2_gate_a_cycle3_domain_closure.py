@@ -1095,6 +1095,57 @@ def test_cm_c4_lost_identityless_packs_have_distinct_labels() -> None:
     assert "required_contract_pack_context_lost:unidentified_legacy_pack" in limitations
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [{"notes": 5}, {"critical": "yes"}, {"allow_external_review": None}, {"require_full_diff": [1]}, {"domain_contract": 7}, {"unknown": {"a": 1}}, {"paths": None}, {"patterns": None}, {"scope": None}, {"is_global": None}],
+)
+def test_cm_c4_legacy_pack_admission_validates_only_projected_and_scope_fields(extra: dict[str, Any]) -> None:
+    """Round-2 sibling of the legacy contract validator: target metadata and null (blank-YAML) fields never
+    invalidate a LEGACY pack source; scope-bearing malformed declarations still fail closed (4178603193)."""
+    profile = {"review_packs": {"packs": [{"id": "P1", "description": "pd", **extra}]}}
+    ctx, limits = _ctx(profile, chunk_contracts=("target_profile:review_packs",))
+    assert [(p["id"], p["description"]) for p in ctx["review_packs"]] == [("P1", "pd")]
+    assert not _critical(limits, "invalid_source_review_packs:")
+
+
+@pytest.mark.parametrize("extra", [{"paths": "backend/**"}, {"patterns": [""]}, {"scope": 3}, {"is_global": "true"}, {"description": 4}])
+def test_cm_c4_legacy_pack_scope_bearing_malformed_still_fails_closed(extra: dict[str, Any]) -> None:
+    _, _, state, subtype, _ = pcm.normalize_review_packs({"packs": [{"id": "P1", **extra}]})
+    assert state == pcm.SOURCE_STATE_INVALID and subtype == pcm.SUBTYPE_MALFORMED_SHAPE
+
+
+def test_cm_c4_legacy_contract_row_is_exactly_the_baseline_projection() -> None:
+    """Round-2 finding 2: unprojected list fields, rules and authority fields never reach a legacy row."""
+    rule = {"id": "R1", "description": "d", "owners": ["x" * 5000], "rules": ["r"], "canonical_authority": "a", "scope": "GLOBAL"}
+    contracts, state, _, _ = pcm.normalize_domain_contracts({"rules": [rule]})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID
+    assert contracts == [{"id": "R1", "description": "d", "scope": "GLOBAL"}]
+    ctx, _ = _ctx({"domain_contracts": {"rules": [rule]}}, chunk_contracts=("contract:R1",))
+    minimal = pcm.minimal_contracts_context(ctx)
+    assert len(pcm.canonical_json(minimal)) < 300, "the required floor must not carry unprojected content"
+
+
+def test_cm_c4_legacy_null_projected_fields_are_absent() -> None:
+    contracts, state, _, _ = pcm.normalize_domain_contracts(
+        {"rules": [{"id": "R1", "description": None, "paths": None, "scope": None, "is_global": None, "patterns": None}]}
+    )
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID and contracts == [{"id": "R1"}]
+
+
+def test_c2_conflicting_carriers_is_order_insensitive() -> None:
+    _, bindings, _, _, limits = pcm.normalize_review_packs(
+        {"packs": {"p": {}}, "contract_bindings": {"p": ["R1", "R2"]}}, extra_bindings={"p": ["R2", "R1"]}
+    )
+    assert limits == [] and sorted(bindings["p"]) == ["R1", "R2"]
+
+
+@pytest.mark.parametrize("value", ["~b*/x", "~*", "~**", "~~/x", "\x7fa"])
+def test_cm_c3_tilde_globs_and_del_are_not_repository_relative(value: str) -> None:
+    value = value.encode().decode("unicode_escape")
+    for doc in ({"c": {"description": "d", "patterns": [value]}}, {"c": {"description": "d", "paths": [value]}}):
+        assert pcm.normalize_domain_contracts(doc)[1] == pcm.SOURCE_STATE_INVALID, value
+
+
 # ---------------------------------------------------------------------------
 # ModeSemanticMatrix -- every LEGACY/MODERN difference is INTENTIONAL (with authority) or a BUG;
 # never accidental. Each row is executable: the witness proves the two cells.
@@ -1205,7 +1256,7 @@ def _w_required_floor() -> bool:
 
 MODE_SEMANTIC_MATRIX: list[dict[str, Any]] = [
     {"axis": "source_shapes", "legacy": '{"rules": [...]} / {"packs": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY); sibling envelope keys ignored (baseline leniency)', "modern": "mapping keyed by identity; closed envelope grammar", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN, "witness": _w_source_shapes},
-    {"axis": "identity", "legacy": "id optional; a description-only row is valid and its identity is never fabricated", "modern": "mapping key is the sole identity; nested id unsupported", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; OBL-CL2-02", "witness": _w_identity},
+    {"axis": "identity", "legacy": "id optional; a description-only row is valid and its identity is never fabricated; only projected + adjudicated scope-bearing fields are typed (null = absent)", "modern": "mapping key is the sole identity; nested id unsupported", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; OBL-CL2-02", "witness": _w_identity},
     {"axis": "normalization", "legacy": "baseline display projection (sanitize_display_path)", "modern": "canonical repository-relative identities (canonical_repo_path / canonical_repo_pattern)", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; " + _AUTH_FAIL_CLOSED, "witness": _w_normalization},
     {"axis": "exact_paths", "legacy": "canonical exact intersection; unresolvable path silently non-matching", "modern": "any non-repository-relative member invalidates the source; glob-bearing paths match", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; " + _AUTH_FAIL_CLOSED, "witness": _w_exact_paths},
     {"axis": "patterns", "legacy": "substring / trailing-star prefix", "modern": "fnmatchcase inside the repository boundary", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN, "witness": _w_patterns},

@@ -106,18 +106,16 @@ def _intake(profile: dict[str, Any]) -> ReviewIntake:
     )
 
 
+ANNOTATION_KEYS = ("required", "required_reasons", "effective_contracts")
+
+
 def _observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
-    def carrier(row: dict[str, Any], *, preset: bool) -> dict[str, Any]:
-        ident = row.get("id") or None
-        desc = row.get("description") or None
-        out: dict[str, Any] = {"id": ident, "description": desc}
-        if preset:
-            out["recommended_review_preset"] = row.get("recommended_review_preset") or None
-        return out
+    def row(value: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in value.items() if k not in ANNOTATION_KEYS and v not in (None, "", [], {})}
 
     return {
-        "contracts": [carrier(r, preset=False) for r in ctx.get("domain_contracts", [])],
-        "packs": [carrier(r, preset=True) for r in ctx.get("review_packs", [])],
+        "contracts": [row(r) for r in ctx.get("domain_contracts", [])],
+        "packs": [row(r) for r in ctx.get("review_packs", [])],
         "not_relevant": any(lim.startswith("contracts_context_not_relevant:") for lim in limitations),
     }
 
@@ -457,3 +455,55 @@ def test_oracle_catches_plausible_wrong_legacy_implementations(monkeypatch: pyte
         m.setattr(pcm, "legacy_pack_matches_selected", reverse_alias)
         assert run_oracle(), "reverse-alias legacy selection not caught"
     assert run_oracle() == []
+
+
+def test_oracle_catches_legacy_row_projection_leaks_and_display_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whole-row observation (adversarial review round 2): a legacy row that gains or loses ANY field, or a
+    display-normalization change, is an observable divergence."""
+    assert run_oracle() == []
+    original_row = pcm._legacy_contract_row
+    original_pack_row = pcm._legacy_pack_row
+    original_sanitize = pcm.sanitize_display_path
+
+    def with_sections(item: dict[str, Any]) -> dict[str, Any]:
+        row = original_row(item)
+        row["sections"] = {"x": [{"text": "leak"}]}
+        return row
+
+    def without_scope_and_paths(item: dict[str, Any]) -> dict[str, Any]:
+        row = original_row(item)
+        for key in ("scope", "paths", "patterns", "is_global"):
+            row.pop(key, None)
+        return row
+
+    def pack_with_paths(item: dict[str, Any]) -> dict[str, Any]:
+        row = original_pack_row(item)
+        if item.get("paths"):
+            row["paths"] = list(item["paths"])
+        return row
+
+    def pack_with_description_default(item: dict[str, Any]) -> dict[str, Any]:
+        row = original_pack_row(item)
+        row.setdefault("description", row.get("id"))
+        return row
+
+    def no_redaction(path: str) -> str:
+        return path.strip()
+
+    def no_backslash(path: str) -> str:
+        return original_sanitize(path.replace("\\", "\x00")).replace("\x00", "\\")
+
+    variants = {
+        ("_legacy_contract_row", with_sections): "contract row gains sections",
+        ("_legacy_contract_row", without_scope_and_paths): "contract row loses scope/paths/patterns",
+        ("_legacy_pack_row", pack_with_paths): "pack row gains paths",
+        ("_legacy_pack_row", pack_with_description_default): "pack row fabricates description",
+        ("sanitize_display_path", no_redaction): "display redaction removed",
+        ("sanitize_display_path", no_backslash): "backslash normalization removed",
+        ("_legacy_relevance_match", lambda i, kw: any(k in ((i.get("id") or "") + (i.get("description") or "")).lower() for k in kw)): "relevance text joined without separator",
+    }
+    for (seam, replacement), name in variants.items():
+        with monkeypatch.context() as m:
+            m.setattr(pcm, seam, replacement)
+            assert run_oracle(), f"not caught: {name}"
+        assert run_oracle() == [], name

@@ -58,6 +58,21 @@
       "kind": "live"
     },
     {
+      "expression": "sanitize_display_path redacts absolute / ~/ patterns and paths to a literal",
+      "id": "D.redact_abs",
+      "kind": "live"
+    },
+    {
+      "expression": "sanitize_display_path redacts drive-letter patterns and paths",
+      "id": "D.redact_drive",
+      "kind": "live"
+    },
+    {
+      "expression": "sanitize_display_path converts backslashes to slashes",
+      "id": "D.backslash",
+      "kind": "live"
+    },
+    {
       "expression": "pattern.endswith(\"*\") and path.startswith(pattern[:-1])",
       "id": "PAT.suffix_star",
       "kind": "live"
@@ -279,11 +294,18 @@
         "contracts": [
           {
             "description": "backend rule",
-            "id": "be-rule"
+            "id": "be-rule",
+            "paths": [
+              "backend/api/shifts.py"
+            ]
           },
           {
             "description": "frontend only",
-            "id": "fe-rule"
+            "id": "fe-rule",
+            "paths": [
+              "frontend/app.js"
+            ],
+            "scope": "frontend"
           },
           {
             "description": "zzz",
@@ -470,7 +492,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "paths": [
+              "backend/api/shifts.py"
+            ]
           }
         ],
         "not_relevant": false,
@@ -510,7 +535,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "paths": [
+              "./backend//api/shifts.py"
+            ]
           }
         ],
         "not_relevant": false,
@@ -655,7 +683,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "patterns": [
+              "backend/api"
+            ]
           }
         ],
         "not_relevant": false,
@@ -696,7 +727,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "patterns": [
+              "backend/*"
+            ]
           }
         ],
         "not_relevant": false,
@@ -807,7 +841,8 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "g"
+            "id": "g",
+            "scope": "global"
           }
         ],
         "not_relevant": false,
@@ -845,7 +880,8 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "g"
+            "id": "g",
+            "scope": "GLOBAL"
           }
         ],
         "not_relevant": false,
@@ -883,7 +919,8 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "g"
+            "id": "g",
+            "is_global": true
           }
         ],
         "not_relevant": false,
@@ -2091,7 +2128,6 @@
       "baseline_observation": {
         "contracts": [
           {
-            "description": null,
             "id": "service-x"
           }
         ],
@@ -2128,8 +2164,7 @@
       "baseline_observation": {
         "contracts": [
           {
-            "description": "service layer",
-            "id": null
+            "description": "service layer"
           }
         ],
         "not_relevant": false,
@@ -2234,15 +2269,13 @@
       "baseline_observation": {
         "contracts": [
           {
-            "description": "only description",
-            "id": null
+            "description": "only description"
           },
           {
             "description": "both described",
             "id": "both"
           },
           {
-            "description": null,
             "id": "only-id"
           }
         ],
@@ -2288,6 +2321,7 @@
         "contracts": [
           {
             "description": "zzz",
+            "file_path": "backend/api/shifts.py",
             "id": "r"
           }
         ],
@@ -2327,7 +2361,8 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "path": "backend/api/shifts.py"
           }
         ],
         "not_relevant": false,
@@ -2366,6 +2401,9 @@
         "contracts": [
           {
             "description": "zzz",
+            "files": [
+              "backend/api/shifts.py"
+            ],
             "id": "r"
           }
         ],
@@ -2407,7 +2445,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "source_files": [
+              "backend/api/shifts.py"
+            ]
           }
         ],
         "not_relevant": false,
@@ -2448,7 +2489,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "related_files": [
+              "backend/api/shifts.py"
+            ]
           }
         ],
         "not_relevant": false,
@@ -2629,7 +2673,10 @@
         "contracts": [
           {
             "description": "zzz",
-            "id": "r"
+            "id": "r",
+            "patterns": [
+              "backend/api/"
+            ]
           }
         ],
         "not_relevant": false,
@@ -2871,7 +2918,11 @@
         "contracts": [
           {
             "description": "frontend only",
-            "id": "fe-rule"
+            "id": "fe-rule",
+            "paths": [
+              "frontend/app.js"
+            ],
+            "scope": "frontend"
           }
         ],
         "not_relevant": false,
@@ -2988,7 +3039,14 @@
         "contracts": [
           {
             "description": "service layer",
-            "id": "q"
+            "id": "q",
+            "paths": [
+              "frontend/app.js"
+            ],
+            "patterns": [
+              "frontend"
+            ],
+            "scope": "frontend"
           }
         ],
         "not_relevant": false,
@@ -3246,7 +3304,6 @@
       "baseline_observation": {
         "contracts": [
           {
-            "description": null,
             "id": "x"
           },
           {
@@ -3291,6 +3348,397 @@
     {
       "baseline_observation": {
         "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "D.redact_abs",
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.abs_redacted.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "svc/app/x.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "/app/"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "D.redact_abs",
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.tilde_redacted.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "svc/app/x.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "~/app/"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "D.redact_drive",
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.drive_redacted.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "svc/C:app/x.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "C:app/"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r",
+            "patterns": [
+              "backend/api"
+            ]
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "D.backslash",
+        "C.match.patterns",
+        "PAT.substring"
+      ],
+      "id": "contract.patterns.backslash.hit",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "backend\\api"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.dot_slash.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "./backend"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.double_star.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "backend/**"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.join_separator.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "i",
+                "id": "ap"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.explicit_ref"
+      ],
+      "id": "contract.token.Contract_zz-rule.miss",
+      "input": {
+        "chunk_contracts": [
+          "Contract:zz-rule"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.explicit_ref"
+      ],
+      "id": "contract.token.contracts_zz-rule.miss",
+      "input": {
+        "chunk_contracts": [
+          "contracts:zz-rule"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.explicit_ref"
+      ],
+      "id": "contract.token.zz-rule.miss",
+      "input": {
+        "chunk_contracts": [
+          "zz-rule"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.include_all"
+      ],
+      "id": "contract.token.include_all_padded.miss",
+      "input": {
+        "chunk_contracts": [
+          " target_profile:domain_contracts"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
         "not_relevant": false,
         "outcome": "ok",
         "packs": [
@@ -3301,8 +3749,7 @@
           },
           {
             "description": "Beta pack",
-            "id": "beta",
-            "recommended_review_preset": null
+            "id": "beta"
           }
         ]
       },
@@ -3467,8 +3914,7 @@
         "packs": [
           {
             "description": "first",
-            "id": "alpha",
-            "recommended_review_preset": null
+            "id": "alpha"
           }
         ]
       },
@@ -3511,8 +3957,7 @@
         "packs": [
           {
             "description": "first",
-            "id": "alpha",
-            "recommended_review_preset": null
+            "id": "alpha"
           }
         ]
       },
@@ -3554,8 +3999,7 @@
         "packs": [
           {
             "description": "calendar",
-            "id": "p1",
-            "recommended_review_preset": null
+            "id": "p1"
           }
         ]
       },
@@ -3598,8 +4042,7 @@
         "packs": [
           {
             "description": "calendar scheduling",
-            "id": "p1",
-            "recommended_review_preset": null
+            "id": "p1"
           }
         ]
       },
@@ -3678,8 +4121,7 @@
         "packs": [
           {
             "description": "first",
-            "id": "alpha",
-            "recommended_review_preset": null
+            "id": "alpha"
           }
         ]
       },
@@ -3720,9 +4162,7 @@
         "outcome": "ok",
         "packs": [
           {
-            "description": "calendar",
-            "id": null,
-            "recommended_review_preset": null
+            "description": "calendar"
           }
         ]
       },
@@ -3759,14 +4199,11 @@
         "outcome": "ok",
         "packs": [
           {
-            "description": "calendar",
-            "id": null,
-            "recommended_review_preset": null
+            "description": "calendar"
           },
           {
             "description": "Beta pack",
-            "id": "beta",
-            "recommended_review_preset": null
+            "id": "beta"
           }
         ]
       },
@@ -3807,9 +4244,7 @@
         "outcome": "ok",
         "packs": [
           {
-            "description": null,
-            "id": "only-id",
-            "recommended_review_preset": null
+            "id": "only-id"
           }
         ]
       },
@@ -3846,9 +4281,7 @@
         "outcome": "ok",
         "packs": [
           {
-            "description": null,
-            "id": "only-id",
-            "recommended_review_preset": null
+            "id": "only-id"
           }
         ]
       },
@@ -3927,8 +4360,7 @@
         "packs": [
           {
             "description": "zzz",
-            "id": "service-pack",
-            "recommended_review_preset": null
+            "id": "service-pack"
           }
         ]
       },
@@ -3966,8 +4398,7 @@
         "packs": [
           {
             "description": "service layer",
-            "id": "qq",
-            "recommended_review_preset": null
+            "id": "qq"
           }
         ]
       },
@@ -4069,8 +4500,7 @@
         "packs": [
           {
             "description": "zz backend zz",
-            "id": "zz-backend",
-            "recommended_review_preset": null
+            "id": "zz-backend"
           }
         ]
       },
@@ -4107,8 +4537,7 @@
         "packs": [
           {
             "description": "zz schema zz",
-            "id": "zz-schema",
-            "recommended_review_preset": null
+            "id": "zz-schema"
           }
         ]
       },
@@ -4145,8 +4574,7 @@
         "packs": [
           {
             "description": "zz frontend zz",
-            "id": "zz-frontend",
-            "recommended_review_preset": null
+            "id": "zz-frontend"
           }
         ]
       },
@@ -4183,8 +4611,7 @@
         "packs": [
           {
             "description": "zz test zz",
-            "id": "zz-test",
-            "recommended_review_preset": null
+            "id": "zz-test"
           }
         ]
       },
@@ -4221,8 +4648,7 @@
         "packs": [
           {
             "description": "zz workflow zz",
-            "id": "zz-workflow",
-            "recommended_review_preset": null
+            "id": "zz-workflow"
           }
         ]
       },
@@ -4259,8 +4685,7 @@
         "packs": [
           {
             "description": "zz docs zz",
-            "id": "zz-docs",
-            "recommended_review_preset": null
+            "id": "zz-docs"
           }
         ]
       },
@@ -4297,8 +4722,7 @@
         "packs": [
           {
             "description": "zz secret zz",
-            "id": "zz-secret",
-            "recommended_review_preset": null
+            "id": "zz-secret"
           }
         ]
       },
@@ -4476,8 +4900,7 @@
         "packs": [
           {
             "description": "Calendar Scheduling",
-            "id": "p1",
-            "recommended_review_preset": null
+            "id": "p1"
           }
         ]
       },
@@ -4519,8 +4942,7 @@
         "packs": [
           {
             "description": "SERVICE Layer",
-            "id": "ZZ-Q",
-            "recommended_review_preset": null
+            "id": "ZZ-Q"
           }
         ]
       },
@@ -4543,6 +4965,202 @@
               {
                 "description": "SERVICE Layer",
                 "id": "ZZ-Q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.token.include_all_padded.miss",
+      "input": {
+        "chunk_contracts": [
+          " target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.explicit_ref"
+      ],
+      "id": "pack.token.bare_id.miss",
+      "input": {
+        "chunk_contracts": [
+          "alpha"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.join_separator.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "i",
+                "id": "ap"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zzz",
+            "id": "m",
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-PROJECTION",
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.modern_fields.emitted_row",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "critical": true,
+                "description": "zzz",
+                "domain_contract": "c1",
+                "id": "m",
+                "is_global": true,
+                "notes": "n",
+                "paths": [
+                  "backend/api/shifts.py"
+                ],
+                "patterns": [
+                  "backend/*"
+                ],
+                "recommended_review_preset": "review:deep",
+                "scope": "global"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zzz",
+            "id": "m"
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.target_metadata.null_and_blank",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zzz",
+                "id": "m",
+                "notes": 5,
+                "paths": null,
+                "scope": null
               }
             ]
           }
@@ -4668,7 +5286,10 @@
         "contracts": [
           {
             "description": "backend rule",
-            "id": "be-rule"
+            "id": "be-rule",
+            "paths": [
+              "backend/api/shifts.py"
+            ]
           }
         ],
         "not_relevant": false,
@@ -4914,6 +5535,27 @@
         "(item.get(\"id\", \"\") + \" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
         "(\" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
         0
+      ]
+    ],
+    "D.backslash": [
+      [
+        "normalized = path.replace(\"\\\\\", \"/\").strip()",
+        "normalized = path.strip()",
+        1
+      ]
+    ],
+    "D.redact_abs": [
+      [
+        "if normalized.startswith(\"/\") or normalized.startswith(\"~/\"):",
+        "if False:",
+        0
+      ]
+    ],
+    "D.redact_drive": [
+      [
+        "if len(normalized) >= 2 and normalized[1] == \":\":",
+        "if False:",
+        1
       ]
     ],
     "KW.api_schema_contract.api": [
@@ -5185,11 +5827,11 @@
   },
   "observable_projection": {
     "baseline_raises": "inputs on which the baseline raises TypeError carry totalized_baseline_observation (baseline with None id/description read as empty)",
-    "contracts": "ordered rows emitted for domain_contracts as {id, description}",
-    "excluded": "internal required/required_reasons/effective_contracts annotations, derived is_global, rules/sections additive content, Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
-    "normalization": "empty -> null (a legacy row never fabricates a description from its id; exact equality)",
+    "contracts": "ordered whole rows emitted for domain_contracts (None/empty = absent), minus internal annotations",
+    "excluded": "internal required/required_reasons/effective_contracts annotations and Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
+    "normalization": "None/empty values are absent; whole-row exact equality (a legacy row never gains or loses a field)",
     "not_relevant": "true iff a contracts_context_not_relevant:<chunk_id> limitation is emitted",
-    "packs": "ordered rows emitted for review_packs as {id, description, recommended_review_preset}"
+    "packs": "ordered whole rows emitted for review_packs (None/empty = absent), minus internal annotations"
   },
   "predicate_kill_map": {
     "C.carrier.file_path": [
@@ -5241,7 +5883,8 @@
     "C.match.patterns": [
       "contract.patterns.substring.hit",
       "contract.patterns.star_prefix.hit",
-      "contract.patterns.trailing_slash.hit"
+      "contract.patterns.trailing_slash.hit",
+      "contract.patterns.backslash.hit"
     ],
     "C.relevance": [
       "contract.relevance.primary_backend_logic.backend",
@@ -5308,6 +5951,15 @@
     ],
     "C.relevance.id_part": [
       "contract.relevance.id_only"
+    ],
+    "D.backslash": [
+      "contract.patterns.backslash.hit"
+    ],
+    "D.redact_abs": [
+      "contract.patterns.abs_redacted.miss"
+    ],
+    "D.redact_drive": [
+      "contract.patterns.drive_redacted.miss"
     ],
     "KW.api_schema_contract.api": [
       "contract.relevance.api_schema_contract.api"
@@ -5404,7 +6056,9 @@
     "P.include_all": [
       "pack.include_all.true",
       "pack.description_only.preserved",
-      "pack.id_only.include_all"
+      "pack.id_only.include_all",
+      "pack.modern_fields.emitted_row",
+      "pack.target_metadata.null_and_blank"
     ],
     "P.match_chunk": [],
     "P.relevance": [
@@ -5451,7 +6105,8 @@
     ],
     "PAT.substring": [
       "contract.patterns.substring.hit",
-      "contract.patterns.trailing_slash.hit"
+      "contract.patterns.trailing_slash.hit",
+      "contract.patterns.backslash.hit"
     ],
     "PAT.suffix_star": [
       "contract.patterns.star_prefix.hit"
@@ -5483,6 +6138,16 @@
       "contract.explicit_ref.case_differs.miss",
       "contract.explicit_ref.description_equal.miss",
       "contract.explicit_ref.substring.miss",
+      "contract.patterns.abs_redacted.miss",
+      "contract.patterns.tilde_redacted.miss",
+      "contract.patterns.drive_redacted.miss",
+      "contract.patterns.dot_slash.miss",
+      "contract.patterns.double_star.miss",
+      "contract.relevance.join_separator.miss",
+      "contract.token.Contract_zz-rule.miss",
+      "contract.token.contracts_zz-rule.miss",
+      "contract.token.zz-rule.miss",
+      "contract.token.include_all_padded.miss",
       "pack.include_all.false",
       "pack.explicit_ref.miss",
       "pack.selected.miss",
@@ -5493,6 +6158,9 @@
       "pack.explicit_ref.description_equal.miss",
       "pack.explicit_ref.substring.miss",
       "pack.selected.reverse_alias.miss",
+      "pack.token.include_all_padded.miss",
+      "pack.token.bare_id.miss",
+      "pack.relevance.join_separator.miss",
       "terminal.zero_context.not_relevant",
       "terminal.sources_absent.not_relevant",
       "terminal.sources_empty.not_relevant"

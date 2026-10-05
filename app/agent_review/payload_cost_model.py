@@ -1280,15 +1280,14 @@ REVIEW_PACK_ENVELOPE_KEYS: frozenset[str] = frozenset({"packs", "contract_bindin
 REVIEW_PACK_ENVELOPE_METADATA_KEYS: frozenset[str] = frozenset({"version", "updated"})
 
 
-_TILDE_USER_SEGMENT = re.compile(r"^~[A-Za-z0-9_][A-Za-z0-9_.-]*$")
-
-
 def _is_non_repo_relative_marker(identity: str) -> bool:
-    """`~user/...` (home of another user) and control characters are not repository-relative
-    identities. Applied at MODERN admission only, next to canonical_repo_path."""
-    if any(ord(char) < 32 for char in identity):
+    """A leading `~...` segment (home-directory expansion: `~`, `~user`, `~*`, ...; the `~$` lock-file
+    prefix excepted) and control characters (incl. DEL) are not repository-relative identities.
+    Applied at MODERN admission only, next to canonical_repo_path."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in identity):
         return True
-    return bool(_TILDE_USER_SEGMENT.match(identity.split("/", 1)[0]))
+    first = identity.split("/", 1)[0]
+    return first.startswith("~") and not first.startswith("~$")
 
 
 def _modern_path_bearing_invalid(
@@ -1443,19 +1442,73 @@ def _validate_legacy_contract_declared_field_types(item: dict[str, Any]) -> bool
     (id, description, scope, is_global, file_path, path, files, paths, source_files, related_files,
     patterns). Anything else on a legacy row (rules, named list sections, unknown fields) was ignored
     by the baseline and stays ignored: the modern named-section grammar must not leak into legacy
-    admission."""
+    admission. A null value is an absent field (what a blank YAML key loads as)."""
     for field in ("files", "paths", "source_files", "related_files", "patterns"):
-        if field in item:
-            value = item[field]
-            if not isinstance(value, list) or any(not isinstance(member, str) or not member.strip() for member in value):
-                return False
+        value = item.get(field)
+        if value is not None and (
+            not isinstance(value, list) or any(not isinstance(member, str) or not member.strip() for member in value)
+        ):
+            return False
     for field in ("path", "file_path", "scope"):
-        if field in item and not isinstance(item[field], str):
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
             return False
     for field in ("description", "id"):
-        if field in item and (not isinstance(item[field], str) or not item[field].strip()):
+        value = item.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
             return False
-    if "is_global" in item and not isinstance(item["is_global"], bool):
+    value = item.get("is_global")
+    if value is not None and not isinstance(value, bool):
+        return False
+    return True
+
+
+def _legacy_contract_row(item: dict[str, Any]) -> dict[str, Any]:
+    """LegacyContractProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_contract_rules`) row.
+    No rules/sections, no authority fields, no derived is_global: a legacy row never acquires modern
+    content."""
+    return _drop_empty_contract_fields(
+        {
+            "id": _clean_text(item.get("id")),
+            "description": _clean_text(item.get("description")),
+            "scope": _clean_text(item.get("scope")),
+            "is_global": item.get("is_global") is True,
+            "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
+            "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
+            "files": _sanitize_contract_paths(item.get("files")),
+            "paths": _sanitize_contract_paths(item.get("paths")),
+            "source_files": _sanitize_contract_paths(item.get("source_files")),
+            "related_files": _sanitize_contract_paths(item.get("related_files")),
+            "patterns": _normalized_contract_patterns(item.get("patterns")),
+        }
+    )
+
+
+def _legacy_contract_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = [_legacy_contract_row(item) for item in items]
+    admitted = [row for row in rows if row.get("id") or row.get("description")]
+    return sorted(admitted, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+
+
+def _validate_legacy_pack_declared_types(item: dict[str, Any]) -> bool:
+    """LEGACY flat packs. Typed: the baseline-projected fields (id, description,
+    recommended_review_preset) and the scope-bearing declarations whose malformed shape was adjudicated to
+    fail closed (paths, patterns, scope, is_global: findings 4178603193 / census R1) -- they are validated
+    but never projected, so they gain no legacy semantics. Target metadata (critical,
+    allow_external_review, require_*, notes, domain_contract) is neither validated nor projected: the
+    baseline ignored it and it carries no applicability. A null is an absent field (blank YAML key)."""
+    for field in ("id", "description", "recommended_review_preset", "scope"):
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    for field in ("paths", "patterns"):
+        value = item.get(field)
+        if value is not None and (
+            not isinstance(value, list) or any(not isinstance(member, str) or not member.strip() for member in value)
+        ):
+            return False
+    value = item.get("is_global")
+    if value is not None and not isinstance(value, bool):
         return False
     return True
 
@@ -1585,9 +1638,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
             for item in document:
                 if not _validate_legacy_contract_declared_field_types(item):
                     return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
-            rows = [_clean_contract_dict_item(item) for item in document]
-            cleaned = [r for r in rows if r.get("id") or r.get("description")]
-            return sorted(cleaned, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+            return _legacy_contract_rows(document), SOURCE_STATE_PRESENT_VALID, None, []
         return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
 
     if not isinstance(document, dict):
@@ -1602,9 +1653,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
             for item in rules:
                 if not _validate_legacy_contract_declared_field_types(item):
                     return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
-            rows = [_clean_contract_dict_item(item) for item in rules]
-            cleaned = [r for r in rows if r.get("id") or r.get("description")]
-            return sorted(cleaned, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+            return _legacy_contract_rows(rules), SOURCE_STATE_PRESENT_VALID, None, []
         return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
 
     # Modern bounded shapes: non-reserved keys represent contract identities
@@ -1781,7 +1830,7 @@ def normalize_review_packs(
     if bindings_valid:
         for parsed in parsed_carriers:
             for key, refs in parsed.items():
-                if key in contract_bindings and contract_bindings[key] != refs:
+                if key in contract_bindings and sorted(contract_bindings[key]) != sorted(refs):
                     limitations.append("malformed_contract_bindings:conflicting_carriers")
                     bindings_valid = False
                     break
@@ -1803,7 +1852,7 @@ def normalize_review_packs(
             return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         if all(isinstance(item, dict) for item in document):
             for item in document:
-                if not _validate_pack_declared_types(item):
+                if not _validate_legacy_pack_declared_types(item):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
             return _legacy_pack_rows(document), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
@@ -1830,7 +1879,7 @@ def normalize_review_packs(
             return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         if all(isinstance(item, dict) for item in raw_packs):
             for item in raw_packs:
-                if not _validate_pack_declared_types(item):
+                if not _validate_legacy_pack_declared_types(item):
                     return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
             return _legacy_pack_rows(raw_packs), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
         return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]

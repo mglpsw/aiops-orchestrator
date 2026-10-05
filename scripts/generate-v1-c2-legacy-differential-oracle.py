@@ -157,6 +157,17 @@ def build_corpus() -> list[dict[str, Any]]:
         add(_case(f"contract.unknown_fields.{name}", ["C.include_all"], rules=[{"id": "x", "description": "api", **extra}], cc=["target_profile:domain_contracts"], cm="CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED"))
     add(_case("contract.same_id.ordering", ["C.include_all"], rules=[{"id": "x"}, {"id": "x", "description": "b"}], cc=["target_profile:domain_contracts"]))
 
+    # --- display normalization, token grammar, relevance join (adversarial review round 2) ----
+    add(_case("contract.patterns.abs_redacted.miss", ["D.redact_abs", "C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["/app/"]}], files=["svc/app/x.py"]))
+    add(_case("contract.patterns.tilde_redacted.miss", ["D.redact_abs", "C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["~/app/"]}], files=["svc/app/x.py"]))
+    add(_case("contract.patterns.drive_redacted.miss", ["D.redact_drive", "C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["C:app/"]}], files=["svc/C:app/x.py"]))
+    add(_case("contract.patterns.backslash.hit", ["D.backslash", "C.match.patterns", "PAT.substring"], rules=[{"id": "r", "description": "zzz", "patterns": ["backend\\api"]}], files=FILES_HIT))
+    add(_case("contract.patterns.dot_slash.miss", ["C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["./backend"]}], files=FILES_HIT))
+    add(_case("contract.patterns.double_star.miss", ["C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["backend/**"]}], files=FILES_HIT))
+    add(_case("contract.relevance.join_separator.miss", ["C.relevance"], rules=[{"id": "ap", "description": "i"}], group="primary_backend_logic"))
+    for token in ("Contract:zz-rule", "contracts:zz-rule", "zz-rule"):
+        add(_case(f"contract.token.{token.replace(':', '_')}.miss", ["C.explicit_ref"], rules=[zz], cc=[token]))
+    add(_case("contract.token.include_all_padded.miss", ["C.include_all"], rules=[zz], cc=[" target_profile:domain_contracts"]))
     # --- packs ------------------------------------------------------------
     alpha = {"id": "alpha", "description": "Alpha pack", "recommended_review_preset": "review:deep"}
     beta = {"id": "beta", "description": "Beta pack"}
@@ -190,6 +201,11 @@ def build_corpus() -> list[dict[str, Any]]:
     add(_case("pack.selected.reverse_alias.miss", ["P.selected.guard"], packs=id_only_sel, sel="foo-alpha"))
     add(_case("pack.selected.description_case_insensitive", ["P.selected.guard", "P.sel.desc_sub"], packs=[{"id": "p1", "description": "Calendar Scheduling"}, {"id": "p2", "description": "zzz"}], sel="CALENDAR"))
     add(_case("pack.relevance.uppercase_text.hit", ["P.relevance"], packs=[{"id": "ZZ-Q", "description": "SERVICE Layer"}], group="primary_backend_logic"))
+    add(_case("pack.token.include_all_padded.miss", ["P.include_all"], packs=[alpha], cc=[" target_profile:review_packs"]))
+    add(_case("pack.token.bare_id.miss", ["P.explicit_ref"], packs=[alpha], cc=["alpha"]))
+    add(_case("pack.relevance.join_separator.miss", ["P.relevance"], packs=[{"id": "ap", "description": "i"}], group="primary_backend_logic"))
+    add(_case("pack.modern_fields.emitted_row", ["P.include_all"], packs=[{"id": "m", "description": "zzz", "recommended_review_preset": "review:deep", "paths": ["backend/api/shifts.py"], "patterns": ["backend/*"], "scope": "global", "is_global": True, "domain_contract": "c1", "notes": "n", "critical": True}], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-PROJECTION"))
+    add(_case("pack.target_metadata.null_and_blank", ["P.include_all"], packs=[{"id": "m", "description": "zzz", "paths": None, "scope": None, "notes": 5}], cc=["target_profile:review_packs"]))
     # baseline TypeError (None + str) when relevance is evaluated for a pack lacking id or description
     add(_case("pack.relevance.baseline_raises.id_only", ["P.relevance"], packs=[{"id": "qq"}], group="primary_backend_logic"))
     add(_case("pack.relevance.baseline_raises.description_only", ["P.relevance"], packs=[{"description": "zzz"}], group="frontend_ui"))
@@ -222,6 +238,9 @@ def _predicates() -> list[dict[str, Any]]:
         ("C.carrier.source_files", live, "source_files is a path-bearing carrier"),
         ("C.carrier.related_files", live, "related_files is a path-bearing carrier"),
         ("C.match.patterns", live, "_matches_pattern(path, patterns)"),
+        ("D.redact_abs", live, "sanitize_display_path redacts absolute / ~/ patterns and paths to a literal"),
+        ("D.redact_drive", live, "sanitize_display_path redacts drive-letter patterns and paths"),
+        ("D.backslash", live, "sanitize_display_path converts backslashes to slashes"),
         ("PAT.suffix_star", live, 'pattern.endswith("*") and path.startswith(pattern[:-1])'),
         ("PAT.substring", live, "pattern in path"),
         ("C.match.global.scope", live, 'scope.lower() == "global"'),
@@ -258,6 +277,9 @@ def _mutants() -> dict[str, list[tuple[str, str, int]]]:
         "C.carrier.files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("paths", "source_files", "related_files"):', 0)],
         "C.carrier.source_files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("files", "paths", "related_files"):', 0)],
         "C.carrier.related_files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("files", "paths", "source_files"):', 0)],
+        "D.redact_abs": [('if normalized.startswith("/") or normalized.startswith("~/"):', "if False:", 0)],
+        "D.redact_drive": [('if len(normalized) >= 2 and normalized[1] == ":":', "if False:", 1)],
+        "D.backslash": [('normalized = path.replace("\\\\", "/").strip()', "normalized = path.strip()", 1)],
         "C.match.patterns": [("if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):", "if False:", 0)],
         "PAT.suffix_star": [('if normalized.endswith("*") and path.startswith(normalized[:-1]):', "if False:", 0)],
         "PAT.substring": [("if normalized in path:", "if False:", 0)],
@@ -354,20 +376,20 @@ def _intake(target_profile: dict[str, Any]) -> Any:
     )
 
 
-def observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
-    """Frozen-legacy observable projection (shared, by definition, with the test)."""
+ANNOTATION_KEYS = ("required", "required_reasons", "effective_contracts")
 
-    def row_carrier(row: dict[str, Any], *, with_preset: bool) -> dict[str, Any]:
-        ident = row.get("id") or None
-        desc = row.get("description") or None
-        out: dict[str, Any] = {"id": ident, "description": desc}
-        if with_preset:
-            out["recommended_review_preset"] = row.get("recommended_review_preset") or None
-        return out
+
+def observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
+    """Frozen-legacy observable projection (shared, by definition, with the test): the WHOLE emitted row of
+    every contract and pack (None/empty = absent), minus the Gate-A internal annotations. A row that gains
+    or loses a field relative to the baseline is an observable divergence."""
+
+    def row(value: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in value.items() if k not in ANNOTATION_KEYS and v not in (None, "", [], {})}
 
     return {
-        "contracts": [row_carrier(r, with_preset=False) for r in ctx.get("domain_contracts", [])],
-        "packs": [row_carrier(r, with_preset=True) for r in ctx.get("review_packs", [])],
+        "contracts": [row(r) for r in ctx.get("domain_contracts", [])],
+        "packs": [row(r) for r in ctx.get("review_packs", [])],
         "not_relevant": any(lim.startswith("contracts_context_not_relevant:") for lim in limitations),
     }
 
@@ -454,11 +476,11 @@ def generate() -> dict[str, Any]:
             "INPUT + EXPECTED OBSERVATION only; no baseline algorithm is copied into production or tests."
         ),
         "observable_projection": {
-            "contracts": "ordered rows emitted for domain_contracts as {id, description}",
-            "packs": "ordered rows emitted for review_packs as {id, description, recommended_review_preset}",
+            "contracts": "ordered whole rows emitted for domain_contracts (None/empty = absent), minus internal annotations",
+            "packs": "ordered whole rows emitted for review_packs (None/empty = absent), minus internal annotations",
             "not_relevant": "true iff a contracts_context_not_relevant:<chunk_id> limitation is emitted",
-            "normalization": "empty -> null (a legacy row never fabricates a description from its id; exact equality)",
-            "excluded": "internal required/required_reasons/effective_contracts annotations, derived is_global, rules/sections additive content, Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
+            "normalization": "None/empty values are absent; whole-row exact equality (a legacy row never gains or loses a field)",
+            "excluded": "internal required/required_reasons/effective_contracts annotations and Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
             "baseline_raises": "inputs on which the baseline raises TypeError carry totalized_baseline_observation (baseline with None id/description read as empty)",
         },
         "admitted_baseline_shapes": [
