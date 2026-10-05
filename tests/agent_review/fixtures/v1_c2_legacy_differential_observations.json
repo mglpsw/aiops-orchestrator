@@ -1,0 +1,4158 @@
+{
+  "additive_compatibility_shapes": [
+    "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
+    "review_packs as a top-level list of dicts (baseline read it as no packs)",
+    "rows with neither id nor description (carry no context) are not admitted"
+  ],
+  "admitted_baseline_shapes": [
+    "target_profile.domain_contracts = {\"rules\": [dict, ...]}",
+    "target_profile.review_packs = {\"packs\": [dict, ...]}",
+    "chunk_contracts items: target_profile:domain_contracts | target_profile:review_packs | contract:<id>"
+  ],
+  "baseline_commit": "6bbd2f949989da3e90e1d9c527e37059c0b628ff",
+  "baseline_payload_cost_model_blob_oid": "41423394e69b4fa67785ac01088757bdff917001",
+  "baseline_predicates": [
+    {
+      "expression": "include_all_contracts (unconditional: scoped and unscoped rules)",
+      "id": "C.include_all",
+      "kind": "live"
+    },
+    {
+      "expression": "item.get(\"id\") in referenced_contracts  (contracts)",
+      "id": "C.explicit_ref",
+      "kind": "live"
+    },
+    {
+      "expression": "canonical(paths) intersects chunk files (exact identity only; no substring/glob)",
+      "id": "C.match.paths",
+      "kind": "live"
+    },
+    {
+      "expression": "_matches_pattern(path, patterns)",
+      "id": "C.match.patterns",
+      "kind": "live"
+    },
+    {
+      "expression": "pattern.endswith(\"*\") and path.startswith(pattern[:-1])",
+      "id": "PAT.suffix_star",
+      "kind": "live"
+    },
+    {
+      "expression": "pattern in path",
+      "id": "PAT.substring",
+      "kind": "live"
+    },
+    {
+      "expression": "scope.lower() == \"global\"",
+      "id": "C.match.global.scope",
+      "kind": "live"
+    },
+    {
+      "expression": "is_global is True",
+      "id": "C.match.global.flag",
+      "kind": "live"
+    },
+    {
+      "expression": "semantic-group keywords over id + description (contracts)",
+      "id": "C.relevance",
+      "kind": "live"
+    },
+    {
+      "expression": "id half of the contract relevance text",
+      "id": "C.relevance.id_part",
+      "kind": "live"
+    },
+    {
+      "expression": "description half of the contract relevance text",
+      "id": "C.relevance.desc_part",
+      "kind": "live"
+    },
+    {
+      "expression": "include_all_packs",
+      "id": "P.include_all",
+      "kind": "live"
+    },
+    {
+      "expression": "item.get(\"id\") in referenced_contracts  (packs)",
+      "id": "P.explicit_ref",
+      "kind": "live"
+    },
+    {
+      "expression": "selected_pack and _review_pack_matches_selected",
+      "id": "P.selected.guard",
+      "kind": "live"
+    },
+    {
+      "expression": "id.lower() == selected -- subsumed by `selected in id.lower()` (equality implies containment)",
+      "id": "P.sel.id_eq",
+      "kind": "redundant"
+    },
+    {
+      "expression": "selected in id.lower()",
+      "id": "P.sel.id_sub",
+      "kind": "live"
+    },
+    {
+      "expression": "description.lower() == selected -- subsumed by `selected in description.lower()`",
+      "id": "P.sel.desc_eq",
+      "kind": "redundant"
+    },
+    {
+      "expression": "selected in description.lower()",
+      "id": "P.sel.desc_sub",
+      "kind": "live"
+    },
+    {
+      "expression": "_contract_matches_chunk(pack): the baseline pack projection {id, description, recommended_review_preset} carries no path/pattern/scope/is_global field, so the disjunct can never be true",
+      "id": "P.match_chunk",
+      "kind": "dead"
+    },
+    {
+      "expression": "semantic-group keywords over id + description (packs)",
+      "id": "P.relevance",
+      "kind": "live"
+    },
+    {
+      "expression": "id half of the pack relevance text",
+      "id": "P.relevance.id_part",
+      "kind": "live"
+    },
+    {
+      "expression": "description half of the pack relevance text",
+      "id": "P.relevance.desc_part",
+      "kind": "live"
+    },
+    {
+      "expression": "no contract and no pack -> contracts_context_not_relevant:<chunk_id>",
+      "id": "TERM.not_relevant",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'backend' of group primary_backend_logic",
+      "id": "KW.primary_backend_logic.backend",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'service' of group primary_backend_logic",
+      "id": "KW.primary_backend_logic.service",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'domain' of group primary_backend_logic",
+      "id": "KW.primary_backend_logic.domain",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'api' of group primary_backend_logic",
+      "id": "KW.primary_backend_logic.api",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'schema' of group api_schema_contract",
+      "id": "KW.api_schema_contract.schema",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'contract' of group api_schema_contract",
+      "id": "KW.api_schema_contract.contract",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'api' of group api_schema_contract",
+      "id": "KW.api_schema_contract.api",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'model' of group api_schema_contract",
+      "id": "KW.api_schema_contract.model",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'frontend' of group frontend_ui",
+      "id": "KW.frontend_ui.frontend",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'ui' of group frontend_ui",
+      "id": "KW.frontend_ui.ui",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'component' of group frontend_ui",
+      "id": "KW.frontend_ui.component",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'test' of group tests",
+      "id": "KW.tests.test",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'coverage' of group tests",
+      "id": "KW.tests.coverage",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'assert' of group tests",
+      "id": "KW.tests.assert",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'workflow' of group workflow_aiops",
+      "id": "KW.workflow_aiops.workflow",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'aiops' of group workflow_aiops",
+      "id": "KW.workflow_aiops.aiops",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'pipeline' of group workflow_aiops",
+      "id": "KW.workflow_aiops.pipeline",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'docs' of group docs_changelog",
+      "id": "KW.docs_changelog.docs",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'changelog' of group docs_changelog",
+      "id": "KW.docs_changelog.changelog",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'readme' of group docs_changelog",
+      "id": "KW.docs_changelog.readme",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'secret' of group suspicious_out_of_scope",
+      "id": "KW.suspicious_out_of_scope.secret",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'prod' of group suspicious_out_of_scope",
+      "id": "KW.suspicious_out_of_scope.prod",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'deploy' of group suspicious_out_of_scope",
+      "id": "KW.suspicious_out_of_scope.deploy",
+      "kind": "live"
+    },
+    {
+      "expression": "relevance keyword 'runtime' of group suspicious_out_of_scope",
+      "id": "KW.suspicious_out_of_scope.runtime",
+      "kind": "live"
+    }
+  ],
+  "cases": [
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "backend rule",
+            "id": "be-rule"
+          },
+          {
+            "description": "frontend only",
+            "id": "fe-rule"
+          },
+          {
+            "description": "zzz",
+            "id": "zz-rule"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-INCLUDE-ALL-CONTRACT",
+      "covers": [
+        "C.include_all"
+      ],
+      "id": "contract.include_all.true",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:domain_contracts"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              },
+              {
+                "description": "backend rule",
+                "id": "be-rule",
+                "paths": [
+                  "backend/api/shifts.py"
+                ]
+              },
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.include_all"
+      ],
+      "id": "contract.include_all.false",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              },
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "zz-rule"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-EXPLICIT-REF",
+      "covers": [
+        "C.explicit_ref"
+      ],
+      "id": "contract.explicit_ref.hit",
+      "input": {
+        "chunk_contracts": [
+          "contract:zz-rule"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              },
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.explicit_ref"
+      ],
+      "id": "contract.explicit_ref.miss",
+      "input": {
+        "chunk_contracts": [
+          "contract:nope"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              },
+              {
+                "description": "zzz",
+                "id": "zz-rule"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.paths"
+      ],
+      "id": "contract.paths.exact.hit",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "paths": [
+                  "backend/api/shifts.py"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.paths"
+      ],
+      "id": "contract.paths.canonical.hit",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "paths": [
+                  "./backend//api/shifts.py"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.paths"
+      ],
+      "id": "contract.paths.substring.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "paths": [
+                  "backend/api"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.paths"
+      ],
+      "id": "contract.paths.glob.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "paths": [
+                  "backend/*"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.paths"
+      ],
+      "id": "contract.paths.unresolvable.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "paths": [
+                  "/etc/passwd"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns",
+        "PAT.substring"
+      ],
+      "id": "contract.patterns.substring.hit",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "backend/api"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns",
+        "PAT.suffix_star"
+      ],
+      "id": "contract.patterns.star_prefix.hit",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "backend/*"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.glob.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "*.py"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.patterns"
+      ],
+      "id": "contract.patterns.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r",
+                "patterns": [
+                  "zzz"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "g"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.global.scope"
+      ],
+      "id": "contract.global.scope.lower",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "g",
+                "scope": "global"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "g"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.global.scope"
+      ],
+      "id": "contract.global.scope.upper_ws",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "g",
+                "scope": " GLOBAL "
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "g"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.global.flag"
+      ],
+      "id": "contract.global.flag",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "g",
+                "is_global": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.match.global.scope",
+        "C.match.global.flag"
+      ],
+      "id": "contract.global.nonglobal_scope.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "g",
+                "is_global": false,
+                "scope": "frontend"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz backend zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.primary_backend_logic.backend",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.primary_backend_logic.backend",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz backend zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz service zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.primary_backend_logic.service",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.primary_backend_logic.service",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz service zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz domain zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.primary_backend_logic.domain",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.primary_backend_logic.domain",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz domain zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz api zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.primary_backend_logic.api",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.primary_backend_logic.api",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz api zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.primary_backend_logic.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz schema zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.api_schema_contract.schema",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.api_schema_contract.schema",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz schema zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz contract zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.api_schema_contract.contract",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.api_schema_contract.contract",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz contract zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz api zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.api_schema_contract.api",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.api_schema_contract.api",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz api zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz model zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.api_schema_contract.model",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.api_schema_contract.model",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz model zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.api_schema_contract.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz frontend zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.frontend_ui.frontend",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.frontend_ui.frontend",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz frontend zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz ui zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.frontend_ui.ui",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.frontend_ui.ui",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz ui zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz component zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.frontend_ui.component",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.frontend_ui.component",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz component zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.frontend_ui.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz test zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.tests.test",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.tests.test",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "tests",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz test zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz coverage zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.tests.coverage",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.tests.coverage",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "tests",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz coverage zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz assert zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.tests.assert",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.tests.assert",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "tests",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz assert zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.tests.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "tests",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz workflow zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.workflow_aiops.workflow",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.workflow_aiops.workflow",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "workflow_aiops",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz workflow zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz aiops zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.workflow_aiops.aiops",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.workflow_aiops.aiops",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "workflow_aiops",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz aiops zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz pipeline zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.workflow_aiops.pipeline",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.workflow_aiops.pipeline",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "workflow_aiops",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz pipeline zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.workflow_aiops.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "workflow_aiops",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz docs zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.docs_changelog.docs",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.docs_changelog.docs",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "docs_changelog",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz docs zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz changelog zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.docs_changelog.changelog",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.docs_changelog.changelog",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "docs_changelog",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz changelog zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz readme zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.docs_changelog.readme",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.docs_changelog.readme",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "docs_changelog",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz readme zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.docs_changelog.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "docs_changelog",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz secret zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.suspicious_out_of_scope.secret",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.suspicious_out_of_scope.secret",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz secret zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz prod zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.suspicious_out_of_scope.prod",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.suspicious_out_of_scope.prod",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz prod zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz deploy zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.suspicious_out_of_scope.deploy",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.suspicious_out_of_scope.deploy",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz deploy zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz runtime zz",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-CONTRACT-RELEVANCE",
+      "covers": [
+        "KW.suspicious_out_of_scope.runtime",
+        "C.relevance"
+      ],
+      "id": "contract.relevance.suspicious_out_of_scope.runtime",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz runtime zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.suspicious_out_of_scope.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz qq zz",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": null,
+            "id": "service-x"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance",
+        "C.relevance.id_part"
+      ],
+      "id": "contract.relevance.id_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "id": "service-x"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "service layer",
+            "id": null
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-DESCRIPTION-ONLY-CONTRACT-PRESERVED",
+      "covers": [
+        "C.relevance",
+        "C.relevance.desc_part"
+      ],
+      "id": "contract.relevance.description_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "service layer"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zz service",
+            "id": "q"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.id_and_description",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zz service",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.relevance"
+      ],
+      "id": "contract.relevance.group_without_keywords.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "service",
+                "id": "q"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "only description",
+            "id": null
+          },
+          {
+            "description": "both described",
+            "id": "both"
+          },
+          {
+            "description": null,
+            "id": "only-id"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "C.include_all"
+      ],
+      "id": "contract.carriers.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:domain_contracts"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "id": "only-id"
+              },
+              {
+                "description": "only description"
+              },
+              {
+                "description": "both described",
+                "id": "both"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "Alpha pack",
+            "id": "alpha",
+            "recommended_review_preset": "review:deep"
+          },
+          {
+            "description": "Beta pack",
+            "id": "beta",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-INCLUDE-ALL",
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.include_all.true",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.include_all.false",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "Alpha pack",
+            "id": "alpha",
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-EXPLICIT-ID-REF",
+      "covers": [
+        "P.explicit_ref"
+      ],
+      "id": "pack.explicit_ref.hit",
+      "input": {
+        "chunk_contracts": [
+          "contract:alpha"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.explicit_ref"
+      ],
+      "id": "pack.explicit_ref.miss",
+      "input": {
+        "chunk_contracts": [
+          "contract:nope"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "first",
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard",
+        "P.sel.id_eq",
+        "P.sel.id_sub"
+      ],
+      "id": "pack.selected.exact_id",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "alpha",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "first",
+                "id": "alpha"
+              },
+              {
+                "description": "second",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "first",
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard",
+        "P.sel.id_sub"
+      ],
+      "id": "pack.selected.fuzzy_id",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "alp",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "first",
+                "id": "alpha"
+              },
+              {
+                "description": "second",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": "p1",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard",
+        "P.sel.desc_eq",
+        "P.sel.desc_sub"
+      ],
+      "id": "pack.selected.exact_description",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "calendar",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar",
+                "id": "p1"
+              },
+              {
+                "description": "zzz",
+                "id": "p2"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar scheduling",
+            "id": "p1",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard",
+        "P.sel.desc_sub"
+      ],
+      "id": "pack.selected.fuzzy_description",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "schedul",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar scheduling",
+                "id": "p1"
+              },
+              {
+                "description": "zzz",
+                "id": "p2"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard"
+      ],
+      "id": "pack.selected.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "zzz",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "first",
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.selected.guard",
+        "P.sel.id_sub"
+      ],
+      "id": "pack.selected.case_insensitive",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "ALPHA",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "first",
+                "id": "alpha"
+              },
+              {
+                "description": "second",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-DESCRIPTION-ONLY-PACK-SELECTED",
+      "covers": [
+        "P.selected.guard",
+        "P.sel.desc_eq",
+        "P.sel.desc_sub"
+      ],
+      "id": "pack.description_only.selected",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "calendar",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": null
+          },
+          {
+            "description": "Beta pack",
+            "id": "beta",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-DESCRIPTION-ONLY-PACK-PRESERVED",
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.description_only.preserved",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar"
+              },
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": "only-id",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.include_all"
+      ],
+      "id": "pack.id_only.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "id": "only-id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": "only-id",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "P.explicit_ref"
+      ],
+      "id": "pack.id_only.explicit_ref",
+      "input": {
+        "chunk_contracts": [
+          "contract:only-id"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "id": "only-id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-PROJECTION",
+      "covers": [
+        "P.match_chunk"
+      ],
+      "id": "pack.modern_fields_ignored",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zzz",
+                "domain_contract": "c1",
+                "id": "m",
+                "is_global": true,
+                "paths": [
+                  "backend/api/shifts.py"
+                ],
+                "patterns": [
+                  "backend/*"
+                ],
+                "scope": "global"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zzz",
+            "id": "service-pack",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance",
+        "P.relevance.id_part"
+      ],
+      "id": "pack.relevance.id_part",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zzz",
+                "id": "service-pack"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "service layer",
+            "id": "qq",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance",
+        "P.relevance.desc_part"
+      ],
+      "id": "pack.relevance.desc_part",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "service layer",
+                "id": "qq"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zzz",
+                "id": "qq"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.group_without_keywords.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "service",
+                "id": "qq"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz backend zz",
+            "id": "zz-backend",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.primary_backend_logic",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz backend zz",
+                "id": "zz-backend"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz schema zz",
+            "id": "zz-schema",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.api_schema_contract",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "api_schema_contract",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz schema zz",
+                "id": "zz-schema"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz frontend zz",
+            "id": "zz-frontend",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.frontend_ui",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz frontend zz",
+                "id": "zz-frontend"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz test zz",
+            "id": "zz-test",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.tests",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "tests",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz test zz",
+                "id": "zz-test"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz workflow zz",
+            "id": "zz-workflow",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.workflow_aiops",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "workflow_aiops",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz workflow zz",
+                "id": "zz-workflow"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz docs zz",
+            "id": "zz-docs",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.docs_changelog",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "docs_changelog",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz docs zz",
+                "id": "zz-docs"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "zz secret zz",
+            "id": "zz-secret",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-RELEVANCE",
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.suspicious_out_of_scope",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "suspicious_out_of_scope",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zz secret zz",
+                "id": "zz-secret"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.baseline_raises.id_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "id": "qq"
+              }
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.baseline_raises.description_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "zzz"
+              }
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-NOT-RELEVANT",
+      "covers": [
+        "TERM.not_relevant"
+      ],
+      "id": "terminal.zero_context.not_relevant",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              }
+            ]
+          },
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "backend rule",
+            "id": "be-rule"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "TERM.not_relevant"
+      ],
+      "id": "terminal.contract_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "backend/api/shifts.py"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "backend rule",
+                "id": "be-rule",
+                "paths": [
+                  "backend/api/shifts.py"
+                ]
+              }
+            ]
+          },
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Beta pack",
+                "id": "beta"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "Alpha pack",
+            "id": "alpha",
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": null,
+      "covers": [
+        "TERM.not_relevant"
+      ],
+      "id": "terminal.pack_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "alpha",
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "frontend only",
+                "id": "fe-rule",
+                "paths": [
+                  "frontend/app.js"
+                ],
+                "scope": "frontend"
+              }
+            ]
+          },
+          "review_packs": {
+            "packs": [
+              {
+                "description": "Alpha pack",
+                "id": "alpha",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "TERM.not_relevant"
+      ],
+      "id": "terminal.sources_absent.not_relevant",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {}
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": null,
+      "covers": [
+        "TERM.not_relevant"
+      ],
+      "id": "terminal.sources_empty.not_relevant",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": []
+          },
+          "review_packs": {
+            "packs": []
+          }
+        }
+      }
+    }
+  ],
+  "generation_method": "scripts/generate-v1-c2-legacy-differential-oracle.py loads `git show <baseline_commit>:app/agent_review/payload_cost_model.py` (blob oid verified) as an isolated module and records contracts_context() observations over the corpus; predicate_kill_map is computed by mutating each baseline predicate in an isolated copy of that source and recording the cases whose observation changes. The fixture stores INPUT + EXPECTED OBSERVATION only; no baseline algorithm is copied into production or tests.",
+  "mutation_operators": {
+    "C.explicit_ref": [
+      [
+        "or item.get(\"id\") in referenced_contracts",
+        "or False",
+        0
+      ]
+    ],
+    "C.include_all": [
+      [
+        "            include_all_contracts\n",
+        "            False\n",
+        0
+      ]
+    ],
+    "C.match.global.flag": [
+      [
+        "return item.get(\"is_global\") is True",
+        "return False",
+        0
+      ]
+    ],
+    "C.match.global.scope": [
+      [
+        "if scope and scope.lower() == \"global\":",
+        "if False:",
+        0
+      ]
+    ],
+    "C.match.paths": [
+      [
+        "if contract_paths and contract_paths.intersection(chunk_files):",
+        "if False:",
+        0
+      ]
+    ],
+    "C.match.patterns": [
+      [
+        "if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):",
+        "if False:",
+        0
+      ]
+    ],
+    "C.relevance": [
+      [
+        "relevance_keywords\n                and any(keyword in ",
+        "False\n                and any(keyword in ",
+        0
+      ]
+    ],
+    "C.relevance.desc_part": [
+      [
+        "(item.get(\"id\", \"\") + \" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        "(item.get(\"id\", \"\") + \" \").lower() for keyword in relevance_keywords",
+        0
+      ]
+    ],
+    "C.relevance.id_part": [
+      [
+        "(item.get(\"id\", \"\") + \" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        "(\" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        0
+      ]
+    ],
+    "KW.api_schema_contract.api": [
+      [
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"api\", \"model\"),",
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"model\"),",
+        0
+      ]
+    ],
+    "KW.api_schema_contract.contract": [
+      [
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"api\", \"model\"),",
+        "\"api_schema_contract\": (\"schema\", \"api\", \"model\"),",
+        0
+      ]
+    ],
+    "KW.api_schema_contract.model": [
+      [
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"api\", \"model\"),",
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"api\"),",
+        0
+      ]
+    ],
+    "KW.api_schema_contract.schema": [
+      [
+        "\"api_schema_contract\": (\"schema\", \"contract\", \"api\", \"model\"),",
+        "\"api_schema_contract\": (\"contract\", \"api\", \"model\"),",
+        0
+      ]
+    ],
+    "KW.docs_changelog.changelog": [
+      [
+        "\"docs_changelog\": (\"docs\", \"changelog\", \"readme\"),",
+        "\"docs_changelog\": (\"docs\", \"readme\"),",
+        0
+      ]
+    ],
+    "KW.docs_changelog.docs": [
+      [
+        "\"docs_changelog\": (\"docs\", \"changelog\", \"readme\"),",
+        "\"docs_changelog\": (\"changelog\", \"readme\"),",
+        0
+      ]
+    ],
+    "KW.docs_changelog.readme": [
+      [
+        "\"docs_changelog\": (\"docs\", \"changelog\", \"readme\"),",
+        "\"docs_changelog\": (\"docs\", \"changelog\"),",
+        0
+      ]
+    ],
+    "KW.frontend_ui.component": [
+      [
+        "\"frontend_ui\": (\"frontend\", \"ui\", \"component\"),",
+        "\"frontend_ui\": (\"frontend\", \"ui\"),",
+        0
+      ]
+    ],
+    "KW.frontend_ui.frontend": [
+      [
+        "\"frontend_ui\": (\"frontend\", \"ui\", \"component\"),",
+        "\"frontend_ui\": (\"ui\", \"component\"),",
+        0
+      ]
+    ],
+    "KW.frontend_ui.ui": [
+      [
+        "\"frontend_ui\": (\"frontend\", \"ui\", \"component\"),",
+        "\"frontend_ui\": (\"frontend\", \"component\"),",
+        0
+      ]
+    ],
+    "KW.primary_backend_logic.api": [
+      [
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"domain\", \"api\"),",
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"domain\"),",
+        0
+      ]
+    ],
+    "KW.primary_backend_logic.backend": [
+      [
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"domain\", \"api\"),",
+        "\"primary_backend_logic\": (\"service\", \"domain\", \"api\"),",
+        0
+      ]
+    ],
+    "KW.primary_backend_logic.domain": [
+      [
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"domain\", \"api\"),",
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"api\"),",
+        0
+      ]
+    ],
+    "KW.primary_backend_logic.service": [
+      [
+        "\"primary_backend_logic\": (\"backend\", \"service\", \"domain\", \"api\"),",
+        "\"primary_backend_logic\": (\"backend\", \"domain\", \"api\"),",
+        0
+      ]
+    ],
+    "KW.suspicious_out_of_scope.deploy": [
+      [
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"deploy\", \"runtime\"),",
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"runtime\"),",
+        0
+      ]
+    ],
+    "KW.suspicious_out_of_scope.prod": [
+      [
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"deploy\", \"runtime\"),",
+        "\"suspicious_out_of_scope\": (\"secret\", \"deploy\", \"runtime\"),",
+        0
+      ]
+    ],
+    "KW.suspicious_out_of_scope.runtime": [
+      [
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"deploy\", \"runtime\"),",
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"deploy\"),",
+        0
+      ]
+    ],
+    "KW.suspicious_out_of_scope.secret": [
+      [
+        "\"suspicious_out_of_scope\": (\"secret\", \"prod\", \"deploy\", \"runtime\"),",
+        "\"suspicious_out_of_scope\": (\"prod\", \"deploy\", \"runtime\"),",
+        0
+      ]
+    ],
+    "KW.tests.assert": [
+      [
+        "\"tests\": (\"test\", \"coverage\", \"assert\"),",
+        "\"tests\": (\"test\", \"coverage\"),",
+        0
+      ]
+    ],
+    "KW.tests.coverage": [
+      [
+        "\"tests\": (\"test\", \"coverage\", \"assert\"),",
+        "\"tests\": (\"test\", \"assert\"),",
+        0
+      ]
+    ],
+    "KW.tests.test": [
+      [
+        "\"tests\": (\"test\", \"coverage\", \"assert\"),",
+        "\"tests\": (\"coverage\", \"assert\"),",
+        0
+      ]
+    ],
+    "KW.workflow_aiops.aiops": [
+      [
+        "\"workflow_aiops\": (\"workflow\", \"aiops\", \"pipeline\"),",
+        "\"workflow_aiops\": (\"workflow\", \"pipeline\"),",
+        0
+      ]
+    ],
+    "KW.workflow_aiops.pipeline": [
+      [
+        "\"workflow_aiops\": (\"workflow\", \"aiops\", \"pipeline\"),",
+        "\"workflow_aiops\": (\"workflow\", \"aiops\"),",
+        0
+      ]
+    ],
+    "KW.workflow_aiops.workflow": [
+      [
+        "\"workflow_aiops\": (\"workflow\", \"aiops\", \"pipeline\"),",
+        "\"workflow_aiops\": (\"aiops\", \"pipeline\"),",
+        0
+      ]
+    ],
+    "P.explicit_ref": [
+      [
+        "or item.get(\"id\") in referenced_contracts",
+        "or False",
+        1
+      ]
+    ],
+    "P.include_all": [
+      [
+        "            include_all_packs\n",
+        "            False\n",
+        0
+      ]
+    ],
+    "P.match_chunk": [
+      [
+        "_contract_matches_chunk(item, chunk_files=chunk_file_set)",
+        "False",
+        1
+      ]
+    ],
+    "P.relevance": [
+      [
+        "relevance_keywords\n                and any(keyword in ",
+        "False\n                and any(keyword in ",
+        1
+      ]
+    ],
+    "P.relevance.desc_part": [
+      [
+        "(item.get(\"id\", \"\") + \" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        "(item.get(\"id\", \"\") + \" \").lower() for keyword in relevance_keywords",
+        1
+      ]
+    ],
+    "P.relevance.id_part": [
+      [
+        "(item.get(\"id\", \"\") + \" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        "(\" \" + item.get(\"description\", \"\")).lower() for keyword in relevance_keywords",
+        1
+      ]
+    ],
+    "P.sel.desc_eq": [
+      [
+        "description_lower == selected",
+        "False",
+        0
+      ]
+    ],
+    "P.sel.desc_sub": [
+      [
+        "selected in description_lower",
+        "False",
+        0
+      ]
+    ],
+    "P.sel.id_eq": [
+      [
+        "id_lower == selected",
+        "False",
+        0
+      ]
+    ],
+    "P.sel.id_sub": [
+      [
+        "selected in id_lower",
+        "False",
+        0
+      ]
+    ],
+    "P.selected.guard": [
+      [
+        "selected_pack and _review_pack_matches_selected(item, selected_pack)",
+        "False",
+        0
+      ]
+    ],
+    "PAT.substring": [
+      [
+        "if normalized in path:",
+        "if False:",
+        0
+      ]
+    ],
+    "PAT.suffix_star": [
+      [
+        "if normalized.endswith(\"*\") and path.startswith(normalized[:-1]):",
+        "if False:",
+        0
+      ]
+    ],
+    "TERM.not_relevant": [
+      [
+        "if not filtered_contracts and not filtered_packs:",
+        "if False:",
+        0
+      ]
+    ]
+  },
+  "observable_projection": {
+    "baseline_raises": "inputs on which the baseline raises TypeError carry totalized_baseline_observation (baseline with None id/description read as empty)",
+    "contracts": "ordered rows emitted for domain_contracts as {id, description}",
+    "excluded": "internal required/required_reasons/effective_contracts annotations, derived is_global, rules/sections additive content, Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
+    "normalization": "empty -> null; a description equal to the id is not an independent observation",
+    "not_relevant": "true iff a contracts_context_not_relevant:<chunk_id> limitation is emitted",
+    "packs": "ordered rows emitted for review_packs as {id, description, recommended_review_preset}"
+  },
+  "predicate_kill_map": {
+    "C.explicit_ref": [
+      "contract.explicit_ref.hit"
+    ],
+    "C.include_all": [
+      "contract.include_all.true",
+      "contract.carriers.include_all"
+    ],
+    "C.match.global.flag": [
+      "contract.global.flag"
+    ],
+    "C.match.global.scope": [
+      "contract.global.scope.lower",
+      "contract.global.scope.upper_ws"
+    ],
+    "C.match.paths": [
+      "contract.paths.exact.hit",
+      "contract.paths.canonical.hit",
+      "terminal.contract_only"
+    ],
+    "C.match.patterns": [
+      "contract.patterns.substring.hit",
+      "contract.patterns.star_prefix.hit"
+    ],
+    "C.relevance": [
+      "contract.relevance.primary_backend_logic.backend",
+      "contract.relevance.primary_backend_logic.service",
+      "contract.relevance.primary_backend_logic.domain",
+      "contract.relevance.primary_backend_logic.api",
+      "contract.relevance.api_schema_contract.schema",
+      "contract.relevance.api_schema_contract.contract",
+      "contract.relevance.api_schema_contract.api",
+      "contract.relevance.api_schema_contract.model",
+      "contract.relevance.frontend_ui.frontend",
+      "contract.relevance.frontend_ui.ui",
+      "contract.relevance.frontend_ui.component",
+      "contract.relevance.tests.test",
+      "contract.relevance.tests.coverage",
+      "contract.relevance.tests.assert",
+      "contract.relevance.workflow_aiops.workflow",
+      "contract.relevance.workflow_aiops.aiops",
+      "contract.relevance.workflow_aiops.pipeline",
+      "contract.relevance.docs_changelog.docs",
+      "contract.relevance.docs_changelog.changelog",
+      "contract.relevance.docs_changelog.readme",
+      "contract.relevance.suspicious_out_of_scope.secret",
+      "contract.relevance.suspicious_out_of_scope.prod",
+      "contract.relevance.suspicious_out_of_scope.deploy",
+      "contract.relevance.suspicious_out_of_scope.runtime",
+      "contract.relevance.id_only",
+      "contract.relevance.description_only",
+      "contract.relevance.id_and_description"
+    ],
+    "C.relevance.desc_part": [
+      "contract.relevance.primary_backend_logic.backend",
+      "contract.relevance.primary_backend_logic.service",
+      "contract.relevance.primary_backend_logic.domain",
+      "contract.relevance.primary_backend_logic.api",
+      "contract.relevance.api_schema_contract.schema",
+      "contract.relevance.api_schema_contract.contract",
+      "contract.relevance.api_schema_contract.api",
+      "contract.relevance.api_schema_contract.model",
+      "contract.relevance.frontend_ui.frontend",
+      "contract.relevance.frontend_ui.ui",
+      "contract.relevance.frontend_ui.component",
+      "contract.relevance.tests.test",
+      "contract.relevance.tests.coverage",
+      "contract.relevance.tests.assert",
+      "contract.relevance.workflow_aiops.workflow",
+      "contract.relevance.workflow_aiops.aiops",
+      "contract.relevance.workflow_aiops.pipeline",
+      "contract.relevance.docs_changelog.docs",
+      "contract.relevance.docs_changelog.changelog",
+      "contract.relevance.docs_changelog.readme",
+      "contract.relevance.suspicious_out_of_scope.secret",
+      "contract.relevance.suspicious_out_of_scope.prod",
+      "contract.relevance.suspicious_out_of_scope.deploy",
+      "contract.relevance.suspicious_out_of_scope.runtime",
+      "contract.relevance.description_only",
+      "contract.relevance.id_and_description"
+    ],
+    "C.relevance.id_part": [
+      "contract.relevance.id_only"
+    ],
+    "KW.api_schema_contract.api": [
+      "contract.relevance.api_schema_contract.api"
+    ],
+    "KW.api_schema_contract.contract": [
+      "contract.relevance.api_schema_contract.contract"
+    ],
+    "KW.api_schema_contract.model": [
+      "contract.relevance.api_schema_contract.model"
+    ],
+    "KW.api_schema_contract.schema": [
+      "contract.relevance.api_schema_contract.schema",
+      "pack.relevance.api_schema_contract"
+    ],
+    "KW.docs_changelog.changelog": [
+      "contract.relevance.docs_changelog.changelog"
+    ],
+    "KW.docs_changelog.docs": [
+      "contract.relevance.docs_changelog.docs",
+      "pack.relevance.docs_changelog"
+    ],
+    "KW.docs_changelog.readme": [
+      "contract.relevance.docs_changelog.readme"
+    ],
+    "KW.frontend_ui.component": [
+      "contract.relevance.frontend_ui.component"
+    ],
+    "KW.frontend_ui.frontend": [
+      "contract.relevance.frontend_ui.frontend",
+      "pack.relevance.frontend_ui"
+    ],
+    "KW.frontend_ui.ui": [
+      "contract.relevance.frontend_ui.ui"
+    ],
+    "KW.primary_backend_logic.api": [
+      "contract.relevance.primary_backend_logic.api"
+    ],
+    "KW.primary_backend_logic.backend": [
+      "contract.relevance.primary_backend_logic.backend",
+      "pack.relevance.primary_backend_logic"
+    ],
+    "KW.primary_backend_logic.domain": [
+      "contract.relevance.primary_backend_logic.domain"
+    ],
+    "KW.primary_backend_logic.service": [
+      "contract.relevance.primary_backend_logic.service",
+      "contract.relevance.id_only",
+      "contract.relevance.description_only",
+      "contract.relevance.id_and_description",
+      "pack.relevance.id_part",
+      "pack.relevance.desc_part"
+    ],
+    "KW.suspicious_out_of_scope.deploy": [
+      "contract.relevance.suspicious_out_of_scope.deploy"
+    ],
+    "KW.suspicious_out_of_scope.prod": [
+      "contract.relevance.suspicious_out_of_scope.prod"
+    ],
+    "KW.suspicious_out_of_scope.runtime": [
+      "contract.relevance.suspicious_out_of_scope.runtime"
+    ],
+    "KW.suspicious_out_of_scope.secret": [
+      "contract.relevance.suspicious_out_of_scope.secret",
+      "pack.relevance.suspicious_out_of_scope"
+    ],
+    "KW.tests.assert": [
+      "contract.relevance.tests.assert"
+    ],
+    "KW.tests.coverage": [
+      "contract.relevance.tests.coverage"
+    ],
+    "KW.tests.test": [
+      "contract.relevance.tests.test",
+      "pack.relevance.tests"
+    ],
+    "KW.workflow_aiops.aiops": [
+      "contract.relevance.workflow_aiops.aiops"
+    ],
+    "KW.workflow_aiops.pipeline": [
+      "contract.relevance.workflow_aiops.pipeline"
+    ],
+    "KW.workflow_aiops.workflow": [
+      "contract.relevance.workflow_aiops.workflow",
+      "pack.relevance.workflow_aiops"
+    ],
+    "P.explicit_ref": [
+      "pack.explicit_ref.hit",
+      "pack.id_only.explicit_ref"
+    ],
+    "P.include_all": [
+      "pack.include_all.true",
+      "pack.description_only.preserved",
+      "pack.id_only.include_all"
+    ],
+    "P.match_chunk": [],
+    "P.relevance": [
+      "pack.relevance.id_part",
+      "pack.relevance.desc_part",
+      "pack.relevance.primary_backend_logic",
+      "pack.relevance.api_schema_contract",
+      "pack.relevance.frontend_ui",
+      "pack.relevance.tests",
+      "pack.relevance.workflow_aiops",
+      "pack.relevance.docs_changelog",
+      "pack.relevance.suspicious_out_of_scope",
+      "pack.relevance.baseline_raises.id_only",
+      "pack.relevance.baseline_raises.description_only"
+    ],
+    "P.relevance.desc_part": [
+      "pack.relevance.desc_part",
+      "pack.relevance.baseline_raises.id_only"
+    ],
+    "P.relevance.id_part": [
+      "pack.relevance.id_part",
+      "pack.relevance.baseline_raises.description_only"
+    ],
+    "P.sel.desc_eq": [],
+    "P.sel.desc_sub": [
+      "pack.selected.fuzzy_description"
+    ],
+    "P.sel.id_eq": [],
+    "P.sel.id_sub": [
+      "pack.selected.fuzzy_id"
+    ],
+    "P.selected.guard": [
+      "pack.selected.exact_id",
+      "pack.selected.fuzzy_id",
+      "pack.selected.exact_description",
+      "pack.selected.fuzzy_description",
+      "pack.selected.case_insensitive",
+      "pack.description_only.selected",
+      "terminal.pack_only"
+    ],
+    "PAT.substring": [
+      "contract.patterns.substring.hit"
+    ],
+    "PAT.suffix_star": [
+      "contract.patterns.star_prefix.hit"
+    ],
+    "TERM.not_relevant": [
+      "contract.include_all.false",
+      "contract.explicit_ref.miss",
+      "contract.paths.substring.miss",
+      "contract.paths.glob.miss",
+      "contract.paths.unresolvable.miss",
+      "contract.patterns.glob.miss",
+      "contract.patterns.miss",
+      "contract.global.nonglobal_scope.miss",
+      "contract.relevance.primary_backend_logic.miss",
+      "contract.relevance.api_schema_contract.miss",
+      "contract.relevance.frontend_ui.miss",
+      "contract.relevance.tests.miss",
+      "contract.relevance.workflow_aiops.miss",
+      "contract.relevance.docs_changelog.miss",
+      "contract.relevance.suspicious_out_of_scope.miss",
+      "contract.relevance.group_without_keywords.miss",
+      "pack.include_all.false",
+      "pack.explicit_ref.miss",
+      "pack.selected.miss",
+      "pack.modern_fields_ignored",
+      "pack.relevance.miss",
+      "pack.relevance.group_without_keywords.miss",
+      "terminal.zero_context.not_relevant",
+      "terminal.sources_absent.not_relevant",
+      "terminal.sources_empty.not_relevant"
+    ]
+  },
+  "schema": "agent-review.v1-c2-legacy-differential-observations.v1"
+}

@@ -633,11 +633,14 @@ def test_cm_a3_exact_identity_boundary() -> None:
     assert payload_cost_model._review_pack_matches_selected(pack, "Admin_Pack") is False
     assert payload_cost_model._review_pack_matches_selected(pack, "ADMIN_PACK") is False
 
-    # Legacy alias calendar <-> agentescala-calendar is explicitly preserved
+    # Cycle-3 (4179993596): the MODERN matcher is exact and target-agnostic -- the former
+    # calendar <-> agentescala-calendar alias was a target-specific engine branch and is gone.
     legacy_pack = {"id": "agentescala-calendar"}
-    assert payload_cost_model._review_pack_matches_selected(legacy_pack, "calendar") is True
+    assert payload_cost_model._review_pack_matches_selected(legacy_pack, "calendar") is False
     reverse_pack = {"id": "calendar"}
-    assert payload_cost_model._review_pack_matches_selected(reverse_pack, "agentescala-calendar") is True
+    assert payload_cost_model._review_pack_matches_selected(reverse_pack, "agentescala-calendar") is False
+    # ...while LEGACY keeps recovering the same pairing generically (selected substring of id).
+    assert payload_cost_model.legacy_pack_matches_selected(legacy_pack, "calendar") is True
 
 
 def test_cm_a3_case_sensitive_pattern_matching() -> None:
@@ -667,7 +670,9 @@ def test_ab_a3_explicit_binding() -> None:
     """AB-A3-EXPLICIT-BINDING: Discarding contract_bindings prevents bound contract from becoming required (ABLATION_CONTROL)."""
     intake = _base_intake()
     intake.target_profile = {
-        "domain_contracts": [{"id": "c1", "paths": ["backend/*"]}],
+        # Cycle-3: MODERN contract mapping (glob `paths` are a modern-mode semantic; the legacy
+        # flat shape matches `paths` exactly, per frozen baseline 6bbd2f9).
+        "domain_contracts": {"c1": {"description": "c1", "paths": ["backend/*"]}},
         "review_packs": {
             "packs": {"p1": {"paths": ["backend/*"]}},
             "contract_bindings": {"p1": ["c1"]},
@@ -688,7 +693,7 @@ def test_ab_a3_explicit_binding() -> None:
     # Ablated: remove bindings
     intake_ablated = _base_intake()
     intake_ablated.target_profile = {
-        "domain_contracts": [{"id": "c1", "paths": ["backend/*"]}],
+        "domain_contracts": {"c1": {"description": "c1", "paths": ["backend/*"]}},
         "review_packs": {"packs": {"p1": {"paths": ["backend/*"]}}},
     }
     ctx_ablated, _ = payload_cost_model.contracts_context(
@@ -4020,6 +4025,15 @@ def test_b4_registry_truth() -> None:
     assert rp_reg["unknown_field_policy"] == payload_cost_model.REVIEW_PACK_UNKNOWN_FIELD_POLICY
     assert rp_reg["legacy_input_policy"] == payload_cost_model.REVIEW_PACK_LEGACY_INPUT_POLICY
     assert rp_reg["mixed_shape_policy"] == payload_cost_model.REVIEW_PACK_MIXED_SHAPE_POLICY
+    # Cycle-3 registries (C1 modern admission totality): one declared census, one declared envelope.
+    assert dc_reg["modern_exact_path_fields"] == sorted(payload_cost_model.MODERN_CONTRACT_EXACT_PATH_FIELDS)
+    assert dc_reg["modern_pattern_fields"] == sorted(payload_cost_model.MODERN_CONTRACT_PATTERN_FIELDS)
+    assert dc_reg["scope_value_domain"] == sorted(payload_cost_model.MODERN_SCOPE_DOMAIN)
+    assert rp_reg["envelope_keys"] == sorted(payload_cost_model.REVIEW_PACK_ENVELOPE_KEYS)
+    assert rp_reg["modern_exact_path_fields"] == sorted(payload_cost_model.MODERN_PACK_EXACT_PATH_FIELDS)
+    assert rp_reg["modern_pattern_fields"] == sorted(payload_cost_model.MODERN_PACK_PATTERN_FIELDS)
+    assert rp_reg["scope_value_domain"] == sorted(payload_cost_model.MODERN_SCOPE_DOMAIN)
+    assert rp_reg["legacy_projection"] == sorted(["id", "description", "recommended_review_preset"])
     assert receipt["grammar"]["registry_drift"] is False
 
     # 2. Historical B4 section
@@ -4567,7 +4581,11 @@ def test_cm_n2_legacy_domain_contract_not_mapping() -> None:
         selected_contract_pack=None,
         semantic_group="api",
     )
-    assert limits == []
+    # Cycle-3 legacy firewall: a LEGACY flat pack carries only {id, description, preset}; its
+    # `paths` never acquire semantics, so (like frozen baseline 6bbd2f9) nothing is applicable
+    # here and the consequence is contracts_context_not_relevant -- but never a binding limitation.
+    assert limits == ["contracts_context_not_relevant:chunk-01"]
+    assert ctx["review_packs"] == []
     c_ids = [c["id"] for c in ctx["domain_contracts"]]
     assert "c1" not in c_ids
 
@@ -4581,7 +4599,7 @@ def test_cm_n2_legacy_domain_contract_not_mapping() -> None:
         selected_contract_pack=None,
         semantic_group="api",
     )
-    assert limits2 == []
+    assert limits2 == ["contracts_context_not_relevant:chunk-01"]
     assert not any(lim.startswith("unresolved_contract_binding") for lim in limits2)
 
 
