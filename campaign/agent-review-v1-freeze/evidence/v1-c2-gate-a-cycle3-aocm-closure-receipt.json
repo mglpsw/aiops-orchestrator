@@ -29,9 +29,9 @@
     "repair_tree": "778ca93f39670df877488f143c63638cee81829f",
     "sibling_closure_commits": [
       "ea24a516cb89988f94e7dabc479b99c1847c3823",
-      "4714dda8fa6cbfbee48f14667c97ef929b0e7350"
+      "9741a3a7b5174a3fb1b1887c0a4c4229b90cc56d"
     ],
-    "sibling_closure_tree": "2010be6081072dfc4fad250f7d0fb42c3217075e",
+    "sibling_closure_tree": "ee8d090218fcf4344e1a28be9edbf7fd2c50e14d",
     "final_head": "BOUND_EXTERNALLY: PR.headRefOid (evidence-only commits follow the repair commit)"
   },
   "transversal_property": "Mode -> Grammar -> Normalization -> Identity -> Applicability -> Relation -> RequiredSource -> RequiredContext -> ObservableResult",
@@ -167,11 +167,12 @@
     "additive_compatibility_shapes": [
       "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
       "review_packs as a top-level list of dicts (baseline read it as no packs)",
-      "rows with neither id nor description (carry no context) are not admitted"
+      "legacy PACK rows with neither id nor description are not admitted (SUBTRACTIVE but lossless: the pack projection has no other field; legacy CONTRACT rows are all admitted)"
     ],
     "baseline_predicates": {
-      "live": 52,
+      "live": 57,
       "redundant": [
+        "D.exact_backslash",
         "P.sel.id_eq",
         "P.sel.desc_eq"
       ],
@@ -190,7 +191,8 @@
       "C.explicit_ref": {
         "C.explicit_ref": [
           "contract.explicit_ref.hit",
-          "contract.explicit_ref.scoped_rule.hit"
+          "contract.explicit_ref.scoped_rule.hit",
+          "contract.token.extra_colon.miss"
         ]
       },
       "C.match.paths": {
@@ -213,7 +215,8 @@
         ],
         "C.match.global.scope": [
           "contract.global.scope.lower",
-          "contract.global.scope.upper_ws"
+          "contract.global.scope.upper_ws",
+          "contract.rows.global_without_id.hit"
         ]
       },
       "C.relevance": {
@@ -287,8 +290,8 @@
     "differential_oracle": {
       "fixture": "tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json",
       "generator": "scripts/generate-v1-c2-legacy-differential-oracle.py",
-      "cases": 134,
-      "predicates": 55,
+      "cases": 151,
+      "predicates": 61,
       "shallow_ci_safe": true,
       "regeneration_check": "test_fixture_equals_a_fresh_generation_from_the_frozen_baseline (skipped without history)",
       "intentional_divergences": "unresolved explicit ref / missing selected pack / explicit ref without domain_contracts source: typed fail-closed limitations suppress the baseline's not_relevant (authority: cycle-1 4178603200, 4178603183)",
@@ -533,6 +536,22 @@
       "bidi/format characters in path identities"
     ]
   },
+  "independent_review_round_3": {
+    "subject": "01a0552116049320e43cf3021ed249178ce1fad7",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (all in the C4 interface; legacy engine itself found sound by ~190k whole-row differential cases; no NEW_OBLIGATION_DOMAIN); repaired in commit 9741a3a7",
+    "repaired": {
+      "F1": "legacy pack rows are exactly the baseline rows including explicit null keys (payload bytes equal)",
+      "F2": "oracle covers projection/canonicalization predicates (sort+dedup, display strip, ~name vs ~/, trailing-star prefix, token grammar, same-id/duplicate rows, exact nulls) with a mutant ablation; D.exact_backslash declared redundant (subsumed by the display step)",
+      "F3": "uniform legacy strictness: blank strings and null rules are absent; only non-str values are malformed",
+      "F4": "legacy contract rows are all admitted (they can carry applicability through scope/paths/patterns); legacy packs with neither id nor description stay dropped, declared SUBTRACTIVE but lossless; the dead second legacy projector was removed",
+      "unverified": "whitespace-padded traversal and unclosed glob class in exact paths are now rejected"
+    },
+    "not_actioned": [
+      "bidi/format characters in path identities (no effect: matching is against canonical chunk files)",
+      "modern contract literally named 'rules' vs legacy-envelope detection (predates this PR)",
+      "all legacy packs are required context under include_all (Gate A design); budget floor is higher than the baseline's, pinned fail-closed by the CLI budget test"
+    ]
+  },
   "amended_predecessor_tests": [
     {
       "test": "test_cm_a3_exact_identity_boundary",
@@ -548,14 +567,14 @@
     }
   ],
   "qualification": {
-    "evidence_subject": "structural-closure commit 4714dda8fa6cbfbee48f14667c97ef929b0e7350 (tree 2010be6081072dfc4fad250f7d0fb42c3217075e) on top of sibling commit ea24a516 and repair commit 4544cfdd; the evidence commit that follows changes only campaign/ evidence files",
+    "evidence_subject": "round-3 closure commit 9741a3a7b5174a3fb1b1887c0a4c4229b90cc56d (tree ee8d090218fcf4344e1a28be9edbf7fd2c50e14d) on top of 4714dda8, ea24a516 and repair commit 4544cfdd; the evidence commit that follows changes only campaign/ evidence files",
     "environment": "plain local clone (not a linked worktree); python 3.11.2, pytest 8.4.2 from the project venv; --basetemp outside any .git-bearing ancestor (sandbox has a stray /tmp/.git that trips the 'no AgentReview artifacts inside Git worktrees' guard: failure class environment)",
-    "focal": "633 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
-    "legacy_differential": "oracle 134 cases / 55 predicates GREEN with WHOLE-ROW observation; 45 of the first 86 observations diverged on the exact predecessor 4d7496a; wrong-implementation and row-leak ablations turn the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
+    "focal": "674 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
+    "legacy_differential": "oracle 151 cases / 61 predicates GREEN with exact WHOLE-ROW observation (explicit nulls included); 45 of the first 86 observations diverged on the exact predecessor 4d7496a; wrong-implementation, row-leak and projection/canonicalization mutant ablations turn the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
     "affected_core": "267 passed (test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_semantic_chunker_225_red.py, test_pr_brief.py, test_quality_gate.py, test_final_synthesizer.py + C1 test_semantic_chunker_232_coverage_truth.py)",
     "CLI": "143 passed (all test_aiops_review_*_cli.py)",
     "C1": "included in affected_core (22 passed, test_semantic_chunker_232_coverage_truth.py)",
-    "full_agent_review_suite": "4193 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
+    "full_agent_review_suite": "4234 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
     "failure_classification": {
       "cli_artifact_guard": "environment (stray /tmp/.git); passes with --basetemp elsewhere",
       "four_uid0_sudo_unreadable": "environment/preexisting; identical at predecessor",
