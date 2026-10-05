@@ -127,6 +127,36 @@ def build_corpus() -> list[dict[str, Any]]:
     add(_case("contract.relevance.group_without_keywords.miss", ["C.relevance"], rules=[{"id": "q", "description": "service"}], group="other"))
     add(_case("contract.carriers.include_all", ["C.include_all"], rules=[{"id": "only-id"}, {"description": "only description"}, {"id": "both", "description": "both described"}], cc=["target_profile:domain_contracts"]))
 
+    # --- contract near-misses / carriers / interactions (adversarial review round) ----------
+    for carrier in ("file_path", "path"):
+        add(_case(f"contract.carrier.{carrier}.hit", [f"C.carrier.{carrier}", "C.match.paths"], rules=[{"id": "r", "description": "zzz", carrier: "backend/api/shifts.py"}], files=FILES_HIT))
+    for carrier in ("files", "source_files", "related_files"):
+        add(_case(f"contract.carrier.{carrier}.hit", [f"C.carrier.{carrier}", "C.match.paths"], rules=[{"id": "r", "description": "zzz", carrier: ["backend/api/shifts.py"]}], files=FILES_HIT))
+    add(_case("contract.paths.case_differs.miss", ["C.match.paths"], rules=[{"id": "r", "description": "zzz", "paths": ["Backend/API/shifts.py"]}], files=FILES_HIT))
+    add(_case("contract.paths.basename.miss", ["C.match.paths"], rules=[{"id": "r", "description": "zzz", "paths": ["shifts.py"]}], files=FILES_HIT))
+    add(_case("contract.patterns.case_differs.miss", ["C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["Backend/API"]}], files=FILES_HIT))
+    add(_case("contract.patterns.middle_star.miss", ["C.match.patterns"], rules=[{"id": "r", "description": "zzz", "patterns": ["backend/*/shifts.py"]}], files=FILES_HIT))
+    add(_case("contract.patterns.trailing_slash.hit", ["C.match.patterns", "PAT.substring"], rules=[{"id": "r", "description": "zzz", "patterns": ["backend/api/"]}], files=FILES_HIT))
+    for near in ("globalx", "all", "document"):
+        add(_case(f"contract.global.near_miss.{near}", ["C.match.global.scope"], rules=[{"id": "g", "description": "zzz", "scope": near}]))
+    add(_case("contract.explicit_ref.case_differs.miss", ["C.explicit_ref"], rules=[zz], cc=["contract:ZZ-RULE"]))
+    add(_case("contract.explicit_ref.description_equal.miss", ["C.explicit_ref"], rules=[zz], cc=["contract:zzz"]))
+    add(_case("contract.explicit_ref.substring.miss", ["C.explicit_ref"], rules=[zz], cc=["contract:zz"]))
+    add(_case("contract.explicit_ref.scoped_rule.hit", ["C.explicit_ref"], rules=[{"id": "fe-rule", "description": "frontend only", "scope": "frontend", "paths": ["frontend/app.js"]}], cc=["contract:fe-rule"]))
+    add(_case("contract.relevance.uppercase_text.hit", ["C.relevance"], rules=[{"id": "q", "description": "SERVICE Layer"}], group="primary_backend_logic"))
+    add(_case("contract.relevance.inside_word.hit", ["C.relevance"], rules=[{"id": "q", "description": "microservices"}], group="primary_backend_logic"))
+    add(_case("contract.relevance.scoped_rule.hit", ["C.relevance"], rules=[{"id": "q", "description": "service layer", "scope": "frontend", "paths": ["frontend/app.js"], "patterns": ["frontend"]}], group="primary_backend_logic"))
+    # legacy rows carry only baseline-projected fields: unknown / nested / list-valued extras are ignored, not rejected
+    for name, extra in (
+        ("tags", {"tags": [1, 2]}),
+        ("examples", {"examples": [{"a": 1}]}),
+        ("rules_dicts", {"rules": [{"name": "n", "check": "c"}]}),
+        ("owners_with_empty", {"owners": ["a", ""]}),
+        ("unknown_scalar", {"owner": "team"}),
+    ):
+        add(_case(f"contract.unknown_fields.{name}", ["C.include_all"], rules=[{"id": "x", "description": "api", **extra}], cc=["target_profile:domain_contracts"], cm="CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED"))
+    add(_case("contract.same_id.ordering", ["C.include_all"], rules=[{"id": "x"}, {"id": "x", "description": "b"}], cc=["target_profile:domain_contracts"]))
+
     # --- packs ------------------------------------------------------------
     alpha = {"id": "alpha", "description": "Alpha pack", "recommended_review_preset": "review:deep"}
     beta = {"id": "beta", "description": "Beta pack"}
@@ -154,6 +184,12 @@ def build_corpus() -> list[dict[str, Any]]:
     for group, keywords in SEMANTIC_GROUP_KEYWORDS.items():
         kw = keywords[0]
         add(_case(f"pack.relevance.{group}", ["P.relevance"], packs=[{"id": f"zz-{kw}", "description": f"zz {kw} zz"}], group=group, cm="CM-C4-LEGACY-PACK-RELEVANCE"))
+    add(_case("pack.explicit_ref.case_differs.miss", ["P.explicit_ref"], packs=[alpha], cc=["contract:ALPHA"]))
+    add(_case("pack.explicit_ref.description_equal.miss", ["P.explicit_ref"], packs=[alpha], cc=["contract:Alpha pack"]))
+    add(_case("pack.explicit_ref.substring.miss", ["P.explicit_ref"], packs=[alpha], cc=["contract:alph"]))
+    add(_case("pack.selected.reverse_alias.miss", ["P.selected.guard"], packs=id_only_sel, sel="foo-alpha"))
+    add(_case("pack.selected.description_case_insensitive", ["P.selected.guard", "P.sel.desc_sub"], packs=[{"id": "p1", "description": "Calendar Scheduling"}, {"id": "p2", "description": "zzz"}], sel="CALENDAR"))
+    add(_case("pack.relevance.uppercase_text.hit", ["P.relevance"], packs=[{"id": "ZZ-Q", "description": "SERVICE Layer"}], group="primary_backend_logic"))
     # baseline TypeError (None + str) when relevance is evaluated for a pack lacking id or description
     add(_case("pack.relevance.baseline_raises.id_only", ["P.relevance"], packs=[{"id": "qq"}], group="primary_backend_logic"))
     add(_case("pack.relevance.baseline_raises.description_only", ["P.relevance"], packs=[{"description": "zzz"}], group="frontend_ui"))
@@ -180,6 +216,11 @@ def _predicates() -> list[dict[str, Any]]:
         ("C.include_all", live, "include_all_contracts (unconditional: scoped and unscoped rules)"),
         ("C.explicit_ref", live, 'item.get("id") in referenced_contracts  (contracts)'),
         ("C.match.paths", live, "canonical(paths) intersects chunk files (exact identity only; no substring/glob)"),
+        ("C.carrier.file_path", live, "file_path is a path-bearing carrier"),
+        ("C.carrier.path", live, "path is a path-bearing carrier"),
+        ("C.carrier.files", live, "files is a path-bearing carrier"),
+        ("C.carrier.source_files", live, "source_files is a path-bearing carrier"),
+        ("C.carrier.related_files", live, "related_files is a path-bearing carrier"),
         ("C.match.patterns", live, "_matches_pattern(path, patterns)"),
         ("PAT.suffix_star", live, 'pattern.endswith("*") and path.startswith(pattern[:-1])'),
         ("PAT.substring", live, "pattern in path"),
@@ -212,6 +253,11 @@ def _mutants() -> dict[str, list[tuple[str, str, int]]]:
         "C.include_all": [("            include_all_contracts\n", "            False\n", 0)],
         "C.explicit_ref": [('or item.get("id") in referenced_contracts', "or False", 0)],
         "C.match.paths": [("if contract_paths and contract_paths.intersection(chunk_files):", "if False:", 0)],
+        "C.carrier.file_path": [('for key in ("file_path", "file", "original_file", "path"):', 'for key in ("file", "original_file", "path"):', 0)],
+        "C.carrier.path": [('for key in ("file_path", "file", "original_file", "path"):', 'for key in ("file_path", "file", "original_file"):', 0)],
+        "C.carrier.files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("paths", "source_files", "related_files"):', 0)],
+        "C.carrier.source_files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("files", "paths", "related_files"):', 0)],
+        "C.carrier.related_files": [('for key in ("files", "paths", "source_files", "related_files"):', 'for key in ("files", "paths", "source_files"):', 0)],
         "C.match.patterns": [("if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):", "if False:", 0)],
         "PAT.suffix_star": [('if normalized.endswith("*") and path.startswith(normalized[:-1]):', "if False:", 0)],
         "PAT.substring": [("if normalized in path:", "if False:", 0)],
@@ -314,8 +360,6 @@ def observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
     def row_carrier(row: dict[str, Any], *, with_preset: bool) -> dict[str, Any]:
         ident = row.get("id") or None
         desc = row.get("description") or None
-        if desc == ident:  # description defaulted from the id is not an independent observation
-            desc = None
         out: dict[str, Any] = {"id": ident, "description": desc}
         if with_preset:
             out["recommended_review_preset"] = row.get("recommended_review_preset") or None
@@ -413,7 +457,7 @@ def generate() -> dict[str, Any]:
             "contracts": "ordered rows emitted for domain_contracts as {id, description}",
             "packs": "ordered rows emitted for review_packs as {id, description, recommended_review_preset}",
             "not_relevant": "true iff a contracts_context_not_relevant:<chunk_id> limitation is emitted",
-            "normalization": "empty -> null; a description equal to the id is not an independent observation",
+            "normalization": "empty -> null (a legacy row never fabricates a description from its id; exact equality)",
             "excluded": "internal required/required_reasons/effective_contracts annotations, derived is_global, rules/sections additive content, Gate-A typed limitations (compared separately as INTENTIONAL divergences)",
             "baseline_raises": "inputs on which the baseline raises TypeError carry totalized_baseline_observation (baseline with None id/description read as empty)",
         },

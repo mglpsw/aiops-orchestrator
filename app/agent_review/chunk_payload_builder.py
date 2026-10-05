@@ -661,7 +661,7 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
     if isinstance(packs, list) and packs:
         popped = packs.pop()
         if isinstance(popped, dict):
-            pack_id = popped.get("id") or payload_cost_model.UNIDENTIFIED_LEGACY_PACK_LOSS_LABEL
+            pack_id = popped.get("id") or payload_cost_model.unidentified_pack_loss_label(popped)
             limitations = _get(payload, "limitations")
             if isinstance(limitations, list):
                 loss_code = f"required_contract_pack_context_lost:{pack_id}"

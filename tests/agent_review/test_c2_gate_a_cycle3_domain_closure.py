@@ -840,7 +840,8 @@ def test_cm_c4_idless_legacy_pack_floor_never_fabricates_identity() -> None:
     floor = next(s for s in snapshots if s["review_packs"] and set(s["review_packs"][0]) == {"description", "required"})
     assert floor["review_packs"] == [{"description": "calendar", "required": True}]
     assert all("id" not in p for s in snapshots for p in s["review_packs"])
-    assert "required_contract_pack_context_lost:unidentified_legacy_pack" in limitations
+    assert limitations == [pcm.unidentified_pack_loss_label({"description": "calendar"}).join(["required_contract_pack_context_lost:", ""])]
+    assert limitations[0].startswith("required_contract_pack_context_lost:unidentified_legacy_pack:")
 
 
 def test_cm_c4_description_only_pack_flows_through_real_plan_and_payload() -> None:
@@ -947,6 +948,151 @@ def test_ab_c4_legacy_description_only_pack(monkeypatch: pytest.MonkeyPatch) -> 
         m.setattr(pcm, "_legacy_pack_row_admitted", lambda row: bool(row.get("id")))
         assert witness() == 0, "mutant must go RED"
     assert witness() == 1
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review round (HEAD d3d6dec): known-domain siblings of C1/C2/C4
+# ---------------------------------------------------------------------------
+
+
+def test_cm_c2_profile_level_bindings_are_not_shadowed_by_the_envelope() -> None:
+    """Sibling of 4179993600 (declared-reference origins): a profile-level contract_bindings carries the same
+    relation as the envelope's; an empty/None envelope key must not shadow it."""
+    for envelope_bindings in ({}, None):
+        profile = {
+            "review_packs": {"packs": {"p": {"paths": ["a/*"]}}, "contract_bindings": envelope_bindings},
+            "contract_bindings": {"p": ["c1"]},
+        }
+        ctx, limits = _ctx(profile, files=("a/x.py",))
+        assert "required_source_absent:domain_contracts" in limits, envelope_bindings
+        assert "unresolved_contract_binding:p:c1" in limits
+
+
+def test_c2_binding_carriers_merge_and_conflicts_fail_closed() -> None:
+    _, bindings, state, _, limits = pcm.normalize_review_packs(
+        {"packs": {"p": {}, "q": {}}, "contract_bindings": {"p": ["c1"]}}, extra_bindings={"q": ["c2"]}
+    )
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID and bindings == {"p": ["c1"], "q": ["c2"]} and limits == []
+    _, bindings, _, _, limits = pcm.normalize_review_packs(
+        {"packs": {"p": {}}, "contract_bindings": {"p": ["c1"]}}, extra_bindings={"p": ["c1"]}
+    )
+    assert bindings == {"p": ["c1"]} and limits == []
+    _, bindings, _, _, limits = pcm.normalize_review_packs(
+        {"packs": {"p": {}}, "contract_bindings": {"p": ["c1"]}}, extra_bindings={"p": ["c2"]}
+    )
+    assert bindings == {} and "malformed_contract_bindings:conflicting_carriers" in limits
+    _, bindings, _, _, limits = pcm.normalize_review_packs(
+        {"packs": {"p": {}}, "contract_bindings": {}}, extra_bindings="bad"
+    )
+    assert bindings == {} and "malformed_contract_bindings:must_be_mapping" in limits
+
+
+def test_ab_c2_binding_carrier_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = {
+        "review_packs": {"packs": {"p": {"paths": ["a/*"]}}, "contract_bindings": {}},
+        "contract_bindings": {"p": ["c1"]},
+    }
+
+    def witness() -> bool:
+        return "required_source_absent:domain_contracts" in _ctx(profile, files=("a/x.py",))[1]
+
+    assert witness()
+    original = pcm._parse_binding_carrier
+    with monkeypatch.context() as m:
+        m.setattr(pcm, "_parse_binding_carrier", lambda raw: ({}, None) if raw == {"p": ["c1"]} else original(raw))
+        assert not witness(), "mutant must go RED"
+    assert witness()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"tags": [1, 2]}, {"examples": [{"a": 1}]}, {"rules": [{"name": "n", "check": "c"}]}, {"owners": ["a", ""]}, {"owner": "team"}],
+)
+def test_cm_c4_legacy_admission_ignores_unprojected_fields(extra: dict[str, Any]) -> None:
+    """The modern named-section grammar must not leak into LEGACY admission: the baseline ignored every field
+    it does not project (CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED)."""
+    profile = {"domain_contracts": {"rules": [{"id": "x", "description": "api", **extra}]}}
+    ctx, limits = _ctx(profile, chunk_contracts=("target_profile:domain_contracts",))
+    assert [c["id"] for c in ctx["domain_contracts"]] == ["x"]
+    assert not _critical(limits, "invalid_source_contract:")
+    # ...while the same shape in a MODERN mapping stays a closed grammar
+    if "owners" in extra:
+        _, state, _, _ = pcm.normalize_domain_contracts({"x": {"description": "api", **extra}})
+        assert state == pcm.SOURCE_STATE_INVALID
+
+
+def test_cm_c4_legacy_contract_rows_never_fabricate_a_description() -> None:
+    contracts, state, _, _ = pcm.normalize_domain_contracts({"rules": [{"id": "x"}, {"id": "x", "description": "b"}]})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID
+    assert [(c.get("id"), c.get("description")) for c in contracts] == [("x", None), ("x", "b")]
+    modern, _, _, _ = pcm.normalize_domain_contracts({"x": {"rules": ["r"]}})
+    assert modern[0]["description"] == "x", "MODERN rows keep the identity default"
+
+
+def test_c4_explicit_ref_identity_is_trimmed_intentional() -> None:
+    """INTENTIONAL (Gate A S1 4179272330, explicit-reference container totality): explicit identities are
+    trimmed, so `contract: x` resolves rule `x`; the frozen baseline compared the untrimmed text."""
+    ctx, limits = _ctx({"domain_contracts": {"rules": [{"id": "x", "description": "zzz"}]}}, chunk_contracts=("contract: x",))
+    assert [c["id"] for c in ctx["domain_contracts"]] == ["x"]
+    assert not _critical(limits, "unresolved_contract_reference:")
+
+
+def test_c1_legacy_envelope_sibling_keys_keep_baseline_leniency_intentional() -> None:
+    """INTENTIONAL (frozen baseline 6bbd2f9): a LEGACY envelope ignores sibling keys, so the typo guard of the
+    closed modern envelope is not applied to {"packs": [...]} / {"rules": [...]} documents. The correctly
+    spelled relation key beside a legacy list is still the typed mixed-shape failure."""
+    packs, _, state, _, limits = pcm.normalize_review_packs({"packs": [{"id": "a"}], "contract_binding": {"a": ["c"]}})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID and limits == [] and [p["id"] for p in packs] == ["a"]
+    _, _, state, _, limits = pcm.normalize_review_packs({"packs": [{"id": "a"}], "contract_bindings": {"a": ["c"]}})
+    assert state == pcm.SOURCE_STATE_INVALID and "invalid_source_review_packs:UNSUPPORTED_NONEMPTY" in limits
+
+
+@pytest.mark.parametrize("pattern", ["src/[abc", "[]x", "a/[", "a\x00b/*", "a\x01"])
+def test_cm_c3_pattern_glob_syntax_is_enforced(pattern: str) -> None:
+    pattern = pattern.encode().decode("unicode_escape")
+    with pytest.raises(pcm.PathIdentityError):
+        pcm.canonical_repo_pattern(pattern)
+    _, state, _, _ = pcm.normalize_domain_contracts({"c": {"description": "d", "patterns": [pattern]}})
+    assert state == pcm.SOURCE_STATE_INVALID
+
+
+@pytest.mark.parametrize("pattern", ["src/[id]/page.tsx", "pages/[[...slug]].js", "a/[!x]/b", "src/[]]x"])
+def test_pc_c3_bracket_globs_remain_admitted(pattern: str) -> None:
+    assert pcm.canonical_repo_pattern(pattern) == pattern
+
+
+@pytest.mark.parametrize("field", CONTRACT_EXACT_PATH_FIELDS)
+@pytest.mark.parametrize("value", ["~root/.ssh/id_rsa", "~alice", "a\x00b", "a\x1fb"])
+def test_cm_c3_tilde_user_and_control_characters_are_not_repository_relative(field: str, value: str) -> None:
+    value = value.encode().decode("unicode_escape")
+    _, state, subtype, _ = pcm.normalize_domain_contracts(_contract_with(field, value))
+    assert state == pcm.SOURCE_STATE_INVALID and subtype == pcm.SUBTYPE_INVALID_IDENTITY
+    _, _, p_state, _, _ = pcm.normalize_review_packs({"packs": {"p": {"paths": [value]}}})
+    assert p_state == pcm.SOURCE_STATE_INVALID if field == "paths" else True
+
+
+def test_pc_c3_tilde_lookalike_names_remain_admitted() -> None:
+    _, state, _, _ = pcm.normalize_domain_contracts({"c": {"description": "d", "paths": ["~$tmp.docx", "docs/~notes.md"]}})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID
+
+
+def test_cm_c1_envelope_non_string_key_is_invalid() -> None:
+    _, _, state, subtype, _ = pcm.normalize_review_packs({"packs": {"p": {}}, 1: "x"})
+    assert state == pcm.SOURCE_STATE_INVALID and subtype == pcm.SUBTYPE_UNSUPPORTED_NONEMPTY
+
+
+def test_cm_c4_lost_identityless_packs_have_distinct_labels() -> None:
+    ctx = {
+        "domain_contracts": [],
+        "review_packs": [
+            {"description": "alpha", "required": True},
+            {"description": "beta", "required": True},
+            {"id": "unidentified_legacy_pack", "required": True},
+        ],
+    }
+    _, limitations = _shrink_until_stable(ctx)
+    assert len(limitations) == len(set(limitations)) == 3
+    assert "required_contract_pack_context_lost:unidentified_legacy_pack" in limitations
 
 
 # ---------------------------------------------------------------------------
@@ -1058,14 +1204,14 @@ def _w_required_floor() -> bool:
 
 
 MODE_SEMANTIC_MATRIX: list[dict[str, Any]] = [
-    {"axis": "source_shapes", "legacy": '{"rules": [...]} / {"packs": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY)', "modern": "mapping keyed by identity", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN, "witness": _w_source_shapes},
+    {"axis": "source_shapes", "legacy": '{"rules": [...]} / {"packs": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY); sibling envelope keys ignored (baseline leniency)', "modern": "mapping keyed by identity; closed envelope grammar", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN, "witness": _w_source_shapes},
     {"axis": "identity", "legacy": "id optional; a description-only row is valid and its identity is never fabricated", "modern": "mapping key is the sole identity; nested id unsupported", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; OBL-CL2-02", "witness": _w_identity},
     {"axis": "normalization", "legacy": "baseline display projection (sanitize_display_path)", "modern": "canonical repository-relative identities (canonical_repo_path / canonical_repo_pattern)", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; " + _AUTH_FAIL_CLOSED, "witness": _w_normalization},
     {"axis": "exact_paths", "legacy": "canonical exact intersection; unresolvable path silently non-matching", "modern": "any non-repository-relative member invalidates the source; glob-bearing paths match", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; " + _AUTH_FAIL_CLOSED, "witness": _w_exact_paths},
     {"axis": "patterns", "legacy": "substring / trailing-star prefix", "modern": "fnmatchcase inside the repository boundary", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN, "witness": _w_patterns},
     {"axis": "global", "legacy": "scope.lower()==global or is_global; other scope strings retained", "modern": "scope domain {global}; any other nonempty value is INVALID", "classification": "INTENTIONAL", "authority": _AUTH_FAIL_CLOSED, "witness": _w_global},
     {"axis": "include_all", "legacy": "target_profile:* is an unconditional include-all", "modern": "availability is not applicability", "classification": "INTENTIONAL", "authority": "CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY; " + _AUTH_FROZEN, "witness": _w_include_all},
-    {"axis": "explicit_refs", "legacy": "contract:<id> selects contracts AND packs by id (unresolved ref fails closed)", "modern": "contract:<id> resolves contracts only", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; OBL-CL2-02", "witness": _w_explicit_refs},
+    {"axis": "explicit_refs", "legacy": "contract:<id> (identity trimmed, Gate A S1) selects contracts AND packs by exact id (unresolved ref fails closed)", "modern": "contract:<id> resolves contracts only", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; OBL-CL2-02", "witness": _w_explicit_refs},
     {"axis": "selection", "legacy": "case-insensitive exact/substring over id and description", "modern": "exact case-sensitive mapping key; no alias", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; app/agent_review/AGENTS.md:119-125 Genericity", "witness": _w_selection},
     {"axis": "relevance_keywords", "legacy": "semantic-group keyword recovery over id+description", "modern": "none", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY", "witness": _w_relevance},
     {"axis": "relation_resolution", "legacy": "pack.domain_contract NON-AUTHORITATIVE (not even projected)", "modern": "pack.domain_contract + contract_bindings establish EffectiveContractRefs", "classification": "INTENTIONAL", "authority": "REVIEW_PACK_LEGACY_INPUT_POLICY; OBL-CL2-02", "witness": _w_relation_resolution},

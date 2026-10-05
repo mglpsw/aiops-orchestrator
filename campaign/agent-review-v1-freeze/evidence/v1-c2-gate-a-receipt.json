@@ -586,7 +586,7 @@
       "AB-B2-ALL-APPLICABLE-PACK-ID-REQUIRED",
       "AB-B2-OPTIONAL-PACK-METADATA-SHRINK"
     ],
-    "identityless_legacy_pack_floor": "a legacy description-only pack floors to {description, effective_contracts, required}; its identity is never fabricated and its loss is reported as required_contract_pack_context_lost:unidentified_legacy_pack"
+    "identityless_legacy_pack_floor": "a legacy description-only pack floors to {description, effective_contracts, required}; its identity is never fabricated and its loss is reported as required_contract_pack_context_lost:unidentified_legacy_pack:<first 12 hex of sha256(description)>"
   },
   "B3_limitation_class_graph": {
     "registry": {

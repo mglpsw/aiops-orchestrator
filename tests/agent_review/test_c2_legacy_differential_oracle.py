@@ -49,6 +49,7 @@ REQUIRED_COUNTERMODELS = {
     "CM-C4-DESCRIPTION-ONLY-PACK-SELECTED",
     "CM-C4-LEGACY-NOT-RELEVANT",
     "CM-C4-LEGACY-PACK-PROJECTION",
+    "CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED",
 }
 
 # Gate A fail-closed typed limitations that INTENTIONALLY change the observation relative to the
@@ -62,6 +63,19 @@ INTENTIONAL_DIVERGENCES: dict[str, dict[str, Any]] = {
         "limitations": ["unresolved_contract_reference:nope", "required_source_absent:domain_contracts"]
     },
     "pack.selected.miss": {"limitations": ["selected_contract_pack_missing:zzz"]},
+    "contract.explicit_ref.case_differs.miss": {"limitations": ["unresolved_contract_reference:ZZ-RULE"]},
+    "contract.explicit_ref.description_equal.miss": {"limitations": ["unresolved_contract_reference:zzz"]},
+    "contract.explicit_ref.substring.miss": {"limitations": ["unresolved_contract_reference:zz"]},
+    "pack.explicit_ref.case_differs.miss": {
+        "limitations": ["unresolved_contract_reference:ALPHA", "required_source_absent:domain_contracts"]
+    },
+    "pack.explicit_ref.description_equal.miss": {
+        "limitations": ["unresolved_contract_reference:Alpha pack", "required_source_absent:domain_contracts"]
+    },
+    "pack.explicit_ref.substring.miss": {
+        "limitations": ["unresolved_contract_reference:alph", "required_source_absent:domain_contracts"]
+    },
+    "pack.selected.reverse_alias.miss": {"limitations": ["selected_contract_pack_missing:foo-alpha"]},
 }
 
 
@@ -96,8 +110,6 @@ def _observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
     def carrier(row: dict[str, Any], *, preset: bool) -> dict[str, Any]:
         ident = row.get("id") or None
         desc = row.get("description") or None
-        if desc == ident:
-            desc = None
         out: dict[str, Any] = {"id": ident, "description": desc}
         if preset:
             out["recommended_review_preset"] = row.get("recommended_review_preset") or None
@@ -398,4 +410,50 @@ def test_ab_c4_legacy_differential_oracle(monkeypatch: pytest.MonkeyPatch) -> No
     with monkeypatch.context() as m:
         m.setattr(pcm, "_legacy_relevance_match", lambda item, keywords: False)
         assert run_oracle(), "dropping legacy relevance recovery must be caught"
+    assert run_oracle() == []
+
+
+def test_oracle_catches_plausible_wrong_legacy_implementations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The kill map is single-fault; this proves the corpus also rejects near-miss wrong implementations
+    (adversarial review round): each variant is injected into one production seam and must turn the oracle RED."""
+    assert run_oracle() == []
+    original_global = pcm.classify_scope
+    original_relevance = pcm._legacy_relevance_match
+    original_item_paths = pcm._item_scope_paths
+
+    def without_carrier(carrier: str):
+        def patched(item: dict[str, Any]) -> tuple[set[str], bool]:
+            return original_item_paths({k: v for k, v in item.items() if k != carrier})
+
+        return patched
+
+    variants: dict[str, tuple[str, Any]] = {
+        "explicit_ref_case_insensitive": ("_legacy_contract_explicit_ref", lambda c, ref: str(c.get("id") or "").lower() in {r.lower() for r in ref}),
+        "explicit_ref_substring": ("_legacy_contract_explicit_ref", lambda c, ref: any(r in str(c.get("id") or "") for r in ref)),
+        "explicit_ref_description": ("_legacy_contract_explicit_ref", lambda c, ref: c.get("id") in ref or c.get("description") in ref),
+        "pack_explicit_ref_case_insensitive": ("_legacy_pack_explicit_ref", lambda p, ref: str(p.get("id") or "").lower() in {r.lower() for r in ref}),
+        "relevance_case_sensitive": ("_legacy_relevance_match", lambda i, kw: bool(kw) and any(k in ((i.get("id") or "") + " " + (i.get("description") or "")) for k in kw)),
+        "relevance_off_for_scoped_rules": ("_legacy_relevance_match", lambda i, kw: False if (i.get("paths") or i.get("scope") or i.get("patterns")) else original_relevance(i, kw)),
+        "relevance_word_boundary": ("_legacy_relevance_match", lambda i, kw: any(f" {k} " in f" {(i.get('id') or '')} {(i.get('description') or '')} ".lower() for k in kw)),
+        "global_contains": ("classify_scope", lambda v: (isinstance(v, str) and "global" in v.lower(), True)),
+        "global_all_document": ("classify_scope", lambda v: (original_global(v)[0] or (isinstance(v, str) and v.strip().lower() in {"all", "document"}), True)),
+        "paths_ignore_files_carrier": ("_item_scope_paths", without_carrier("files")),
+        "paths_ignore_related_files_carrier": ("_item_scope_paths", without_carrier("related_files")),
+        "paths_ignore_file_path_carrier": ("_item_scope_paths", without_carrier("file_path")),
+        "paths_ignore_path_carrier": ("_item_scope_paths", without_carrier("path")),
+    }
+    for name, (seam, replacement) in variants.items():
+        with monkeypatch.context() as m:
+            m.setattr(pcm, seam, replacement)
+            assert run_oracle(), f"wrong legacy implementation not caught: {name}"
+        assert run_oracle() == [], name
+
+    with monkeypatch.context() as m:
+        original_legacy_selected = pcm.legacy_pack_matches_selected
+
+        def reverse_alias(pack: dict[str, Any], selected: str) -> bool:
+            return original_legacy_selected(pack, selected) or bool(selected) and selected.lower().endswith("-" + str(pack.get("id") or "").lower())
+
+        m.setattr(pcm, "legacy_pack_matches_selected", reverse_alias)
+        assert run_oracle(), "reverse-alias legacy selection not caught"
     assert run_oracle() == []
