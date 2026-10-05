@@ -27,6 +27,8 @@
   "successor": {
     "repair_commit": "4544cfdddda602009917f812d86d167d7e63f6f5",
     "repair_tree": "778ca93f39670df877488f143c63638cee81829f",
+    "sibling_closure_commit": "ea24a516cb89988f94e7dabc479b99c1847c3823",
+    "sibling_closure_tree": "455b63863c15bd24aaf28146401a5d4efe6d05a2",
     "final_head": "BOUND_EXTERNALLY: PR.headRefOid (evidence-only commits follow the repair commit)"
   },
   "transversal_property": "Mode -> Grammar -> Normalization -> Identity -> Applicability -> Relation -> RequiredSource -> RequiredContext -> ObservableResult",
@@ -165,7 +167,7 @@
       "rows with neither id nor description (carry no context) are not admitted"
     ],
     "baseline_predicates": {
-      "live": 44,
+      "live": 49,
       "redundant": [
         "P.sel.id_eq",
         "P.sel.desc_eq"
@@ -178,25 +180,28 @@
       "C.include_all": {
         "C.include_all": [
           "contract.include_all.true",
-          "contract.carriers.include_all"
+          "contract.carriers.include_all",
+          "contract.unknown_fields.tags"
         ]
       },
       "C.explicit_ref": {
         "C.explicit_ref": [
-          "contract.explicit_ref.hit"
+          "contract.explicit_ref.hit",
+          "contract.explicit_ref.scoped_rule.hit"
         ]
       },
       "C.match.paths": {
         "C.match.paths": [
           "contract.paths.exact.hit",
           "contract.paths.canonical.hit",
-          "terminal.contract_only"
+          "contract.carrier.file_path.hit"
         ]
       },
       "C.match.patterns": {
         "C.match.patterns": [
           "contract.patterns.substring.hit",
-          "contract.patterns.star_prefix.hit"
+          "contract.patterns.star_prefix.hit",
+          "contract.patterns.trailing_slash.hit"
         ]
       },
       "C.match.global": {
@@ -244,7 +249,8 @@
         ],
         "P.sel.desc_eq": [],
         "P.sel.desc_sub": [
-          "pack.selected.fuzzy_description"
+          "pack.selected.fuzzy_description",
+          "pack.selected.description_case_insensitive"
         ],
         "P.sel.id_eq": [],
         "P.sel.id_sub": [
@@ -259,6 +265,7 @@
         ],
         "P.relevance.desc_part": [
           "pack.relevance.desc_part",
+          "pack.relevance.uppercase_text.hit",
           "pack.relevance.baseline_raises.id_only"
         ],
         "P.relevance.id_part": [
@@ -277,8 +284,8 @@
     "differential_oracle": {
       "fixture": "tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json",
       "generator": "scripts/generate-v1-c2-legacy-differential-oracle.py",
-      "cases": 86,
-      "predicates": 47,
+      "cases": 118,
+      "predicates": 52,
       "shallow_ci_safe": true,
       "regeneration_check": "test_fixture_equals_a_fresh_generation_from_the_frozen_baseline (skipped without history)",
       "intentional_divergences": "unresolved explicit ref / missing selected pack / explicit ref without domain_contracts source: typed fail-closed limitations suppress the baseline's not_relevant (authority: cycle-1 4178603200, 4178603183)",
@@ -294,7 +301,7 @@
     "description_only_packs": "CM-C4-DESCRIPTION-ONLY-PACK-PRESERVED / -SELECTED",
     "legacy_pack_projection": "{id, description, recommended_review_preset} only (CM-C4-LEGACY-PACK-PROJECTION)",
     "legacy_contract_paths": "exact canonical intersection only; the cycle-2 substring/glob recovery on paths was a leak and is removed",
-    "idless_pack_floor": "{description, effective_contracts, required}; no fabricated id; loss label required_contract_pack_context_lost:unidentified_legacy_pack",
+    "idless_pack_floor": "{description, effective_contracts, required}; no fabricated id; loss label required_contract_pack_context_lost:unidentified_legacy_pack:<sha256(description)[:12]>",
     "not_relevant": "CM-C4-LEGACY-NOT-RELEVANT",
     "observables_equivalent": true,
     "unreachable_normalization_difference": "selected pack whitespace: contracts_context strips, baseline did not; both call sites pass _clean_text(...) output, so the difference cannot occur in production",
@@ -309,8 +316,8 @@
   },
   "ModeSemanticMatrix": {
     "source_shapes": {
-      "legacy": "{\"rules\": [...]} / {\"packs\": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY)",
-      "modern": "mapping keyed by identity",
+      "legacy": "{\"rules\": [...]} / {\"packs\": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY); sibling envelope keys ignored (baseline leniency)",
+      "modern": "mapping keyed by identity; closed envelope grammar",
       "classification": "INTENTIONAL",
       "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
     },
@@ -351,7 +358,7 @@
       "authority": "CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY; frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
     },
     "explicit_refs": {
-      "legacy": "contract:<id> selects contracts AND packs by id (unresolved ref fails closed)",
+      "legacy": "contract:<id> (identity trimmed, Gate A S1) selects contracts AND packs by exact id (unresolved ref fails closed)",
       "modern": "contract:<id> resolves contracts only",
       "classification": "INTENTIONAL",
       "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); OBL-CL2-02"
@@ -451,7 +458,8 @@
       "4179272330": [
         "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_container_scalar",
         "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_container_mixed",
-        "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_empty_identity"
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_empty_identity",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_c4_explicit_ref_identity_is_trimmed_intentional"
       ],
       "4179272331": [
         "test_c2_executable_contract_gate_a.py::test_cm_s3_legacy_pattern_baseline"
@@ -469,7 +477,8 @@
         "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_modern_selection_has_no_target_alias"
       ],
       "4179993600": [
-        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_inline_domain_contract_source_absent"
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_inline_domain_contract_source_absent",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c2_profile_level_bindings_are_not_shadowed_by_the_envelope"
       ],
       "4179993602": [
         "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_scope_global_spellings_are_global_everywhere",
@@ -482,6 +491,24 @@
       "4179993607": [
         "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c4_description_only_pack_preserved_and_selected"
       ]
+    }
+  },
+  "independent_review_round_1": {
+    "subject": "d3d6dec7bf0cd411a1e39a5ab67beb9114398ff3",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (no NEW_OBLIGATION_DOMAIN); repaired within this round",
+    "repaired": {
+      "F1": "profile-level contract_bindings no longer shadowed by the envelope carrier: both carriers merged, conflicts fail closed (malformed_contract_bindings:conflicting_carriers); declared-ref origins see both",
+      "F3": "legacy admission validates only baseline-projected fields; the modern named-section grammar no longer rejects legacy rows with unprojected list-valued fields (oracle CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED)",
+      "F4": "oracle widened to 118 cases / 52 predicates (carriers, explicit-ref and selection near-misses, relevance case/inside-word, global near-misses, scoped-rule interactions, same-id ordering, exact equality without description masking) and a 14-variant wrong-implementation ablation",
+      "F6": "glob-syntax (unclosed class, control chars), bracket-glob positives and non-string envelope key pinned by tests",
+      "F7": "identity-less pack loss label is a digest of its description carrier (injective per carrier)",
+      "F8": "legacy contract rows no longer fabricate a description from the id (payload bytes and same-id ordering equal the baseline)",
+      "F10": "modern admission rejects ~user paths and control characters in exact paths"
+    },
+    "declared_intentional_not_repaired": {
+      "F2": "a LEGACY envelope keeps the baseline's tolerance of sibling keys (typo guard is a modern-envelope property); the correctly spelled relation key beside a legacy list is the typed mixed-shape failure; pinned by test",
+      "F9": "explicit contract:<id> identities are trimmed (Gate A S1 4179272330); the baseline compared untrimmed text; pinned by test",
+      "F5": "fixture provenance is the pinned commit+blob plus the history-gated regeneration test; no in-fixture hash can be self-attesting; regeneration runs in full-history checkouts"
     }
   },
   "amended_predecessor_tests": [
@@ -499,14 +526,14 @@
     }
   ],
   "qualification": {
-    "evidence_subject": "repair commit 4544cfdddda602009917f812d86d167d7e63f6f5 (tree 778ca93f39670df877488f143c63638cee81829f); the evidence commit that follows changes only campaign/ evidence files",
+    "evidence_subject": "sibling-closure commit ea24a516cb89988f94e7dabc479b99c1847c3823 (tree 455b63863c15bd24aaf28146401a5d4efe6d05a2) on top of repair commit 4544cfdddda602009917f812d86d167d7e63f6f5; the evidence commit that follows changes only campaign/ evidence files",
     "environment": "plain local clone (not a linked worktree); python 3.11.2, pytest 8.4.2 from the project venv; --basetemp outside any .git-bearing ancestor (sandbox has a stray /tmp/.git that trips the 'no AgentReview artifacts inside Git worktrees' guard: failure class environment)",
-    "focal": "465 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
-    "legacy_differential": "oracle 86 cases / 47 predicates GREEN on the successor; 45 behavioural divergences on the exact predecessor; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
-    "affected_core": "245 passed (test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_semantic_chunker_225_red.py, test_pr_brief.py, test_quality_gate.py, test_final_synthesizer.py)",
+    "focal": "577 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
+    "legacy_differential": "oracle 118 cases / 52 predicates GREEN; 45 of the first 86 observations diverged on the exact predecessor 4d7496a; a 14-variant wrong-implementation ablation turns the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
+    "affected_core": "267 passed (test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_semantic_chunker_225_red.py, test_pr_brief.py, test_quality_gate.py, test_final_synthesizer.py + C1 test_semantic_chunker_232_coverage_truth.py)",
     "CLI": "143 passed (all test_aiops_review_*_cli.py)",
-    "C1": "22 passed (test_semantic_chunker_232_coverage_truth.py)",
-    "full_agent_review_suite": "4025 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
+    "C1": "included in affected_core (22 passed, test_semantic_chunker_232_coverage_truth.py)",
+    "full_agent_review_suite": "4137 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
     "failure_classification": {
       "cli_artifact_guard": "environment (stray /tmp/.git); passes with --basetemp elsewhere",
       "four_uid0_sudo_unreadable": "environment/preexisting; identical at predecessor",
