@@ -839,7 +839,7 @@ def test_cm_c4_idless_legacy_pack_floor_never_fabricates_identity() -> None:
     snapshots, limitations = _shrink_until_stable(pcm.clean_contracts_context_for_payload(ctx))
     floor = next(s for s in snapshots if s["review_packs"] and set(s["review_packs"][0]) == {"description", "required"})
     assert floor["review_packs"] == [{"description": "calendar", "required": True}]
-    assert all("id" not in p for s in snapshots for p in s["review_packs"])
+    assert all(not p.get("id") for s in snapshots for p in s["review_packs"])
     assert limitations == [pcm.unidentified_pack_loss_label({"description": "calendar"}).join(["required_contract_pack_context_lost:", ""])]
     assert limitations[0].startswith("required_contract_pack_context_lost:unidentified_legacy_pack:")
 
@@ -860,7 +860,10 @@ def test_cm_c4_description_only_pack_flows_through_real_plan_and_payload() -> No
     _, payloads = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
     assert payloads
     for payload in payloads.values():
-        assert payload.chunk_context["contracts_context"]["review_packs"] == [{"description": "calendar", "required": True}]
+        # the legacy pack row is the baseline row (explicit null keys included) plus the required marker
+        assert payload.chunk_context["contracts_context"]["review_packs"] == [
+            {"id": None, "description": "calendar", "recommended_review_preset": None, "required": True}
+        ]
         assert not [lim for lim in payload.limitations if "contract" in lim]
 
 
@@ -1144,6 +1147,39 @@ def test_cm_c3_tilde_globs_and_del_are_not_repository_relative(value: str) -> No
     value = value.encode().decode("unicode_escape")
     for doc in ({"c": {"description": "d", "patterns": [value]}}, {"c": {"description": "d", "paths": [value]}}):
         assert pcm.normalize_domain_contracts(doc)[1] == pcm.SOURCE_STATE_INVALID, value
+
+
+def test_cm_c4_legacy_pack_rows_keep_the_baseline_null_keys() -> None:
+    """Round-3 F1: the baseline did not drop empties on packs; the row (and thus payload bytes) is the baseline's."""
+    packs, _, state, _, _ = pcm.normalize_review_packs({"packs": [{"id": "p"}, {"description": "d only"}]})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID
+    assert packs == [
+        {"id": None, "description": "d only", "recommended_review_preset": None},
+        {"id": "p", "description": None, "recommended_review_preset": None},
+    ]
+
+
+def test_cm_c4_legacy_contract_rows_without_id_or_description_are_admitted() -> None:
+    """Round-3 F4: a legacy contract row can carry applicability through scope/paths/patterns alone; the baseline
+    admitted it, so it is not dropped silently."""
+    contracts, state, _, _ = pcm.normalize_domain_contracts({"rules": [{"scope": "global"}, {"patterns": ["backend/*"]}]})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID and len(contracts) == 2
+    ctx, limits = _ctx({"domain_contracts": {"rules": [{"scope": "global"}]}}, files=("zzz/other.py",))
+    assert len(ctx["domain_contracts"]) == 1 and _no_not_relevant(limits)
+
+
+def test_cm_c4_legacy_blank_strings_and_null_rules_are_absent_not_invalid() -> None:
+    """Round-3 F3: uniform with the baseline and with legacy packs (blank = absent); only non-str values are malformed."""
+    contracts, state, _, _ = pcm.normalize_domain_contracts({"rules": [{"id": "", "description": "named", "scope": "", "path": ""}]})
+    assert state == pcm.SOURCE_STATE_PRESENT_VALID and contracts == [{"description": "named"}]
+    assert pcm.normalize_domain_contracts({"rules": None})[1] == pcm.SOURCE_STATE_PRESENT_VALID
+    assert pcm.normalize_domain_contracts({"rules": [{"id": 5}]})[1] == pcm.SOURCE_STATE_INVALID
+
+
+@pytest.mark.parametrize("value", [".. /x", "a/ ../b", "a/. /b", "src/[abc"])
+def test_cm_c3_padded_traversal_and_unclosed_class_in_exact_paths(value: str) -> None:
+    _, state, subtype, _ = pcm.normalize_domain_contracts({"c": {"description": "d", "paths": [value]}})
+    assert state == pcm.SOURCE_STATE_INVALID and subtype == pcm.SUBTYPE_INVALID_IDENTITY
 
 
 # ---------------------------------------------------------------------------

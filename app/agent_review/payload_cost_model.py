@@ -1286,7 +1286,10 @@ def _is_non_repo_relative_marker(identity: str) -> bool:
     Applied at MODERN admission only, next to canonical_repo_path."""
     if any(ord(char) < 32 or ord(char) == 127 for char in identity):
         return True
-    first = identity.split("/", 1)[0]
+    segments = identity.split("/")
+    if any(segment.strip() in ("..", ".") for segment in segments):
+        return True  # whitespace-padded traversal such as `.. /x`
+    first = segments[0]
     return first.startswith("~") and not first.startswith("~$")
 
 
@@ -1308,7 +1311,7 @@ def _modern_path_bearing_invalid(
             if isinstance(member, str) and not member.strip():
                 continue
             try:
-                identity = canonical_repo_path(member)
+                identity = canonical_repo_pattern(member)
             except PathIdentityError:
                 return True
             if _is_non_repo_relative_marker(identity):
@@ -1455,7 +1458,7 @@ def _validate_legacy_contract_declared_field_types(item: dict[str, Any]) -> bool
             return False
     for field in ("description", "id"):
         value = item.get(field)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
+        if value is not None and not isinstance(value, str):
             return False
     value = item.get("is_global")
     if value is not None and not isinstance(value, bool):
@@ -1486,8 +1489,7 @@ def _legacy_contract_row(item: dict[str, Any]) -> dict[str, Any]:
 
 def _legacy_contract_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = [_legacy_contract_row(item) for item in items]
-    admitted = [row for row in rows if row.get("id") or row.get("description")]
-    return sorted(admitted, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
 
 
 def _validate_legacy_pack_declared_types(item: dict[str, Any]) -> bool:
@@ -1513,16 +1515,10 @@ def _validate_legacy_pack_declared_types(item: dict[str, Any]) -> bool:
     return True
 
 
-def _clean_contract_dict_item(
-    item: dict[str, Any],
-    default_id: str | None = None,
-    *,
-    modern: bool = False,
-) -> dict[str, Any]:
+def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = None) -> dict[str, Any]:
+    """MODERN contract row (legacy flat rows are built by `_legacy_contract_row`, the baseline projection)."""
     cid = (default_id.strip() if default_id else (_clean_text(item.get("id")) or ""))
-    # MODERN rows default the description to the identity; a LEGACY row never fabricates one
-    # (frozen baseline: a missing description stays missing).
-    desc = _clean_text(item.get("description")) or (cid if modern else "")
+    desc = _clean_text(item.get("description")) or cid
     scope = _clean_text(item.get("scope"))
     is_global = item.get("is_global") is True or classify_scope(scope)[0]
     canonical_authority = _clean_text(item.get("canonical_authority"))
@@ -1588,30 +1584,14 @@ def _clean_contract_dict_item(
         "is_global": is_global,
         "canonical_authority": canonical_authority,
         "display_authority": display_authority,
-        **(
-            {
-                # MODERN: identity is the canonical repository-relative form
-                # (already validated by `_modern_path_bearing_invalid`).
-                "file_path": (_modern_exact_paths(item.get("file_path")) or [""])[0],
-                "path": (_modern_exact_paths(item.get("path")) or [""])[0],
-                "files": _modern_exact_paths(item.get("files")),
-                "paths": _modern_exact_paths(item.get("paths")),
-                "source_files": _modern_exact_paths(item.get("source_files")),
-                "related_files": _modern_exact_paths(item.get("related_files")),
-                "patterns": _modern_patterns(item.get("patterns")),
-            }
-            if modern
-            else {
-                # LEGACY: frozen baseline display projection.
-                "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
-                "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
-                "files": _sanitize_contract_paths(item.get("files")),
-                "paths": _sanitize_contract_paths(item.get("paths")),
-                "source_files": _sanitize_contract_paths(item.get("source_files")),
-                "related_files": _sanitize_contract_paths(item.get("related_files")),
-                "patterns": _normalized_contract_patterns(item.get("patterns")),
-            }
-        ),
+        # identity is the canonical repository-relative form (already validated by `_modern_path_bearing_invalid`)
+        "file_path": (_modern_exact_paths(item.get("file_path")) or [""])[0],
+        "path": (_modern_exact_paths(item.get("path")) or [""])[0],
+        "files": _modern_exact_paths(item.get("files")),
+        "paths": _modern_exact_paths(item.get("paths")),
+        "source_files": _modern_exact_paths(item.get("source_files")),
+        "related_files": _modern_exact_paths(item.get("related_files")),
+        "patterns": _modern_patterns(item.get("patterns")),
     }
     if all_rule_texts:
         row["rules"] = all_rule_texts
@@ -1647,6 +1627,8 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
     # Check for legacy envelope {"rules": [...]}
     if "rules" in document:
         rules = document.get("rules")
+        if rules is None:
+            return [], SOURCE_STATE_PRESENT_VALID, None, []
         if not isinstance(rules, list):
             return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
         if all(isinstance(item, dict) for item in rules):
@@ -1691,7 +1673,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
                 for rdict in value:
                     if not _is_valid_rule_dict(rdict):
                         return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
-                rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key, modern=True))
+                rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key))
             else:
                 return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
         elif isinstance(value, dict):
@@ -1716,7 +1698,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
                 pattern_fields=MODERN_CONTRACT_PATTERN_FIELDS,
             ):
                 return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
-            row = _clean_contract_dict_item(value, default_id=clean_key, modern=True)
+            row = _clean_contract_dict_item(value, default_id=clean_key)
             rows.append(row)
         else:
             return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
@@ -1754,23 +1736,22 @@ def _validate_pack_declared_types(item: dict[str, Any]) -> bool:
 
 
 def _legacy_pack_row(item: dict[str, Any]) -> dict[str, Any]:
-    """LegacyPackProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_review_packs`)
-    three-field projection. Modern-only fields (paths, patterns, scope, is_global,
-    domain_contract) never acquire semantics in a legacy pack."""
-    return _drop_empty_contract_fields(
-        {
-            "id": _clean_text(item.get("id")),
-            "description": _clean_text(item.get("description")),
-            "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
-        }
-    )
+    """LegacyPackProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_review_packs`) row -- the
+    three fields, absent ones as explicit nulls (the baseline did not drop empties on packs). Modern-only
+    fields (paths, patterns, scope, is_global, domain_contract) never acquire semantics in a legacy pack."""
+    return {
+        "id": _clean_text(item.get("id")),
+        "description": _clean_text(item.get("description")),
+        "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
+    }
 
 
 def _legacy_pack_row_admitted(row: dict[str, Any]) -> bool:
     """A legacy pack row is admitted when it carries an identity OR a description.
     A description-only pack is a valid baseline pack (selectable through the legacy
-    description matcher); its identity is never fabricated. A row with neither
-    carries no context at all."""
+    description matcher); its identity is never fabricated. A row with neither carries
+    nothing observable beyond a null row (the pack projection has no other field), so
+    dropping it is lossless; legacy CONTRACT rows are all admitted (they can carry scope)."""
     return bool(row.get("id") or row.get("description"))
 
 

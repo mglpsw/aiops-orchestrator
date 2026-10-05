@@ -50,6 +50,8 @@ REQUIRED_COUNTERMODELS = {
     "CM-C4-LEGACY-NOT-RELEVANT",
     "CM-C4-LEGACY-PACK-PROJECTION",
     "CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED",
+    "CM-C4-LEGACY-CONTRACT-ROWS-ADMITTED",
+    "CM-C4-LEGACY-PACK-ROWS-EXACT",
 }
 
 # Gate A fail-closed typed limitations that INTENTIONALLY change the observation relative to the
@@ -111,7 +113,7 @@ ANNOTATION_KEYS = ("required", "required_reasons", "effective_contracts")
 
 def _observe(ctx: dict[str, Any], limitations: list[str]) -> dict[str, Any]:
     def row(value: dict[str, Any]) -> dict[str, Any]:
-        return {k: v for k, v in value.items() if k not in ANNOTATION_KEYS and v not in (None, "", [], {})}
+        return {k: v for k, v in value.items() if k not in ANNOTATION_KEYS}
 
     return {
         "contracts": [row(r) for r in ctx.get("domain_contracts", [])],
@@ -208,7 +210,7 @@ def test_every_live_baseline_predicate_has_a_discriminating_case() -> None:
         else:
             assert killers == [], predicate
     survivors = {p for p, k in kinds.items() if k != "live"}
-    assert survivors == {"P.sel.id_eq", "P.sel.desc_eq", "P.match_chunk"}
+    assert survivors == {"P.sel.id_eq", "P.sel.desc_eq", "P.match_chunk", "D.exact_backslash"}
 
 
 def test_corpus_covers_the_requested_branch_matrix() -> None:
@@ -484,7 +486,7 @@ def test_oracle_catches_legacy_row_projection_leaks_and_display_normalization(mo
 
     def pack_with_description_default(item: dict[str, Any]) -> dict[str, Any]:
         row = original_pack_row(item)
-        row.setdefault("description", row.get("id"))
+        row["description"] = row.get("description") or row.get("id")
         return row
 
     def no_redaction(path: str) -> str:
@@ -503,6 +505,39 @@ def test_oracle_catches_legacy_row_projection_leaks_and_display_normalization(mo
         ("_legacy_relevance_match", lambda i, kw: any(k in ((i.get("id") or "") + (i.get("description") or "")).lower() for k in kw)): "relevance text joined without separator",
     }
     for (seam, replacement), name in variants.items():
+        with monkeypatch.context() as m:
+            m.setattr(pcm, seam, replacement)
+            assert run_oracle(), f"not caught: {name}"
+        assert run_oracle() == [], name
+
+
+def test_oracle_catches_projection_and_canonicalization_mutants(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round-3 F2: wrong legacy implementations in the row-projection / canonicalization layer are caught."""
+    assert run_oracle() == []
+    original_row = pcm._legacy_contract_row
+    original_pack_row = pcm._legacy_pack_row
+
+    def mutate(row_builder, fn):
+        def patched(item: dict[str, Any]) -> dict[str, Any]:
+            return fn(row_builder(item))
+
+        return patched
+
+    def unsorted_paths(value: Any) -> list[str]:
+        return [item for item in [pcm.sanitize_display_path(x) for x in value if isinstance(x, str) and x.strip()] if item] if isinstance(value, list) else []
+
+    variants: list[tuple[str, str, Any]] = [
+        ("unsorted_paths", "_sanitize_contract_paths", unsorted_paths),
+        ("unsorted_patterns", "_normalized_contract_patterns", lambda v: [pcm.sanitize_display_path(x.strip()) for x in v if isinstance(x, str) and x.strip()] if isinstance(v, list) else []),
+        ("sanitize_no_strip", "sanitize_display_path", lambda p: p.replace("\\", "/") if p.strip() else ""),
+        ("tilde_any_redacted", "sanitize_display_path", lambda p: "[LOCAL_PATH_REDACTED]" if p.strip().startswith("~") else p.strip()),
+        ("contract_id_lowercased", "_legacy_contract_row", mutate(original_row, lambda r: {**r, **({"id": r["id"].lower()} if r.get("id") else {})})),
+        ("pack_preset_lowercased", "_legacy_pack_row", mutate(original_pack_row, lambda r: {**r, "recommended_review_preset": (r["recommended_review_preset"] or "").lower() or None})),
+        ("pack_drops_null_keys", "_legacy_pack_row", mutate(original_pack_row, lambda r: {k: v for k, v in r.items() if v is not None})),
+        ("contract_description_collapsed", "_legacy_contract_row", mutate(original_row, lambda r: {**r, **({"description": " ".join(r["description"].split())} if r.get("description") else {})})),
+        ("star_pattern_substring", "_matches_legacy_pattern", lambda path, patterns: any((p.strip()[:-1] in path) if p.strip().endswith("*") else (p.strip() in path) for p in patterns if p.strip())),
+    ]
+    for name, seam, replacement in variants:
         with monkeypatch.context() as m:
             m.setattr(pcm, seam, replacement)
             assert run_oracle(), f"not caught: {name}"
