@@ -1,0 +1,202 @@
+{
+  "artifact_type": "PR372_R4_EVIDENCE_AMENDMENT_RECEIPT",
+  "status": "v1_c2_gate_a_oracle_evidence_amended",
+  "gate": "Gate A",
+  "slice": "V1-C2 / Gate A (C2ExecutableContract)",
+  "subject_binding": {
+    "mode": "FORGE_EXACT_HEAD",
+    "repository": "mglpsw/aiops-orchestrator",
+    "pr": 372,
+    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
+    "self_hash_claimed": false,
+    "exact_subject_authorities": [
+      "PR.headRefOid",
+      "canonical_CI.headSha",
+      "full_regression.headSha",
+      "current_head_guard_dispositions"
+    ],
+    "requirement": "all_exact_subject_authorities_must_agree",
+    "note": "a committed receipt cannot contain its own commit id; the final HEAD, its CI, Full offline regression, evidence review and the 23 dispositions are bound externally"
+  },
+  "predecessor": {
+    "head": "b6ce30910dd0c65c413152772be6d380adad7235",
+    "tree": "103b4592d412f75d637e255a16b7a15a73c44fe7",
+    "round_5": "CLEAN_WITHIN_R4_FINITE_DOMAIN",
+    "legacy_differential_authority": "6bbd2f949989da3e90e1d9c527e37059c0b628ff"
+  },
+  "scope": {
+    "runtime_changed": false,
+    "runtime_paths_untouched": "app/agent_review/**",
+    "write_set": [
+      "scripts/generate-v1-c2-legacy-differential-oracle.py",
+      "tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json",
+      "tests/agent_review/test_c2_legacy_differential_oracle.py",
+      "tests/agent_review/test_c2_gate_a_oracle_evidence_semantics.py",
+      "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-r4-evidence-amendment-receipt.json"
+    ],
+    "closed_domain_not_reopened": [
+      "S1",
+      "S2",
+      "S3",
+      "cycle3_C1_C4",
+      "169-case oracle corpus",
+      "4064-case R4 carrier fuzz",
+      "23 historical findings"
+    ]
+  },
+  "E1_totalization": {
+    "defect": "ExceptionTotalization implied RowSemanticMutation: the previous _totalized rewrote the pack ROW BUILDER (id/description None -> \"\") to avoid a crash in one relevance expression",
+    "red_witnesses": {
+      "pack.relevance.baseline_raises.idless_x_empty_explicit_token": {
+        "input": "packs=[{recommended_review_preset: 'review:deep'}], chunk_contracts=['contract:'], group=primary_backend_logic",
+        "baseline": "raises TypeError",
+        "previous_totalized": {
+          "packs": [
+            {
+              "id": "",
+              "description": "",
+              "recommended_review_preset": "review:deep"
+            }
+          ],
+          "not_relevant": false
+        },
+        "semantic_difference": "None became '' so the id-less pack was 'referenced' by the empty explicit token (None is not in {''} in the baseline) and was emitted with id ''",
+        "corrected_totalized": {
+          "packs": [],
+          "not_relevant": true
+        }
+      },
+      "pack.relevance.baseline_raises.sibling_row_values": {
+        "input": "packs=[{id: 'alpha'}, {description: 'zz'}], chunk_contracts=['contract:alpha'], group=primary_backend_logic",
+        "baseline": "raises TypeError",
+        "previous_totalized": {
+          "packs": [
+            {
+              "id": "alpha",
+              "description": "",
+              "recommended_review_preset": null
+            }
+          ]
+        },
+        "semantic_difference": "the emitted sibling row lost description null",
+        "corrected_totalized": {
+          "packs": [
+            {
+              "id": "alpha",
+              "description": null,
+              "recommended_review_preset": null
+            }
+          ]
+        }
+      }
+    },
+    "correction": "exact anchored replacement of ONLY the pack-relevance expression: (item.get('id') or '') + ' ' + (item.get('description') or ''); the projected row, explicit-ref membership and selection are the frozen baseline's own; the contract-relevance twin cannot raise and is untouched",
+    "anchor_policy": "2 relevance seams + 1 pack-filter anchor, the pack seam must follow the anchor; any drift -> STOP_TOTALIZATION_ANCHOR_DRIFT",
+    "oracle_regeneration": {
+      "baseline_commit": "6bbd2f949989da3e90e1d9c527e37059c0b628ff",
+      "baseline_blob_oid": "41423394e69b4fa67785ac01088757bdff917001",
+      "case_count_before": 169,
+      "case_count_after": 171,
+      "observations_changed": 0,
+      "changed_case_ids": [],
+      "added_case_ids": [
+        "pack.relevance.baseline_raises.idless_x_empty_explicit_token",
+        "pack.relevance.baseline_raises.sibling_row_values"
+      ],
+      "other_fixture_changes": [
+        "predicate_kill_map: only the two added ids appear (P.relevance, P.relevance.id_part, P.row_admission)",
+        "differential_domain: new documentation block declaring the qualified domain and D1/D2"
+      ],
+      "unexplained_changes": 0
+    },
+    "ablation": "AB-E1-BROAD-TOTALIZATION: the previous row-builder totalization is RED on both witnesses"
+  },
+  "E2_differential_domain": {
+    "claim": "legacy ADMITTED TYPED domain -> differential equivalence to 6bbd2f9 (whole-row exact, modulo typed Gate A limitations); malformed / out-of-domain legacy inputs -> explicit fail-closed divergences",
+    "declared_divergences": {
+      "D1.legacy_non_dict_pack_member": {
+        "baseline": "non-dict member of packs[] skipped",
+        "current": "invalid_source_review_packs:UNSUPPORTED_NONEMPTY",
+        "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+        "authority": "outside the typed admitted legacy row domain; OBL-CL2-03 source-state honesty",
+        "properties_tested": [
+          "typed",
+          "no partial rows",
+          "not not_relevant",
+          "plan status degraded (non-conclusive)"
+        ]
+      },
+      "D2.legacy_non_string_projected_fields": {
+        "baseline": "_clean_text stringifies id/description/recommended_review_preset",
+        "current": "invalid_source_review_packs:MALFORMED_SHAPE",
+        "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+        "authority": "typed source-admission contract; OBL-CL2-03; prior Gate A fail-closed field-type finding 4178603193",
+        "baseline_coercion_restored": false,
+        "properties_tested": [
+          "typed",
+          "no partial rows",
+          "not not_relevant",
+          "plan status degraded (non-conclusive)"
+        ]
+      },
+      "D3.nonstring_direct_contract_ref": {
+        "precise_scope": "the producer parse_contract_refs already excludes a non-string member and reports MALFORMED_MEMBER; only a DIRECT contracts_context(chunk_contracts=[non-string]) call changed",
+        "predecessor": "AttributeError",
+        "current": "unresolved_contract_reference:MALFORMED_MEMBER",
+        "disposition": "DEFENSIVE_TOTALIZATION",
+        "claim_limit": "runtime behavior unchanged on the admitted string-token domain only; NOT claimed for arbitrary Python inputs"
+      },
+      "D4.loss_label_namespace_collision": {
+        "possible": true,
+        "requires_crafted_identified_pack_id": true,
+        "required_loss_suppressed": false,
+        "gate_consequence_changed": false,
+        "disposition": "ACCEPTED_DIAGNOSTIC_RESIDUAL",
+        "normative_basis": "OBL-CL2-05 requires required loss to be non-silent and optional != required; it does not require globally injective human-readable loss labels",
+        "claim_narrowed": "the digest discriminates distinct id-less legacy projections within the synthetic id-less label domain; it is NOT a globally collision-free namespace against arbitrary user-chosen pack ids",
+        "production_change": false
+      }
+    }
+  },
+  "predecessor_full_regression": {
+    "run": 37370680781,
+    "head_sha": "16a050fed84f5cac98fed9be7459aee9ae5a221d",
+    "event": "workflow_dispatch",
+    "job": "Full offline regression (non-required)",
+    "job_conclusion": "cancelled",
+    "run_conclusion": "failure",
+    "steps_executed": 0,
+    "duration": "15m06s (2026-10-05T20:35:23Z -> 2026-10-05T20:50:29Z)",
+    "tests_started": false,
+    "classification": "GATE_UNAVAILABLE / INCOMPLETE",
+    "not": [
+      "PRODUCT_FAILURE",
+      "REGRESSION_FAILURE"
+    ],
+    "note": "the run-level 'failure' is the cancelled job; no test executed"
+  },
+  "external_authorities_pending_at_commit_time": {
+    "exact_head_fast_CI": "bound externally",
+    "full_offline_regression_on_exact_head": "bound externally",
+    "evidence_amendment_review": "bound externally",
+    "dispositions_23": "bound externally"
+  },
+  "dispositions": {
+    "expected_GitHub_roots": 23,
+    "bound_in_this_file": false
+  },
+  "PR_state": "DRAFT",
+  "nonclaims": {
+    "Gate_B": "NOT_CLAIMED",
+    "Gate_C": "NOT_CLAIMED",
+    "Control_A": "NOT_CLAIMED",
+    "Control_B": "NOT_CLAIMED",
+    "release": "NOT_CLAIMED",
+    "V1_FINAL_FREEZE": "NOT_CLAIMED"
+  },
+  "protected_actions": {
+    "Ready": "NOT_AUTHORIZED",
+    "codex_review": "NOT_AUTHORIZED",
+    "merge": "NOT_AUTHORIZED"
+  }
+}

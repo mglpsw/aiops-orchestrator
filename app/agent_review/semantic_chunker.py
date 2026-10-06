@@ -202,7 +202,8 @@ def build_semantic_chunk_plan(
     # `required_files` above, which is the canonicalized *identity* set used
     # for must_review membership/priority/oversize classification only.
     required_files_wire = payload_cost_model.required_files_wire(review_intake)
-    contract_refs = _contract_refs(intake)
+    contract_refs, contract_limitations = _contract_refs(intake)
+    limitations.extend(contract_limitations)
     available_refs = _artifact_refs(artifacts)
 
     # A file with no observable hunk material (binary, metadata-only such as
@@ -321,6 +322,7 @@ def build_semantic_chunk_plan(
     max_iterations = len(canonical_files) * 2 + len(GROUP_PRIORITY) * 2 + 4
     accumulated = sorted(set(limitations))
     pack_result: _PackResult | None = None
+    contract_limits: list[str] = []
     for _ in range(max_iterations):
         pack_result = _pack_all_groups(
             grouped,
@@ -331,7 +333,35 @@ def build_semantic_chunk_plan(
             contract_refs=contract_refs,
             project_chunk_cost=lambda group, candidate, _acc=accumulated: project_chunk_cost(group, candidate, _acc),
         )
-        new_accumulated = sorted(set(accumulated) | set(pack_result.plan_limitations))
+        candidate_contract_limits: list[str] = []
+        if pack_result.chunks:
+            for chunk in pack_result.chunks:
+                _, chunk_contract_limits = payload_cost_model.contracts_context(
+                    review_intake,
+                    chunk_files=chunk.files,
+                    chunk_contracts=chunk.contracts,
+                    chunk_id=chunk.chunk_id,
+                    selected_contract_pack=review_metadata["contract_pack"],
+                    semantic_group=chunk.semantic_group,
+                )
+                for lim in chunk_contract_limits:
+                    if not lim.startswith("contracts_context_not_relevant:"):
+                        candidate_contract_limits.append(lim)
+        else:
+            _, plan_contract_limits = payload_cost_model.contracts_context(
+                review_intake,
+                chunk_files=canonical_files,
+                chunk_contracts=contract_refs,
+                chunk_id="chunk_plan",
+                selected_contract_pack=review_metadata["contract_pack"],
+                semantic_group="plan",
+            )
+            for lim in plan_contract_limits:
+                if not lim.startswith("contracts_context_not_relevant:"):
+                    candidate_contract_limits.append(lim)
+
+        contract_limits = candidate_contract_limits
+        new_accumulated = sorted(set(accumulated) | set(pack_result.plan_limitations) | set(contract_limits))
         if new_accumulated == accumulated:
             break
         accumulated = new_accumulated
@@ -340,6 +370,8 @@ def build_semantic_chunk_plan(
 
     assert pack_result is not None
     limitations.extend(pack_result.plan_limitations)
+    limitations.extend(contract_limits)
+
     files_not_covered = _dedupe([*identity_not_covered, *hunk_unavailable, *pack_result.files_not_covered])
 
     status = _plan_status(
@@ -754,6 +786,11 @@ def _plan_status(
         return "degraded"
     if files_not_covered:
         return "degraded"
+    if any(
+        any(lim.startswith(prefix) for prefix in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        for lim in limitations
+    ):
+        return "degraded"
     if files_partially_covered:
         return "partial"
     if "file_context_fallback_used" in limitations:
@@ -779,11 +816,8 @@ def _artifact_refs(artifacts: dict[str, Any]) -> list[str]:
     return _dedupe(refs)
 
 
-def _contract_refs(intake: dict[str, Any]) -> list[str]:
-    profile = intake.get("target_profile")
-    if isinstance(profile, dict) and profile.get("domain_contracts"):
-        return ["target_profile:domain_contracts"]
-    return []
+def _contract_refs(intake: dict[str, Any]) -> tuple[list[str], list[str]]:
+    return payload_cost_model.parse_contract_refs(intake)
 
 
 def _sanitize_output_string(value: str) -> str:

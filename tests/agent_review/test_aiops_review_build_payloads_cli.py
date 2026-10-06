@@ -232,19 +232,25 @@ def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) ->
 
 
 def test_cli_returns_partial_status_when_manifest_entries_are_truncated(monkeypatch, tmp_path: Path) -> None:
-    # 4100 is within the fixture's own boundary (aiops-orchestrator#225
-    # rev.3 SS6): aux/checks/evidence/contracts context all shrink, but both
-    # chunks' single hunk each still fits, so the run completes as "partial"
-    # instead of the hard guard blocking it. The budget now has to be set on
-    # the chunk plan itself, not via a diverging --payload-max-chars
-    # override -- that mismatch is exactly what payload_budget_mismatch
-    # fails closed on.
+    # 4150 is within the fixture's own boundary (aiops-orchestrator#225
+    # rev.3 SS6): the payload shrinks, but both chunks' single hunk each
+    # still fits, so the run completes as "partial" instead of the hard
+    # guard blocking it. The budget now has to be set on the chunk plan
+    # itself, not via a diverging --payload-max-chars override -- that
+    # mismatch is exactly what payload_budget_mismatch fails closed on.
+    #
+    # Re-calibrated from 4100 (Gate A cycle 3): the legacy relevance recovery of
+    # the frozen baseline makes `rule-api` ("api contract") applicable in the
+    # api_schema_contract chunk, and the selected pack is REQUIRED context
+    # (Gate A), so at 4100 the ladder can no longer reach a fitting payload
+    # without losing required context. That boundary is pinned, fail-closed, by
+    # test_cli_blocks_when_the_required_pack_floor_cannot_fit_the_budget below.
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
     paths = _base_artifacts(tmp_path)
     chunk_plan = json.loads(paths["chunk_plan"].read_text(encoding="utf-8"))
     for chunk in chunk_plan["chunks"]:
-        chunk["prompt_budget_chars"] = 4_100
+        chunk["prompt_budget_chars"] = 4_150
     _write_json(paths["chunk_plan"], chunk_plan)
     out_root = tmp_path / "agent-output"
     module = _load_script_module()
@@ -258,6 +264,28 @@ def test_cli_returns_partial_status_when_manifest_entries_are_truncated(monkeypa
     assert all(item["payload_path"] is not None for item in manifest["chunks"])
     assert any(item["truncation"]["applied"] for item in manifest["chunks"])
     assert not any("chunk_hunks_reduced" in item["truncation"]["coverage_impact"] for item in manifest["chunks"])
+
+
+def test_cli_blocks_when_the_required_pack_floor_cannot_fit_the_budget(monkeypatch, tmp_path: Path) -> None:
+    """At 4100 the selected pack (required context) plus the hunk no longer fit once the optional context is gone:
+    the run must fail closed and non-silently -- never route a payload that lost required context or hunk material."""
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    chunk_plan = json.loads(paths["chunk_plan"].read_text(encoding="utf-8"))
+    for chunk in chunk_plan["chunks"]:
+        chunk["prompt_budget_chars"] = 4_100
+    _write_json(paths["chunk_plan"], chunk_plan)
+    out_root = tmp_path / "agent-output"
+
+    result = _invoke(_load_script_module(), _args(paths, out_root))
+
+    payload = _error_payload(result)
+    assert payload["error_class"] == "chunk_hunk_material_not_transported"
+    manifest = json.loads((out_root / "chunk-payload-manifest.json").read_text(encoding="utf-8"))
+    blocked = [item for item in manifest["chunks"] if item["payload_path"] is None]
+    assert [item["chunk_id"] for item in blocked] == ["chunk-01-api_schema_contract"]
+    assert "required_contract_pack_context_lost:calendar-pack" in blocked[0]["limitations"]
 
 
 def test_cli_blocks_symlinked_output_inside_git_worktree(monkeypatch, tmp_path: Path) -> None:

@@ -11,6 +11,27 @@ from pydantic import ValidationError
 from app.agent_review.schemas import TARGET_PROFILE_SCHEMA, TargetProfile
 
 
+# R5-A: C2 declarations that `.aiops/repo-profile.yaml` cannot carry. Two classes, one fail-closed family:
+# - consumer-only relations (`contracts`, `contract_refs`, `contract_bindings`): the consumer reads them from a
+#   hand-built intake, but they are NOT repo-profile v1 grammar and `TargetProfile` ignores unknown keys;
+# - inline C2 sources (`domain_contracts`, `review_packs`): the canonical carriers are the files
+#   `.aiops/domain-contracts.yaml` / `.aiops/review-packs.yaml`, and the loader overwrites the profile fields from
+#   those files, so an inline copy would be dropped (or silently lose to the file).
+# Without this census a declaration disappears and the review can stay conclusive without the declared relation.
+# The canonical relation carriers are `review_packs.packs[*].domain_contract` and the review-packs envelope's
+# `contract_bindings`. Deliberately NOT `extra="forbid"` (that would widen the behavior of every other key).
+REPO_PROFILE_UNSUPPORTED_C2_FIELDS: tuple[str, ...] = (
+    "contract_bindings",
+    "contract_refs",
+    "contracts",
+    "domain_contracts",
+    "review_packs",
+)
+# An inline source declares nothing when it is null (e.g. a `TargetProfile.model_dump()` round trip), so a null
+# inline source is tolerated; any non-null inline value would be overwritten by the file loader and is rejected.
+REPO_PROFILE_INLINE_C2_SOURCE_FIELDS: frozenset[str] = frozenset({"domain_contracts", "review_packs"})
+
+
 class RepoProfileLoadResult:
     def __init__(
         self,
@@ -57,6 +78,20 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
     if target_repo and not profile_data.get("target_repo"):
         profile_data["target_repo"] = target_repo
 
+    unsupported = [
+        field
+        for field in REPO_PROFILE_UNSUPPORTED_C2_FIELDS
+        if field in profile_data and (field not in REPO_PROFILE_INLINE_C2_SOURCE_FIELDS or profile_data[field] is not None)
+    ]
+    if unsupported:
+        profile = TargetProfile(target_repo=target_repo, artifacts=[])
+        return RepoProfileLoadResult(
+            profile=profile,
+            status="failed",
+            limitations=[f"repo_profile_unsupported_c2_field:{field}" for field in unsupported],
+            error_class="profile_invalid",
+        )
+
     limitations: list[str] = []
     try:
         profile = TargetProfile.model_validate(profile_data)
@@ -71,6 +106,20 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
 
     domain_contracts = _load_optional_yaml(root / ".aiops" / "domain-contracts.yaml", "domain_contracts", limitations)
     review_packs = _load_optional_yaml(root / ".aiops" / "review-packs.yaml", "review_packs", limitations)
+
+    # R5-A: the typed carrier stringifies mapping keys on serialization (`on:` -> "true"; `1` and "1" collide and the
+    # first declaration is lost), so a C2 source with a non-string key is NOT carried faithfully: fail closed with the
+    # same profile-invalid semantics as the other undeliverable C2 declarations.
+    non_string_sources = [
+        name for name, data in (("domain_contracts", domain_contracts), ("review_packs", review_packs)) if _has_non_string_mapping_key(data)
+    ]
+    if non_string_sources:
+        return RepoProfileLoadResult(
+            profile=TargetProfile(target_repo=target_repo, artifacts=[]),
+            status="failed",
+            limitations=[f"{name}_non_string_mapping_key" for name in non_string_sources],
+            error_class="profile_invalid",
+        )
 
     profile.domain_contracts = domain_contracts
     profile.review_packs = review_packs
@@ -100,4 +149,12 @@ def _load_optional_yaml(path: Path, name: str, limitations: list[str]) -> Any:
         limitations.append(f"{name}_yaml_invalid")
         return None
     return loaded.data
+
+
+def _has_non_string_mapping_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(not isinstance(key, str) or _has_non_string_mapping_key(item) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_has_non_string_mapping_key(item) for item in value)
+    return False
 

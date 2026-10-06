@@ -1,0 +1,612 @@
+{
+  "artifact_type": "PR372_CYCLE3_AOCM_CLOSURE_RECEIPT",
+  "status": "v1_c2_gate_a_cycle3_domain_closed",
+  "gate": "Gate A",
+  "slice": "V1-C2 / Gate A (C2ExecutableContract)",
+  "subject_binding": {
+    "mode": "FORGE_EXACT_HEAD",
+    "repository": "mglpsw/aiops-orchestrator",
+    "pr": 372,
+    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
+    "self_hash_claimed": false,
+    "exact_subject_authorities": [
+      "PR.headRefOid",
+      "canonical_CI.headSha",
+      "current_head_guard_dispositions",
+      "maintainer_checkpoint"
+    ],
+    "requirement": "all_exact_subject_authorities_must_agree",
+    "note": "a committed receipt cannot contain its own commit id; the final HEAD is bound externally"
+  },
+  "predecessor": {
+    "head": "4d7496a1bb7e3d18c75a504125232f871272530e",
+    "tree": "a221f8e7dfd2c83668a88701cc26dff347030c76",
+    "review": 5409041457,
+    "legacy_differential_authority": "6bbd2f949989da3e90e1d9c527e37059c0b628ff"
+  },
+  "successor": {
+    "repair_commit": "4544cfdddda602009917f812d86d167d7e63f6f5",
+    "repair_tree": "778ca93f39670df877488f143c63638cee81829f",
+    "sibling_closure_commits": [
+      "ea24a516cb89988f94e7dabc479b99c1847c3823",
+      "9741a3a7b5174a3fb1b1887c0a4c4229b90cc56d"
+    ],
+    "sibling_closure_tree": "ee8d090218fcf4344e1a28be9edbf7fd2c50e14d",
+    "final_head": "BOUND_EXTERNALLY: PR.headRefOid (evidence-only commits follow the repair commit)"
+  },
+  "transversal_property": "Mode -> Grammar -> Normalization -> Identity -> Applicability -> Relation -> RequiredSource -> RequiredContext -> ObservableResult",
+  "predecessor_red": {
+    "method": "behavioural witnesses using only the predecessor's public API, run at the exact predecessor HEAD with an unmodified source tree",
+    "findings": {
+      "4179993590": {
+        "witness": "modern contract paths ['/etc/passwd'] and ['../backend/api.py']",
+        "predecessor_observation": "PRESENT_VALID; contracts_context_not_relevant",
+        "violated_relation": "ModernSemanticPath -> ValidRepositoryRelativeIdentity",
+        "expected_observation": "INVALID + invalid_source_contract:INVALID_IDENTITY"
+      },
+      "4179993594": {
+        "witness": "review_packs envelope with contract_binding (typo) next to packs",
+        "predecessor_observation": "PRESENT_VALID; bindings={}",
+        "violated_relation": "ReviewPackDocumentEnvelopeGrammar",
+        "expected_observation": "INVALID + invalid_source_review_packs:UNSUPPORTED_NONEMPTY"
+      },
+      "4179993596": {
+        "witness": "modern selected 'calendar' vs mapping key 'agentescala-calendar'",
+        "predecessor_observation": "pack transported; no selected_contract_pack_missing",
+        "violated_relation": "selected_pack == exact mapping key",
+        "expected_observation": "selected_contract_pack_missing:calendar; no pack"
+      },
+      "4179993600": {
+        "witness": "modern pack inline domain_contract with domain_contracts absent",
+        "predecessor_observation": "only unresolved_contract_binding",
+        "violated_relation": "DeclaredContractRefs != {} AND source ABSENT -> required_source_absent",
+        "expected_observation": "required_source_absent:domain_contracts + unresolved_contract_binding"
+      },
+      "4179993602": {
+        "witness": "modern pack scope GLOBAL; scope local",
+        "predecessor_observation": "GLOBAL pack not global (not_relevant); scope local PRESENT_VALID",
+        "violated_relation": "single scope value-domain authority",
+        "expected_observation": "GLOBAL applies everywhere; scope local INVALID UNSUPPORTED_NONEMPTY"
+      },
+      "4179993605": {
+        "witness": "legacy flat scoped frontend rule, backend chunk, target_profile:domain_contracts",
+        "predecessor_observation": "['be-rule'] (fe-rule dropped)",
+        "violated_relation": "legacy include-all is unconditional",
+        "expected_observation": "['be-rule', 'fe-rule']"
+      },
+      "4179993607": {
+        "witness": "legacy pack {description: calendar}, selected calendar",
+        "predecessor_observation": "pack dropped; selected_contract_pack_missing",
+        "violated_relation": "description-only legacy pack preserved",
+        "expected_observation": "pack transported, identity not fabricated"
+      }
+    },
+    "all_seven_RED": true,
+    "hidden_sibling_evidence": "the durable oracle run against the exact predecessor: 45 of 86 baseline-derived observations diverge (legacy relevance recovery removed, pack include-all, pack explicit-id refs, pack projection, legacy paths substring/glob)"
+  },
+  "C1_MODERN_ADMISSION_TOTALITY": {
+    "path_identity_authority": "payload_cost_model.canonical_repo_path",
+    "pattern_identity_authority": "payload_cost_model.canonical_repo_pattern (boundary = canonical_repo_path; plus glob syntax)",
+    "display_path": "sanitize_display_path is display-only and never an admission authority",
+    "path_bearing_census": {
+      "domain_contract_exact": [
+        "path",
+        "file_path",
+        "files",
+        "paths",
+        "source_files",
+        "related_files"
+      ],
+      "domain_contract_pattern": [
+        "patterns"
+      ],
+      "review_pack_exact": [
+        "paths"
+      ],
+      "review_pack_pattern": [
+        "patterns"
+      ]
+    },
+    "review_pack_envelope_grammar": [
+      "contract_bindings",
+      "packs",
+      "updated",
+      "version"
+    ],
+    "envelope_owner_evidence": "AgentEscala@b281ca5d2872117b1c128cabb1735e264f024eaf .aiops/review-packs.yaml top-level keys: version, updated, packs",
+    "scope_domain": [
+      "global"
+    ],
+    "scope_single_authority": "payload_cost_model.classify_scope (consumed by domain contracts, review packs and _is_global_item)",
+    "RED": "4179993590 4179993594 4179993602 reproduced at the exact predecessor",
+    "GREEN": "test_c2_gate_a_cycle3_domain_closure.py",
+    "ablations": [
+      "AB-C1-MODERN-PATH-IDENTITY",
+      "AB-C1-PACK-ENVELOPE-GRAMMAR",
+      "AB-C1-GLOBAL-SCOPE"
+    ],
+    "positives": [
+      "PC-C3-EXACT-REPO-PATH",
+      "PC-C3-SAFE-GLOB",
+      "PC-C3-NORMALIZED-RELATIVE-PATH",
+      "PC-C3-ENVELOPE-REAL-TARGET-SHAPE"
+    ]
+  },
+  "C2_EXPLICIT_RELATION_REQUIRED_SOURCE": {
+    "declared_ref_origins": [
+      "pack_inline",
+      "binding",
+      "explicit"
+    ],
+    "required_source_rule": "DeclaredContractRefs = pack.domain_contract (modern) U contract_bindings[*] U explicit contract:<id>; non-empty AND domain_contracts ABSENT -> required_source_absent:domain_contracts, preserved alongside the unresolved-relation limitation",
+    "legacy_flat_pack_domain_contract": "NON-AUTHORITATIVE; not in the set",
+    "RED": "4179993600",
+    "GREEN": "CM-C3-INLINE-DOMAIN-CONTRACT-SOURCE-ABSENT, CM-C3-BINDING-SOURCE-ABSENT, CM-C3-EXPLICIT-CONTRACT-REF-SOURCE-ABSENT, PC-C3-DECLARED-REF-SOURCE-PRESENT",
+    "ablation": "AB-C2-DECLARED-REF-REQUIRED-SOURCE (one per origin)"
+  },
+  "C3_GENERIC_IDENTITY_AUTHORITY": {
+    "modern_selection": "exact, case-sensitive mapping key",
+    "legacy_selection": "generic: case-insensitive exact/substring over id and description (frozen baseline)",
+    "production_target_specific_branches": 0,
+    "genericity_census": "AST census over every app/agent_review/*.py string constant (docstrings and comments excluded): no AgentEscala / InterLeitos / agentescala-calendar / auth_admin / backend_schema_contract / response_model_rules; no 'calendar' or 'security' literal in the C2 runtime modules",
+    "RED": "4179993596",
+    "GREEN": "CM-C3-MODERN-NO-ALIAS, PC-C3-LEGACY-GENERIC",
+    "ablations": [
+      "AB-C3-MODERN-EXACT-SELECTION",
+      "AB-C3-TARGET-ALIAS"
+    ]
+  },
+  "C4_LEGACY_DIFFERENTIAL_FIREWALL": {
+    "baseline_commit": "6bbd2f949989da3e90e1d9c527e37059c0b628ff",
+    "baseline_blob_oid": "41423394e69b4fa67785ac01088757bdff917001",
+    "admitted_baseline_shapes": [
+      "target_profile.domain_contracts = {\"rules\": [dict, ...]}",
+      "target_profile.review_packs = {\"packs\": [dict, ...]}",
+      "chunk_contracts items: target_profile:domain_contracts | target_profile:review_packs | contract:<id>"
+    ],
+    "additive_compatibility_shapes": [
+      "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
+      "review_packs as a top-level list of dicts (baseline read it as no packs)",
+      "legacy PACK rows with neither id nor description are not admitted (SUBTRACTIVE but lossless: the pack projection has no other field; legacy CONTRACT rows are all admitted)"
+    ],
+    "baseline_predicates": {
+      "live": 57,
+      "redundant": [
+        "D.exact_backslash",
+        "P.sel.id_eq",
+        "P.sel.desc_eq"
+      ],
+      "dead": [
+        "P.match_chunk"
+      ]
+    },
+    "branch_fixture_map": {
+      "C.include_all": {
+        "C.include_all": [
+          "contract.include_all.true",
+          "contract.carriers.include_all",
+          "contract.unknown_fields.tags"
+        ]
+      },
+      "C.explicit_ref": {
+        "C.explicit_ref": [
+          "contract.explicit_ref.hit",
+          "contract.explicit_ref.scoped_rule.hit",
+          "contract.token.extra_colon.miss"
+        ]
+      },
+      "C.match.paths": {
+        "C.match.paths": [
+          "contract.paths.exact.hit",
+          "contract.paths.canonical.hit",
+          "contract.carrier.file_path.hit"
+        ]
+      },
+      "C.match.patterns": {
+        "C.match.patterns": [
+          "contract.patterns.substring.hit",
+          "contract.patterns.star_prefix.hit",
+          "contract.patterns.trailing_slash.hit"
+        ]
+      },
+      "C.match.global": {
+        "C.match.global.flag": [
+          "contract.global.flag"
+        ],
+        "C.match.global.scope": [
+          "contract.global.scope.lower",
+          "contract.global.scope.upper_ws",
+          "contract.rows.global_without_id.hit"
+        ]
+      },
+      "C.relevance": {
+        "C.relevance": [
+          "contract.relevance.primary_backend_logic.backend",
+          "contract.relevance.primary_backend_logic.service",
+          "contract.relevance.primary_backend_logic.domain"
+        ],
+        "C.relevance.desc_part": [
+          "contract.relevance.primary_backend_logic.backend",
+          "contract.relevance.primary_backend_logic.service",
+          "contract.relevance.primary_backend_logic.domain"
+        ],
+        "C.relevance.id_part": [
+          "contract.relevance.id_only"
+        ]
+      },
+      "P.include_all": {
+        "P.include_all": [
+          "pack.include_all.true",
+          "pack.description_only.preserved",
+          "pack.id_only.include_all"
+        ]
+      },
+      "P.explicit_ref": {
+        "P.explicit_ref": [
+          "pack.explicit_ref.hit",
+          "pack.id_only.explicit_ref"
+        ]
+      },
+      "P.selected": {
+        "P.selected.guard": [
+          "pack.selected.exact_id",
+          "pack.selected.fuzzy_id",
+          "pack.selected.exact_description"
+        ],
+        "P.sel.desc_eq": [],
+        "P.sel.desc_sub": [
+          "pack.selected.fuzzy_description",
+          "pack.selected.description_case_insensitive"
+        ],
+        "P.sel.id_eq": [],
+        "P.sel.id_sub": [
+          "pack.selected.fuzzy_id"
+        ]
+      },
+      "P.relevance": {
+        "P.relevance": [
+          "pack.relevance.id_part",
+          "pack.relevance.desc_part",
+          "pack.relevance.primary_backend_logic"
+        ],
+        "P.relevance.desc_part": [
+          "pack.relevance.desc_part",
+          "pack.relevance.uppercase_text.hit",
+          "pack.relevance.baseline_raises.id_only"
+        ],
+        "P.relevance.id_part": [
+          "pack.relevance.id_part",
+          "pack.relevance.baseline_raises.description_only"
+        ]
+      },
+      "TERM.not_relevant": {
+        "TERM.not_relevant": [
+          "contract.include_all.false",
+          "contract.explicit_ref.miss",
+          "contract.paths.substring.miss"
+        ]
+      }
+    },
+    "differential_oracle": {
+      "fixture": "tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json",
+      "generator": "scripts/generate-v1-c2-legacy-differential-oracle.py",
+      "cases": 151,
+      "predicates": 61,
+      "shallow_ci_safe": true,
+      "regeneration_check": "test_fixture_equals_a_fresh_generation_from_the_frozen_baseline (skipped without history)",
+      "intentional_divergences": "unresolved explicit ref / missing selected pack / explicit ref without domain_contracts source: typed fail-closed limitations suppress the baseline's not_relevant (authority: cycle-1 4178603200, 4178603183)",
+      "baseline_defects_declared": "pack.relevance.baseline_raises.*: the baseline raises TypeError on a pack lacking id or description; expectation is the totalized baseline"
+    },
+    "include_all_contracts": "unconditional (CM-C4-LEGACY-INCLUDE-ALL-CONTRACT)",
+    "include_all_packs": "unconditional (CM-C4-LEGACY-PACK-INCLUDE-ALL)",
+    "explicit_contract_refs": "ids of legacy contracts; unresolved fails closed",
+    "explicit_pack_refs": "legacy pack ids (CM-C4-LEGACY-PACK-EXPLICIT-ID-REF)",
+    "relevance_keywords_contracts": "7 groups / 23 keywords each discriminated (CM-C4-LEGACY-CONTRACT-RELEVANCE)",
+    "relevance_keywords_packs": "CM-C4-LEGACY-PACK-RELEVANCE",
+    "description_only_contracts": "CM-C4-DESCRIPTION-ONLY-CONTRACT-PRESERVED",
+    "description_only_packs": "CM-C4-DESCRIPTION-ONLY-PACK-PRESERVED / -SELECTED",
+    "legacy_pack_projection": "{id, description, recommended_review_preset} only (CM-C4-LEGACY-PACK-PROJECTION)",
+    "legacy_contract_paths": "exact canonical intersection only; the cycle-2 substring/glob recovery on paths was a leak and is removed",
+    "idless_pack_floor": "{description, effective_contracts, required}; no fabricated id; loss label required_contract_pack_context_lost:unidentified_legacy_pack:<sha256(description)[:12]>",
+    "not_relevant": "CM-C4-LEGACY-NOT-RELEVANT",
+    "observables_equivalent": true,
+    "unreachable_normalization_difference": "selected pack whitespace: contracts_context strips, baseline did not; both call sites pass _clean_text(...) output, so the difference cannot occur in production",
+    "ablations": [
+      "AB-C4-LEGACY-INCLUDE-ALL-CONTRACT",
+      "AB-C4-LEGACY-INCLUDE-ALL-PACK",
+      "AB-C4-LEGACY-EXPLICIT-PACK-REF",
+      "AB-C4-LEGACY-RELEVANCE",
+      "AB-C4-LEGACY-DESCRIPTION-ONLY-PACK",
+      "AB-C4-LEGACY-DIFFERENTIAL-ORACLE"
+    ]
+  },
+  "ModeSemanticMatrix": {
+    "source_shapes": {
+      "legacy": "{\"rules\": [...]} / {\"packs\": [...]} (+ top-level lists: ADDITIVE_COMPATIBILITY); sibling envelope keys ignored (baseline leniency)",
+      "modern": "mapping keyed by identity; closed envelope grammar",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
+    },
+    "identity": {
+      "legacy": "id optional; a description-only row is valid and its identity is never fabricated; only projected + adjudicated scope-bearing fields are typed (null = absent)",
+      "modern": "mapping key is the sole identity; nested id unsupported",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); OBL-CL2-02"
+    },
+    "normalization": {
+      "legacy": "baseline display projection (sanitize_display_path)",
+      "modern": "canonical repository-relative identities (canonical_repo_path / canonical_repo_pattern)",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); AGENTS.md:37-39 fail-closed for identity/schema/coverage; OBL-CL2-02/-03"
+    },
+    "exact_paths": {
+      "legacy": "canonical exact intersection; unresolvable path silently non-matching",
+      "modern": "any non-repository-relative member invalidates the source; glob-bearing paths match",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); AGENTS.md:37-39 fail-closed for identity/schema/coverage; OBL-CL2-02/-03"
+    },
+    "patterns": {
+      "legacy": "substring / trailing-star prefix",
+      "modern": "fnmatchcase inside the repository boundary",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
+    },
+    "global": {
+      "legacy": "scope.lower()==global or is_global; other scope strings retained",
+      "modern": "scope domain {global}; any other nonempty value is INVALID",
+      "classification": "INTENTIONAL",
+      "authority": "AGENTS.md:37-39 fail-closed for identity/schema/coverage; OBL-CL2-02/-03"
+    },
+    "include_all": {
+      "legacy": "target_profile:* is an unconditional include-all",
+      "modern": "availability is not applicability",
+      "classification": "INTENTIONAL",
+      "authority": "CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY; frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility)"
+    },
+    "explicit_refs": {
+      "legacy": "contract:<id> (identity trimmed, Gate A S1) selects contracts AND packs by exact id (unresolved ref fails closed)",
+      "modern": "contract:<id> resolves contracts only",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); OBL-CL2-02"
+    },
+    "selection": {
+      "legacy": "case-insensitive exact/substring over id and description",
+      "modern": "exact case-sensitive mapping key; no alias",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); app/agent_review/AGENTS.md:119-125 Genericity"
+    },
+    "relevance_keywords": {
+      "legacy": "semantic-group keyword recovery over id+description",
+      "modern": "none",
+      "classification": "INTENTIONAL",
+      "authority": "frozen legacy baseline 6bbd2f9 (app/agent_review/AGENTS.md:96-100 Compatibility); CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY"
+    },
+    "relation_resolution": {
+      "legacy": "pack.domain_contract NON-AUTHORITATIVE (not even projected)",
+      "modern": "pack.domain_contract + contract_bindings establish EffectiveContractRefs",
+      "classification": "INTENTIONAL",
+      "authority": "REVIEW_PACK_LEGACY_INPUT_POLICY; OBL-CL2-02"
+    },
+    "required_source": {
+      "legacy": "only an explicit contract:<id> is a declared contract reference",
+      "modern": "inline domain_contract U contract_bindings U explicit refs",
+      "classification": "INTENTIONAL",
+      "authority": "OBL-CL2-03; cycle-3 4179993600"
+    },
+    "required_floor": {
+      "legacy": "identity-less pack floors to its description carrier (no fabricated id)",
+      "modern": "pack floors to its identity (+ effective_contracts)",
+      "classification": "INTENTIONAL",
+      "authority": "OBL-CL2-05; item 28 (no fabricated identity)"
+    }
+  },
+  "regression": {
+    "cycle_1": "9/9",
+    "cycle_2": "7/7",
+    "cycle_3": "7/7",
+    "total": "23/23",
+    "witnesses": {
+      "4178603183": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_selected_pack_source_absent_and_empty"
+      ],
+      "4178603188": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a2_mapping_key_id_conflict"
+      ],
+      "4178603193": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_malformed_pack_scope",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c4_legacy_pack_admission_validates_only_projected_and_scope_fields"
+      ],
+      "4178603197": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_modern_exact_selection_and_legacy_equivalence"
+      ],
+      "4178603200": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_explicit_contract_reference_missing_e2e"
+      ],
+      "4178603205": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a4_contract_limitation_fixed_point"
+      ],
+      "4178603209": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a5_required_binding_pack_preserved",
+        "test_c2_executable_contract_gate_a.py::test_cm_a5_optional_pack_dropped_safely",
+        "test_c2_executable_contract_gate_a.py::test_cm_a5_required_binding_pack_loss"
+      ],
+      "4178603213": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_binding_key_normalization_collision",
+        "test_c2_executable_contract_gate_a.py::test_cm_a2_contract_key_normalization_collision",
+        "test_c2_executable_contract_gate_a.py::test_cm_a2_pack_key_normalization_collision"
+      ],
+      "4178603218": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a2_legacy_description_only_no_crash"
+      ],
+      "4179272317": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_domain_paths_scalar",
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_domain_paths_nonstring_member",
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_domain_patterns_scalar",
+        "test_c2_executable_contract_gate_a.py::test_s1_domain_contract_positives"
+      ],
+      "4179272322": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s2_selected_pack_required",
+        "test_c2_executable_contract_gate_a.py::test_s2_binding_pack_required_reasons",
+        "test_c2_executable_contract_gate_a.py::test_s2_optional_pack_shrink_positive"
+      ],
+      "4179272324": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s2_selected_pack_budget_loss",
+        "test_c2_executable_contract_gate_a.py::test_s2_optional_pack_shrink_positive"
+      ],
+      "4179272326": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s3_empty_bindings_legacy_mode",
+        "test_c2_executable_contract_gate_a.py::test_s3_format_matrix_exhaustive"
+      ],
+      "4179272328": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_empty_domain_contract",
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_whitespace_domain_contract",
+        "test_c2_executable_contract_gate_a.py::test_s1_pack_domain_contract_positives"
+      ],
+      "4179272330": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_container_scalar",
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_container_mixed",
+        "test_c2_executable_contract_gate_a.py::test_cm_s1_contract_ref_empty_identity",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_c4_explicit_ref_identity_is_trimmed_intentional"
+      ],
+      "4179272331": [
+        "test_c2_executable_contract_gate_a.py::test_cm_s3_legacy_pattern_baseline"
+      ],
+      "4179993590": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_path_invalid_identity_contract",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_ab_c1_modern_path_identity"
+      ],
+      "4179993594": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_envelope_unknown_key",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_ab_c1_pack_envelope_grammar"
+      ],
+      "4179993596": [
+        "test_c2_executable_contract_gate_a.py::test_cm_a3_exact_identity_boundary",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_modern_selection_has_no_target_alias"
+      ],
+      "4179993600": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_inline_domain_contract_source_absent",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c2_profile_level_bindings_are_not_shadowed_by_the_envelope"
+      ],
+      "4179993602": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_scope_global_spellings_are_global_everywhere",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c3_scope_unsupported_value_is_invalid_not_discarded",
+        "test_c2_gate_a_cycle3_domain_closure.py::test_ab_c1_global_scope"
+      ],
+      "4179993605": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c4_legacy_include_all_contract_is_unconditional"
+      ],
+      "4179993607": [
+        "test_c2_gate_a_cycle3_domain_closure.py::test_cm_c4_description_only_pack_preserved_and_selected"
+      ]
+    }
+  },
+  "independent_review_round_1": {
+    "subject": "d3d6dec7bf0cd411a1e39a5ab67beb9114398ff3",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (no NEW_OBLIGATION_DOMAIN); repaired within this round",
+    "repaired": {
+      "F1": "profile-level contract_bindings no longer shadowed by the envelope carrier: both carriers merged, conflicts fail closed (malformed_contract_bindings:conflicting_carriers); declared-ref origins see both",
+      "F3": "legacy admission validates only baseline-projected fields; the modern named-section grammar no longer rejects legacy rows with unprojected list-valued fields (oracle CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED)",
+      "F4": "oracle widened to 118 cases / 52 predicates (carriers, explicit-ref and selection near-misses, relevance case/inside-word, global near-misses, scoped-rule interactions, same-id ordering, exact equality without description masking) and a 14-variant wrong-implementation ablation",
+      "F6": "glob-syntax (unclosed class, control chars), bracket-glob positives and non-string envelope key pinned by tests",
+      "F7": "identity-less pack loss label is a digest of its description carrier (injective per carrier)",
+      "F8": "legacy contract rows no longer fabricate a description from the id (payload bytes and same-id ordering equal the baseline)",
+      "F10": "modern admission rejects ~user paths and control characters in exact paths"
+    },
+    "declared_intentional_not_repaired": {
+      "F2": "a LEGACY envelope keeps the baseline's tolerance of sibling keys (typo guard is a modern-envelope property); the correctly spelled relation key beside a legacy list is the typed mixed-shape failure; pinned by test",
+      "F9": "explicit contract:<id> identities are trimmed (Gate A S1 4179272330); the baseline compared untrimmed text; pinned by test",
+      "F5": "fixture provenance is the pinned commit+blob plus the history-gated regeneration test; no in-fixture hash can be self-attesting; regeneration runs in full-history checkouts"
+    }
+  },
+  "independent_review_round_2": {
+    "subject": "acc53db9ac9947f7756972df325c046750f5f7c3",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (all inside the C4 legacy-firewall interface; no NEW_OBLIGATION_DOMAIN); repaired structurally in commit 4714dda8",
+    "common_cause": "legacy admission and legacy rows were not exactly the frozen baseline's projection",
+    "repaired": {
+      "1": "legacy pack admission validated modern-only/target-metadata fields: now only projected fields and the adjudicated scope-bearing declarations (paths, patterns, scope, is_global; findings 4178603193 / census R1) are typed for legacy packs, null = absent, target metadata ignored",
+      "2": "legacy contract rows are built by one projection equal to the baseline row (no rules/sections/authority fields/derived is_global); the oracle compares WHOLE emitted rows so any gained or lost field is observable; row-leak ablation added",
+      "3": "legacy typed strictness on PROJECTED structure (non-dict members, null envelope rules, malformed projected scalars) is declared INTENTIONAL: authority OBL-CL2-03 (invalid != present_valid), AGENTS.md:37-39 fail-closed schema, S1 4179272317; null projected fields are absent",
+      "4": "oracle completeness: display redaction/backslash normalization predicates, chunk_contracts token grammar, relevance join separator, emitted legacy packs carrying modern fields",
+      "5": "modern admission rejects any leading ~ segment (except the ~$ lock-file prefix) and DEL",
+      "6": "conflicting binding carriers compare order-insensitively"
+    },
+    "unverified_suspicions_not_actioned": [
+      "modern contract literally named 'rules' collides with legacy-envelope detection (predates this PR)",
+      "canonical_authority/display_authority carry no applicability",
+      "bidi/format characters in path identities"
+    ]
+  },
+  "independent_review_round_3": {
+    "subject": "01a0552116049320e43cf3021ed249178ce1fad7",
+    "verdict": "KNOWN_DOMAIN_SIBLING_FOUND (all in the C4 interface; legacy engine itself found sound by ~190k whole-row differential cases; no NEW_OBLIGATION_DOMAIN); repaired in commit 9741a3a7",
+    "repaired": {
+      "F1": "legacy pack rows are exactly the baseline rows including explicit null keys (payload bytes equal)",
+      "F2": "oracle covers projection/canonicalization predicates (sort+dedup, display strip, ~name vs ~/, trailing-star prefix, token grammar, same-id/duplicate rows, exact nulls) with a mutant ablation; D.exact_backslash declared redundant (subsumed by the display step)",
+      "F3": "uniform legacy strictness: blank strings and null rules are absent; only non-str values are malformed",
+      "F4": "legacy contract rows are all admitted (they can carry applicability through scope/paths/patterns); legacy packs with neither id nor description stay dropped, declared SUBTRACTIVE but lossless; the dead second legacy projector was removed",
+      "unverified": "whitespace-padded traversal and unclosed glob class in exact paths are now rejected"
+    },
+    "not_actioned": [
+      "bidi/format characters in path identities (no effect: matching is against canonical chunk files)",
+      "modern contract literally named 'rules' vs legacy-envelope detection (predates this PR)",
+      "all legacy packs are required context under include_all (Gate A design); budget floor is higher than the baseline's, pinned fail-closed by the CLI budget test"
+    ]
+  },
+  "amended_predecessor_tests": [
+    {
+      "test": "test_cm_a3_exact_identity_boundary",
+      "reason": "asserted the target-specific alias in the modern matcher (the defect of 4179993596)"
+    },
+    {
+      "test": "test_ab_a3_explicit_binding",
+      "reason": "fixture used a legacy flat contract matched through the legacy paths substring leak; now a modern mapping contract, property unchanged"
+    },
+    {
+      "test": "test_cm_n2_legacy_domain_contract_not_mapping",
+      "reason": "asserted limits == [] by relying on legacy pack paths acquiring semantics (the defect class of C4); now asserts the baseline consequence and the absence of binding limitations"
+    }
+  ],
+  "qualification": {
+    "evidence_subject": "round-3 closure commit 9741a3a7b5174a3fb1b1887c0a4c4229b90cc56d (tree ee8d090218fcf4344e1a28be9edbf7fd2c50e14d) on top of 4714dda8, ea24a516 and repair commit 4544cfdd; the evidence commit that follows changes only campaign/ evidence files",
+    "environment": "plain local clone (not a linked worktree); python 3.11.2, pytest 8.4.2 from the project venv; --basetemp outside any .git-bearing ancestor (sandbox has a stray /tmp/.git that trips the 'no AgentReview artifacts inside Git worktrees' guard: failure class environment)",
+    "focal": "674 passed (test_c2_executable_contract_gate_a.py, test_c2_gate_a_cycle3_domain_closure.py, test_c2_legacy_differential_oracle.py)",
+    "legacy_differential": "oracle 151 cases / 61 predicates GREEN with exact WHOLE-ROW observation (explicit nulls included); 45 of the first 86 observations diverged on the exact predecessor 4d7496a; wrong-implementation, row-leak and projection/canonicalization mutant ablations turn the oracle RED; regeneration from frozen baseline 6bbd2f9 byte-identical (blob 41423394e69b4fa67785ac01088757bdff917001)",
+    "affected_core": "267 passed (test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_semantic_chunker_225_red.py, test_pr_brief.py, test_quality_gate.py, test_final_synthesizer.py + C1 test_semantic_chunker_232_coverage_truth.py)",
+    "CLI": "143 passed (all test_aiops_review_*_cli.py)",
+    "C1": "included in affected_core (22 passed, test_semantic_chunker_232_coverage_truth.py)",
+    "full_agent_review_suite": "4234 passed, 14 skipped, 4 failed; the 4 failures are classified environment/preexisting and fail identically at the exact predecessor 4d7496a (sandbox runs as uid 0): test_isolated_executor_v2::test_execute_denies_sudo_inside_the_isolated_check, ::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list, test_minimal_toolrepo_lock::test_preparation_census_fails_closed_on_traversal_error, ::test_preparation_r2_fails_closed_on_unreadable_file",
+    "failure_classification": {
+      "cli_artifact_guard": "environment (stray /tmp/.git); passes with --basetemp elsewhere",
+      "four_uid0_sudo_unreadable": "environment/preexisting; identical at predecessor",
+      "cli_manifest_truncated_budget_4100": "latent calibration coupling, exposed (not introduced) by the C4 repair: identical block at the predecessor once the rule is applicable by exact path; recalibrated to 4150 and the 4100 boundary pinned fail-closed by a companion test"
+    },
+    "root_focused_guards": "137 passed (tests/test_test_workers.py tests/test_ci_validation.py tests/test_action_catalog.py tests/test_executor_guardrails.py)",
+    "repository": "passed (bash scripts/ci_validate.sh --repository, run as part of --static)",
+    "generated": "passed (bash scripts/ci_validate.sh --generated, run as part of --static)",
+    "static": "passed (bash scripts/ci_validate.sh --static)",
+    "CAEM_pin": "passed (scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check: pin ok, carrier 28ca73f338417b5c7e9275c6154b6a0eddbb8bc7)",
+    "git_diff_check": "passed (git diff --check; git diff --check HEAD^ HEAD)",
+    "regression_census": "23/23 GREEN (cycle_1 9/9, cycle_2 7/7, cycle_3 7/7), every finding re-run through its named witness tests",
+    "CI": "EXTERNAL_SUBJECT_AUTHORITY: canonical_CI.headSha must equal PR.headRefOid (a committed receipt cannot state a later run's result)",
+    "independent_review": "EXTERNAL_SUBJECT_AUTHORITY: pre-Ready independent review is recorded as a PR comment bound to the final HEAD; this receipt does not self-attest it"
+  },
+  "dispositions": {
+    "known": 23,
+    "required_current_head_bound": 23,
+    "authority": "EXTERNAL_SUBJECT_AUTHORITY: current_head_guard_dispositions (one Guard-Disposition reply per finding, trusted adjudicator mglpsw, Subject-Head == final HEAD)"
+  },
+  "PR_state": "DRAFT",
+  "nonclaims": {
+    "Gate_B": "NOT_CLAIMED",
+    "Gate_C": "NOT_CLAIMED",
+    "Control_A": "NOT_CLAIMED",
+    "Control_B": "NOT_CLAIMED",
+    "release": "NOT_CLAIMED",
+    "V1_FINAL_FREEZE": "NOT_CLAIMED"
+  },
+  "protected_actions": {
+    "Ready": "NOT_AUTHORIZED",
+    "merge": "NOT_AUTHORIZED"
+  },
+  "terminal": "V1_C2_GATE_A_CYCLE3_DOMAIN_CLOSED_DRAFT_AWAITING_READY_REGRANT"
+}

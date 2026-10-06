@@ -35,8 +35,12 @@ silently reviewing a payload the planner never actually projected.
 from __future__ import annotations
 
 import copy
+import fnmatch
+import hashlib
 import json
+import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
@@ -57,6 +61,69 @@ class ProjectionInputMismatchError(ValueError):
         super().__init__(message)
         self.error_class = error_class
         self.message = message
+
+
+SOURCE_STATE_PRESENT_VALID = "PRESENT_VALID"
+SOURCE_STATE_ABSENT = "ABSENT"
+SOURCE_STATE_INVALID = "INVALID"
+
+SUBTYPE_MALFORMED_SHAPE = "MALFORMED_SHAPE"
+SUBTYPE_UNSUPPORTED_NONEMPTY = "UNSUPPORTED_NONEMPTY"
+SUBTYPE_INVALID_IDENTITY = "INVALID_IDENTITY"
+SUBTYPE_OTHER_TYPED_INVALID = "OTHER_TYPED_INVALID"
+
+RELATION_STATE_RESOLVED = "RESOLVED"
+RELATION_STATE_UNRESOLVED = "UNRESOLVED"
+RELATION_STATE_NOT_REQUIRED = "NOT_REQUIRED_FOR_THIS_INPUT"
+
+APPLICABILITY_APPLICABLE = "APPLICABLE"
+APPLICABILITY_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+CRITICAL_CONTRACT_LIMITATION_PREFIXES: tuple[str, ...] = (
+    "required_contract_context_lost:",
+    "required_contract_pack_context_lost:",
+    "unresolved_contract_binding:",
+    "unresolved_contract_reference:",
+    "orphan_contract_binding:",
+    "invalid_source_contract:",
+    "invalid_source_review_packs:",
+    "malformed_contract_bindings:",
+    "required_source_absent:",
+    "selected_contract_pack_missing:",
+)
+
+REQUIRED_CONTEXT_LOSS_PREFIXES: tuple[str, ...] = (
+    "required_contract_context_lost:",
+    "required_contract_pack_context_lost:",
+)
+
+
+def is_required_context_loss(limitation: str) -> bool:
+    return any(limitation.startswith(prefix) for prefix in REQUIRED_CONTEXT_LOSS_PREFIXES)
+
+
+FORMAT_LEGACY_FLAT = "legacy_flat"
+FORMAT_MODERN_MAPPING = "modern_mapping"
+
+
+def detect_domain_contracts_format(document: Any) -> str:
+    """Detect whether domain_contracts artifact follows legacy flat rules list or modern domain mapping."""
+    if isinstance(document, list):
+        return FORMAT_LEGACY_FLAT
+    if isinstance(document, dict) and "rules" in document and isinstance(document.get("rules"), list):
+        return FORMAT_LEGACY_FLAT
+    return FORMAT_MODERN_MAPPING
+
+
+def detect_review_packs_format(document: Any, extra_bindings: Any = None) -> str:
+    """Detect whether review_packs follows legacy flat packs list or modern pack mapping."""
+    if isinstance(document, list):
+        return FORMAT_LEGACY_FLAT
+    if isinstance(document, dict) and isinstance(document.get("packs"), list):
+        return FORMAT_LEGACY_FLAT
+    return FORMAT_MODERN_MAPPING
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +158,30 @@ def canonical_repo_path(path: object) -> str:
     return collapsed
 
 
+def canonical_repo_pattern(pattern: object) -> str:
+    """Repository-relative *pattern* identity: GlobSyntax AND RepositoryBoundary at once.
+
+    The boundary (not a string, empty, absolute, drive-letter, `~`-relative, `..`
+    traversal) is `canonical_repo_path`'s -- it is structural and therefore
+    already glob-transparent (`*`, `?`, `[...]` survive untouched) -- so there is
+    exactly one boundary authority. On top of it a pattern must be a
+    well-formed glob: no control characters and every `[` closed.
+    """
+    identity = canonical_repo_path(pattern)
+    if any(ord(char) < 32 for char in identity):
+        raise PathIdentityError("pattern_syntax_invalid", f"pattern contains a control character: {pattern!r}")
+    open_at = identity.find("[")
+    while open_at != -1:
+        close_at = identity.find("]", open_at + 2)
+        if close_at == -1:
+            raise PathIdentityError("pattern_syntax_invalid", f"pattern has an unclosed character class: {pattern!r}")
+        open_at = identity.find("[", close_at + 1)
+    return identity
+
+
 def sanitize_display_path(path: str) -> str:
-    """Publishable display form of a path. Never used for identity/dedup."""
+    """Publishable display form of a path. Never used for identity/dedup,
+    and never an admission authority (`DisplayPath` does not decide validity)."""
     normalized = path.replace("\\", "/").strip()
     if not normalized:
         return ""
@@ -385,6 +474,126 @@ def artifact_text(intake: ReviewIntake, name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _deterministic_items(mapping: dict[Any, Any]) -> list[tuple[Any, Any]]:
+    """R5-B: mapping items in a canonical identity order (non-string keys last; string keys by their trimmed text,
+    then raw text). Source normalizers return at the FIRST invalid entry, so semantically equal configs that differ
+    only in YAML key order must reach the same entry first: iteration order may never decide the emitted reason."""
+    def order(item: tuple[Any, Any]) -> tuple[int, str, str]:
+        key = item[0]
+        return (0, key.strip(), key) if isinstance(key, str) else (1, repr(key), "")
+    return sorted(mapping.items(), key=order)
+
+
+def parse_contract_refs(intake_data: dict[str, Any] | ReviewIntake) -> tuple[list[str], list[str]]:
+    """Extracts and validates explicit contract references from intake and target_profile.
+    Enforces that 'contracts' and 'contract_refs' must be list[str] of nonempty identities.
+    Returns (refs, limitations).
+
+    NONCANONICAL_DEFENSIVE_COMPATIBILITY (R5-A): `target_profile.contracts` / `contract_refs` and the top-level
+    `intake.contracts` / `intake.contract_refs` are read here for a hand-built / raw intake dict only. The canonical
+    producer cannot carry them (`TargetProfile` / `ReviewIntake` ignore unknown keys) and `load_repo_profile` rejects
+    them in `.aiops/repo-profile.yaml` (`repo_profile_unsupported_c2_field:<field>`). Support on this path is NOT
+    canonical-producer support.
+    """
+    raw_intake = intake_data.model_dump(mode="json") if hasattr(intake_data, "model_dump") else intake_data
+    if not isinstance(raw_intake, dict):
+        return [], []
+
+    refs: list[str] = []
+    limitations: list[str] = []
+
+    profile = raw_intake.get("target_profile")
+    if isinstance(profile, dict):
+        if profile.get("domain_contracts"):
+            refs.append(SOURCE_MARKER_DOMAIN_CONTRACTS)
+        if profile.get("review_packs"):
+            refs.append(SOURCE_MARKER_REVIEW_PACKS)
+
+        for key in ("contracts", "contract_refs"):
+            if key in profile and profile[key] is not None:
+                val = profile[key]
+                if not isinstance(val, list):
+                    limitations.append("unresolved_contract_reference:MALFORMED_CONTAINER")
+                else:
+                    for elem in val:
+                        if not isinstance(elem, str):
+                            limitations.append("unresolved_contract_reference:MALFORMED_MEMBER")
+                        elif not elem.strip():
+                            limitations.append("unresolved_contract_reference:EMPTY_IDENTITY")
+                        else:
+                            refs.append(elem.strip())
+
+    for key in ("contracts", "contract_refs"):
+        if key in raw_intake and raw_intake[key] is not None:
+            val = raw_intake[key]
+            if not isinstance(val, list):
+                limitations.append("unresolved_contract_reference:MALFORMED_CONTAINER")
+            else:
+                for elem in val:
+                    if not isinstance(elem, str):
+                        limitations.append("unresolved_contract_reference:MALFORMED_MEMBER")
+                    elif not elem.strip():
+                        limitations.append("unresolved_contract_reference:EMPTY_IDENTITY")
+                    else:
+                        refs.append(elem.strip())
+
+    return _dedupe(refs), _dedupe(limitations)
+
+
+# ContractRefToken -> TokenClass -> SemanticAuthority.
+# `chunk_contracts` transports opaque strings from the planner (representation unchanged). Only two token
+# grammars carry C2 semantics; every other non-empty string is inert for C2 exactly as it was in the frozen
+# baseline. The classification is explicit and total: no other site may test these strings ad hoc.
+TOKEN_CLASS_EXPLICIT_CONTRACT_REF = "EXPLICIT_CONTRACT_REF"  # "contract:<nonempty-id>": explicit C2 identity relation
+TOKEN_CLASS_INTERNAL_SOURCE_MARKER = "INTERNAL_SOURCE_MARKER"  # planner-owned include-all source carrier, never an identity
+TOKEN_CLASS_OPAQUE_LEGACY_NON_C2 = "OPAQUE_LEGACY_NON_C2"  # any other non-empty string: no C2 relation
+TOKEN_CLASS_INVALID = "INVALID"  # blank / non-string / "contract:" without an identity
+TOKEN_CLASSES: frozenset[str] = frozenset(
+    {
+        TOKEN_CLASS_EXPLICIT_CONTRACT_REF,
+        TOKEN_CLASS_INTERNAL_SOURCE_MARKER,
+        TOKEN_CLASS_OPAQUE_LEGACY_NON_C2,
+        TOKEN_CLASS_INVALID,
+    }
+)
+SOURCE_MARKER_DOMAIN_CONTRACTS = "target_profile:domain_contracts"
+SOURCE_MARKER_REVIEW_PACKS = "target_profile:review_packs"
+INTERNAL_SOURCE_MARKERS: frozenset[str] = frozenset({SOURCE_MARKER_DOMAIN_CONTRACTS, SOURCE_MARKER_REVIEW_PACKS})
+EXPLICIT_CONTRACT_REF_PREFIX = "contract:"
+
+
+@dataclass(frozen=True)
+class ContractRefToken:
+    """Classified chunk contract-ref token. `identity` is set only for EXPLICIT_CONTRACT_REF, `marker` only for
+    INTERNAL_SOURCE_MARKER; `limitation` is the typed fail-closed detail of an INVALID token that has a
+    consequence (None when the token is inert, as in the baseline)."""
+
+    token_class: str
+    identity: str | None = None
+    marker: str | None = None
+    limitation: str | None = None
+
+
+def classify_contract_ref_token(token: Any) -> ContractRefToken:
+    """The single authority classifying a chunk contract-ref token. Matching is exact and case-sensitive
+    (the baseline's grammar); the explicit identity is trimmed (Gate A S1, 4179272330).
+    Behavior vs the predecessor: unchanged for every string. A blank string stays inert (the producer,
+    `parse_contract_refs`, already reports it); `contract:` without an identity keeps EMPTY_IDENTITY; a
+    non-string member, which previously raised AttributeError, is a typed MALFORMED_MEMBER limitation."""
+    if not isinstance(token, str):
+        return ContractRefToken(TOKEN_CLASS_INVALID, limitation="unresolved_contract_reference:MALFORMED_MEMBER")
+    if not token.strip():
+        return ContractRefToken(TOKEN_CLASS_INVALID)
+    if token in INTERNAL_SOURCE_MARKERS:
+        return ContractRefToken(TOKEN_CLASS_INTERNAL_SOURCE_MARKER, marker=token)
+    if token.startswith(EXPLICIT_CONTRACT_REF_PREFIX):
+        identity = token[len(EXPLICIT_CONTRACT_REF_PREFIX):].strip()
+        if not identity:
+            return ContractRefToken(TOKEN_CLASS_INVALID, limitation="unresolved_contract_reference:EMPTY_IDENTITY")
+        return ContractRefToken(TOKEN_CLASS_EXPLICIT_CONTRACT_REF, identity=identity)
+    return ContractRefToken(TOKEN_CLASS_OPAQUE_LEGACY_NON_C2)
+
+
 def contracts_context(
     intake: ReviewIntake,
     *,
@@ -395,51 +604,185 @@ def contracts_context(
     semantic_group: str,
 ) -> tuple[dict[str, Any], list[str]]:
     profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
-    contracts = _flatten_contract_rules(profile.get("domain_contracts"))
-    packs = _flatten_review_packs(profile.get("review_packs"))
+    raw_domain_contracts = profile.get("domain_contracts")
+    raw_review_packs = profile.get("review_packs")
+    # NONCANONICAL_DEFENSIVE_COMPATIBILITY (R5-A): profile-level `contract_bindings` exists only on a raw intake;
+    # the canonical carrier is the review-packs envelope's `contract_bindings`.
+    extra_bindings = profile.get("contract_bindings")
+
+    contracts, c_state, c_sub, c_limits = normalize_domain_contracts(raw_domain_contracts)
+    packs, bindings, p_state, p_sub, p_limits = normalize_review_packs(raw_review_packs, extra_bindings=extra_bindings)
+    c_format = detect_domain_contracts_format(raw_domain_contracts)
+    p_format = detect_review_packs_format(raw_review_packs, extra_bindings=extra_bindings)
+
+    limitations: list[str] = []
+    limitations.extend(c_limits)
+    limitations.extend(p_limits)
+    _, ref_limits = parse_contract_refs(intake)
+    limitations.extend(ref_limits)
+
+    has_invalid_source = (c_state == SOURCE_STATE_INVALID or p_state == SOURCE_STATE_INVALID)
+    has_malformed_bindings = any(lim.startswith("malformed_contract_bindings:") for lim in limitations)
+
     relevance_keywords = _relevance_keywords(semantic_group)
     chunk_file_set = set(chunk_files)
-    referenced_contracts = {item.split(":", 1)[1] for item in chunk_contracts if item.startswith("contract:") and ":" in item}
-    include_all_contracts = "target_profile:domain_contracts" in chunk_contracts
-    include_all_packs = "target_profile:review_packs" in chunk_contracts
-    selected_pack = (selected_contract_pack or "").lower()
+    include_all_contracts = False
+    include_all_packs = False
 
-    filtered_contracts = [
-        item
-        for item in contracts
-        if (
-            include_all_contracts
-            or item.get("id") in referenced_contracts
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
+    has_unresolved = False
+    referenced_contracts: set[str] = set()
+    for item in chunk_contracts:
+        classified = classify_contract_ref_token(item)
+        if classified.token_class == TOKEN_CLASS_INTERNAL_SOURCE_MARKER:
+            include_all_contracts = include_all_contracts or classified.marker == SOURCE_MARKER_DOMAIN_CONTRACTS
+            include_all_packs = include_all_packs or classified.marker == SOURCE_MARKER_REVIEW_PACKS
+        elif classified.token_class == TOKEN_CLASS_EXPLICIT_CONTRACT_REF and classified.identity is not None:
+            referenced_contracts.add(classified.identity)
+        elif classified.limitation is not None:
+            limitations.append(classified.limitation)
+            has_unresolved = True
+        # OPAQUE_LEGACY_NON_C2 (and an inert blank INVALID): no C2 relation, no required source, no consequence
+
+    contracts_by_id = {c["id"]: c for c in contracts if c.get("id")}
+    packs_by_id = {p["id"]: p for p in packs if p.get("id")}
+
+    # An explicit `contract:<id>` that names a LEGACY pack is the baseline's pack reference
+    # (resolved, not a contract identity reference); everything else is a contract reference.
+    legacy_pack_ref_hits = (
+        {ref for ref in referenced_contracts if ref in packs_by_id} if p_format == FORMAT_LEGACY_FLAT else set()
+    )
+    explicit_contract_refs = referenced_contracts - (legacy_pack_ref_hits - set(contracts_by_id))
+
+    # Required source: any DECLARED contract identity reference requires the contract source.
+    # SourceAbsent != RelationUnresolved -- both facts are preserved.
+    declared_refs: set[str] = set()
+    for origin_refs in _declared_contract_ref_origins(
+        packs, bindings, explicit_contract_refs, pack_mode=p_format
+    ).values():
+        declared_refs |= origin_refs
+    if declared_refs and c_state == SOURCE_STATE_ABSENT:
+        limitations.append("required_source_absent:domain_contracts")
+
+    # Resolve EffectiveContractRefs(pack_id)
+    for p in packs:
+        eff_refs: set[str] = set()
+        if p_format == FORMAT_MODERN_MAPPING:
+            dc = p.get("domain_contract")
+            if dc:
+                eff_refs.add(dc)
+            for ref in bindings.get(p.get("id", ""), []):
+                eff_refs.add(ref)
+        p["effective_contracts"] = sorted(eff_refs)
+        for ref in p["effective_contracts"]:
+            if ref not in contracts_by_id:
+                limitations.append(f"unresolved_contract_binding:{p.get('id', 'unknown')}:{ref}")
+                has_unresolved = True
+
+    # Check orphan bindings
+    for bound_pid in sorted(bindings):  # R5-B: identity order, never YAML insertion order
+        if bound_pid not in packs_by_id:
+            limitations.append(f"orphan_contract_binding:{bound_pid}")
+            has_unresolved = True
+
+    # Explicit contract reference totality (Finding 4178603200)
+    for ref in sorted(explicit_contract_refs - set(contracts_by_id.keys())):
+        limitations.append(f"unresolved_contract_reference:{ref}")
+        has_unresolved = True
+
+    # Evaluate applicable packs -- one mode, one predicate set.
+    selected_pack = selected_contract_pack.strip() if selected_contract_pack else ""
+    applicable_packs: list[dict[str, Any]] = []
+    selected_pack_matched = False
+    pack_matcher = modern_pack_matches_selected if p_format == FORMAT_MODERN_MAPPING else legacy_pack_matches_selected
+
+    for pack in packs:
+        matches = False
+        is_selected = False
+        if selected_pack and pack_matcher(pack, selected_pack):
+            matches = True
+            selected_pack_matched = True
+            is_selected = True
+        elif p_format == FORMAT_LEGACY_FLAT:
+            matches = _legacy_pack_applies(
+                pack,
+                include_all=include_all_packs,
+                referenced=referenced_contracts,
+                keywords=relevance_keywords,
             )
-        )
-    ]
-    filtered_packs = [
-        item
-        for item in packs
-        if (
-            include_all_packs
-            or item.get("id") in referenced_contracts
-            or (selected_pack and _review_pack_matches_selected(item, selected_pack))
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
+        else:
+            matches = _contract_matches_chunk(pack, chunk_files=chunk_file_set, format=FORMAT_MODERN_MAPPING)
+
+        if matches:
+            pack_entry = dict(pack)
+            if is_selected:
+                pack_entry["_explicitly_selected"] = True
+            applicable_packs.append(pack_entry)
+
+    # Finding 4178603183: emit missing limitation whenever selected pack cannot be resolved and source is not invalid
+    if selected_pack and not selected_pack_matched and p_state != SOURCE_STATE_INVALID:
+        limitations.append(f"selected_contract_pack_missing:{selected_pack}")
+        has_unresolved = True
+
+    # B2 (Section 11-12): Every applicable pack preserves its identity as required context.
+    # An identity-less LEGACY pack has no identity to preserve and none is fabricated: its floor is
+    # the exact three-field baseline projection (legacy_pack_projection), whatever subset is non-null.
+    for ap in applicable_packs:
+        reasons: list[str] = ["applicable_pack_identity" if ap.get("id") else "applicable_pack_legacy_projection"]
+        if ap.pop("_explicitly_selected", False):
+            reasons.append("explicit_selection")
+        if ap.get("effective_contracts"):
+            reasons.append("effective_contract_binding")
+        ap["required"] = True
+        ap["required_reasons"] = reasons
+
+    # Evaluate applicable contracts
+    required_contract_ids: set[str] = set()
+    for ap in applicable_packs:
+        for ref in ap.get("effective_contracts", []):
+            required_contract_ids.add(ref)
+
+    applicable_contracts: list[dict[str, Any]] = []
+    for contract in contracts:
+        cid = contract.get("id")
+        is_required = bool(cid and (cid in required_contract_ids or cid in referenced_contracts))
+        if is_required:
+            matches = True
+        elif c_format == FORMAT_LEGACY_FLAT:
+            matches = _legacy_contract_applies(
+                contract,
+                chunk_files=chunk_file_set,
+                include_all=include_all_contracts,
+                referenced=referenced_contracts,
+                keywords=relevance_keywords,
             )
-        )
-    ]
-    limitations: list[str] = []
-    if not filtered_contracts and not filtered_packs:
+        else:
+            matches = _contract_matches_chunk(contract, chunk_files=chunk_file_set, format=FORMAT_MODERN_MAPPING)
+
+        if matches:
+            contract_copy = dict(contract)
+            if is_required:
+                contract_copy["required"] = True
+            applicable_contracts.append(contract_copy)
+
+    filtered_contracts = sorted(applicable_contracts, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+    filtered_packs = sorted(applicable_packs, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+
+    has_typed_error = (
+        has_invalid_source
+        or has_malformed_bindings
+        or has_unresolved
+        or any(lim.startswith(("required_source_absent:", "selected_contract_pack_missing:", "invalid_source_", "unresolved_contract_reference:")) for lim in limitations)
+    )
+
+    if not filtered_contracts and not filtered_packs and not has_typed_error:
         limitations.append(f"contracts_context_not_relevant:{chunk_id}")
+
     return (
         {
-            "domain_contracts": sorted(filtered_contracts, key=lambda item: (item.get("id") or "", item.get("description") or "")),
-            "review_packs": sorted(filtered_packs, key=lambda item: (item.get("id") or "", item.get("description") or "")),
+            "domain_contracts": filtered_contracts,
+            "review_packs": filtered_packs,
         },
-        limitations,
+        _dedupe(limitations),
     )
 
 
@@ -554,17 +897,7 @@ def checks_context(
     )
 
 
-def _contract_matches_chunk(contract: dict[str, Any], *, chunk_files: set[str]) -> bool:
-    contract_paths = _paths_from_item(contract)
-    if contract_paths and contract_paths.intersection(chunk_files):
-        return True
-    patterns = _normalized_contract_patterns(contract.get("patterns"))
-    if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):
-        return True
-    return _is_global_item(contract)
-
-
-def _matches_pattern(path: str, patterns: list[str]) -> bool:
+def _matches_legacy_pattern(path: str, patterns: list[str]) -> bool:
     for pattern in patterns:
         normalized = pattern.strip()
         if not normalized:
@@ -574,6 +907,45 @@ def _matches_pattern(path: str, patterns: list[str]) -> bool:
         if normalized in path:
             return True
     return False
+
+
+def _matches_modern_pattern(path: str, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        normalized = pattern.strip()
+        if not normalized:
+            continue
+        if fnmatch.fnmatchcase(path, normalized):
+            return True
+    return False
+
+
+def _matches_pattern(path: str, patterns: list[str], *, format: str = FORMAT_MODERN_MAPPING) -> bool:
+    if format == FORMAT_LEGACY_FLAT:
+        return _matches_legacy_pattern(path, patterns)
+    return _matches_modern_pattern(path, patterns)
+
+
+def _contract_matches_chunk(
+    contract: dict[str, Any],
+    *,
+    chunk_files: set[str],
+    format: str = FORMAT_MODERN_MAPPING,
+) -> bool:
+    contract_paths = _paths_from_item(contract)
+    if contract_paths:
+        if contract_paths.intersection(chunk_files):
+            return True
+        # Legacy `paths` are exact canonical identities only (frozen baseline
+        # 6bbd2f9): substring/prefix recovery belongs to legacy `patterns`, never
+        # to `paths`. Glob-bearing paths are a MODERN-mode semantic.
+        if format != FORMAT_LEGACY_FLAT:
+            pattern_candidates = [p for p in contract_paths if any(char in p for char in "*?[]")]
+            if pattern_candidates and any(_matches_modern_pattern(path, pattern_candidates) for path in chunk_files):
+                return True
+    patterns = _normalized_contract_patterns(contract.get("patterns"))
+    if patterns and any(_matches_pattern(path, patterns, format=format) for path in chunk_files):
+        return True
+    return _is_global_item(contract)
 
 
 def _document_scope_applies_to_chunk(scope: str, *, chunk_files: set[str]) -> bool:
@@ -592,9 +964,31 @@ def _document_scope_applies_to_chunk(scope: str, *, chunk_files: set[str]) -> bo
     return False
 
 
+MODERN_SCOPE_DOMAIN: frozenset[str] = frozenset({"global"})
+
+
+def classify_scope(value: Any) -> tuple[bool, bool]:
+    """Single authority for the contract/pack `scope` scalar: returns (is_global, supported).
+
+    `global` (any case, surrounding whitespace ignored) is the ONLY value any
+    consumer gives semantics to; an absent/empty scope carries none and is
+    supported (nothing to discard). Any other nonempty value is *unsupported* --
+    a modern source must reject it instead of accepting and silently dropping
+    its meaning. Domain contracts, review packs and `_is_global_item` all consume
+    this one function (proved extensionally in the cycle-3 suite).
+    """
+    if not isinstance(value, str):
+        return False, value is None
+    normalized = value.strip().lower()
+    if not normalized:
+        return False, True
+    if normalized in MODERN_SCOPE_DOMAIN:
+        return True, True
+    return False, False
+
+
 def _is_global_item(item: dict[str, Any]) -> bool:
-    scope = _clean_text(item.get("scope"))
-    if scope and scope.lower() == "global":
+    if classify_scope(item.get("scope"))[0]:
         return True
     return item.get("is_global") is True
 
@@ -786,31 +1180,6 @@ def _validation_facts(document: dict[str, Any] | None) -> list[str]:
     return sorted(facts)
 
 
-def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
-    rules = _get(document, "rules")
-    if not isinstance(rules, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in rules:
-        if not isinstance(item, dict):
-            continue
-        row = {
-            "id": _clean_text(item.get("id")),
-            "description": _clean_text(item.get("description")),
-            "scope": _clean_text(item.get("scope")),
-            "is_global": item.get("is_global") is True,
-            "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
-            "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
-            "files": _sanitize_contract_paths(item.get("files")),
-            "paths": _sanitize_contract_paths(item.get("paths")),
-            "source_files": _sanitize_contract_paths(item.get("source_files")),
-            "related_files": _sanitize_contract_paths(item.get("related_files")),
-            "patterns": _normalized_contract_patterns(item.get("patterns")),
-        }
-        rows.append(_drop_empty_contract_fields(row))
-    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
-
-
 def _sanitize_contract_paths(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -840,25 +1209,845 @@ def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
-    packs = _get(document, "packs")
-    if not isinstance(packs, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in packs:
-        if not isinstance(item, dict):
+RESERVED_DOMAIN_CONTRACT_METADATA_KEYS: frozenset[str] = frozenset(
+    {"version", "schema_version", "updated", "system", "metadata"}
+)
+
+
+def reserved_value_is_contract_like(value: Any) -> bool:
+    """Bounded, top-level (never recursive) test: does the value under a RESERVED metadata key declare a
+    modern contract? RESERVED_METADATA_NAMESPACE and MODERN_CONTRACT_IDENTITY_NAMESPACE are disjoint, so such
+    a value is a contract declaration colliding with a metadata name, never silently metadata. The test mirrors
+    the admitted contract grammar exactly and no wider:
+    - a list in one of the admitted named-list forms (empty, all strings, or all rule mappings);
+    - a mapping with a member named by the contract field registry (MODERN_CONTRACT_KNOWN_FIELDS), or with a
+      member that is an admitted named string section (GENERIC_NAMED_STRING_SECTION_RULE: list[str]).
+    Scalars, and lists/members outside those forms (e.g. a list of numbers), remain metadata-or-malformed."""
+    if isinstance(value, list):
+        return not value or all(isinstance(m, str) for m in value) or all(isinstance(m, dict) for m in value)
+    if isinstance(value, dict):
+        for member_key, member in value.items():
+            if not isinstance(member_key, str):
+                continue
+            if member_key.strip() in MODERN_CONTRACT_KNOWN_FIELDS:
+                return True
+            if isinstance(member, list) and all(isinstance(m, str) for m in member):
+                return True
+    return False
+
+
+def _is_strict_json_scalar(value: Any) -> bool:
+    """R5-C: a scalar admitted into emitted C2 semantic content must be a strict-JSON value. `float` is wider than
+    the JSON number domain: NaN / +Infinity / -Infinity are rejected at SOURCE ADMISSION (the v1 serializer is not
+    changed). Large finite floats are admitted; the bound is mathematical finiteness, nothing else."""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, (str, int, bool))
+
+
+def _is_valid_reserved_metadata(key: str, value: Any) -> bool:
+    if isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if not isinstance(k, str) or not k.strip():
+                return False
+            if not isinstance(v, (str, int, float, bool, dict, list)):
+                return False
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Modern Domain Contract Grammar & Bounded Shape Registry
+# ---------------------------------------------------------------------------
+
+MODERN_CONTRACT_IDENTITY_FIELDS: frozenset[str] = frozenset({"id"})
+
+MODERN_CONTRACT_SCALAR_FIELDS: frozenset[str] = frozenset({
+    "description",
+    "scope",
+    "is_global",
+    "canonical_authority",
+    "display_authority",
+    "path",
+    "file_path",
+})
+
+MODERN_CONTRACT_PATH_LIST_FIELDS: frozenset[str] = frozenset({
+    "paths",
+    "files",
+    "source_files",
+    "related_files",
+    "patterns",
+})
+
+# Sections whose members are bounded rule dicts (or strings for 'rules')
+MODERN_CONTRACT_RULE_SECTIONS: frozenset[str] = frozenset({
+    "rules",
+    "slot_rules",
+})
+
+MODERN_CONTRACT_KNOWN_FIELDS: frozenset[str] = (
+    MODERN_CONTRACT_IDENTITY_FIELDS
+    | MODERN_CONTRACT_SCALAR_FIELDS
+    | MODERN_CONTRACT_PATH_LIST_FIELDS
+    | MODERN_CONTRACT_RULE_SECTIONS
+)
+
+# Rule dict bounded grammar (Section 8 & 28)
+MODERN_RULE_DICT_REQUIRED_FIELDS: frozenset[str] = frozenset({"rule"})
+MODERN_RULE_DICT_OPTIONAL_FIELDS: frozenset[str] = frozenset({
+    "invariant",
+    "rationale",
+    "field",
+    "expected_value",
+})
+ALL_MODERN_RULE_DICT_FIELDS: frozenset[str] = (
+    MODERN_RULE_DICT_REQUIRED_FIELDS | MODERN_RULE_DICT_OPTIONAL_FIELDS
+)
+
+MODERN_PACK_IDENTITY_AUTHORITY: str = (
+    "mapping key is the sole authoritative pack identity; nested id is unsupported"
+)
+MODERN_MAPPING_PACK_SEMANTIC_FIELDS: frozenset[str] = frozenset({
+    "description",
+    "domain_contract",
+    "recommended_review_preset",
+    "paths",
+    "patterns",
+    "is_global",
+    "scope",
+})
+TARGET_METADATA_NOT_USED_AS_RELATION: frozenset[str] = frozenset({
+    "critical",
+    "allow_external_review",
+    "require_full_diff",
+    "require_final_files_when_available",
+    "notes",
+})
+MODERN_MAPPING_PACK_VALUE_FIELDS: frozenset[str] = frozenset(
+    MODERN_MAPPING_PACK_SEMANTIC_FIELDS | TARGET_METADATA_NOT_USED_AS_RELATION
+)
+LEGACY_FLAT_PACK_ITEM_FIELDS: frozenset[str] = frozenset(
+    {"id", "description", "paths", "patterns", "recommended_review_preset", "is_global", "scope"}
+    | TARGET_METADATA_NOT_USED_AS_RELATION
+)
+GATE_A_SEMANTIC_PACK_FIELDS: frozenset[str] = frozenset({
+    "id",
+    "description",
+    "paths",
+    "patterns",
+    "domain_contract",
+    "recommended_review_preset",
+    "is_global",
+    "scope",
+})
+
+GENERIC_NAMED_STRING_SECTION_RULE: str = (
+    "any unknown nested key with list[nonempty str] value is admitted as named string section"
+)
+DOMAIN_CONTRACT_UNKNOWN_FIELD_POLICY: str = (
+    "unknown field not matching generic named string section fails closed with invalid_source_contract:UNSUPPORTED_NONEMPTY"
+)
+REVIEW_PACK_UNKNOWN_FIELD_POLICY: str = (
+    "unknown modern pack value key fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY"
+)
+REVIEW_PACK_LEGACY_INPUT_POLICY: str = (
+    "legacy flat packs list admitted as differential baseline; domain_contract in legacy flat pack is ignored and does not establish EffectiveContractRefs"
+)
+REVIEW_PACK_MIXED_SHAPE_POLICY: str = (
+    "legacy packs list combined with nonempty contract_bindings fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY as INVALID_MIXED_SHAPE"
+)
+
+# ---------------------------------------------------------------------------
+# C1 -- modern admission totality. Every path-bearing field a MODERN source can
+# carry is declared here, once, and validated by one authority before any
+# normalization/projection (`DisplayPath` never decides validity). Legacy flat
+# sources keep the frozen baseline's lenient handling (6bbd2f9) and never
+# reach these validators.
+# ---------------------------------------------------------------------------
+
+MODERN_CONTRACT_EXACT_PATH_FIELDS: tuple[str, ...] = (
+    "path",
+    "file_path",
+    "files",
+    "paths",
+    "source_files",
+    "related_files",
+)
+MODERN_CONTRACT_PATTERN_FIELDS: tuple[str, ...] = ("patterns",)
+MODERN_PACK_EXACT_PATH_FIELDS: tuple[str, ...] = ("paths",)
+MODERN_PACK_PATTERN_FIELDS: tuple[str, ...] = ("patterns",)
+
+# Review-pack document envelope. Owner evidence: the real target's
+# `.aiops/review-packs.yaml` (AgentEscala@b281ca5d) has top-level keys
+# {version, updated, packs}; `contract_bindings` is the engine-owned relation
+# carrier. No other key has owner/source evidence, so none is admitted.
+REVIEW_PACK_ENVELOPE_KEYS: frozenset[str] = frozenset({"packs", "contract_bindings", "version", "updated"})
+REVIEW_PACK_ENVELOPE_METADATA_KEYS: frozenset[str] = frozenset({"version", "updated"})
+
+
+def _is_non_repo_relative_marker(identity: str) -> bool:
+    """A leading `~...` segment (home-directory expansion: `~`, `~user`, `~*`, ...; the `~$` lock-file
+    prefix excepted) and control characters (incl. DEL) are not repository-relative identities.
+    Applied at MODERN admission only, next to canonical_repo_path."""
+    if any(ord(char) < 32 or ord(char) == 127 for char in identity):
+        return True
+    segments = identity.split("/")
+    if any(segment.strip() in ("..", ".") for segment in segments):
+        return True  # whitespace-padded traversal such as `.. /x`
+    first = segments[0]
+    return first.startswith("~") and not first.startswith("~$")
+
+
+def _modern_path_bearing_invalid(
+    item: dict[str, Any],
+    *,
+    exact_fields: tuple[str, ...],
+    pattern_fields: tuple[str, ...],
+) -> bool:
+    """True when any path-bearing member of a modern item is not a valid repository-relative
+    identity (exact fields) / pattern identity (pattern fields). One invalid member
+    invalidates the whole source: never discard-invalid + retain-valid."""
+    for field in exact_fields:
+        if field not in item:
             continue
-        rows.append(
-            {
-                "id": _clean_text(item.get("id")),
-                "description": _clean_text(item.get("description")),
-                "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
-            }
-        )
+        value = item[field]
+        members = [value] if isinstance(value, str) else value
+        for member in members:
+            if isinstance(member, str) and not member.strip():
+                continue
+            try:
+                identity = canonical_repo_pattern(member)
+            except PathIdentityError:
+                return True
+            if _is_non_repo_relative_marker(identity):
+                return True
+    for field in pattern_fields:
+        if field not in item:
+            continue
+        for member in item[field]:
+            try:
+                identity = canonical_repo_pattern(member)
+            except PathIdentityError:
+                return True
+            if _is_non_repo_relative_marker(identity):
+                return True
+    return False
+
+
+def _modern_scope_unsupported(item: dict[str, Any]) -> bool:
+    return "scope" in item and not classify_scope(item["scope"])[1]
+
+
+def _review_pack_envelope_invalid(document: dict[str, Any]) -> bool:
+    """Closed envelope grammar for a modern review-packs document."""
+    for key, value in document.items():
+        if not isinstance(key, str) or key not in REVIEW_PACK_ENVELOPE_KEYS:
+            return True
+        if key in REVIEW_PACK_ENVELOPE_METADATA_KEYS:
+            if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                return True
+    return False
+
+
+def _modern_exact_paths(value: Any) -> list[str]:
+    members = [value] if isinstance(value, str) else (value if isinstance(value, list) else [])
+    return sorted({canonical_repo_path(member) for member in members if isinstance(member, str) and member.strip()})
+
+
+def _modern_patterns(value: Any) -> list[str]:
+    members = value if isinstance(value, list) else []
+    return sorted({canonical_repo_pattern(member) for member in members if isinstance(member, str) and member.strip()})
+
+
+def _is_valid_rule_dict(d: Any) -> bool:
+    """Validates that a rule dict matches the bounded modern rule dict shape."""
+    if not isinstance(d, dict):
+        return False
+    if any(k not in ALL_MODERN_RULE_DICT_FIELDS for k in d.keys()):
+        return False
+    if "rule" not in d:
+        return False
+    rule_val = d["rule"]
+    if not isinstance(rule_val, str) or not rule_val.strip():
+        return False
+    if "invariant" in d and not isinstance(d["invariant"], bool):
+        return False
+    if "rationale" in d and (not isinstance(d["rationale"], str) or not d["rationale"].strip()):
+        return False
+    if "field" in d and (not isinstance(d["field"], str) or not d["field"].strip()):
+        return False
+    if "expected_value" in d and not _is_strict_json_scalar(d["expected_value"]):
+        return False
+    return True
+
+
+def _validate_contract_declared_field_types(item: dict[str, Any]) -> bool:
+    """Validates that declared fields on a contract match expected types.
+    Prevents malformed types (e.g. scalar strings for paths/patterns, empty list members,
+    invalid section members) from being silently sanitized away.
+    Admits generic named list[str] sections where value is list of non-empty strings.
+    """
+    for f in MODERN_CONTRACT_PATH_LIST_FIELDS:
+        if f in item:
+            val = item[f]
+            if not isinstance(val, list) or any(not isinstance(elem, str) or not elem.strip() for elem in val):
+                return False
+
+    str_fields = ("path", "file_path", "scope", "canonical_authority", "display_authority")
+    for f in str_fields:
+        if f in item:
+            val = item[f]
+            if not isinstance(val, str):
+                return False
+
+    if "description" in item:
+        val = item["description"]
+        if not isinstance(val, str) or not val.strip():
+            return False
+
+    if "id" in item:
+        val = item["id"]
+        if not isinstance(val, str) or not val.strip():
+            return False
+
+    if "is_global" in item and not isinstance(item["is_global"], bool):
+        return False
+
+    if "rules" in item:
+        val = item["rules"]
+        if not isinstance(val, list):
+            return False
+        for elem in val:
+            if isinstance(elem, str):
+                if not elem.strip():
+                    return False
+            elif isinstance(elem, dict):
+                if not _is_valid_rule_dict(elem):
+                    return False
+            else:
+                return False
+
+    if "slot_rules" in item:
+        val = item["slot_rules"]
+        if not isinstance(val, list):
+            return False
+        for elem in val:
+            if not isinstance(elem, dict) or not _is_valid_rule_dict(elem):
+                return False
+
+    # Generic named list[str] sections (Section 6 & 7):
+    for k, v in item.items():
+        if k not in MODERN_CONTRACT_KNOWN_FIELDS:
+            if isinstance(v, list):
+                if any(not isinstance(elem, str) or not elem.strip() for elem in v):
+                    return False
+
+    return True
+
+
+def _validate_legacy_contract_declared_field_types(item: dict[str, Any]) -> bool:
+    """LEGACY flat rows: type-check exactly the fields the frozen baseline (6bbd2f9) projects
+    (id, description, scope, is_global, file_path, path, files, paths, source_files, related_files,
+    patterns). Anything else on a legacy row (rules, named list sections, unknown fields) was ignored
+    by the baseline and stays ignored: the modern named-section grammar must not leak into legacy
+    admission. A null value is an absent field (what a blank YAML key loads as)."""
+    for field in ("files", "paths", "source_files", "related_files", "patterns"):
+        value = item.get(field)
+        if value is not None and (
+            not isinstance(value, list) or any(not isinstance(member, str) or not member.strip() for member in value)
+        ):
+            return False
+    for field in ("path", "file_path", "scope"):
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    for field in ("description", "id"):
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    value = item.get("is_global")
+    if value is not None and not isinstance(value, bool):
+        return False
+    return True
+
+
+def _legacy_contract_row(item: dict[str, Any]) -> dict[str, Any]:
+    """LegacyContractProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_contract_rules`) row.
+    No rules/sections, no authority fields, no derived is_global: a legacy row never acquires modern
+    content."""
+    return _drop_empty_contract_fields(
+        {
+            "id": _clean_text(item.get("id")),
+            "description": _clean_text(item.get("description")),
+            "scope": _clean_text(item.get("scope")),
+            "is_global": item.get("is_global") is True,
+            "file_path": sanitize_display_path(_clean_text(item.get("file_path")) or ""),
+            "path": sanitize_display_path(_clean_text(item.get("path")) or ""),
+            "files": _sanitize_contract_paths(item.get("files")),
+            "paths": _sanitize_contract_paths(item.get("paths")),
+            "source_files": _sanitize_contract_paths(item.get("source_files")),
+            "related_files": _sanitize_contract_paths(item.get("related_files")),
+            "patterns": _normalized_contract_patterns(item.get("patterns")),
+        }
+    )
+
+
+def _legacy_contract_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = [_legacy_contract_row(item) for item in items]
     return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
 
 
-def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
+def _validate_legacy_pack_declared_types(item: dict[str, Any]) -> bool:
+    """LEGACY flat packs. Typed: the baseline-projected fields (id, description,
+    recommended_review_preset) and the scope-bearing declarations whose malformed shape was adjudicated to
+    fail closed (paths, patterns, scope, is_global: findings 4178603193 / census R1) -- they are validated
+    but never projected, so they gain no legacy semantics. Target metadata (critical,
+    allow_external_review, require_*, notes, domain_contract) is neither validated nor projected: the
+    baseline ignored it and it carries no applicability. A null is an absent field (blank YAML key)."""
+    for field in ("id", "description", "recommended_review_preset", "scope"):
+        value = item.get(field)
+        if value is not None and not isinstance(value, str):
+            return False
+    for field in ("paths", "patterns"):
+        value = item.get(field)
+        if value is not None and (
+            not isinstance(value, list) or any(not isinstance(member, str) or not member.strip() for member in value)
+        ):
+            return False
+    value = item.get("is_global")
+    if value is not None and not isinstance(value, bool):
+        return False
+    return True
+
+
+def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = None) -> dict[str, Any]:
+    """MODERN contract row (legacy flat rows are built by `_legacy_contract_row`, the baseline projection)."""
+    cid = (default_id.strip() if default_id else (_clean_text(item.get("id")) or ""))
+    desc = _clean_text(item.get("description")) or cid
+    scope = _clean_text(item.get("scope"))
+    is_global = item.get("is_global") is True or classify_scope(scope)[0]
+    canonical_authority = _clean_text(item.get("canonical_authority"))
+    display_authority = _clean_text(item.get("display_authority"))
+
+    non_section_keys = {
+        "id",
+        "description",
+        "scope",
+        "is_global",
+        "canonical_authority",
+        "display_authority",
+        "file_path",
+        "path",
+        "files",
+        "paths",
+        "source_files",
+        "related_files",
+        "patterns",
+    }
+
+    sections: dict[str, list[dict[str, Any]]] = {}
+    all_rule_texts: list[str] = []
+
+    for sec_name, sec_val in _deterministic_items(item):  # R5-B: section order is identity order, never YAML key order
+        if sec_name in non_section_keys or not isinstance(sec_val, list):
+            continue
+        cleaned_sec_items: list[dict[str, Any]] = []
+        for elem in sec_val:
+            if isinstance(elem, str):
+                elem_text = elem.strip()
+                if elem_text:
+                    cleaned_sec_items.append({"text": elem_text})
+            elif isinstance(elem, dict):
+                elem_text = _clean_text(elem.get("rule"))
+                sec_dict: dict[str, Any] = {}
+                if elem_text:
+                    sec_dict["text"] = elem_text
+                if "invariant" in elem and isinstance(elem["invariant"], bool):
+                    sec_dict["invariant"] = elem["invariant"]
+                if "rationale" in elem and isinstance(elem["rationale"], str) and elem["rationale"].strip():
+                    sec_dict["rationale"] = elem["rationale"].strip()
+                if "field" in elem and isinstance(elem["field"], str) and elem["field"].strip():
+                    sec_dict["field"] = elem["field"].strip()
+                if "expected_value" in elem and _is_strict_json_scalar(elem["expected_value"]):
+                    sec_dict["expected_value"] = elem["expected_value"]
+                if sec_dict:
+                    cleaned_sec_items.append(sec_dict)
+        if cleaned_sec_items:
+            sections[sec_name] = cleaned_sec_items
+            if sec_name in ("rules", "slot_rules"):
+                for si in cleaned_sec_items:
+                    if "text" in si:
+                        all_rule_texts.append(si["text"])
+        elif not sec_val:
+            # Preserve empty section identity: present [] != absent (Finding N4 / Section 17)
+            sections[sec_name] = []
+
+    row = {
+        "id": cid,
+        "description": desc,
+        "scope": scope,
+        "is_global": is_global,
+        "canonical_authority": canonical_authority,
+        "display_authority": display_authority,
+        # identity is the canonical repository-relative form (already validated by `_modern_path_bearing_invalid`)
+        "file_path": (_modern_exact_paths(item.get("file_path")) or [""])[0],
+        "path": (_modern_exact_paths(item.get("path")) or [""])[0],
+        "files": _modern_exact_paths(item.get("files")),
+        "paths": _modern_exact_paths(item.get("paths")),
+        "source_files": _modern_exact_paths(item.get("source_files")),
+        "related_files": _modern_exact_paths(item.get("related_files")),
+        "patterns": _modern_patterns(item.get("patterns")),
+    }
+    if all_rule_texts:
+        row["rules"] = all_rule_texts
+    if sections:
+        row["sections"] = sections
+    return _drop_empty_contract_fields(row)
+
+
+def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str, str | None, list[str]]:
+    """Normalizes domain_contracts into a canonical list of contract dicts,
+    returning (contracts, source_state, invalid_subtype, limitations).
+    Preserves legacy flat rules list, and admits bounded modern shapes:
+    - nested bounded domain contract mapping (key is contract id, value is dict)
+    - named list[str] sections (key is section id, value is list of strings)
+    - reserved top-level metadata envelope (version, schema_version, updated, system, metadata)
+    """
+    if document is None:
+        return [], SOURCE_STATE_ABSENT, None, []
+
+    if isinstance(document, list):
+        if not document:
+            return [], SOURCE_STATE_PRESENT_VALID, None, []
+        if all(isinstance(item, dict) for item in document):
+            for item in document:
+                if not _validate_legacy_contract_declared_field_types(item):
+                    return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+            return _legacy_contract_rows(document), SOURCE_STATE_PRESENT_VALID, None, []
+        return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+
+    if not isinstance(document, dict):
+        return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+
+    # Check for legacy envelope {"rules": [...]}
+    if "rules" in document:
+        rules = document.get("rules")
+        if rules is None:
+            return [], SOURCE_STATE_PRESENT_VALID, None, []
+        if not isinstance(rules, list):
+            return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+        if all(isinstance(item, dict) for item in rules):
+            for item in rules:
+                if not _validate_legacy_contract_declared_field_types(item):
+                    return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+            return _legacy_contract_rows(rules), SOURCE_STATE_PRESENT_VALID, None, []
+        return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+
+    # Modern bounded shapes: non-reserved keys represent contract identities
+    rows = []
+    seen_contract_keys: set[str] = set()
+    for key, value in _deterministic_items(document):
+        if not isinstance(key, str) or not key.strip():
+            return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+        clean_key = key.strip()
+        if clean_key in RESERVED_DOMAIN_CONTRACT_METADATA_KEYS:
+            # ReservedIdentityCollision != ReservedMetadataMalformed: a contract-like value under a
+            # reserved name is an invalid contract IDENTITY (the name is not in the identity namespace);
+            # a non-contract-like value that is not valid metadata stays UNSUPPORTED_NONEMPTY.
+            if reserved_value_is_contract_like(value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+            if not _is_valid_reserved_metadata(clean_key, value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+            continue
+
+        # Normalization collision check (Finding 4178603213 sibling census)
+        if clean_key in seen_contract_keys:
+            return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+        seen_contract_keys.add(clean_key)
+
+        if isinstance(value, list):
+            if not value:
+                rows.append({"id": clean_key, "description": clean_key, "rules": [], "sections": {"rules": []}})
+            elif all(isinstance(rule_str, str) for rule_str in value):
+                if any(not rule_str.strip() for rule_str in value):
+                    return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+                rules_list = [r.strip() for r in value]
+                sec_items = [{"text": r} for r in rules_list]
+                rows.append({
+                    "id": clean_key,
+                    "description": clean_key,
+                    "rules": rules_list,
+                    "sections": {"rules": sec_items},
+                })
+            elif all(isinstance(rule_dict, dict) for rule_dict in value):
+                for rdict in value:
+                    if not _is_valid_rule_dict(rdict):
+                        return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+                rows.append(_clean_contract_dict_item({"id": clean_key, "rules": value}, default_id=clean_key))
+            else:
+                return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+        elif isinstance(value, dict):
+            # Check for unknown unsupported fields (Section 7 & 27: anything not in known fields that is NOT an admitted named list[str] section)
+            for k, v in value.items():
+                if k not in MODERN_CONTRACT_KNOWN_FIELDS:
+                    if not isinstance(v, list):
+                        return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+
+            # Nested id conflict check (Finding 4178603188)
+            if "id" in value:
+                nested_id = _clean_text(value.get("id"))
+                if nested_id and nested_id != clean_key:
+                    return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+            if not _validate_contract_declared_field_types(value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, ["invalid_source_contract:MALFORMED_SHAPE"]
+            if _modern_scope_unsupported(value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+            if _modern_path_bearing_invalid(
+                value,
+                exact_fields=MODERN_CONTRACT_EXACT_PATH_FIELDS,
+                pattern_fields=MODERN_CONTRACT_PATTERN_FIELDS,
+            ):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
+            row = _clean_contract_dict_item(value, default_id=clean_key)
+            rows.append(row)
+        else:
+            return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
+
+    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), SOURCE_STATE_PRESENT_VALID, None, []
+
+
+def _validate_pack_declared_types(item: dict[str, Any]) -> bool:
+    """Validates declared field types on review pack items, including semantic fields
+    and target metadata (Section 10).
+    """
+    if "paths" in item and (not isinstance(item["paths"], list) or any(not isinstance(p, str) or not p.strip() for p in item["paths"])):
+        return False
+    if "patterns" in item and (not isinstance(item["patterns"], list) or any(not isinstance(p, str) or not p.strip() for p in item["patterns"])):
+        return False
+    if "recommended_review_preset" in item and not isinstance(item["recommended_review_preset"], str):
+        return False
+    if "description" in item and not isinstance(item["description"], str):
+        return False
+    if "is_global" in item and not isinstance(item["is_global"], bool):
+        return False
+    if "scope" in item and not isinstance(item["scope"], str):
+        return False
+    if "critical" in item and not isinstance(item["critical"], bool):
+        return False
+    if "allow_external_review" in item and not isinstance(item["allow_external_review"], bool):
+        return False
+    if "require_full_diff" in item and not isinstance(item["require_full_diff"], bool):
+        return False
+    if "require_final_files_when_available" in item and not isinstance(item["require_final_files_when_available"], bool):
+        return False
+    if "notes" in item and not isinstance(item["notes"], str):
+        return False
+    return True
+
+
+LEGACY_PACK_PROJECTION_FIELDS: tuple[str, ...] = ("id", "description", "recommended_review_preset")
+
+
+def _legacy_pack_row(item: dict[str, Any]) -> dict[str, Any]:
+    """LegacyPackProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_review_packs`) row -- the
+    three fields, absent ones as explicit nulls (the baseline did not drop empties on packs). Modern-only
+    fields (paths, patterns, scope, is_global, domain_contract) never acquire semantics in a legacy pack."""
+    return {field: _clean_text(item.get(field)) for field in LEGACY_PACK_PROJECTION_FIELDS}
+
+
+def _legacy_pack_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """LegacyPackItemIsDict -> LegacyPackRowExists. The frozen baseline projected EVERY dict item and
+    never filtered on id or description: a pack carrying any subset of the three carriers (including
+    none) is a row, duplicates keep their multiplicity, and the order is the baseline's stable sort."""
+    rows = [_legacy_pack_row(item) for item in items if isinstance(item, dict)]
+    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+
+
+def _parse_binding_carrier(raw: Any) -> tuple[dict[str, list[str]], str | None]:
+    """One contract_bindings carrier -> (normalized bindings, first malformed_contract_bindings limitation)."""
+    if not isinstance(raw, dict):
+        return {}, "malformed_contract_bindings:must_be_mapping"
+    parsed: dict[str, list[str]] = {}
+    for key, value in _deterministic_items(raw):
+        if not isinstance(key, str) or not key.strip():
+            return {}, "malformed_contract_bindings:invalid_key"
+        clean_key = key.strip()
+        if clean_key in parsed:
+            return {}, "malformed_contract_bindings:duplicate_normalized_key"
+        if not isinstance(value, list) or not all(isinstance(x, str) and x.strip() for x in value):
+            return {}, "malformed_contract_bindings:must_be_list_of_strings"
+        parsed[clean_key] = _dedupe([x.strip() for x in value if x.strip()])
+    return parsed, None
+
+
+def normalize_review_packs(
+    document: Any,
+    extra_bindings: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, list[str]], str, str | None, list[str]]:
+    """Normalizes review_packs and contract_bindings into canonical structures.
+    Returns (packs, contract_bindings, source_state, invalid_subtype, limitations).
+    Preserves legacy flat packs list, and admits bounded modern shapes:
+    - packs mapping: dict[str, dict] where key is pack_id
+    - contract_bindings: dict[str, list[str]] mapping pack_id to list of contract identities
+    """
+    limitations: list[str] = []
+    contract_bindings: dict[str, list[str]] = {}
+
+    # Both carriers of contract_bindings (the document envelope and the profile-level key) declare
+    # relations; neither may shadow the other. Each is validated by the same grammar and merged.
+    carriers: list[Any] = []
+    if isinstance(document, dict) and document.get("contract_bindings") is not None:
+        carriers.append(document["contract_bindings"])
+    if extra_bindings is not None:
+        carriers.append(extra_bindings)
+    raw_bindings = next((carrier for carrier in carriers if carrier), None)
+    bindings_valid = True
+    parsed_carriers: list[dict[str, list[str]]] = []
+    for carrier in carriers:
+        parsed, carrier_limitation = _parse_binding_carrier(carrier)
+        if carrier_limitation:
+            limitations.append(carrier_limitation)
+            bindings_valid = False
+            continue
+        parsed_carriers.append(parsed)
+    if bindings_valid:
+        for parsed in parsed_carriers:
+            for key, refs in parsed.items():
+                if key in contract_bindings and sorted(contract_bindings[key]) != sorted(refs):
+                    limitations.append("malformed_contract_bindings:conflicting_carriers")
+                    bindings_valid = False
+                    break
+                contract_bindings[key] = refs
+            if not bindings_valid:
+                break
+    if not bindings_valid:
+        contract_bindings.clear()
+
+    if document is None:
+        if contract_bindings:
+            limitations.append("required_source_absent:review_packs")
+        return [], contract_bindings, SOURCE_STATE_ABSENT, None, limitations
+
+    if isinstance(document, list):
+        if raw_bindings:
+            return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+        if not document:
+            return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        if all(isinstance(item, dict) for item in document):
+            for item in document:
+                if not _validate_legacy_pack_declared_types(item):
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+            return _legacy_pack_rows(document), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+    if not isinstance(document, dict):
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+    raw_packs = document.get("packs")
+
+    # Modern document envelope grammar (the frozen legacy `{"packs": [...]}` envelope keeps the
+    # baseline's leniency toward sibling keys; a modern document is a closed grammar).
+    if not isinstance(raw_packs, list) and _review_pack_envelope_invalid(document):
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+    if raw_packs is None:
+        if contract_bindings:
+            limitations.append("orphan_contract_binding:packs_absent")
+        return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+
+    if isinstance(raw_packs, list):
+        if raw_bindings:
+            return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+        if not raw_packs:
+            return [], contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        if all(isinstance(item, dict) for item in raw_packs):
+            for item in raw_packs:
+                if not _validate_legacy_pack_declared_types(item):
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+            return _legacy_pack_rows(raw_packs), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+        return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+    if isinstance(raw_packs, dict):
+        rows = []
+        seen_pack_keys: set[str] = set()
+        for pack_id, pval in _deterministic_items(raw_packs):
+            if not isinstance(pack_id, str) or not pack_id.strip():
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+            clean_pid = pack_id.strip()
+            if clean_pid in seen_pack_keys:
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+            seen_pack_keys.add(clean_pid)
+            if not isinstance(pval, dict):
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+            # Section 12: Modern mapping id field adjudication
+            if "id" in pval:
+                nested_id = _clean_text(pval.get("id"))
+                if nested_id and nested_id != clean_pid:
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+            # Section 13: Unknown modern pack fields check
+            for k in pval.keys():
+                if k not in MODERN_MAPPING_PACK_VALUE_FIELDS:
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+
+            # Validate declared field types before sanitizing
+            if not _validate_pack_declared_types(pval):
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+            if "domain_contract" in pval:
+                if not isinstance(pval["domain_contract"], str):
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+                if not pval["domain_contract"].strip():
+                    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+
+            # C1: scope value domain, then repository-relative path/pattern identity, before any projection.
+            if _modern_scope_unsupported(pval):
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, [*limitations, "invalid_source_review_packs:UNSUPPORTED_NONEMPTY"]
+            if _modern_path_bearing_invalid(
+                pval,
+                exact_fields=MODERN_PACK_EXACT_PATH_FIELDS,
+                pattern_fields=MODERN_PACK_PATTERN_FIELDS,
+            ):
+                return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
+
+            rows.append(_drop_empty_contract_fields({
+                "id": clean_pid,
+                "description": _clean_text(pval.get("description")) or clean_pid,
+                "domain_contract": _clean_text(pval.get("domain_contract")),
+                "recommended_review_preset": _clean_text(pval.get("recommended_review_preset")),
+                "paths": _modern_exact_paths(pval.get("paths")),
+                "patterns": _modern_patterns(pval.get("patterns")),
+                "is_global": pval.get("is_global") is True or classify_scope(pval.get("scope"))[0],
+            }))
+        return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or "")), contract_bindings, SOURCE_STATE_PRESENT_VALID, None, limitations
+
+    return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_MALFORMED_SHAPE, [*limitations, "invalid_source_review_packs:MALFORMED_SHAPE"]
+
+
+def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
+    contracts, _, _, _ = normalize_domain_contracts(document)
+    return contracts
+
+
+def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
+    packs, _, _, _, _ = normalize_review_packs(document)
+    return packs
+
+
+def modern_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
+    """MODERN identity: the selected pack is the exact (case-sensitive) mapping key. No
+    alias, no fuzziness, no target knowledge -- every target-specific decision comes
+    from supplied configuration, never from an engine branch."""
+    if not selected_pack:
+        return False
+    return (_clean_text(pack.get("id")) or "") == selected_pack.strip()
+
+
+def legacy_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
     if not selected_pack:
         return False
     pack_id = _clean_text(pack.get("id")) or ""
@@ -874,6 +2063,19 @@ def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> b
     )
 
 
+def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
+    return modern_pack_matches_selected(pack, selected_pack)
+
+
+# ---------------------------------------------------------------------------
+# LEGACY applicability -- the frozen baseline's (6bbd2f9) predicates, one named
+# function per predicate so each is independently discriminated by the durable
+# differential oracle (tests/fixtures/agent_review/v1_c2_legacy_differential_observations.json).
+# Modern semantics never reach these functions, and legacy rows carry only the
+# baseline projection, so a modern-only field cannot leak into legacy applicability.
+# ---------------------------------------------------------------------------
+
+
 def _relevance_keywords(semantic_group: str) -> tuple[str, ...]:
     mapping = {
         "primary_backend_logic": ("backend", "service", "domain", "api"),
@@ -885,6 +2087,162 @@ def _relevance_keywords(semantic_group: str) -> tuple[str, ...]:
         "suspicious_out_of_scope": ("secret", "prod", "deploy", "runtime"),
     }
     return mapping.get(semantic_group, tuple())
+
+
+def _legacy_relevance_match(item: dict[str, Any], keywords: tuple[str, ...]) -> bool:
+    if not keywords:
+        return False
+    text = ((item.get("id") or "") + " " + (item.get("description") or "")).lower()
+    return any(keyword in text for keyword in keywords)
+
+
+def _legacy_contract_include_all(contract: dict[str, Any], include_all: bool) -> bool:
+    """`target_profile:domain_contracts` is an UNCONDITIONAL request to include every
+    legacy rule -- scoped or not, whatever the chunk's files."""
+    return include_all
+
+
+def _legacy_pack_include_all(pack: dict[str, Any], include_all: bool) -> bool:
+    return include_all
+
+
+def _legacy_contract_explicit_ref(contract: dict[str, Any], referenced: set[str]) -> bool:
+    return contract.get("id") in referenced
+
+
+def _legacy_pack_explicit_ref(pack: dict[str, Any], referenced: set[str]) -> bool:
+    return pack.get("id") in referenced
+
+
+def _legacy_contract_applies(
+    contract: dict[str, Any],
+    *,
+    chunk_files: set[str],
+    include_all: bool,
+    referenced: set[str],
+    keywords: tuple[str, ...],
+) -> bool:
+    return bool(
+        _legacy_contract_include_all(contract, include_all)
+        or _legacy_contract_explicit_ref(contract, referenced)
+        or _contract_matches_chunk(contract, chunk_files=chunk_files, format=FORMAT_LEGACY_FLAT)
+        or _legacy_relevance_match(contract, keywords)
+    )
+
+
+def _legacy_pack_applies(
+    pack: dict[str, Any],
+    *,
+    include_all: bool,
+    referenced: set[str],
+    keywords: tuple[str, ...],
+) -> bool:
+    # The baseline's `_contract_matches_chunk(pack)` disjunct is structurally dead: the
+    # baseline pack projection carries no path/pattern/scope field, and neither does
+    # `_legacy_pack_row`. (Selection is evaluated by the caller.)
+    return bool(
+        _legacy_pack_include_all(pack, include_all)
+        or _legacy_pack_explicit_ref(pack, referenced)
+        or _legacy_relevance_match(pack, keywords)
+    )
+
+
+DECLARED_CONTRACT_REF_ORIGINS: tuple[str, ...] = ("pack_inline", "binding", "explicit")
+
+
+def _declared_contract_ref_origins(
+    packs: list[dict[str, Any]],
+    bindings: dict[str, list[str]],
+    explicit_contract_refs: set[str],
+    *,
+    pack_mode: str,
+) -> dict[str, set[str]]:
+    """DeclaredContractRefs, partitioned by origin. A *declared* contract identity reference
+    requires the domain_contracts source; the mere presence of `contract_bindings` is not
+    the criterion.
+
+    MODERN: pack.domain_contract  U  contract_bindings[*]  U  explicit `contract:<id>`.
+    LEGACY flat `pack.domain_contract` is NON-AUTHORITATIVE and never enters the set.
+    """
+    inline: set[str] = set()
+    if pack_mode == FORMAT_MODERN_MAPPING:
+        inline = {pack["domain_contract"] for pack in packs if pack.get("domain_contract")}
+    bound = {ref for refs in bindings.values() for ref in refs}
+    return {"pack_inline": inline, "binding": bound, "explicit": set(explicit_contract_refs)}
+
+
+def clean_contracts_context_for_payload(ctx: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(ctx, dict):
+        return ctx
+    cleaned = copy.deepcopy(ctx)
+    for p in cleaned.get("review_packs", []):
+        if isinstance(p, dict):
+            p.pop("required_reasons", None)
+            if "effective_contracts" in p and not p["effective_contracts"]:
+                p.pop("effective_contracts", None)
+    return cleaned
+
+
+UNIDENTIFIED_LEGACY_PACK_LOSS_LABEL = "unidentified_legacy_pack"
+
+
+def legacy_pack_projection(pack: dict[str, Any]) -> dict[str, Any]:
+    """The single authority for what an identity-less legacy pack IS: the exact baseline projection
+    {id, description, recommended_review_preset}, absent carriers as explicit nulls. The required floor,
+    the minimal form and the loss label all derive from it -- no carrier is presumed to be the only one."""
+    return {field: pack.get(field) for field in LEGACY_PACK_PROJECTION_FIELDS}
+
+
+def unidentified_pack_loss_label(pack: dict[str, Any]) -> str:
+    """Evidence/loss label of an identity-less legacy pack: a digest of its canonical observable projection
+    (the full carrier tuple), so two distinct lost packs never collapse into one limitation and no semantic
+    identity is fabricated."""
+    digest = hashlib.sha256(canonical_json(legacy_pack_projection(pack)).encode("utf-8")).hexdigest()[:12]
+    return f"{UNIDENTIFIED_LEGACY_PACK_LOSS_LABEL}:{digest}"
+
+
+def required_pack_floor_keys(pack: dict[str, Any]) -> frozenset[str]:
+    """Keys of a required pack that the shrink ladder must preserve. An identified pack
+    floors to its identity (+ relation); an identity-less legacy pack floors to its whole baseline
+    projection -- never to a fabricated `id`, and never to one presumed carrier."""
+    base = {"id", "effective_contracts", "required"}
+    if not pack.get("id"):
+        base = {*LEGACY_PACK_PROJECTION_FIELDS, "effective_contracts", "required"}
+    return frozenset(base)
+
+
+def minimal_pack_context(pack: dict[str, Any]) -> dict[str, Any]:
+    min_pack: dict[str, Any] = {}
+    if pack.get("id"):
+        min_pack["id"] = pack["id"]
+    else:
+        min_pack.update(legacy_pack_projection(pack))
+    if pack.get("required") is True:
+        min_pack["required"] = True
+    eff = pack.get("effective_contracts")
+    if eff:
+        min_pack["effective_contracts"] = list(eff)
+    return min_pack
+
+
+def minimal_contracts_context(contracts_ctx: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(contracts_ctx, dict):
+        return {"domain_contracts": [], "review_packs": []}
+    domain_contracts = contracts_ctx.get("domain_contracts")
+    required_contracts = [
+        dict(item) for item in (domain_contracts or [])
+        if isinstance(item, dict) and item.get("required") is True
+    ]
+    review_packs = contracts_ctx.get("review_packs")
+    required_packs = [
+        minimal_pack_context(item) for item in (review_packs or [])
+        if isinstance(item, dict) and item.get("required") is True
+    ]
+    return clean_contracts_context_for_payload({
+        "domain_contracts": required_contracts,
+        "review_packs": required_packs,
+    })
+
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +2866,7 @@ def project_min_hunk_preserving_chars(
         {
             "files": display_files,
             "chunk_hunks": chunk_hunks_full,
-            "contracts_context": contracts_ctx,
+            "contracts_context": clean_contracts_context_for_payload(contracts_ctx),
             "evidence_context": evidence_ctx,
             "checks_context": checks_ctx,
             "aux_context": aux_ctx,
@@ -1536,7 +2894,7 @@ def project_min_hunk_preserving_chars(
         {
             "files": display_files,
             "chunk_hunks": chunk_hunks_full,
-            "contracts_context": dict(MINIMAL_CONTRACTS_CONTEXT),
+            "contracts_context": minimal_contracts_context(contracts_ctx),
             "evidence_context": minimal_evidence_context(evidence_ctx),
             "checks_context": minimal_checks_context(checks_ctx),
             "aux_context": dict(MINIMAL_AUX_CONTEXT),

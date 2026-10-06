@@ -14,6 +14,7 @@ from app.agent_review.payload_cost_model import (
     checks_context,
     contracts_context,
     evidence_context,
+    is_required_context_loss,
     materialize_payload,
     sanitize_display_path as _sanitize_relative_path,
     stabilize_payload_truncation,
@@ -218,7 +219,7 @@ def _build_chunk_payload(
         "chunk_context": {
             "files": chunk_files,
             "chunk_hunks": chunk_hunks,
-            "contracts_context": contracts_ctx,
+            "contracts_context": payload_cost_model.clean_contracts_context_for_payload(contracts_ctx),
             "evidence_context": evidence_ctx,
             "checks_context": checks_ctx,
             "aux_context": payload_cost_model.aux_context(intake, chunk_files=chunk.files),
@@ -287,7 +288,11 @@ def _build_chunk_payload(
 
     filename, filename_limitations = _payload_filename(chunk)
 
-    if reduced_paths or omitted_paths:
+    required_context_lost = [
+        lim for lim in payload.limitations if is_required_context_loss(lim)
+    ]
+
+    if reduced_paths or omitted_paths or required_context_lost:
         guard_limitations = [
             f"chunk_hunk_material_not_transported:{path}" for path in sorted({*reduced_paths, *omitted_paths})
         ]
@@ -628,11 +633,52 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
     contracts = _get(_get(payload, "chunk_context"), "contracts_context")
     if not isinstance(contracts, dict):
         return False
-    for key in ("review_packs", "domain_contracts"):
-        items = contracts.get(key)
-        if isinstance(items, list) and items:
-            items.pop()
-            return True
+    # 1. Pop optional review_packs first
+    packs = contracts.get("review_packs")
+    if isinstance(packs, list):
+        for i, item in enumerate(packs):
+            if isinstance(item, dict) and not item.get("required"):
+                packs.pop(i)
+                return True
+    # 2. Pop optional domain contracts next
+    domain_contracts = contracts.get("domain_contracts")
+    if isinstance(domain_contracts, list):
+        for i, item in enumerate(domain_contracts):
+            if isinstance(item, dict) and not item.get("required"):
+                domain_contracts.pop(i)
+                return True
+    # 3. Strip optional metadata from review_packs before dropping any required pack floor
+    if isinstance(packs, list):
+        for item in packs:
+            if isinstance(item, dict):
+                floor_keys = payload_cost_model.required_pack_floor_keys(item)
+                optional_keys = [k for k in item if k not in floor_keys]
+                if optional_keys:
+                    for k in optional_keys:
+                        del item[k]
+                    return True
+    # 4. If only required review packs remain and shrink is forced:
+    if isinstance(packs, list) and packs:
+        popped = packs.pop()
+        if isinstance(popped, dict):
+            pack_id = popped.get("id") or payload_cost_model.unidentified_pack_loss_label(popped)
+            limitations = _get(payload, "limitations")
+            if isinstance(limitations, list):
+                loss_code = f"required_contract_pack_context_lost:{pack_id}"
+                if loss_code not in limitations:
+                    limitations.append(loss_code)
+        return True
+    # 4. If only required domain contracts remain and shrink is forced:
+    if isinstance(domain_contracts, list) and domain_contracts:
+        popped = domain_contracts.pop()
+        if isinstance(popped, dict):
+            contract_id = popped.get("id") or "unknown"
+            limitations = _get(payload, "limitations")
+            if isinstance(limitations, list):
+                loss_code = f"required_contract_context_lost:{contract_id}"
+                if loss_code not in limitations:
+                    limitations.append(loss_code)
+        return True
     minimal = {"domain_contracts": [], "review_packs": []}
     if contracts != minimal:
         _get(payload, "chunk_context")["contracts_context"] = minimal

@@ -1,0 +1,877 @@
+{
+  "artifact_type": "PR372_GATE_A_NORMATIVE_BINDING_RECEIPT",
+  "status": "v1_c2_gate_a_normative_bindings_closed",
+  "gate": "Gate A",
+  "owner": "#221",
+  "slice": "V1-C2 / Gate A (C2ExecutableContract)",
+  "governing_norm": "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json",
+  "subject_binding": {
+    "mode": "FORGE_EXACT_HEAD",
+    "repository": "mglpsw/aiops-orchestrator",
+    "pr": 372,
+    "base": "fe4293b7d3b2f7a2d3d2748f04ca5c4dada7f98f",
+    "source_predecessor": {
+      "head": "f2d39c0fbfc2a14f48bc960bbb11b355cd31eabc",
+      "tree": "7545bd6ee45184a6f16168e425ec775aa6e52f78"
+    },
+    "self_hash_claimed": false,
+    "exact_subject_authorities": [
+      "PR.headRefOid",
+      "canonical_CI.headSha",
+      "current_head_guard_dispositions",
+      "maintainer_checkpoint"
+    ],
+    "requirement": "all_exact_subject_authorities_must_agree"
+  },
+  "capability": {
+    "label": "contract_aware_advisory",
+    "nonclaims": {
+      "ClaimV1": true,
+      "exhaustive_per_claim_coverage": true
+    }
+  },
+  "normative_controls": {
+    "CM-CL2-01": {
+      "executable_equivalent": "test_cm_cl2_01_capability_boundary_nonclaims",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_01_capability_boundary_nonclaims",
+      "observation": "Result presented as ClaimV1 or claiming exhaustive coverage is refused; normalized contract context never fabricates claim_id, deterministic claim authority, or per-claim coverage states."
+    },
+    "PC-CL2-01": {
+      "executable_equivalent": "test_pc_cl2_01_advisory_capability_admitted",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_01_advisory_capability_admitted",
+      "observation": "Bounded contract-aware advisory capability is admitted and preserved."
+    },
+    "CM-C2-MAP-01": {
+      "executable_equivalent": "test_cm_c2_map_01_unresolved_explicit_relation_fails_closed",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_c2_map_01_unresolved_explicit_relation_fails_closed",
+      "observation": "Unresolved explicit relation fails closed with unresolved_contract_binding; no NLP, descriptions-as-relation, or fuzzy recovery in modern mapping."
+    },
+    "PC-C2-MAP-01": {
+      "executable_equivalent": "test_pc_c2_map_01_explicit_mapping_and_bindings_resolved",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_c2_map_01_explicit_mapping_and_bindings_resolved",
+      "observation": "Explicit mapping packs and contract_bindings resolve exact EffectiveContractRefs."
+    },
+    "CM-CL2-03": {
+      "executable_equivalent": "test_cm_cl2_03_invalid_source_never_not_relevant",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_03_invalid_source_never_not_relevant",
+      "observation": "Invalid source input yields SOURCE_STATE_INVALID and typed limitation, and never collapses to not_relevant."
+    },
+    "PC-CL2-03": {
+      "executable_equivalent": "test_pc_cl2_03_source_states_distinct",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_03_source_states_distinct",
+      "observation": "Source states (present_valid, absent, invalid) are evaluated and preserved independently."
+    },
+    "CM-CL2-04": {
+      "executable_equivalent": "test_cm_cl2_04_missing_or_unresolved_never_not_relevant",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_04_missing_or_unresolved_never_not_relevant",
+      "observation": "Available != applicable; missing, unresolved, or invalid context never yields not_relevant."
+    },
+    "PC-CL2-04": {
+      "executable_equivalent": "test_pc_cl2_04_valid_zero_applicable_context_not_relevant",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_04_valid_zero_applicable_context_not_relevant",
+      "observation": "When source is present_valid and valid applicability evaluation finds zero applicable context, contracts_context_not_relevant is emitted."
+    },
+    "CM-CL2-05": {
+      "executable_equivalent": "test_cm_cl2_05_required_loss_nonconclusive",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_05_required_loss_nonconclusive",
+      "observation": "Loss of required contract or pack context propagates as non-conclusive (execution refusal / status limited)."
+    },
+    "PC-CL2-05": {
+      "executable_equivalent": "test_pc_cl2_05_intact_required_floor_preserved",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_05_intact_required_floor_preserved",
+      "observation": "Intact hunks and required context form a non-silent floor preserved when budget allows."
+    },
+    "CM-C2-LOSS-OPTIONAL-01": {
+      "executable_equivalent": "test_cm_c2_loss_optional_01_optional_not_required",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_c2_loss_optional_01_optional_not_required",
+      "observation": "Optional loss is distinct from required loss; reduction of optional metadata must never emit required loss codes."
+    },
+    "PC-C2-LOSS-OPTIONAL-01": {
+      "executable_equivalent": "test_pc_c2_loss_optional_01_optional_loss_permits_review",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_c2_loss_optional_01_optional_loss_permits_review",
+      "observation": "Positive useful review remains possible after optional-only loss."
+    },
+    "CM-CL2-06": {
+      "executable_equivalent": "test_cm_cl2_06_gate_substitution_refused",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_06_gate_substitution_refused",
+      "observation": "Gate A evidence cannot satisfy Gate B or Gate C by implication; cross-gate substitution is refused."
+    },
+    "PC-CL2-06": {
+      "executable_equivalent": "test_pc_cl2_06_gate_a_boundary_exact",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_06_gate_a_boundary_exact",
+      "observation": "Gate A candidate qualification retains exact gate label and declares external exact-head binding contract without false self-authored HEAD."
+    },
+    "CM-CL2-07": {
+      "executable_equivalent": "test_cm_cl2_07_control_b_exhaustive_claim_coverage_refused",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_07_control_b_exhaustive_claim_coverage_refused",
+      "observation": "Control B bounded semantic utility cannot be promoted to exhaustive per-claim coverage or substitute for Control A."
+    },
+    "PC-CL2-07": {
+      "executable_equivalent": "test_pc_cl2_07_control_bounded_purpose",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_07_control_bounded_purpose",
+      "observation": "Bounded named control operates strictly within its declared purpose without provider calls."
+    },
+    "CM-N2-LEGACY-DOMAIN-CONTRACT-NOT-MAPPING": {
+      "executable_equivalent": "test_cm_n2_legacy_domain_contract_not_mapping",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_n2_legacy_domain_contract_not_mapping",
+      "observation": "Legacy flat packs declaring domain_contract do not establish EffectiveContractRefs or emit binding limitations."
+    },
+    "CM-N3-MAPPING-NESTED-ID": {
+      "executable_equivalent": "test_cm_n3_mapping_nested_id",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_n3_mapping_nested_id",
+      "observation": "Modern mapping pack value declaring nested id fails closed with UNSUPPORTED_NONEMPTY."
+    },
+    "CM-N3-MAPPING-NESTED-ID-CONFLICT": {
+      "executable_equivalent": "test_cm_n3_mapping_nested_id_conflict",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_n3_mapping_nested_id_conflict",
+      "observation": "Modern mapping pack value declaring nested id conflicting with mapping key fails closed with INVALID_IDENTITY."
+    },
+    "CM-N3-UNKNOWN-MODERN-PACK-FIELD": {
+      "executable_equivalent": "test_cm_n3_unknown_modern_pack_field",
+      "exact_test": "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_n3_unknown_modern_pack_field",
+      "observation": "Modern mapping pack value declaring unknown field fails closed with UNSUPPORTED_NONEMPTY."
+    }
+  },
+  "obligations": {
+    "OBL-CL2-01": {
+      "normative_proposition": "contract-aware advisory != ClaimV1/exhaustive per-claim qualification",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_01_capability_boundary_nonclaims",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_01_advisory_capability_admitted"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-01",
+        "app/agent_review/payload_cost_model.py:normalize_domain_contracts",
+        "app/agent_review/payload_cost_model.py:normalize_review_packs"
+      ],
+      "negative_control": "CM-CL2-01",
+      "positive_control": "PC-CL2-01",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "ClaimV1": true,
+        "exhaustive_per_claim_coverage": true
+      }
+    },
+    "OBL-CL2-02": {
+      "normative_proposition": "explicit mapping packs + contract_bindings; unresolved explicit relation fails closed",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_c2_map_01_unresolved_explicit_relation_fails_closed",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_c2_map_01_explicit_mapping_and_bindings_resolved",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_a3_owner_focal_relations"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-02",
+        "app/agent_review/payload_cost_model.py:contracts_context",
+        "app/agent_review/payload_cost_model.py:normalize_review_packs"
+      ],
+      "negative_control": "CM-C2-MAP-01",
+      "positive_control": "PC-C2-MAP-01",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "implicit_relation_recovery": true,
+        "legacy_internal_algorithm_specification": true
+      }
+    },
+    "OBL-CL2-03": {
+      "normative_proposition": "present_valid != absent != invalid",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_03_invalid_source_never_not_relevant",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_03_source_states_distinct",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_ab_a1_state_separation"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-03",
+        "app/agent_review/payload_cost_model.py:normalize_domain_contracts",
+        "app/agent_review/payload_cost_model.py:normalize_review_packs"
+      ],
+      "negative_control": "CM-CL2-03",
+      "positive_control": "PC-CL2-03",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "absence_as_negative_relevance": true,
+        "invalid_as_negative_relevance": true
+      }
+    },
+    "OBL-CL2-04": {
+      "normative_proposition": "applicable context preserved; not_relevant only after valid no-applicable-context",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_04_missing_or_unresolved_never_not_relevant",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_04_valid_zero_applicable_context_not_relevant",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_a3_availability_is_not_applicability"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-04",
+        "app/agent_review/payload_cost_model.py:contracts_context"
+      ],
+      "negative_control": "CM-CL2-04",
+      "positive_control": "PC-CL2-04",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "silent_context_elision": true,
+        "not_relevant_from_missing_context": true
+      }
+    },
+    "OBL-CL2-05": {
+      "normative_proposition": "required semantic context + intact hunks form non-silent floor; optional loss != required loss",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_05_required_loss_nonconclusive",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_05_intact_required_floor_preserved",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_c2_loss_optional_01_optional_not_required",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_c2_loss_optional_01_optional_loss_permits_review"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-05",
+        "app/agent_review/chunk_payload_builder.py:_shrink_contracts_context",
+        "app/agent_review/payload_cost_model.py:minimal_contracts_context"
+      ],
+      "negative_control": "CM-CL2-05",
+      "positive_control": "PC-CL2-05",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "silent_required_loss": true,
+        "optional_and_required_loss_equivalence": true
+      }
+    },
+    "OBL-CL2-06": {
+      "normative_proposition": "Gate A != Gate B != Gate C; no gate substitution",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_06_gate_substitution_refused",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_06_gate_a_boundary_exact"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-06",
+        "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-receipt.json"
+      ],
+      "negative_control": "CM-CL2-06",
+      "positive_control": "PC-CL2-06",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "Gate_B": "NOT_CLAIMED",
+        "Gate_C": "NOT_CLAIMED",
+        "documentation_as_gate_evidence": true,
+        "gate_equivalence": true,
+        "pair_substitution": true
+      }
+    },
+    "OBL-CL2-07": {
+      "normative_proposition": "Control A != Control B; Control B bounded utility != exhaustive coverage",
+      "executable_truth_makers": [
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_cm_cl2_07_control_b_exhaustive_claim_coverage_refused",
+        "tests/agent_review/test_c2_executable_contract_gate_a.py::test_pc_cl2_07_control_bounded_purpose"
+      ],
+      "source_truth_makers": [
+        "campaign/agent-review-v1-freeze/02_OBLIGATION_MATRIX.json:OBL-CL2-07",
+        "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-receipt.json"
+      ],
+      "negative_control": "CM-CL2-07",
+      "positive_control": "PC-CL2-07",
+      "current_result": "SATISFIED_AT_GATE_A_BOUNDARY",
+      "nonclaims": {
+        "Control_A": "NOT_CLAIMED",
+        "Control_B": "NOT_CLAIMED",
+        "ControlB_as_exhaustive_coverage": true,
+        "ControlA_ControlB_equivalence": true,
+        "automatic_final_freeze": true
+      }
+    }
+  },
+  "Gate_A": {
+    "A1": {
+      "proposition": "RawSourceAdmission",
+      "source_truth_makers": [
+        "app/agent_review/payload_cost_model.py:normalize_domain_contracts",
+        "app/agent_review/payload_cost_model.py:normalize_review_packs"
+      ],
+      "controls": [
+        "CM-A1-MALFORMED-SOURCE",
+        "CM-A1-UNSUPPORTED-NONEMPTY",
+        "PC-A1-MALFORMED-SOURCE",
+        "AB-A1-STATE-SEPARATION"
+      ],
+      "residual_nonclaims": {
+        "unbounded_raw_schema": false
+      },
+      "status": "SATISFIED_AT_GATE_A_BOUNDARY"
+    },
+    "A2": {
+      "proposition": "LegacyCompatibility + Normalization",
+      "source_truth_makers": [
+        "app/agent_review/payload_cost_model.py:detect_review_packs_format",
+        "app/agent_review/payload_cost_model.py:detect_domain_contracts_format",
+        "app/agent_review/payload_cost_model.py:normalize_domain_contracts",
+        "app/agent_review/payload_cost_model.py:normalize_review_packs"
+      ],
+      "controls": [
+        "CM-A2-REAL-TARGET-DOMAIN-SHAPE",
+        "CM-A2-NESTED-SECTION-IDENTITY",
+        "CM-A2-RULE-DICT-TEXT-PRESERVATION",
+        "CM-A2-LEGACY-FLAT-COMPAT",
+        "CM-A2-NAMED-STRING-LIST",
+        "CM-A2-MALFORMED-CONTRACT_BINDINGS",
+        "PC-A2-CONTRACT-BINDINGS",
+        "AB-A2-SECTION-IDENTITY",
+        "AB-A2-RULE-DICT-TEXT"
+      ],
+      "residual_nonclaims": {
+        "legacy_as_modern_mapping": false
+      },
+      "status": "SATISFIED_AT_GATE_A_BOUNDARY"
+    },
+    "A3": {
+      "proposition": "Applicability + explicit relation resolution",
+      "source_truth_makers": [
+        "app/agent_review/payload_cost_model.py:contracts_context",
+        "app/agent_review/payload_cost_model.py:modern_pack_matches_selected",
+        "app/agent_review/payload_cost_model.py:legacy_pack_matches_selected"
+      ],
+      "controls": [
+        "CM-A3-EXACT-IDENTITY-BOUNDARY",
+        "CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY",
+        "CM-A3-UNSCOPED-PACK-IS-NOT-GLOBAL",
+        "CM-A3-OWNER-FOCAL-RELATIONS",
+        "CM-A3-STRUCTURAL-TARGET-LIKE-SHAPE",
+        "CM-A3-UNRELATED-PACK",
+        "CM-A3-UNKNOWN-BINDING",
+        "CM-A3-CASE-SENSITIVE-PATTERN",
+        "PC-A3-APPLICABLE-PACK-BINDS-CONTRACT",
+        "PC-A3-EXPLICIT-CONTRACT-REF",
+        "PC-A3-EXPLICIT-GLOBAL",
+        "PC-A3-EXPLICIT-SELECTED-PACK",
+        "PC-A3-LEGACY-FLAT-COMPATIBILITY",
+        "AB-A3-EXPLICIT-BINDING",
+        "AB-A3-EXACT-IDENTITY",
+        "AB-A3-FNMATCHCASE",
+        "AB-A3-AVAILABILITY-APPLICABILITY"
+      ],
+      "residual_nonclaims": {
+        "nlp_or_description_relation": false
+      },
+      "status": "SATISFIED_AT_GATE_A_BOUNDARY"
+    },
+    "A4": {
+      "proposition": "Canonical cost + deterministic packing",
+      "source_truth_makers": [
+        "app/agent_review/payload_cost_model.py:project_min_hunk_preserving_chars",
+        "app/agent_review/payload_cost_model.py:minimal_contracts_context",
+        "app/agent_review/payload_cost_model.py:minimal_pack_context"
+      ],
+      "controls": [
+        "CM-GA-A4-COST",
+        "CM-GA-A4-REPACK",
+        "PC-GA-A4-COST",
+        "AB-GA-A4-COST",
+        "AB-GA-A4-REPACK"
+      ],
+      "residual_nonclaims": {
+        "hunk_loss_under_budget": false
+      },
+      "status": "SATISFIED_AT_GATE_A_BOUNDARY"
+    },
+    "A5": {
+      "proposition": "Required-context loss propagation",
+      "source_truth_makers": [
+        "app/agent_review/chunk_payload_builder.py:_shrink_contracts_context",
+        "app/agent_review/chunk_payload_builder.py:build_chunk_payloads",
+        "app/agent_review/semantic_chunker.py:_plan_status",
+        "app/agent_review/quality_gate.py:evaluate_review_quality_gate"
+      ],
+      "controls": [
+        "CM-A5-REQUIRED-CONTEXT-DROPPED",
+        "CM-A5-REQUIRED-FLOOR-EXCEEDS-BUDGET",
+        "CM-A5-PRODUCTION-CARRIER-ORIGIN",
+        "CM-A5-PRODUCTION-CARRIER-ORIGIN-SELECTED-PACK-MISSING",
+        "AB-A5-SHRINK-ORDER"
+      ],
+      "residual_nonclaims": {
+        "silent_required_loss_allowed": false
+      },
+      "status": "SATISFIED_AT_GATE_A_BOUNDARY"
+    }
+  },
+  "grammar": {
+    "domain_contract": {
+      "reserved_metadata": [
+        "metadata",
+        "schema_version",
+        "system",
+        "updated",
+        "version"
+      ],
+      "identity_fields": [
+        "id"
+      ],
+      "scalar_fields": [
+        "canonical_authority",
+        "description",
+        "display_authority",
+        "file_path",
+        "is_global",
+        "path",
+        "scope"
+      ],
+      "path_fields": [
+        "files",
+        "paths",
+        "patterns",
+        "related_files",
+        "source_files"
+      ],
+      "rule_sections": [
+        "rules",
+        "slot_rules"
+      ],
+      "generic_named_string_section_rule": "any unknown nested key with list[nonempty str] value is admitted as named string section",
+      "unknown_field_policy": "unknown field not matching generic named string section fails closed with invalid_source_contract:UNSUPPORTED_NONEMPTY",
+      "modern_exact_path_fields": [
+        "file_path",
+        "files",
+        "path",
+        "paths",
+        "related_files",
+        "source_files"
+      ],
+      "modern_pattern_fields": [
+        "patterns"
+      ],
+      "modern_path_identity_authority": "canonical_repo_path (exact) / canonical_repo_pattern (glob syntax AND repository boundary); one invalid member invalidates the source with invalid_source_contract:INVALID_IDENTITY",
+      "scope_value_domain": [
+        "global"
+      ]
+    },
+    "review_pack": {
+      "modern_identity_authority": "mapping key is the sole authoritative pack identity; nested id is unsupported",
+      "modern_value_fields": [
+        "allow_external_review",
+        "critical",
+        "description",
+        "domain_contract",
+        "is_global",
+        "notes",
+        "paths",
+        "patterns",
+        "recommended_review_preset",
+        "require_final_files_when_available",
+        "require_full_diff",
+        "scope"
+      ],
+      "admitted_nonsemantic_target_metadata": [
+        "allow_external_review",
+        "critical",
+        "notes",
+        "require_final_files_when_available",
+        "require_full_diff"
+      ],
+      "unknown_field_policy": "unknown modern pack value key fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY",
+      "legacy_input_policy": "legacy flat packs list admitted as differential baseline; domain_contract in legacy flat pack is ignored and does not establish EffectiveContractRefs",
+      "mixed_shape_policy": "legacy packs list combined with nonempty contract_bindings fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY as INVALID_MIXED_SHAPE",
+      "envelope_keys": [
+        "contract_bindings",
+        "packs",
+        "updated",
+        "version"
+      ],
+      "envelope_policy": "modern document envelope is closed: any other top-level key, or version/updated that is not a scalar, fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY (frozen legacy {'packs': [...]} envelope keeps baseline leniency)",
+      "envelope_owner_evidence": "AgentEscala@b281ca5d2872117b1c128cabb1735e264f024eaf .aiops/review-packs.yaml: top-level keys version, updated, packs",
+      "modern_exact_path_fields": [
+        "paths"
+      ],
+      "modern_pattern_fields": [
+        "patterns"
+      ],
+      "scope_value_domain": [
+        "global"
+      ],
+      "legacy_projection": [
+        "description",
+        "id",
+        "recommended_review_preset"
+      ]
+    },
+    "mixed_shape_policy": "legacy packs list combined with nonempty contract_bindings fails closed with invalid_source_review_packs:UNSUPPORTED_NONEMPTY as INVALID_MIXED_SHAPE",
+    "legacy_differential": "legacy flat sources are decided only by the frozen baseline 6bbd2f9 predicates (tests/agent_review/fixtures/v1_c2_legacy_differential_observations.json); legacy packs project only {id, description, recommended_review_preset}; domain_contract ignored; modern-only fields never acquire legacy semantics",
+    "registry_drift": false
+  },
+  "limitation_graph": {
+    "planner_origin": [
+      {
+        "class": "invalid_source_contract:MALFORMED_SHAPE",
+        "producer": "payload_cost_model.normalize_domain_contracts",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "invalid_source_review_packs:MALFORMED_SHAPE",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "malformed_contract_bindings:must_be_mapping",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "unresolved_contract_binding:",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "unresolved_contract_reference:",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "orphan_contract_binding:",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "required_source_absent:",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      {
+        "class": "selected_contract_pack_missing:",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "build_semantic_chunk_plan -> plan.limitations (status=degraded) -> parse_chunk_results -> ChunkResults.limitations -> synthesize_final_review -> FinalReview.limitations/degraded",
+        "terminal_effect": "non-conclusive quality gate"
+      }
+    ],
+    "builder_origin": [
+      {
+        "class": "required_contract_context_lost:",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "terminal_effect": "payload routing blocked before inference"
+      },
+      {
+        "class": "required_contract_pack_context_lost:",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "terminal_effect": "payload routing blocked before inference"
+      }
+    ],
+    "orphan_classes": 0,
+    "orphan_producers": 0,
+    "orphan_carriers": 0,
+    "orphan_consumers": 0
+  },
+  "B1_target_shape_binding": {
+    "AgentEscala_subject": "mglpsw/AgentEscala@b281ca5d2872117b1c128cabb1735e264f024eaf",
+    "nested_list_string_rule": "any unknown nested key with list[nonempty str] value is admitted as named string section (e.g. response_models, orm_models, critical_constraints, review_checklist)",
+    "rule_dict_rule": "rule text carrier bounded to 'rule' with optional 'invariant', 'rationale', 'field', 'expected_value'",
+    "target_shape_control": "CM-B1-EXACT-TARGET-SHAPE-MIRROR",
+    "structural_mirror_exactness": true,
+    "ablation": "AB-B1-NESTED-LIST-STRING-GRAMMAR"
+  },
+  "B2_applicable_pack_required_context": {
+    "applicable_pack_identity_rule": "every applicable pack preserves pack_id as required context with reason applicable_pack_identity",
+    "minimal_pack_context": "minimal pack floor preserves only id, effective_contracts, and required: true",
+    "optional_pack_metadata": "description, recommended_review_preset, paths, patterns, notes, and other target metadata are optional and reduced under budget pressure before any pack ID is lost",
+    "optional_loss_recording": "contracts_context_reduced recorded in TruncationMetadata coverage_impact without required loss",
+    "required_pack_loss": "required_contract_pack_context_lost:<id> emitted only when minimal pack floor cannot fit, blocking payload routing (payload_path=None, status=limited)",
+    "countermodels": [
+      "CM-B2-PATH-APPLICABLE-NO-BINDING-PACK",
+      "CM-B2-APPLICABLE-PACK-OPTIONAL-METADATA-SHRINK"
+    ],
+    "positives": [
+      "PC-B2-PATH-MATCH-REQUIRED-PACK"
+    ],
+    "ablations": [
+      "AB-B2-ALL-APPLICABLE-PACK-ID-REQUIRED",
+      "AB-B2-OPTIONAL-PACK-METADATA-SHRINK"
+    ],
+    "identityless_legacy_pack_floor": "a legacy description-only pack floors to {description, effective_contracts, required}; its identity is never fabricated and its loss is reported as required_contract_pack_context_lost:unidentified_legacy_pack:<first 12 hex of sha256(description)>"
+  },
+  "B3_limitation_class_graph": {
+    "registry": {
+      "required_contract_context_lost:": {
+        "status": "PRODUCED",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "consumer": "build_chunk_payloads manifest entry routing guard",
+        "terminal_effect": "payload routing blocked before inference"
+      },
+      "required_contract_pack_context_lost:": {
+        "status": "PRODUCED",
+        "producer": "chunk_payload_builder._shrink_contracts_context",
+        "carrier": "payload.limitations -> manifest_entry.limitations",
+        "consumer": "build_chunk_payloads manifest entry routing guard",
+        "terminal_effect": "payload routing blocked before inference"
+      },
+      "unresolved_contract_binding:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "unresolved_contract_reference:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "orphan_contract_binding:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "invalid_source_contract:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_domain_contracts",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "invalid_source_review_packs:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "malformed_contract_bindings:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.normalize_review_packs",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "required_source_absent:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      },
+      "selected_contract_pack_missing:": {
+        "status": "PRODUCED",
+        "producer": "payload_cost_model.contracts_context",
+        "carrier": "contracts_context limitations -> plan.limitations",
+        "consumer": "semantic_chunker._plan_status",
+        "terminal_effect": "non-conclusive quality gate"
+      }
+    },
+    "orphan_registry_entries": 0,
+    "orphan_producers": 0,
+    "planner_origin_controls": [
+      "invalid_source_contract:MALFORMED_SHAPE",
+      "invalid_source_review_packs:MALFORMED_SHAPE",
+      "malformed_contract_bindings:must_be_mapping",
+      "unresolved_contract_binding",
+      "unresolved_contract_reference",
+      "orphan_contract_binding",
+      "required_source_absent:domain_contracts",
+      "selected_contract_pack_missing"
+    ],
+    "builder_origin_controls": [
+      "required_contract_context_lost",
+      "required_contract_pack_context_lost"
+    ],
+    "ablation": "AB-B3-REASON-CLASS-PRODUCER-BINDING"
+  },
+  "B4_single_grammar_authority": {
+    "production_registry": {
+      "identity_fields": [
+        "id"
+      ],
+      "path_list_fields": [
+        "files",
+        "paths",
+        "patterns",
+        "related_files",
+        "source_files"
+      ],
+      "reserved_metadata": [
+        "metadata",
+        "schema_version",
+        "system",
+        "updated",
+        "version"
+      ],
+      "rule_dict_fields": [
+        "expected_value",
+        "field",
+        "invariant",
+        "rationale",
+        "rule"
+      ],
+      "rule_dict_optional_fields": [
+        "expected_value",
+        "field",
+        "invariant",
+        "rationale"
+      ],
+      "rule_dict_required_fields": [
+        "rule"
+      ],
+      "rule_sections": [
+        "rules",
+        "slot_rules"
+      ],
+      "scalar_fields": [
+        "canonical_authority",
+        "description",
+        "display_authority",
+        "file_path",
+        "is_global",
+        "path",
+        "scope"
+      ],
+      "semantic_pack_fields": [
+        "description",
+        "domain_contract",
+        "id",
+        "is_global",
+        "paths",
+        "patterns",
+        "recommended_review_preset",
+        "scope"
+      ],
+      "target_metadata_not_used_as_relation": [
+        "allow_external_review",
+        "critical",
+        "notes",
+        "require_final_files_when_available",
+        "require_full_diff"
+      ]
+    },
+    "critical_limitation_consumption": {
+      "classes": [
+        "invalid_source_contract:",
+        "invalid_source_review_packs:",
+        "malformed_contract_bindings:",
+        "orphan_contract_binding:",
+        "required_contract_context_lost:",
+        "required_contract_pack_context_lost:",
+        "required_source_absent:",
+        "selected_contract_pack_missing:",
+        "unresolved_contract_binding:",
+        "unresolved_contract_reference:"
+      ],
+      "families": 10
+    },
+    "source_required_field_disposition": "required removed from admitted modern source grammar; internal derived state only",
+    "modern_rule_carriers": [
+      "rule"
+    ],
+    "registry_drift": false,
+    "ablation": "AB-B4-SOURCE-GRAMMAR-SINGLE-AUTHORITY"
+  },
+  "historical_findings": {
+    "known": 16,
+    "current_head_bound": 16,
+    "regression_GREEN": 16,
+    "dispositions": {
+      "first_cycle": {
+        "expected": 9,
+        "current_head_bound": 9,
+        "repair_commit": "3539096948cef5eefd6f509bd24634b774b5d494"
+      },
+      "second_cycle": {
+        "expected": 7,
+        "current_head_bound": 7,
+        "repair_commit": "3c15ecd4d05555d9baa6a15127a4e5f9aaf73ec1"
+      },
+      "total": {
+        "expected": 16,
+        "current_head_bound": 16,
+        "missing": 0
+      }
+    },
+    "finding_dispositions": {
+      "4178603183": "FIXED",
+      "4178603188": "FIXED",
+      "4178603193": "FIXED",
+      "4178603197": "FIXED",
+      "4178603200": "FIXED",
+      "4178603205": "FIXED",
+      "4178603209": "FIXED",
+      "4178603213": "FIXED",
+      "4178603218": "FIXED",
+      "4179272317": "FIXED",
+      "4179272322": "FIXED",
+      "4179272324": "FIXED",
+      "4179272326": "FIXED",
+      "4179272328": "FIXED",
+      "4179272330": "FIXED",
+      "4179272331": "FIXED"
+    },
+    "prior_cycle_families": {
+      "F1_identity_admission_totality": [
+        "4178603188",
+        "4178603193",
+        "4178603213",
+        "4178603218"
+      ],
+      "F2_explicit_requirement_and_compatibility_closure": [
+        "4178603183",
+        "4178603197",
+        "4178603200"
+      ],
+      "F3_projection_fixed_point_closure": [
+        "4178603205"
+      ],
+      "F4_required_semantic_context_closure": [
+        "4178603209"
+      ]
+    },
+    "second_cycle_families": {
+      "S1_typed_declaration_admission_totality": [
+        "4179272317",
+        "4179272328",
+        "4179272330"
+      ],
+      "S2_required_pack_context_closure": [
+        "4179272322",
+        "4179272324"
+      ],
+      "S3_legacy_modern_semantic_boundary": [
+        "4179272326",
+        "4179272331"
+      ]
+    },
+    "status": "HISTORICAL: 16 findings of cycles 1-2; CURRENT census (23 known, cycle_3 = 7) lives in the cycle-3 closure receipt"
+  },
+  "qualification": {
+    "focal": "passed (tests/agent_review/test_c2_executable_contract_gate_a.py)",
+    "affected_core": "passed (tests/agent_review/test_payload_cost_model.py, test_chunk_payload_builder.py, test_semantic_chunker.py, test_pr_brief.py, test_quality_gate.py)",
+    "CLI": "passed (all test_aiops_review_*_cli.py suites)",
+    "C1": "passed (test_semantic_chunker_232_coverage_truth.py)",
+    "repository": "passed (bash scripts/ci_validate.sh --repository)",
+    "generated": "passed (bash scripts/ci_validate.sh --generated)",
+    "static": "passed (bash scripts/ci_validate.sh --static)",
+    "CAEM_pin": "passed (scripts/verify-caem-f0-pin.py)",
+    "git_diff_check": "passed (git diff --check)",
+    "CI": "clean local qualification, awaiting push",
+    "independent_review": "CLEAN: verified against all normative binding criteria with zero regressions across 16 historical findings"
+  },
+  "nonclaims": {
+    "Gate_B": "NOT_CLAIMED",
+    "Gate_C": "NOT_CLAIMED",
+    "Control_A": "NOT_CLAIMED",
+    "Control_B": "NOT_CLAIMED",
+    "release": "NOT_CLAIMED",
+    "V1_FINAL_FREEZE": "NOT_CLAIMED"
+  },
+  "protected_actions": {
+    "Ready": "NOT_AUTHORIZED",
+    "merge": "NOT_AUTHORIZED",
+    "release": "NOT_AUTHORIZED"
+  },
+  "PR_state": "DRAFT",
+  "terminal": "V1_C2_GATE_A_NORMATIVE_BINDINGS_CLOSED_DRAFT_AWAITING_READY_REGRANT",
+  "current_authority": {
+    "receipt": "campaign/agent-review-v1-freeze/evidence/v1-c2-gate-a-cycle3-aocm-closure-receipt.json",
+    "note": "this receipt is the Gate A cycle-2 closure record; the cycle-3 closure receipt supersedes its finding counts (16 -> 23 known) and terminal"
+  }
+}
