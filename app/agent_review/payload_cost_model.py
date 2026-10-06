@@ -1651,7 +1651,7 @@ def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = Non
     sections: dict[str, list[dict[str, Any]]] = {}
     all_rule_texts: list[str] = []
 
-    for sec_name, sec_val in item.items():
+    for sec_name, sec_val in _deterministic_items(item):  # R5-B: section order is identity order, never YAML key order
         if sec_name in non_section_keys or not isinstance(sec_val, list):
             continue
         cleaned_sec_items: list[dict[str, Any]] = []

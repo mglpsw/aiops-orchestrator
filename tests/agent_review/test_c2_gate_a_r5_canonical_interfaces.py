@@ -278,6 +278,7 @@ C2_INPUT_SURFACE_MATRIX: dict[str, dict[str, Any]] = {
     "repo_profile.review_packs (inline)": {"canonical_producer": "REJECTED", "consumer_raw_support": "n/a (TargetProfile field, loaded from .aiops/review-packs.yaml)", "authority": "docs/AGENT_REVIEW_ENGINE.md carriers"},
     "review_packs.domain_contract": {"canonical_producer": "SUPPORTED", "canonical_consumer": "SUPPORTED", "authority": "02_OBLIGATION_MATRIX OBL-CL2; PC-R5A-DOMAIN-CONTRACT-CANONICAL-CARRIER"},
     "review_packs.contract_bindings": {"canonical_producer": "SUPPORTED", "canonical_consumer": "SUPPORTED", "authority": "02_OBLIGATION_MATRIX OBL-CL2; PC-R5A-CONTRACT-BINDINGS-CANONICAL-CARRIER"},
+    "domain_contracts.yaml / review_packs.yaml non-string mapping keys": {"canonical_producer": "REJECTED", "consumer_raw_support": "defensive: normalize_* returns INVALID_IDENTITY on a raw dict", "authority": "typed carrier stringifies keys (CM-R5A-NON-STRING-KEY)"},
     "raw_intake.contracts": {"canonical": False, "defensive_support": "parse_contract_refs(raw dict); dropped by typed ReviewIntake", "authority": "NONCANONICAL_DEFENSIVE_COMPATIBILITY"},
     "raw_intake.contract_refs": {"canonical": False, "defensive_support": "parse_contract_refs(raw dict); dropped by typed ReviewIntake", "authority": "NONCANONICAL_DEFENSIVE_COMPATIBILITY"},
 }
@@ -333,7 +334,7 @@ def test_r5a_taxonomy_canonical_controls_begin_from_real_files() -> None:
                 continue
             assert uses_files and not builds_raw, node.name
             checked += 1
-    assert checked == 7
+    assert checked == 10
 
 
 def test_ab_r5a_canonical_producer_drop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -355,6 +356,69 @@ def test_ab_r5a_canonical_producer_drop(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert witness() is True
 
 
+NON_STRING_KEY_DOCS: dict[str, tuple[str, str]] = {
+    "domain_contracts int key plus string twin": ("contracts", "? 1\n: {paths: ['backend/api/*'], rules: [first]}\n'1': {paths: ['backend/api/*'], rules: [second]}\n"),
+    "domain_contracts yaml-boolean key (on)": ("contracts", "on: {paths: ['backend/api/*'], rules: [only]}\n"),
+    "domain_contracts yaml-boolean key (yes)": ("contracts", "yes: {paths: ['backend/api/*'], rules: [only]}\n"),
+    "domain_contracts null key": ("contracts", "~: {paths: ['backend/api/*'], rules: [only]}\n"),
+    "domain_contracts float key": ("contracts", "1.5: {paths: ['backend/api/*'], rules: [only]}\n"),
+    "domain_contracts date key": ("contracts", "2026-01-01: {paths: ['backend/api/*'], rules: [only]}\n"),
+    "domain_contracts nested non-string key": ("contracts", "c1:\n  paths: ['backend/api/*']\n  rules: [r]\n  extra: {1: x}\n"),
+    "review_packs int pack id": ("packs", "packs:\n  1:\n    description: d\n"),
+    "review_packs int binding key": ("packs", "packs:\n  p1:\n    description: d\ncontract_bindings:\n  2: [c1]\n"),
+    "review_packs yaml-boolean pack id": ("packs", "packs:\n  on:\n    description: d\n"),
+}
+
+
+@pytest.mark.parametrize("name", list(NON_STRING_KEY_DOCS))
+def test_cm_r5a_non_string_c2_source_keys_fail_closed(tmp_path: Path, name: str) -> None:
+    """The typed carrier stringifies keys (`on:` -> "true", `1` and "1" collide). A C2 source whose keys it cannot
+    carry faithfully must not stay conclusive and must not silently lose a declaration."""
+    kind, text = NON_STRING_KEY_DOCS[name]
+    kwargs = {"contracts": text, "packs": None} if kind == "contracts" else {"packs": text, "contracts": CANONICAL_CONTRACTS}
+    source = "domain_contracts" if kind == "contracts" else "review_packs"
+    loaded = load_repo_profile(_write_repo(tmp_path, "nsk-load", **kwargs), target_repo="example/target")
+    assert loaded.status == "failed" and loaded.error_class == "profile_invalid"
+    assert loaded.limitations == [f"{source}_non_string_mapping_key"]
+    intake, plan, payloads = _canonical_run(tmp_path, "nsk-run", **kwargs)
+    assert intake.status == "failed" and f"{source}_non_string_mapping_key" in intake.limitations
+    assert plan.status != "complete" and payloads == {}
+
+
+def test_pc_r5a_quoted_numeric_string_keys_are_still_carried(tmp_path: Path) -> None:
+    """Positive twin: a STRING key that looks numeric is a valid identity and survives the canonical path."""
+    contracts = "'1': {paths: ['backend/api/*'], rules: [first]}\n'2': {paths: ['backend/api/*'], rules: [second]}\n"
+    intake, plan, payloads = _canonical_run(tmp_path, "pc-quoted", contracts=contracts)
+    ids = sorted(d["id"] for v in payloads.values() for d in v.chunk_context["contracts_context"]["domain_contracts"])
+    assert intake.status == "complete" and ids == ["1", "2"]
+
+
+def test_cm_r5a_null_inline_source_is_tolerated_but_a_declared_one_is_not(tmp_path: Path) -> None:
+    """A TargetProfile.model_dump() round trip carries `domain_contracts: null`; null declares nothing."""
+    ok = load_repo_profile(_write_repo(tmp_path, "null-inline", profile_extra="domain_contracts: null\nreview_packs: null\n"), target_repo="example/target")
+    assert ok.status == "complete" and ok.limitations == []
+    bad = load_repo_profile(_write_repo(tmp_path, "decl-inline", profile_extra="domain_contracts: {}\n"), target_repo="example/target")
+    assert bad.status == "failed" and bad.limitations == ["repo_profile_unsupported_c2_field:domain_contracts"]
+
+
+def test_ab_r5a_non_string_key_carrier_loss(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """AB-R5A-NON-STRING-KEY-LOSS: restore the silent key stringification."""
+    counter = itertools.count()
+    text = NON_STRING_KEY_DOCS["domain_contracts int key plus string twin"][1]
+
+    def witness() -> tuple[str, list[str]]:
+        intake, _, payloads = _canonical_run(tmp_path, f"abk-{next(counter)}", contracts=text)
+        ids = sorted(d["id"] for v in payloads.values() for d in v.chunk_context["contracts_context"]["domain_contracts"])
+        return intake.status, ids
+
+    assert witness() == ("failed", [])
+    with monkeypatch.context() as m:
+        m.setattr(repo_profile, "_has_non_string_mapping_key", lambda value: False)
+        status, ids = witness()
+        assert status == "complete" and ids == ["1"], "mutant must go RED: the first declaration is lost silently"
+    assert witness() == ("failed", [])
+
+
 # ---------------------------------------------------------------------------
 # R5-B -- deterministic semantic projection
 # ---------------------------------------------------------------------------
@@ -366,6 +430,10 @@ PERMUTATION_SCENARIOS: dict[str, tuple[Any, Any]] = {
     "multi_bad_binding_values": ({"packs": {"p1": {"description": "a"}, "p2": {"description": "b"}}, "contract_bindings": {"p1": "notalist", "p2": [1], "zz": {"a": 1}}}, BASE_CONTRACTS),
     "multi_invalid_contracts": ({"packs": {"p1": {"description": "a"}}}, {"c1": {"paths": ["/abs"], "rules": ["r"]}, "c2": {"description": 5}, "c3": 7, "c4": {"id": "other"}}),
     "multi_invalid_packs": ({"packs": {"p1": {"paths": ["/abs"]}, "p2": {"scope": 3}, "p3": {"unknown_key": 1}}}, BASE_CONTRACTS),
+    "rules_and_slot_rules_in_one_contract": (
+        {"packs": {"p1": {"description": "d", "domain_contract": "c1"}}},
+        {"c1": {"description": "d", "paths": ["backend/api/*"], "rules": ["a", "b"], "slot_rules": [{"rule": "x"}, {"rule": "y"}], "extra_section": ["z"]}},
+    ),
     "valid_multi": ({"packs": {"p1": {"domain_contract": "c1"}, "p2": {"domain_contract": "c2"}, "p3": {"description": "x"}}, "contract_bindings": {"p3": ["c3", "c2"], "p1": ["c3"]}}, BASE_CONTRACTS),
 }
 PERMUTATION_SEEDS = range(6)
@@ -490,6 +558,31 @@ def test_ab_r5b_first_failure_iteration_order(monkeypatch: pytest.MonkeyPatch) -
         m.setattr(pcm, "_deterministic_items", lambda mapping: list(mapping.items()))
         assert pcm.normalize_domain_contracts(doc_a)[3] != pcm.normalize_domain_contracts(doc_b)[3], "mutant must go RED"
     assert pcm.normalize_domain_contracts(doc_a)[3] == pcm.normalize_domain_contracts(doc_b)[3]
+
+
+def test_r5b_rules_and_slot_rules_key_order_never_changes_the_emitted_rules(tmp_path: Path) -> None:
+    packs = {"packs": {"p1": {"description": "d", "domain_contract": "c1"}}}
+    a = "c1:\n  description: d\n  paths: ['backend/api/*']\n  rules: [a, b]\n  slot_rules:\n    - {rule: x}\n    - {rule: y}\n"
+    b = "c1:\n  description: d\n  paths: ['backend/api/*']\n  slot_rules:\n    - {rule: x}\n    - {rule: y}\n  rules: [a, b]\n"
+    outs = []
+    for tag, text in (("a", a), ("b", b)):
+        intake, plan, payloads = _canonical_run(tmp_path, f"rs-{tag}", packs=packs, contracts=text)
+        rules = [d["rules"] for v in payloads.values() for d in v.chunk_context["contracts_context"]["domain_contracts"]]
+        outs.append((rules, _artifact_bytes(intake, plan, payloads)))
+    assert outs[0][0] == outs[1][0] == [["a", "b", "x", "y"]]
+    assert outs[0][1] == outs[1][1]
+
+
+def test_ab_r5b_contract_section_order() -> None:
+    """AB-R5B-CONTRACT-SECTION-ORDER: restore insertion-order iteration of a contract's sections."""
+    doc_a = {"c1": {"description": "d", "rules": ["a"], "slot_rules": [{"rule": "x"}]}}
+    doc_b = {"c1": {"description": "d", "slot_rules": [{"rule": "x"}], "rules": ["a"]}}
+    assert pcm.normalize_domain_contracts(doc_a)[0] == pcm.normalize_domain_contracts(doc_b)[0]
+    mutant = _mutant_module(
+        [("    for sec_name, sec_val in _deterministic_items(item):  # R5-B: section order is identity order, never YAML key order\n", "    for sec_name, sec_val in item.items():\n")],
+        "_r5b_mutant_sections",
+    )
+    assert mutant.normalize_domain_contracts(doc_a)[0] != mutant.normalize_domain_contracts(doc_b)[0], "mutant must go RED"
 
 
 # ---------------------------------------------------------------------------
