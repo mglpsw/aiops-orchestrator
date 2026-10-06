@@ -11,6 +11,24 @@ from pydantic import ValidationError
 from app.agent_review.schemas import TARGET_PROFILE_SCHEMA, TargetProfile
 
 
+# R5-A: C2 declarations that `.aiops/repo-profile.yaml` cannot carry. Two classes, one fail-closed family:
+# - consumer-only relations (`contracts`, `contract_refs`, `contract_bindings`): the consumer reads them from a
+#   hand-built intake, but they are NOT repo-profile v1 grammar and `TargetProfile` ignores unknown keys;
+# - inline C2 sources (`domain_contracts`, `review_packs`): the canonical carriers are the files
+#   `.aiops/domain-contracts.yaml` / `.aiops/review-packs.yaml`, and the loader overwrites the profile fields from
+#   those files, so an inline copy would be dropped (or silently lose to the file).
+# Without this census a declaration disappears and the review can stay conclusive without the declared relation.
+# The canonical relation carriers are `review_packs.packs[*].domain_contract` and the review-packs envelope's
+# `contract_bindings`. Deliberately NOT `extra="forbid"` (that would widen the behavior of every other key).
+REPO_PROFILE_UNSUPPORTED_C2_FIELDS: tuple[str, ...] = (
+    "contract_bindings",
+    "contract_refs",
+    "contracts",
+    "domain_contracts",
+    "review_packs",
+)
+
+
 class RepoProfileLoadResult:
     def __init__(
         self,
@@ -56,6 +74,16 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
     profile_data.setdefault("schema_version", TARGET_PROFILE_SCHEMA)
     if target_repo and not profile_data.get("target_repo"):
         profile_data["target_repo"] = target_repo
+
+    unsupported = [field for field in REPO_PROFILE_UNSUPPORTED_C2_FIELDS if field in profile_data]
+    if unsupported:
+        profile = TargetProfile(target_repo=target_repo, artifacts=[])
+        return RepoProfileLoadResult(
+            profile=profile,
+            status="failed",
+            limitations=[f"repo_profile_unsupported_c2_field:{field}" for field in unsupported],
+            error_class="profile_invalid",
+        )
 
     limitations: list[str] = []
     try:

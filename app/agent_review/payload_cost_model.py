@@ -38,6 +38,7 @@ import copy
 import fnmatch
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -473,10 +474,26 @@ def artifact_text(intake: ReviewIntake, name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _deterministic_items(mapping: dict[Any, Any]) -> list[tuple[Any, Any]]:
+    """R5-B: mapping items in a canonical identity order (non-string keys last; string keys by their trimmed text,
+    then raw text). Source normalizers return at the FIRST invalid entry, so semantically equal configs that differ
+    only in YAML key order must reach the same entry first: iteration order may never decide the emitted reason."""
+    def order(item: tuple[Any, Any]) -> tuple[int, str, str]:
+        key = item[0]
+        return (0, key.strip(), key) if isinstance(key, str) else (1, repr(key), "")
+    return sorted(mapping.items(), key=order)
+
+
 def parse_contract_refs(intake_data: dict[str, Any] | ReviewIntake) -> tuple[list[str], list[str]]:
     """Extracts and validates explicit contract references from intake and target_profile.
     Enforces that 'contracts' and 'contract_refs' must be list[str] of nonempty identities.
     Returns (refs, limitations).
+
+    NONCANONICAL_DEFENSIVE_COMPATIBILITY (R5-A): `target_profile.contracts` / `contract_refs` and the top-level
+    `intake.contracts` / `intake.contract_refs` are read here for a hand-built / raw intake dict only. The canonical
+    producer cannot carry them (`TargetProfile` / `ReviewIntake` ignore unknown keys) and `load_repo_profile` rejects
+    them in `.aiops/repo-profile.yaml` (`repo_profile_unsupported_c2_field:<field>`). Support on this path is NOT
+    canonical-producer support.
     """
     raw_intake = intake_data.model_dump(mode="json") if hasattr(intake_data, "model_dump") else intake_data
     if not isinstance(raw_intake, dict):
@@ -589,6 +606,8 @@ def contracts_context(
     profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
     raw_domain_contracts = profile.get("domain_contracts")
     raw_review_packs = profile.get("review_packs")
+    # NONCANONICAL_DEFENSIVE_COMPATIBILITY (R5-A): profile-level `contract_bindings` exists only on a raw intake;
+    # the canonical carrier is the review-packs envelope's `contract_bindings`.
     extra_bindings = profile.get("contract_bindings")
 
     contracts, c_state, c_sub, c_limits = normalize_domain_contracts(raw_domain_contracts)
@@ -660,7 +679,7 @@ def contracts_context(
                 has_unresolved = True
 
     # Check orphan bindings
-    for bound_pid in bindings:
+    for bound_pid in sorted(bindings):  # R5-B: identity order, never YAML insertion order
         if bound_pid not in packs_by_id:
             limitations.append(f"orphan_contract_binding:{bound_pid}")
             has_unresolved = True
@@ -1217,6 +1236,15 @@ def reserved_value_is_contract_like(value: Any) -> bool:
     return False
 
 
+def _is_strict_json_scalar(value: Any) -> bool:
+    """R5-C: a scalar admitted into emitted C2 semantic content must be a strict-JSON value. `float` is wider than
+    the JSON number domain: NaN / +Infinity / -Infinity are rejected at SOURCE ADMISSION (the v1 serializer is not
+    changed). Large finite floats are admitted; the bound is mathematical finiteness, nothing else."""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, (str, int, bool))
+
+
 def _is_valid_reserved_metadata(key: str, value: Any) -> bool:
     if isinstance(value, (str, int, float, bool)):
         return True
@@ -1451,7 +1479,7 @@ def _is_valid_rule_dict(d: Any) -> bool:
         return False
     if "field" in d and (not isinstance(d["field"], str) or not d["field"].strip()):
         return False
-    if "expected_value" in d and not isinstance(d["expected_value"], (str, int, float, bool)):
+    if "expected_value" in d and not _is_strict_json_scalar(d["expected_value"]):
         return False
     return True
 
@@ -1643,7 +1671,7 @@ def _clean_contract_dict_item(item: dict[str, Any], default_id: str | None = Non
                     sec_dict["rationale"] = elem["rationale"].strip()
                 if "field" in elem and isinstance(elem["field"], str) and elem["field"].strip():
                     sec_dict["field"] = elem["field"].strip()
-                if "expected_value" in elem and isinstance(elem["expected_value"], (str, int, float, bool)):
+                if "expected_value" in elem and _is_strict_json_scalar(elem["expected_value"]):
                     sec_dict["expected_value"] = elem["expected_value"]
                 if sec_dict:
                     cleaned_sec_items.append(sec_dict)
@@ -1721,7 +1749,7 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
     # Modern bounded shapes: non-reserved keys represent contract identities
     rows = []
     seen_contract_keys: set[str] = set()
-    for key, value in document.items():
+    for key, value in _deterministic_items(document):
         if not isinstance(key, str) or not key.strip():
             return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
         clean_key = key.strip()
@@ -1843,7 +1871,7 @@ def _parse_binding_carrier(raw: Any) -> tuple[dict[str, list[str]], str | None]:
     if not isinstance(raw, dict):
         return {}, "malformed_contract_bindings:must_be_mapping"
     parsed: dict[str, list[str]] = {}
-    for key, value in raw.items():
+    for key, value in _deterministic_items(raw):
         if not isinstance(key, str) or not key.strip():
             return {}, "malformed_contract_bindings:invalid_key"
         clean_key = key.strip()
@@ -1945,7 +1973,7 @@ def normalize_review_packs(
     if isinstance(raw_packs, dict):
         rows = []
         seen_pack_keys: set[str] = set()
-        for pack_id, pval in raw_packs.items():
+        for pack_id, pval in _deterministic_items(raw_packs):
             if not isinstance(pack_id, str) or not pack_id.strip():
                 return [], contract_bindings, SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, [*limitations, "invalid_source_review_packs:INVALID_IDENTITY"]
             clean_pid = pack_id.strip()
