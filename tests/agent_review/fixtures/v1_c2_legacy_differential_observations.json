@@ -6744,6 +6744,91 @@
       },
       "countermodel": null,
       "covers": [
+        "P.relevance",
+        "P.explicit_ref"
+      ],
+      "id": "pack.relevance.baseline_raises.idless_x_empty_explicit_token",
+      "input": {
+        "chunk_contracts": [
+          "contract:"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance",
+        "P.explicit_ref"
+      ],
+      "id": "pack.relevance.baseline_raises.sibling_row_values",
+      "input": {
+        "chunk_contracts": [
+          "contract:alpha"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "id": "alpha"
+              },
+              {
+                "description": "zz"
+              }
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
         "P.relevance"
       ],
       "id": "pack.relevance.baseline_raises.preset_only",
@@ -7075,6 +7160,26 @@
       }
     }
   ],
+  "differential_domain": {
+    "declared_fail_closed_divergences": [
+      {
+        "authority": "outside the typed admitted legacy row domain; OBL-CL2-03 source-state honesty",
+        "baseline": "a non-dict member of packs[] is skipped",
+        "current": "invalid_source_review_packs:UNSUPPORTED_NONEMPTY (source invalid, no rows, non-conclusive)",
+        "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+        "id": "D1.legacy_non_dict_pack_member"
+      },
+      {
+        "authority": "typed source-admission contract; OBL-CL2-03; prior Gate A fail-closed field-type finding 4178603193",
+        "baseline": "_clean_text stringifies id / description / recommended_review_preset (123 -> '123', True -> 'True')",
+        "current": "invalid_source_review_packs:MALFORMED_SHAPE (source invalid, no rows, non-conclusive)",
+        "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+        "id": "D2.legacy_non_string_projected_fields"
+      }
+    ],
+    "equivalence_domain": "legacy ADMITTED TYPED domain: `rules`/`packs` are lists of dicts whose projected fields are strings or null. Inside it the current engine is differentially equivalent to the frozen baseline (whole-row exact), modulo the typed Gate A limitations declared as INTENTIONAL_DIVERGENCES in the oracle test.",
+    "not_covered_by_this_fixture": "direct-call non-string chunk_contracts members (defensive totalization) and the diagnostic loss-label namespace are not baseline observations; see test_c2_gate_a_oracle_evidence_semantics.py"
+  },
   "generation_method": "scripts/generate-v1-c2-legacy-differential-oracle.py loads `git show <baseline_commit>:app/agent_review/payload_cost_model.py` (blob oid verified) as an isolated module and records contracts_context() observations over the corpus; predicate_kill_map is computed by mutating each baseline predicate in an isolated copy of that source and recording the cases whose observation changes. The fixture stores INPUT + EXPECTED OBSERVATION only; no baseline algorithm is copied into production or tests.",
   "mutation_operators": {
     "C.carrier.file_path": [
@@ -7799,6 +7904,8 @@
       "pack.relevance.docs_changelog",
       "pack.relevance.suspicious_out_of_scope",
       "pack.relevance.uppercase_text.hit",
+      "pack.relevance.baseline_raises.idless_x_empty_explicit_token",
+      "pack.relevance.baseline_raises.sibling_row_values",
       "pack.relevance.baseline_raises.preset_only",
       "pack.relevance.baseline_raises.all_null",
       "pack.relevance.baseline_raises.id_only",
@@ -7811,6 +7918,7 @@
     ],
     "P.relevance.id_part": [
       "pack.relevance.id_part",
+      "pack.relevance.baseline_raises.sibling_row_values",
       "pack.relevance.baseline_raises.description_only"
     ],
     "P.row_admission": [
@@ -7821,6 +7929,7 @@
       "pack.idless.sort_ties_keep_input_order",
       "pack.blank_carriers.include_all",
       "pack.idless.include_all_with_contracts",
+      "pack.relevance.baseline_raises.idless_x_empty_explicit_token",
       "pack.relevance.baseline_raises.preset_only",
       "pack.relevance.baseline_raises.all_null"
     ],

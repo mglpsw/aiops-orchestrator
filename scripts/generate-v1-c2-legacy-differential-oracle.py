@@ -252,6 +252,10 @@ def build_corpus() -> list[dict[str, Any]]:
     add(_case("pack.idless.explicit_ref_sibling", ["P.explicit_ref", "P.row_admission"], packs=[{"recommended_review_preset": preset}, {}, {"id": "alpha"}], cc=["contract:alpha"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
     add(_case("pack.idless.include_all_with_contracts", ["P.include_all", "C.include_all", "P.row_admission"], rules=[{"id": "r", "description": "zzz"}], packs=[{"recommended_review_preset": preset}], cc=["target_profile:review_packs", "target_profile:domain_contracts"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
     # baseline TypeError (None + str) when relevance is evaluated for an id-less or description-less pack
+    # Totalization witnesses: the baseline raises; the expectation must keep the frozen projected rows (None stays None)
+    # and the frozen explicit-ref membership (an id-less pack is never referenced by an empty explicit token).
+    add(_case("pack.relevance.baseline_raises.idless_x_empty_explicit_token", ["P.relevance", "P.explicit_ref"], packs=[{"recommended_review_preset": preset}], cc=["contract:"], group="primary_backend_logic"))
+    add(_case("pack.relevance.baseline_raises.sibling_row_values", ["P.relevance", "P.explicit_ref"], packs=[{"id": "alpha"}, {"description": "zz"}], cc=["contract:alpha"], group="primary_backend_logic"))
     add(_case("pack.relevance.baseline_raises.preset_only", ["P.relevance"], packs=[{"recommended_review_preset": preset}], group="primary_backend_logic"))
     add(_case("pack.relevance.baseline_raises.all_null", ["P.relevance"], packs=[{}], group="frontend_ui"))
     # baseline TypeError (None + str) when relevance is evaluated for a pack lacking id or description
@@ -475,17 +479,29 @@ def run_case(module: types.ModuleType, case_input: dict[str, Any]) -> dict[str, 
     return {"outcome": "ok", **observe(ctx, limits)}
 
 
+# The ONE baseline expression that can raise: the pack-relevance text concatenates the projected row's
+# `id`/`description`, which the baseline pack projection leaves as explicit None (`None + " "` -> TypeError).
+# The contract-relevance twin cannot raise (contract rows drop empty carriers), so it is left untouched.
+_RELEVANCE_SEAM = '(item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords'
+_RELEVANCE_SEAM_TOTALIZED = '((item.get("id") or "") + " " + (item.get("description") or "")).lower() for keyword in relevance_keywords'
+_PACK_FILTER_ANCHOR = "    filtered_packs = ["
+
+
 def _totalized(source: str) -> str:
-    """Baseline with the one defect that crashes it (None + str on pack relevance text) closed:
-    pack id/description None are read as empty. Used ONLY to define the expected observation
-    for inputs on which the baseline itself raises."""
-    patched = source.replace(
-        '            {\n                "id": _clean_text(item.get("id")),\n                "description": _clean_text(item.get("description")),\n                "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),\n            }',
-        '            {\n                "id": _clean_text(item.get("id")) or "",\n                "description": _clean_text(item.get("description")) or "",\n                "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),\n            }',
-    )
-    if patched == source:
-        raise SystemExit("STOP_LEGACY_ORACLE_INCOMPLETE: totalization anchor not found")
-    return patched
+    """Baseline with ONLY the crash-causing relevance expression totalized: a None id/description reads as empty
+    text *inside that expression*. ExceptionTotalization must not imply RowSemanticMutation: the projected row
+    (`id`/`description` stay None), explicit-ref membership, selection and every other predicate are the frozen
+    baseline's own. Used ONLY to define the expected observation for inputs on which the baseline itself raises.
+    Exact anchored replacement; any drift in the anchor count or position fails closed."""
+    if source.count(_RELEVANCE_SEAM) != 2 or source.count(_PACK_FILTER_ANCHOR) != 1:
+        raise SystemExit(
+            "STOP_TOTALIZATION_ANCHOR_DRIFT: expected exactly 2 relevance seams and 1 pack-filter anchor, found "
+            f"{source.count(_RELEVANCE_SEAM)} / {source.count(_PACK_FILTER_ANCHOR)}"
+        )
+    pack_seam_index = source.index(_RELEVANCE_SEAM, source.index(_PACK_FILTER_ANCHOR))
+    if source.find(_RELEVANCE_SEAM) == pack_seam_index:
+        raise SystemExit("STOP_TOTALIZATION_ANCHOR_DRIFT: the pack relevance seam is not the second occurrence")
+    return source[:pack_seam_index] + _RELEVANCE_SEAM_TOTALIZED + source[pack_seam_index + len(_RELEVANCE_SEAM):]
 
 
 def generate() -> dict[str, Any]:
@@ -558,6 +574,30 @@ def generate() -> dict[str, Any]:
             "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
             "review_packs as a top-level list of dicts (baseline read it as no packs)",
         ],
+        "differential_domain": {
+            "equivalence_domain": (
+                "legacy ADMITTED TYPED domain: `rules`/`packs` are lists of dicts whose projected fields are strings or null. "
+                "Inside it the current engine is differentially equivalent to the frozen baseline (whole-row exact), modulo "
+                "the typed Gate A limitations declared as INTENTIONAL_DIVERGENCES in the oracle test."
+            ),
+            "declared_fail_closed_divergences": [
+                {
+                    "id": "D1.legacy_non_dict_pack_member",
+                    "baseline": "a non-dict member of packs[] is skipped",
+                    "current": "invalid_source_review_packs:UNSUPPORTED_NONEMPTY (source invalid, no rows, non-conclusive)",
+                    "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+                    "authority": "outside the typed admitted legacy row domain; OBL-CL2-03 source-state honesty",
+                },
+                {
+                    "id": "D2.legacy_non_string_projected_fields",
+                    "baseline": "_clean_text stringifies id / description / recommended_review_preset (123 -> '123', True -> 'True')",
+                    "current": "invalid_source_review_packs:MALFORMED_SHAPE (source invalid, no rows, non-conclusive)",
+                    "disposition": "INTENTIONAL_FAIL_CLOSED_DIVERGENCE",
+                    "authority": "typed source-admission contract; OBL-CL2-03; prior Gate A fail-closed field-type finding 4178603193",
+                },
+            ],
+            "not_covered_by_this_fixture": "direct-call non-string chunk_contracts members (defensive totalization) and the diagnostic loss-label namespace are not baseline observations; see test_c2_gate_a_oracle_evidence_semantics.py",
+        },
         "baseline_predicates": predicates,
         "mutation_operators": {pid: [list(op) for op in ops] for pid, ops in mutants.items()},
         "predicate_kill_map": kill_map,

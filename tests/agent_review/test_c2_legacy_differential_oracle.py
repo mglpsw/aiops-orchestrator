@@ -81,6 +81,8 @@ INTENTIONAL_DIVERGENCES: dict[str, dict[str, Any]] = {
     "pack.selected.reverse_alias.miss": {"limitations": ["selected_contract_pack_missing:foo-alpha"]},
     # Round-4 S1: the preset is a projected carrier but never a selection carrier (id/description only)
     "pack.preset_only.selected_by_preset.miss": {"limitations": ["selected_contract_pack_missing:review:deep"]},
+    # an empty explicit token `contract:` is a typed EMPTY_IDENTITY limitation, not the baseline's silent inert token
+    "pack.relevance.baseline_raises.idless_x_empty_explicit_token": {"limitations": ["unresolved_contract_reference:EMPTY_IDENTITY"]},
 }
 
 
@@ -278,6 +280,8 @@ def test_baseline_defects_are_declared_not_hidden() -> None:
         "pack.relevance.baseline_raises.description_only",
         "pack.relevance.baseline_raises.preset_only",
         "pack.relevance.baseline_raises.all_null",
+        "pack.relevance.baseline_raises.idless_x_empty_explicit_token",
+        "pack.relevance.baseline_raises.sibling_row_values",
     }
     for case in raising:
         assert case["baseline_observation"]["error"] == "TypeError"
