@@ -224,6 +224,36 @@ def build_corpus() -> list[dict[str, Any]]:
     add(_case("pack.duplicates_not_deduped", ["P.include_all"], packs=[alpha, alpha], cc=["target_profile:review_packs"]))
     add(_case("pack.row.case_and_whitespace_preserved", ["P.include_all"], packs=[{"id": "MixedCase", "description": "  A  B ", "recommended_review_preset": "Review:DEEP"}], cc=["target_profile:review_packs"]))
     add(_case("pack.blank_strings.absent", ["P.include_all"], packs=[{"id": "", "description": "named"}, {"id": "p", "description": ""}], cc=["target_profile:review_packs"]))
+    # --- Round-4 S1: LegacyPackItemIsDict -> LegacyPackRowExists, over the whole carrier product ----------
+    # id x description x recommended_review_preset, each present/absent: every dict item is one projected row.
+    preset = "review:deep"
+    carrier_packs = {
+        "all_null": {},
+        "preset_only": {"recommended_review_preset": preset},
+        "description_only": {"description": "calendar"},
+        "id_only": {"id": "only-id"},
+        "id_preset": {"id": "p-id", "recommended_review_preset": preset},
+        "description_preset": {"description": "calendar", "recommended_review_preset": preset},
+        "id_description": {"id": "p-id", "description": "calendar"},
+        "all_carriers": {"id": "p-id", "description": "calendar", "recommended_review_preset": preset},
+    }
+    for name, carrier_pack in carrier_packs.items():
+        if name == "id_only":  # already covered by pack.id_only.include_all above
+            continue
+        add(_case(f"pack.{name}.include_all", ["P.include_all", "P.row_admission"], packs=[dict(carrier_pack)], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.carrier_matrix.include_all", ["P.include_all", "P.row_admission"], packs=[dict(v) for v in reversed(list(carrier_packs.values()))], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.preset_only.multiplicity_and_order", ["P.include_all", "P.row_admission"], packs=[{"recommended_review_preset": "b"}, {"recommended_review_preset": "a"}, {"recommended_review_preset": "b"}], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.idless.sort_ties_keep_input_order", ["P.include_all", "P.row_admission"], packs=[{"description": "x", "recommended_review_preset": "2"}, {"description": "x", "recommended_review_preset": "1"}, {"recommended_review_preset": "0"}, {"recommended_review_preset": "9"}], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.blank_carriers.include_all", ["P.include_all", "P.row_admission"], packs=[{"id": "  ", "description": "\t", "recommended_review_preset": " "}], cc=["target_profile:review_packs"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    # applicability is decided by id/description only: a preset-only or all-null pack is never selected or related
+    add(_case("pack.preset_only.not_applicable", ["TERM.not_relevant", "P.row_admission"], packs=[{"recommended_review_preset": preset}], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.preset_only.selected_by_preset.miss", ["P.selected.guard", "P.row_admission"], packs=[{"recommended_review_preset": preset}], sel=preset, cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.idless.selected_sibling", ["P.selected.guard", "P.sel.id_sub", "P.row_admission"], packs=[{"recommended_review_preset": preset}, {}, {"id": "alpha", "description": "first"}], sel="alpha", cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.idless.explicit_ref_sibling", ["P.explicit_ref", "P.row_admission"], packs=[{"recommended_review_preset": preset}, {}, {"id": "alpha"}], cc=["contract:alpha"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    add(_case("pack.idless.include_all_with_contracts", ["P.include_all", "C.include_all", "P.row_admission"], rules=[{"id": "r", "description": "zzz"}], packs=[{"recommended_review_preset": preset}], cc=["target_profile:review_packs", "target_profile:domain_contracts"], cm="CM-C4-LEGACY-PACK-CARRIER-PRODUCT"))
+    # baseline TypeError (None + str) when relevance is evaluated for an id-less or description-less pack
+    add(_case("pack.relevance.baseline_raises.preset_only", ["P.relevance"], packs=[{"recommended_review_preset": preset}], group="primary_backend_logic"))
+    add(_case("pack.relevance.baseline_raises.all_null", ["P.relevance"], packs=[{}], group="frontend_ui"))
     # baseline TypeError (None + str) when relevance is evaluated for a pack lacking id or description
     add(_case("pack.relevance.baseline_raises.id_only", ["P.relevance"], packs=[{"id": "qq"}], group="primary_backend_logic"))
     add(_case("pack.relevance.baseline_raises.description_only", ["P.relevance"], packs=[{"description": "zzz"}], group="frontend_ui"))
@@ -280,6 +310,7 @@ def _predicates() -> list[dict[str, Any]]:
         ("P.sel.desc_eq", "redundant", "description.lower() == selected -- subsumed by `selected in description.lower()`"),
         ("P.sel.desc_sub", live, "selected in description.lower()"),
         ("P.match_chunk", "dead", "_contract_matches_chunk(pack): the baseline pack projection {id, description, recommended_review_preset} carries no path/pattern/scope/is_global field, so the disjunct can never be true"),
+        ("P.row_admission", live, "every dict item of packs is projected to one row (no id/description admission filter; null carriers kept)"),
         ("P.relevance", live, "semantic-group keywords over id + description (packs)"),
         ("P.relevance.id_part", live, "id half of the pack relevance text"),
         ("P.relevance.desc_part", live, "description half of the pack relevance text"),
@@ -326,6 +357,11 @@ def _mutants() -> dict[str, list[tuple[str, str, int]]]:
         "P.sel.desc_eq": [("description_lower == selected", "False", 0)],
         "P.sel.desc_sub": [("selected in description_lower", "False", 0)],
         "P.match_chunk": [("_contract_matches_chunk(item, chunk_files=chunk_file_set)", "False", 1)],
+        "P.row_admission": [(
+            '        if not isinstance(item, dict):\n            continue\n        rows.append(\n            {\n                "id": _clean_text(item.get("id")),\n                "description": _clean_text(item.get("description")),\n                "recommended_review_preset"',
+            '        if not isinstance(item, dict) or not (_clean_text(item.get("id")) or _clean_text(item.get("description"))):\n            continue\n        rows.append(\n            {\n                "id": _clean_text(item.get("id")),\n                "description": _clean_text(item.get("description")),\n                "recommended_review_preset"',
+            0,
+        )],
         "P.relevance": [("relevance_keywords\n                and any(keyword in ", "False\n                and any(keyword in ", 1)],
         "P.relevance.id_part": [(REL_EXPR, '(" " + item.get("description", "")).lower() for keyword in relevance_keywords', 1)],
         "P.relevance.desc_part": [(REL_EXPR, '(item.get("id", "") + " ").lower() for keyword in relevance_keywords', 1)],
@@ -521,7 +557,6 @@ def generate() -> dict[str, Any]:
         "additive_compatibility_shapes": [
             "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
             "review_packs as a top-level list of dicts (baseline read it as no packs)",
-            "legacy PACK rows with neither id nor description are not admitted (SUBTRACTIVE but lossless: the pack projection has no other field; legacy CONTRACT rows are all admitted)",
         ],
         "baseline_predicates": predicates,
         "mutation_operators": {pid: [list(op) for op in ops] for pid, ops in mutants.items()},

@@ -52,6 +52,7 @@ REQUIRED_COUNTERMODELS = {
     "CM-C4-LEGACY-UNKNOWN-FIELDS-IGNORED",
     "CM-C4-LEGACY-CONTRACT-ROWS-ADMITTED",
     "CM-C4-LEGACY-PACK-ROWS-EXACT",
+    "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
 }
 
 # Gate A fail-closed typed limitations that INTENTIONALLY change the observation relative to the
@@ -78,6 +79,8 @@ INTENTIONAL_DIVERGENCES: dict[str, dict[str, Any]] = {
         "limitations": ["unresolved_contract_reference:alph", "required_source_absent:domain_contracts"]
     },
     "pack.selected.reverse_alias.miss": {"limitations": ["selected_contract_pack_missing:foo-alpha"]},
+    # Round-4 S1: the preset is a projected carrier but never a selection carrier (id/description only)
+    "pack.preset_only.selected_by_preset.miss": {"limitations": ["selected_contract_pack_missing:review:deep"]},
 }
 
 
@@ -273,6 +276,8 @@ def test_baseline_defects_are_declared_not_hidden() -> None:
     assert {c["id"] for c in raising} == {
         "pack.relevance.baseline_raises.id_only",
         "pack.relevance.baseline_raises.description_only",
+        "pack.relevance.baseline_raises.preset_only",
+        "pack.relevance.baseline_raises.all_null",
     }
     for case in raising:
         assert case["baseline_observation"]["error"] == "TypeError"

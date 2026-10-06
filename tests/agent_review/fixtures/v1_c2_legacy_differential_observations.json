@@ -1,8 +1,7 @@
 {
   "additive_compatibility_shapes": [
     "domain_contracts as a top-level list of dicts (baseline read it as no contracts)",
-    "review_packs as a top-level list of dicts (baseline read it as no packs)",
-    "legacy PACK rows with neither id nor description are not admitted (SUBTRACTIVE but lossless: the pack projection has no other field; legacy CONTRACT rows are all admitted)"
+    "review_packs as a top-level list of dicts (baseline read it as no packs)"
   ],
   "admitted_baseline_shapes": [
     "target_profile.domain_contracts = {\"rules\": [dict, ...]}",
@@ -176,6 +175,11 @@
       "expression": "_contract_matches_chunk(pack): the baseline pack projection {id, description, recommended_review_preset} carries no path/pattern/scope/is_global field, so the disjunct can never be true",
       "id": "P.match_chunk",
       "kind": "dead"
+    },
+    {
+      "expression": "every dict item of packs is projected to one row (no id/description admission filter; null carriers kept)",
+      "id": "P.row_admission",
+      "kind": "live"
     },
     {
       "expression": "semantic-group keywords over id + description (packs)",
@@ -5982,6 +5986,827 @@
     },
     {
       "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.all_null.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.preset_only.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.description_only.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": "p-id",
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.id_preset.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "id": "p-id",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.description_preset.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": "p-id",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.id_description.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar",
+                "id": "p-id"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "calendar",
+            "id": "p-id",
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.all_carriers.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar",
+                "id": "p-id",
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "review:deep"
+          },
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": null
+          },
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": "review:deep"
+          },
+          {
+            "description": "calendar",
+            "id": null,
+            "recommended_review_preset": null
+          },
+          {
+            "description": null,
+            "id": "only-id",
+            "recommended_review_preset": null
+          },
+          {
+            "description": null,
+            "id": "p-id",
+            "recommended_review_preset": "review:deep"
+          },
+          {
+            "description": "calendar",
+            "id": "p-id",
+            "recommended_review_preset": "review:deep"
+          },
+          {
+            "description": "calendar",
+            "id": "p-id",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.carrier_matrix.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "calendar",
+                "id": "p-id",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "description": "calendar",
+                "id": "p-id"
+              },
+              {
+                "description": "calendar",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "id": "p-id",
+                "recommended_review_preset": "review:deep"
+              },
+              {
+                "id": "only-id"
+              },
+              {
+                "description": "calendar"
+              },
+              {
+                "recommended_review_preset": "review:deep"
+              },
+              {}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "b"
+          },
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "a"
+          },
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "b"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.preset_only.multiplicity_and_order",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "b"
+              },
+              {
+                "recommended_review_preset": "a"
+              },
+              {
+                "recommended_review_preset": "b"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "0"
+          },
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "9"
+          },
+          {
+            "description": "x",
+            "id": null,
+            "recommended_review_preset": "2"
+          },
+          {
+            "description": "x",
+            "id": null,
+            "recommended_review_preset": "1"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.idless.sort_ties_keep_input_order",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "x",
+                "recommended_review_preset": "2"
+              },
+              {
+                "description": "x",
+                "recommended_review_preset": "1"
+              },
+              {
+                "recommended_review_preset": "0"
+              },
+              {
+                "recommended_review_preset": "9"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.blank_carriers.include_all",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "description": "\t",
+                "id": "  ",
+                "recommended_review_preset": " "
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "TERM.not_relevant",
+        "P.row_admission"
+      ],
+      "id": "pack.preset_only.not_applicable",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.selected.guard",
+        "P.row_admission"
+      ],
+      "id": "pack.preset_only.selected_by_preset.miss",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "review:deep",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": "first",
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.selected.guard",
+        "P.sel.id_sub",
+        "P.row_admission"
+      ],
+      "id": "pack.idless.selected_sibling",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": "alpha",
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              },
+              {},
+              {
+                "description": "first",
+                "id": "alpha"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": "alpha",
+            "recommended_review_preset": null
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.explicit_ref",
+        "P.row_admission"
+      ],
+      "id": "pack.idless.explicit_ref_sibling",
+      "input": {
+        "chunk_contracts": [
+          "contract:alpha"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              },
+              {},
+              {
+                "id": "alpha"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "contracts": [
+          {
+            "description": "zzz",
+            "id": "r"
+          }
+        ],
+        "not_relevant": false,
+        "outcome": "ok",
+        "packs": [
+          {
+            "description": null,
+            "id": null,
+            "recommended_review_preset": "review:deep"
+          }
+        ]
+      },
+      "countermodel": "CM-C4-LEGACY-PACK-CARRIER-PRODUCT",
+      "covers": [
+        "P.include_all",
+        "C.include_all",
+        "P.row_admission"
+      ],
+      "id": "pack.idless.include_all_with_contracts",
+      "input": {
+        "chunk_contracts": [
+          "target_profile:review_packs",
+          "target_profile:domain_contracts"
+        ],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "other",
+        "target_profile": {
+          "domain_contracts": {
+            "rules": [
+              {
+                "description": "zzz",
+                "id": "r"
+              }
+            ]
+          },
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.baseline_raises.preset_only",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "primary_backend_logic",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {
+                "recommended_review_preset": "review:deep"
+              }
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      }
+    },
+    {
+      "baseline_observation": {
+        "error": "TypeError",
+        "outcome": "raises"
+      },
+      "countermodel": null,
+      "covers": [
+        "P.relevance"
+      ],
+      "id": "pack.relevance.baseline_raises.all_null",
+      "input": {
+        "chunk_contracts": [],
+        "chunk_files": [
+          "elsewhere/a.txt"
+        ],
+        "chunk_id": "chunk-1",
+        "selected_contract_pack": null,
+        "semantic_group": "frontend_ui",
+        "target_profile": {
+          "review_packs": {
+            "packs": [
+              {}
+            ]
+          }
+        }
+      },
+      "totalized_baseline_observation": {
+        "contracts": [],
+        "not_relevant": true,
+        "outcome": "ok",
+        "packs": []
+      }
+    },
+    {
+      "baseline_observation": {
         "error": "TypeError",
         "outcome": "raises"
       },
@@ -6609,6 +7434,13 @@
         1
       ]
     ],
+    "P.row_admission": [
+      [
+        "        if not isinstance(item, dict):\n            continue\n        rows.append(\n            {\n                \"id\": _clean_text(item.get(\"id\")),\n                \"description\": _clean_text(item.get(\"description\")),\n                \"recommended_review_preset\"",
+        "        if not isinstance(item, dict) or not (_clean_text(item.get(\"id\")) or _clean_text(item.get(\"description\"))):\n            continue\n        rows.append(\n            {\n                \"id\": _clean_text(item.get(\"id\")),\n                \"description\": _clean_text(item.get(\"description\")),\n                \"recommended_review_preset\"",
+        0
+      ]
+    ],
     "P.sel.desc_eq": [
       [
         "description_lower == selected",
@@ -6722,7 +7554,8 @@
       "contract.patterns.tilde_noslash.row",
       "contract.row.description_whitespace_and_case",
       "contract.rows.without_id_or_description",
-      "contract.blank_strings.absent"
+      "contract.blank_strings.absent",
+      "pack.idless.include_all_with_contracts"
     ],
     "C.match.global.flag": [
       "contract.global.flag"
@@ -6928,7 +7761,8 @@
     ],
     "P.explicit_ref": [
       "pack.explicit_ref.hit",
-      "pack.id_only.explicit_ref"
+      "pack.id_only.explicit_ref",
+      "pack.idless.explicit_ref_sibling"
     ],
     "P.include_all": [
       "pack.include_all.true",
@@ -6939,7 +7773,19 @@
       "pack.rows.null_keys_preserved",
       "pack.duplicates_not_deduped",
       "pack.row.case_and_whitespace_preserved",
-      "pack.blank_strings.absent"
+      "pack.blank_strings.absent",
+      "pack.all_null.include_all",
+      "pack.preset_only.include_all",
+      "pack.description_only.include_all",
+      "pack.id_preset.include_all",
+      "pack.description_preset.include_all",
+      "pack.id_description.include_all",
+      "pack.all_carriers.include_all",
+      "pack.carrier_matrix.include_all",
+      "pack.preset_only.multiplicity_and_order",
+      "pack.idless.sort_ties_keep_input_order",
+      "pack.blank_carriers.include_all",
+      "pack.idless.include_all_with_contracts"
     ],
     "P.match_chunk": [],
     "P.relevance": [
@@ -6953,6 +7799,8 @@
       "pack.relevance.docs_changelog",
       "pack.relevance.suspicious_out_of_scope",
       "pack.relevance.uppercase_text.hit",
+      "pack.relevance.baseline_raises.preset_only",
+      "pack.relevance.baseline_raises.all_null",
       "pack.relevance.baseline_raises.id_only",
       "pack.relevance.baseline_raises.description_only"
     ],
@@ -6964,6 +7812,17 @@
     "P.relevance.id_part": [
       "pack.relevance.id_part",
       "pack.relevance.baseline_raises.description_only"
+    ],
+    "P.row_admission": [
+      "pack.all_null.include_all",
+      "pack.preset_only.include_all",
+      "pack.carrier_matrix.include_all",
+      "pack.preset_only.multiplicity_and_order",
+      "pack.idless.sort_ties_keep_input_order",
+      "pack.blank_carriers.include_all",
+      "pack.idless.include_all_with_contracts",
+      "pack.relevance.baseline_raises.preset_only",
+      "pack.relevance.baseline_raises.all_null"
     ],
     "P.sel.desc_eq": [],
     "P.sel.desc_sub": [
@@ -6982,6 +7841,7 @@
       "pack.selected.case_insensitive",
       "pack.description_only.selected",
       "pack.selected.description_case_insensitive",
+      "pack.idless.selected_sibling",
       "terminal.pack_only"
     ],
     "PAT.star_prefix": [
@@ -7051,6 +7911,8 @@
       "pack.token.include_all_padded.miss",
       "pack.token.bare_id.miss",
       "pack.relevance.join_separator.miss",
+      "pack.preset_only.not_applicable",
+      "pack.preset_only.selected_by_preset.miss",
       "terminal.zero_context.not_relevant",
       "terminal.sources_absent.not_relevant",
       "terminal.sources_empty.not_relevant"

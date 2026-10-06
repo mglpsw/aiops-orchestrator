@@ -825,22 +825,27 @@ def _shrink_until_stable(ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], lis
 
 
 def test_cm_c4_idless_legacy_pack_floor_never_fabricates_identity() -> None:
-    """Item 28: description-only legacy pack x required floor. No `id: ""`, no description->id."""
+    """Item 28 (+ Round-4 S1): an identity-less legacy pack x required floor. No `id: ""`, no description->id,
+    and no presumed single carrier: the floor is the exact three-field baseline projection."""
     profile = {"review_packs": {"packs": [{"description": "calendar", "recommended_review_preset": "review:deep"}]}}
     ctx, _ = _ctx(profile, selected="calendar")
     assert ctx["review_packs"][0]["required"] is True
     assert not ctx["review_packs"][0].get("id")
     assert not ctx["review_packs"][0].get("effective_contracts")
 
+    projection = {"id": None, "description": "calendar", "recommended_review_preset": "review:deep"}
     minimal = pcm.minimal_contracts_context(ctx)
-    assert minimal["review_packs"] == [{"description": "calendar", "required": True}]
-    assert all("id" not in p for p in minimal["review_packs"]), "no fabricated identity"
+    assert minimal["review_packs"] == [{**projection, "required": True}]
+    assert all(p["id"] is None for p in minimal["review_packs"]), "no fabricated identity (explicit null)"
 
-    snapshots, limitations = _shrink_until_stable(pcm.clean_contracts_context_for_payload(ctx))
-    floor = next(s for s in snapshots if s["review_packs"] and set(s["review_packs"][0]) == {"description", "required"})
-    assert floor["review_packs"] == [{"description": "calendar", "required": True}]
+    cleaned = pcm.clean_contracts_context_for_payload(ctx)
+    floor_pack = {**projection, "required": True}
+    assert cleaned["review_packs"] == [floor_pack], "the cleaned payload already IS the floor: no carrier is optional"
+    snapshots, limitations = _shrink_until_stable(cleaned)
+    # the ladder never strips a floor carrier: every snapshot is the intact floor or the final loss (empty)
+    assert all(s["review_packs"] in ([floor_pack], []) for s in snapshots) and snapshots[-1]["review_packs"] == []
     assert all(not p.get("id") for s in snapshots for p in s["review_packs"])
-    assert limitations == [pcm.unidentified_pack_loss_label({"description": "calendar"}).join(["required_contract_pack_context_lost:", ""])]
+    assert limitations == [pcm.unidentified_pack_loss_label(projection).join(["required_contract_pack_context_lost:", ""])]
     assert limitations[0].startswith("required_contract_pack_context_lost:unidentified_legacy_pack:")
 
 
@@ -940,15 +945,19 @@ def test_ab_c4_legacy_relevance(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ab_c4_legacy_description_only_pack(monkeypatch: pytest.MonkeyPatch) -> None:
-    """AB-C4-LEGACY-DESCRIPTION-ONLY-PACK: reintroduce `if pid:` row admission."""
+    """AB-C4-LEGACY-DESCRIPTION-ONLY-PACK: reintroduce `if pid:` row admission (at the row-projection seam)."""
     profile = {"review_packs": {"packs": [{"description": "calendar"}]}}
 
     def witness() -> int:
         return len(_ctx(profile, selected="calendar")[0]["review_packs"])
 
+    def id_only_admission(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = [pcm._legacy_pack_row(item) for item in items if isinstance(item, dict)]
+        return sorted([r for r in rows if r.get("id")], key=lambda r: (r.get("id") or "", r.get("description") or ""))
+
     assert witness() == 1
     with monkeypatch.context() as m:
-        m.setattr(pcm, "_legacy_pack_row_admitted", lambda row: bool(row.get("id")))
+        m.setattr(pcm, "_legacy_pack_rows", id_only_admission)
         assert witness() == 0, "mutant must go RED"
     assert witness() == 1
 
@@ -1285,7 +1294,8 @@ def _w_required_floor() -> bool:
     legacy_ctx, _ = _ctx({"review_packs": {"packs": [{"description": "calendar"}]}}, selected="calendar")
     modern_ctx, _ = _ctx({"review_packs": {"packs": {"calendar": {"description": "d"}}}}, selected="calendar")
     return (
-        pcm.minimal_contracts_context(legacy_ctx)["review_packs"] == [{"description": "calendar", "required": True}]
+        pcm.minimal_contracts_context(legacy_ctx)["review_packs"]
+        == [{"id": None, "description": "calendar", "recommended_review_preset": None, "required": True}]
         and pcm.minimal_contracts_context(modern_ctx)["review_packs"] == [{"id": "calendar", "required": True}]
     )
 
@@ -1303,7 +1313,7 @@ MODE_SEMANTIC_MATRIX: list[dict[str, Any]] = [
     {"axis": "relevance_keywords", "legacy": "semantic-group keyword recovery over id+description", "modern": "none", "classification": "INTENTIONAL", "authority": _AUTH_FROZEN + "; CM-A3-AVAILABILITY-IS-NOT-APPLICABILITY", "witness": _w_relevance},
     {"axis": "relation_resolution", "legacy": "pack.domain_contract NON-AUTHORITATIVE (not even projected)", "modern": "pack.domain_contract + contract_bindings establish EffectiveContractRefs", "classification": "INTENTIONAL", "authority": "REVIEW_PACK_LEGACY_INPUT_POLICY; OBL-CL2-02", "witness": _w_relation_resolution},
     {"axis": "required_source", "legacy": "only an explicit contract:<id> is a declared contract reference", "modern": "inline domain_contract U contract_bindings U explicit refs", "classification": "INTENTIONAL", "authority": "OBL-CL2-03; cycle-3 4179993600", "witness": _w_required_source},
-    {"axis": "required_floor", "legacy": "identity-less pack floors to its description carrier (no fabricated id)", "modern": "pack floors to its identity (+ effective_contracts)", "classification": "INTENTIONAL", "authority": "OBL-CL2-05; item 28 (no fabricated identity)", "witness": _w_required_floor},
+    {"axis": "required_floor", "legacy": "identity-less pack floors to its exact three-field baseline projection (no fabricated id, no presumed carrier)", "modern": "pack floors to its identity (+ effective_contracts)", "classification": "INTENTIONAL", "authority": "OBL-CL2-05; item 28 (no fabricated identity)", "witness": _w_required_floor},
 ]
 
 

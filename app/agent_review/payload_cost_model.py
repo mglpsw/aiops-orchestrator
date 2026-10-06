@@ -39,6 +39,7 @@ import fnmatch
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
@@ -487,9 +488,9 @@ def parse_contract_refs(intake_data: dict[str, Any] | ReviewIntake) -> tuple[lis
     profile = raw_intake.get("target_profile")
     if isinstance(profile, dict):
         if profile.get("domain_contracts"):
-            refs.append("target_profile:domain_contracts")
+            refs.append(SOURCE_MARKER_DOMAIN_CONTRACTS)
         if profile.get("review_packs"):
-            refs.append("target_profile:review_packs")
+            refs.append(SOURCE_MARKER_REVIEW_PACKS)
 
         for key in ("contracts", "contract_refs"):
             if key in profile and profile[key] is not None:
@@ -522,6 +523,60 @@ def parse_contract_refs(intake_data: dict[str, Any] | ReviewIntake) -> tuple[lis
     return _dedupe(refs), _dedupe(limitations)
 
 
+# ContractRefToken -> TokenClass -> SemanticAuthority.
+# `chunk_contracts` transports opaque strings from the planner (representation unchanged). Only two token
+# grammars carry C2 semantics; every other non-empty string is inert for C2 exactly as it was in the frozen
+# baseline. The classification is explicit and total: no other site may test these strings ad hoc.
+TOKEN_CLASS_EXPLICIT_CONTRACT_REF = "EXPLICIT_CONTRACT_REF"  # "contract:<nonempty-id>": explicit C2 identity relation
+TOKEN_CLASS_INTERNAL_SOURCE_MARKER = "INTERNAL_SOURCE_MARKER"  # planner-owned include-all source carrier, never an identity
+TOKEN_CLASS_OPAQUE_LEGACY_NON_C2 = "OPAQUE_LEGACY_NON_C2"  # any other non-empty string: no C2 relation
+TOKEN_CLASS_INVALID = "INVALID"  # blank / non-string / "contract:" without an identity
+TOKEN_CLASSES: frozenset[str] = frozenset(
+    {
+        TOKEN_CLASS_EXPLICIT_CONTRACT_REF,
+        TOKEN_CLASS_INTERNAL_SOURCE_MARKER,
+        TOKEN_CLASS_OPAQUE_LEGACY_NON_C2,
+        TOKEN_CLASS_INVALID,
+    }
+)
+SOURCE_MARKER_DOMAIN_CONTRACTS = "target_profile:domain_contracts"
+SOURCE_MARKER_REVIEW_PACKS = "target_profile:review_packs"
+INTERNAL_SOURCE_MARKERS: frozenset[str] = frozenset({SOURCE_MARKER_DOMAIN_CONTRACTS, SOURCE_MARKER_REVIEW_PACKS})
+EXPLICIT_CONTRACT_REF_PREFIX = "contract:"
+
+
+@dataclass(frozen=True)
+class ContractRefToken:
+    """Classified chunk contract-ref token. `identity` is set only for EXPLICIT_CONTRACT_REF, `marker` only for
+    INTERNAL_SOURCE_MARKER; `limitation` is the typed fail-closed detail of an INVALID token that has a
+    consequence (None when the token is inert, as in the baseline)."""
+
+    token_class: str
+    identity: str | None = None
+    marker: str | None = None
+    limitation: str | None = None
+
+
+def classify_contract_ref_token(token: Any) -> ContractRefToken:
+    """The single authority classifying a chunk contract-ref token. Matching is exact and case-sensitive
+    (the baseline's grammar); the explicit identity is trimmed (Gate A S1, 4179272330).
+    Behavior vs the predecessor: unchanged for every string. A blank string stays inert (the producer,
+    `parse_contract_refs`, already reports it); `contract:` without an identity keeps EMPTY_IDENTITY; a
+    non-string member, which previously raised AttributeError, is a typed MALFORMED_MEMBER limitation."""
+    if not isinstance(token, str):
+        return ContractRefToken(TOKEN_CLASS_INVALID, limitation="unresolved_contract_reference:MALFORMED_MEMBER")
+    if not token.strip():
+        return ContractRefToken(TOKEN_CLASS_INVALID)
+    if token in INTERNAL_SOURCE_MARKERS:
+        return ContractRefToken(TOKEN_CLASS_INTERNAL_SOURCE_MARKER, marker=token)
+    if token.startswith(EXPLICIT_CONTRACT_REF_PREFIX):
+        identity = token[len(EXPLICIT_CONTRACT_REF_PREFIX):].strip()
+        if not identity:
+            return ContractRefToken(TOKEN_CLASS_INVALID, limitation="unresolved_contract_reference:EMPTY_IDENTITY")
+        return ContractRefToken(TOKEN_CLASS_EXPLICIT_CONTRACT_REF, identity=identity)
+    return ContractRefToken(TOKEN_CLASS_OPAQUE_LEGACY_NON_C2)
+
+
 def contracts_context(
     intake: ReviewIntake,
     *,
@@ -552,19 +607,22 @@ def contracts_context(
 
     relevance_keywords = _relevance_keywords(semantic_group)
     chunk_file_set = set(chunk_files)
-    include_all_contracts = "target_profile:domain_contracts" in chunk_contracts
-    include_all_packs = "target_profile:review_packs" in chunk_contracts
+    include_all_contracts = False
+    include_all_packs = False
 
     has_unresolved = False
     referenced_contracts: set[str] = set()
     for item in chunk_contracts:
-        if item.startswith("contract:") and ":" in item:
-            ref_id = item.split(":", 1)[1]
-            if not ref_id.strip():
-                limitations.append("unresolved_contract_reference:EMPTY_IDENTITY")
-                has_unresolved = True
-            else:
-                referenced_contracts.add(ref_id.strip())
+        classified = classify_contract_ref_token(item)
+        if classified.token_class == TOKEN_CLASS_INTERNAL_SOURCE_MARKER:
+            include_all_contracts = include_all_contracts or classified.marker == SOURCE_MARKER_DOMAIN_CONTRACTS
+            include_all_packs = include_all_packs or classified.marker == SOURCE_MARKER_REVIEW_PACKS
+        elif classified.token_class == TOKEN_CLASS_EXPLICIT_CONTRACT_REF and classified.identity is not None:
+            referenced_contracts.add(classified.identity)
+        elif classified.limitation is not None:
+            limitations.append(classified.limitation)
+            has_unresolved = True
+        # OPAQUE_LEGACY_NON_C2 (and an inert blank INVALID): no C2 relation, no required source, no consequence
 
     contracts_by_id = {c["id"]: c for c in contracts if c.get("id")}
     packs_by_id = {p["id"]: p for p in packs if p.get("id")}
@@ -647,10 +705,10 @@ def contracts_context(
         has_unresolved = True
 
     # B2 (Section 11-12): Every applicable pack preserves its identity as required context.
-    # A legacy description-only pack has no identity to preserve; its only admitted
-    # carrier (the description) is the floor -- identity is never fabricated.
+    # An identity-less LEGACY pack has no identity to preserve and none is fabricated: its floor is
+    # the exact three-field baseline projection (legacy_pack_projection), whatever subset is non-null.
     for ap in applicable_packs:
-        reasons: list[str] = ["applicable_pack_identity" if ap.get("id") else "applicable_pack_description_carrier"]
+        reasons: list[str] = ["applicable_pack_identity" if ap.get("id") else "applicable_pack_legacy_projection"]
         if ap.pop("_explicitly_selected", False):
             reasons.append("explicit_selection")
         if ap.get("effective_contracts"):
@@ -1135,6 +1193,28 @@ def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
 RESERVED_DOMAIN_CONTRACT_METADATA_KEYS: frozenset[str] = frozenset(
     {"version", "schema_version", "updated", "system", "metadata"}
 )
+
+
+def reserved_value_is_contract_like(value: Any) -> bool:
+    """Bounded, top-level (never recursive) test: does the value under a RESERVED metadata key declare a
+    modern contract? RESERVED_METADATA_NAMESPACE and MODERN_CONTRACT_IDENTITY_NAMESPACE are disjoint, so such
+    a value is a contract declaration colliding with a metadata name, never silently metadata. The test mirrors
+    the admitted contract grammar exactly and no wider:
+    - a list in one of the admitted named-list forms (empty, all strings, or all rule mappings);
+    - a mapping with a member named by the contract field registry (MODERN_CONTRACT_KNOWN_FIELDS), or with a
+      member that is an admitted named string section (GENERIC_NAMED_STRING_SECTION_RULE: list[str]).
+    Scalars, and lists/members outside those forms (e.g. a list of numbers), remain metadata-or-malformed."""
+    if isinstance(value, list):
+        return not value or all(isinstance(m, str) for m in value) or all(isinstance(m, dict) for m in value)
+    if isinstance(value, dict):
+        for member_key, member in value.items():
+            if not isinstance(member_key, str):
+                continue
+            if member_key.strip() in MODERN_CONTRACT_KNOWN_FIELDS:
+                return True
+            if isinstance(member, list) and all(isinstance(m, str) for m in member):
+                return True
+    return False
 
 
 def _is_valid_reserved_metadata(key: str, value: Any) -> bool:
@@ -1646,6 +1726,11 @@ def normalize_domain_contracts(document: Any) -> tuple[list[dict[str, Any]], str
             return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
         clean_key = key.strip()
         if clean_key in RESERVED_DOMAIN_CONTRACT_METADATA_KEYS:
+            # ReservedIdentityCollision != ReservedMetadataMalformed: a contract-like value under a
+            # reserved name is an invalid contract IDENTITY (the name is not in the identity namespace);
+            # a non-contract-like value that is not valid metadata stays UNSUPPORTED_NONEMPTY.
+            if reserved_value_is_contract_like(value):
+                return [], SOURCE_STATE_INVALID, SUBTYPE_INVALID_IDENTITY, ["invalid_source_contract:INVALID_IDENTITY"]
             if not _is_valid_reserved_metadata(clean_key, value):
                 return [], SOURCE_STATE_INVALID, SUBTYPE_UNSUPPORTED_NONEMPTY, ["invalid_source_contract:UNSUPPORTED_NONEMPTY"]
             continue
@@ -1735,30 +1820,22 @@ def _validate_pack_declared_types(item: dict[str, Any]) -> bool:
     return True
 
 
+LEGACY_PACK_PROJECTION_FIELDS: tuple[str, ...] = ("id", "description", "recommended_review_preset")
+
+
 def _legacy_pack_row(item: dict[str, Any]) -> dict[str, Any]:
     """LegacyPackProjection: exactly the frozen baseline's (6bbd2f9 `_flatten_review_packs`) row -- the
     three fields, absent ones as explicit nulls (the baseline did not drop empties on packs). Modern-only
     fields (paths, patterns, scope, is_global, domain_contract) never acquire semantics in a legacy pack."""
-    return {
-        "id": _clean_text(item.get("id")),
-        "description": _clean_text(item.get("description")),
-        "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
-    }
-
-
-def _legacy_pack_row_admitted(row: dict[str, Any]) -> bool:
-    """A legacy pack row is admitted when it carries an identity OR a description.
-    A description-only pack is a valid baseline pack (selectable through the legacy
-    description matcher); its identity is never fabricated. A row with neither carries
-    nothing observable beyond a null row (the pack projection has no other field), so
-    dropping it is lossless; legacy CONTRACT rows are all admitted (they can carry scope)."""
-    return bool(row.get("id") or row.get("description"))
+    return {field: _clean_text(item.get(field)) for field in LEGACY_PACK_PROJECTION_FIELDS}
 
 
 def _legacy_pack_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rows = [_legacy_pack_row(item) for item in items]
-    admitted = [row for row in rows if _legacy_pack_row_admitted(row)]
-    return sorted(admitted, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+    """LegacyPackItemIsDict -> LegacyPackRowExists. The frozen baseline projected EVERY dict item and
+    never filtered on id or description: a pack carrying any subset of the three carriers (including
+    none) is a row, duplicates keep their multiplicity, and the order is the baseline's stable sort."""
+    rows = [_legacy_pack_row(item) for item in items if isinstance(item, dict)]
+    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
 
 
 def _parse_binding_carrier(raw: Any) -> tuple[dict[str, list[str]], str | None]:
@@ -2081,20 +2158,28 @@ def clean_contracts_context_for_payload(ctx: dict[str, Any]) -> dict[str, Any]:
 UNIDENTIFIED_LEGACY_PACK_LOSS_LABEL = "unidentified_legacy_pack"
 
 
+def legacy_pack_projection(pack: dict[str, Any]) -> dict[str, Any]:
+    """The single authority for what an identity-less legacy pack IS: the exact baseline projection
+    {id, description, recommended_review_preset}, absent carriers as explicit nulls. The required floor,
+    the minimal form and the loss label all derive from it -- no carrier is presumed to be the only one."""
+    return {field: pack.get(field) for field in LEGACY_PACK_PROJECTION_FIELDS}
+
+
 def unidentified_pack_loss_label(pack: dict[str, Any]) -> str:
-    """Loss label of an identity-less legacy pack: a digest of its only carrier (the description), so two
-    distinct lost packs never collapse into one limitation and no identity is fabricated."""
-    digest = hashlib.sha256(str(pack.get("description") or "").encode("utf-8")).hexdigest()[:12]
+    """Evidence/loss label of an identity-less legacy pack: a digest of its canonical observable projection
+    (the full carrier tuple), so two distinct lost packs never collapse into one limitation and no semantic
+    identity is fabricated."""
+    digest = hashlib.sha256(canonical_json(legacy_pack_projection(pack)).encode("utf-8")).hexdigest()[:12]
     return f"{UNIDENTIFIED_LEGACY_PACK_LOSS_LABEL}:{digest}"
 
 
 def required_pack_floor_keys(pack: dict[str, Any]) -> frozenset[str]:
     """Keys of a required pack that the shrink ladder must preserve. An identified pack
-    floors to its identity (+ relation); an identity-less legacy pack floors to its only
-    admitted carrier, the description -- never to a fabricated `id`."""
+    floors to its identity (+ relation); an identity-less legacy pack floors to its whole baseline
+    projection -- never to a fabricated `id`, and never to one presumed carrier."""
     base = {"id", "effective_contracts", "required"}
     if not pack.get("id"):
-        base = {"description", "effective_contracts", "required"}
+        base = {*LEGACY_PACK_PROJECTION_FIELDS, "effective_contracts", "required"}
     return frozenset(base)
 
 
@@ -2102,8 +2187,8 @@ def minimal_pack_context(pack: dict[str, Any]) -> dict[str, Any]:
     min_pack: dict[str, Any] = {}
     if pack.get("id"):
         min_pack["id"] = pack["id"]
-    elif pack.get("description"):
-        min_pack["description"] = pack["description"]
+    else:
+        min_pack.update(legacy_pack_projection(pack))
     if pack.get("required") is True:
         min_pack["required"] = True
     eff = pack.get("effective_contracts")
