@@ -16,10 +16,12 @@ MethodGuidanceCarrierDecision:
   canonical_source_shape: closed grammar, version 1 (below). Unknown key / version => INVALID.
   typed_carrier: >-
     `TargetProfile.method_guidance` (author document, verbatim) and
-    `TargetProfile.method_guidance_verification` (loader-owned, never author-writable:
-    source_id -> CURRENT | STALE | UNVERIFIABLE). Both survive `TargetProfile.model_dump` and
-    `ReviewIntake.target_profile`. An inline `method_guidance` in repo-profile.yaml is refused
-    exactly like the other inline C2 sources.
+    `TargetProfile.method_guidance_verification` (loader-owned, never author-writable). Source
+    verdicts are keyed by `source_id` (CURRENT | STALE | UNVERIFIABLE); text-binding verdicts are
+    keyed `<method_id>/<section_id>` (BOUND | BOUND_REDACTED | UNBOUND) and exist only for a CURRENT
+    source. Both fields survive `TargetProfile.model_dump` and `ReviewIntake.target_profile`; both
+    keys are absent from the intake of a repository without a sidecar. An inline `method_guidance`
+    in repo-profile.yaml is refused exactly like the other inline C2 sources.
   serialized_intake: ReviewIntake.target_profile.{method_guidance, method_guidance_verification}
   applicability: >-
     deterministic, per guidance item, from declared `applies_to` only (semantic_groups, exact
@@ -51,6 +53,13 @@ MethodGuidanceCarrierDecision:
       `method_guidance_source_stale:<source_id>` / `method_guidance_source_unverifiable:<source_id>`
       (informational) plus the required/optional loss of every applicable item bound to it. A stale
       reference never receives current authority and its text is never emitted.
+    unbound_text: >-
+      A CURRENT blob does not lend authority to text it does not contain: the item's `selected_text` must
+      be a literal (whitespace-insensitive) excerpt of the verified document, else
+      `method_guidance_text_unbound:<method>/<section>` plus the required/optional loss of that item.
+    redacted_text: >-
+      `method_guidance_text_redacted:<method>/<section>` (informational) when the redaction policy
+      rewrote the emitted text; the rewrite is never silent.
   backwards_compatibility: >-
     No sidecar => no new key, no new limitation, no cost change (the projection adds nothing
     unless a method context exists). v1 goldens and the legacy differential oracle are unchanged.
@@ -80,6 +89,19 @@ guidance:                       # <= 32
     selected_text: "..."        # non-empty, <= 4000 chars
 ```
 
+Grammar notes (all enforced, each with a countermodel in `tests/agent_review/test_v1_method_guidance_carrier.py`):
+
+- unknown keys at any level, `version` ≠ 1 and author-written verdicts are `UNSUPPORTED_NONEMPTY`; one violation
+  invalidates the whole source (nothing is admitted);
+- duplicate YAML keys are invalid (the stock loader would resolve them last-wins and silently);
+- `source_id` / `method_id` / `section_id` match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` and must not equal a
+  redaction-sensitive key name (`token`, `secret`, `password`, ...) because the loader-owned mapping is keyed by them;
+- `paths` members containing a glob character are patterns (same convention as modern contracts), so a required item
+  cannot be silently inert; `paths` / `patterns` are bounded (≤ 64 members, ≤ 256 chars each);
+- the source `path` is canonicalized by ONE function for verification and emission, and the loader never raises:
+  hostile shapes (loop, NUL, directory, FIFO, escaping symlink, > 4 MiB, undecodable sidecar) are typed
+  UNVERIFIABLE / INVALID and the read is bounded.
+
 Source-state vocabulary reuses `PRESENT_VALID | ABSENT | INVALID` from OBL-CL2-03. `ABSENT` is not
 `not_relevant`: an absent sidecar declares nothing and the engine claims nothing from it.
 
@@ -97,6 +119,11 @@ Method guidance never enters `domain_contracts`, `review_packs` or `contract_bin
 `contract:<id>` resolution, and never changes the effective contract set of a pack.
 
 ## Non-claims
+
+Known adjacent limits (not closed here): the v1→v2 profile migrator does not carry `method_guidance`
+(it is dropped without a pending decision); an unparsable `domain-contracts.yaml` / `review-packs.yaml`
+still reads as "no contracts declared" (tracked as a separate follow-up); the engine cannot judge whether an
+excerpt is the *right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),
 repin, release or v2 change. A model finding that cites a method id as `contract_id` is still an

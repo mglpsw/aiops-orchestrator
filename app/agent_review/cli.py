@@ -106,6 +106,11 @@ def build_intake(*, target_repo: str, repo_root: Path, agent_dir: Path) -> tuple
 
     redaction_state.record_file()
     target_profile = redact_value(profile_result.profile.model_dump(mode="json"), redaction_state)
+    # V1-C2: the two MethodGuidance carrier keys exist only when a sidecar was declared, so an intake for a
+    # repository without one is byte-identical to the previous engine's.
+    for carrier_key in ("method_guidance", "method_guidance_verification"):
+        if target_profile.get(carrier_key) is None:
+            target_profile.pop(carrier_key, None)
     report = redaction_state.to_report(output_safe_for_llm=True)
     status = _intake_status(profile_result.status, limitations, artifact_status)
 

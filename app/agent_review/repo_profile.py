@@ -9,7 +9,17 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from app.agent_review.payload_cost_model import METHOD_SOURCE_CURRENT, METHOD_SOURCE_STALE, METHOD_SOURCE_UNVERIFIABLE
+from app.agent_review.payload_cost_model import (
+    METHOD_SOURCE_CURRENT,
+    METHOD_SOURCE_STALE,
+    METHOD_SOURCE_UNVERIFIABLE,
+    METHOD_TEXT_BOUND,
+    METHOD_TEXT_BOUND_REDACTED,
+    METHOD_TEXT_UNBOUND,
+    canonical_method_source_path,
+    normalize_method_text,
+)
+from app.agent_review.redaction import RedactionState, redact_value, sanitize_artifact_value
 from app.agent_review.schemas import TARGET_PROFILE_SCHEMA, TargetProfile
 
 
@@ -117,7 +127,7 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
 
     domain_contracts = _load_optional_yaml(root / ".aiops" / "domain-contracts.yaml", "domain_contracts", limitations)
     review_packs = _load_optional_yaml(root / ".aiops" / "review-packs.yaml", "review_packs", limitations)
-    method_guidance = _load_optional_yaml(root / ".aiops" / METHOD_GUIDANCE_SIDECAR, "method_guidance", limitations)
+    method_guidance = _load_method_guidance_sidecar(root / ".aiops" / METHOD_GUIDANCE_SIDECAR, limitations)
     if "method_guidance_yaml_invalid" in limitations:
         # A sidecar that exists but cannot be parsed is INVALID, never ABSENT: its requiredness is unknowable, so
         # it is carried as a non-mapping value which normalization reports as invalid_source_method_guidance:
@@ -183,19 +193,69 @@ def _git_blob_oid(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git object identity, not security
 
 
-def _verify_method_guidance_sources(root: Path, document: Any, target_repo: str | None) -> dict[str, str] | None:
-    """Binds each declared method source to the checkout the review runs on.
+class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
+    """Stock SafeLoader resolves a duplicate mapping key last-wins and silently; for the MethodGuidance sidecar a
+    repeated key (e.g. a second `guidance:` or `requiredness:`) would change semantics unnoticed, so it is invalid."""
 
-    CURRENT      the declared path is a regular file inside `root` whose git blob oid equals the declared `blob`.
-    STALE        the file is there and its oid differs: the reference describes a document that no longer exists.
-    UNVERIFIABLE anything else (other repository, file absent / unreadable / too large / outside the checkout).
-    A declaration the sidecar grammar rejects is not verified here: normalization marks the source INVALID and the
-    verification mapping is never consulted for it.
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            try:
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+                seen.add(key)
+            except TypeError:
+                continue
+        return super().construct_mapping(node, deep)
+
+
+def _load_method_guidance_sidecar(path: Path, limitations: list[str]) -> Any:
+    """None when the sidecar does not exist; a typed `method_guidance_yaml_invalid` (carried as a non-mapping so it
+    normalizes to INVALID, never ABSENT) for anything unreadable, undecodable, unparsable or key-ambiguous."""
+    if not path.exists():
+        return None
+    try:
+        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_DuplicateKeyRefusingLoader) or {}  # noqa: S506 - SafeLoader subclass
+    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError):
+        limitations.append("method_guidance_yaml_invalid")
+        return []
+    return document
+
+
+def _read_bounded(path: Path) -> bytes | None:
+    """Regular-file content up to the bound, or None. Never reads past the bound."""
+    try:
+        if not path.is_file() or path.stat().st_size > _METHOD_SOURCE_MAX_BYTES:
+            return None
+        with path.open("rb") as handle:
+            data = handle.read(_METHOD_SOURCE_MAX_BYTES + 1)
+    except (OSError, ValueError):
+        return None
+    return data if len(data) <= _METHOD_SOURCE_MAX_BYTES else None
+
+
+def _verify_method_guidance_sources(root: Path, document: Any, target_repo: str | None) -> dict[str, str] | None:
+    """Binds each declared method source (and each selected_text) to the checkout the review runs on.
+
+    Source verdicts, keyed by source_id:
+      CURRENT      the declared path is a regular file inside `root` whose git blob oid equals the declared `blob`.
+      STALE        the file is there and its oid differs: the reference describes a document that no longer exists.
+      UNVERIFIABLE anything else (other repository, absent / unreadable / too large / outside the checkout / a path
+                   the normalizer would not accept). It never raises.
+    Item verdicts, keyed "<method_id>/<section_id>" (only for a CURRENT source):
+      BOUND / BOUND_REDACTED / UNBOUND  whether the item's selected_text is a literal (whitespace-insensitive) excerpt of that document.
+    The path is canonicalized by the SAME function normalization uses, so the file verified is the file emitted.
+    A declaration the sidecar grammar rejects is normalized INVALID and this mapping is never consulted for it.
     """
     if not isinstance(document, dict) or not isinstance(document.get("sources"), list):
         return None
-    resolved_root = root.resolve()
+    try:
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
     states: dict[str, str] = {}
+    texts: dict[str, str] = {}
     for source in document["sources"]:
         if not isinstance(source, dict):
             continue
@@ -208,17 +268,35 @@ def _verify_method_guidance_sources(root: Path, document: Any, target_repo: str 
             and bool(target_repo)
             and repository.strip().casefold() == str(target_repo).strip().casefold()
         )
-        if same_repository:
-            candidate = (resolved_root / path.replace("\\", "/")).resolve()
+        canonical = canonical_method_source_path(path)
+        if same_repository and canonical:
             try:
+                candidate = (resolved_root / canonical).resolve()
                 inside = candidate.is_relative_to(resolved_root)
-                data = candidate.read_bytes() if inside and candidate.is_file() else None
-            except OSError:
-                data = None
-            if data is not None and len(data) <= _METHOD_SOURCE_MAX_BYTES:
-                state = METHOD_SOURCE_CURRENT if _git_blob_oid(data) == blob.strip().lower() else METHOD_SOURCE_STALE
+            except (OSError, RuntimeError, ValueError):
+                inside = False
+            data = _read_bounded(candidate) if inside else None
+            if data is not None:
+                state = METHOD_SOURCE_CURRENT if _git_blob_oid(data) == blob.strip() else METHOD_SOURCE_STALE
+                if state == METHOD_SOURCE_CURRENT:
+                    texts[source_id] = normalize_method_text(data.decode("utf-8", errors="replace"))
         states.setdefault(source_id, state)
-    return dict(sorted(states.items())) or None
+    verdicts: dict[str, str] = dict(states)
+    for item in document.get("guidance") if isinstance(document.get("guidance"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        method_id, section_id, source_id, text = (item.get(k) for k in ("method_id", "section_id", "source_id", "selected_text"))
+        if not all(isinstance(v, str) for v in (method_id, section_id, source_id, text)) or source_id not in texts:
+            continue
+        needle = normalize_method_text(text)
+        if not needle or needle not in texts[source_id]:
+            verdict = METHOD_TEXT_UNBOUND
+        elif redact_value(text, RedactionState()) != text or sanitize_artifact_value(text) != text:
+            verdict = METHOD_TEXT_BOUND_REDACTED
+        else:
+            verdict = METHOD_TEXT_BOUND
+        verdicts[f"{method_id}/{section_id}"] = verdict
+    return dict(sorted(verdicts.items())) or None
 
 
 def _has_non_string_mapping_key(value: Any) -> bool:

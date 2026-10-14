@@ -23,7 +23,14 @@
   blocker), `invalid_source_method_guidance:<SUBTYPE>` (critical, nothing admitted),
   `method_guidance_source_stale|unverifiable:<source_id>`. No sidecar means no new key,
   limitation or cost: payloads, plans, manifests and briefs are byte-identical to the
-  previous engine (differential over two domains x three budgets x contracts on/off).
+  previous engine: committed goldens and the legacy differential oracle are unchanged, and an
+  out-of-tree differential against `07fdb02` (two domains x three budgets x contracts on/off)
+  found plan, brief, manifest and payload bytes identical. Behaviour change: a
+  `repo-profile.yaml` carrying a top-level `method_guidance` /
+  `method_guidance_verification` key is now refused like the other inline C2 sources.
+  Selected text must be a literal excerpt of the verified source blob (`UNBOUND` is a typed
+  loss), the loader never raises on a hostile source path, and duplicate YAML keys in the
+  sidecar are invalid.
   The contract limitation registries pinned by the Gate A receipt are unchanged; consumers
   now read `payload_cost_model.critical_context_limitation_prefixes()`. The `contract_bindings`
   / `review_packs` / `domain_contracts` grammars and the v2 engine are untouched. This does

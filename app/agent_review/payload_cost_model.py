@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 from app.agent_review.chunk_response_contract import build_chunk_response_contract
-from app.agent_review.redaction import RedactionState, redact_value, sanitize_artifact_value
+from app.agent_review.redaction import SENSITIVE_KEYS, RedactionState, redact_value, sanitize_artifact_value
 from app.agent_review.schemas import ChunkPayload, ReviewIntake, SemanticGroup, TruncationMetadata
 
 
@@ -2292,11 +2292,19 @@ METHOD_GUIDANCE_APPLIES_TO_KEYS: frozenset[str] = frozenset({"semantic_groups", 
 METHOD_GUIDANCE_MAX_SOURCES = 16
 METHOD_GUIDANCE_MAX_ITEMS = 32
 METHOD_GUIDANCE_MAX_TEXT_CHARS = 4000
+METHOD_GUIDANCE_MAX_SELECTION_MEMBERS = 64
+METHOD_GUIDANCE_MAX_SELECTION_CHARS = 256
 METHOD_GUIDANCE_REQUIRED = "required"
 METHOD_GUIDANCE_OPTIONAL = "optional"
 METHOD_SOURCE_CURRENT = "CURRENT"
 METHOD_SOURCE_STALE = "STALE"
 METHOD_SOURCE_UNVERIFIABLE = "UNVERIFIABLE"
+# Item-level loader verdicts (same loader-owned mapping, keyed "<method_id>/<section_id>"; ids cannot contain "/"):
+# BOUND = the normalized selected_text is a literal excerpt of the declared, CURRENT source document.
+METHOD_TEXT_BOUND = "BOUND"
+METHOD_TEXT_UNBOUND = "UNBOUND"
+# BOUND, and the redaction policy rewrites that text on its way to the reviewer: typed, never silent.
+METHOD_TEXT_BOUND_REDACTED = "BOUND_REDACTED"
 _METHOD_SOURCE_STATES: frozenset[str] = frozenset({METHOD_SOURCE_CURRENT, METHOD_SOURCE_STALE, METHOD_SOURCE_UNVERIFIABLE})
 _METHOD_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _GIT_BLOB_OID_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -2307,6 +2315,8 @@ class MethodGuidanceItem:
     key: str
     emitted: dict[str, Any]
     applies_to: dict[str, Any]
+    text_bound: bool = False
+    text_redacted: bool = False
 
     @property
     def required(self) -> bool:
@@ -2328,9 +2338,24 @@ def _method_guidance_invalid(subtype: str) -> MethodGuidanceNormalization:
 
 
 def _method_identity(value: Any) -> str | None:
-    if isinstance(value, str) and _METHOD_IDENTITY_RE.fullmatch(value):
+    # An id that equals a redaction-sensitive key name would have its loader verdict rewritten by redact_value.
+    if isinstance(value, str) and _METHOD_IDENTITY_RE.fullmatch(value) and value.strip().lower().replace("-", "_") not in SENSITIVE_KEYS:
         return value
     return None
+
+
+def canonical_method_source_path(value: Any) -> str | None:
+    """The ONE canonical form of a declared method source path: used by normalization AND by the loader's
+    verification, so the file that is verified is the file whose path is emitted."""
+    members = _method_path_list([value], pattern=False)
+    if not members or any(char in members[0] for char in "*?[]"):
+        return None
+    return members[0]
+
+
+def normalize_method_text(value: str) -> str:
+    """Whitespace-insensitive form used to bind a selected_text to its source document."""
+    return " ".join(value.split())
 
 
 def _method_path_list(value: Any, *, pattern: bool) -> list[str] | None:
@@ -2394,13 +2419,13 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
             return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
         source_id = _method_identity(raw["source_id"])
         blob = raw["blob"].strip()
-        paths = _method_path_list([raw["path"]], pattern=False)
-        if source_id is None or source_id in sources or not _GIT_BLOB_OID_RE.fullmatch(blob) or not paths:
+        source_path = canonical_method_source_path(raw["path"])
+        if source_id is None or source_id in sources or not _GIT_BLOB_OID_RE.fullmatch(blob) or not source_path:
             return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
         sources[source_id] = {
             "source_id": source_id,
             "repository": raw["repository"].strip(),
-            "path": paths[0],
+            "path": source_path,
             "revision": raw["revision"].strip(),
             "blob": blob,
         }
@@ -2444,8 +2469,21 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
             not isinstance(group, str) or group not in get_args(SemanticGroup) for group in groups
         ):
             return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
-        paths = _method_path_list(applies.get("paths", []), pattern=False)
-        patterns = _method_path_list(applies.get("patterns", []), pattern=True)
+        raw_paths, raw_patterns = applies.get("paths", []), applies.get("patterns", [])
+        if not isinstance(raw_paths, list) or not isinstance(raw_patterns, list):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if (
+            len(raw_paths) > METHOD_GUIDANCE_MAX_SELECTION_MEMBERS
+            or len(raw_patterns) > METHOD_GUIDANCE_MAX_SELECTION_MEMBERS
+            or any(isinstance(m, str) and len(m) > METHOD_GUIDANCE_MAX_SELECTION_CHARS for m in (*raw_paths, *raw_patterns))
+        ):
+            return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+        # Same convention as modern contracts: a glob-bearing `paths` member is a pattern, never an exact path
+        # that can silently never match.
+        paths = _method_path_list([m for m in raw_paths if not (isinstance(m, str) and any(c in m for c in "*?["))], pattern=False)
+        patterns = _method_path_list(
+            [*raw_patterns, *[m for m in raw_paths if isinstance(m, str) and any(c in m for c in "*?[")]], pattern=True
+        )
         if paths is None or patterns is None:
             return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
         is_global = False
@@ -2464,6 +2502,9 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
             return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
 
         verdict = verdicts.get(source_id)
+        state = verdict if verdict in _METHOD_SOURCE_STATES else METHOD_SOURCE_UNVERIFIABLE
+        item_verdict = verdicts.get(f"{method_id}/{section_id}")
+        bound = item_verdict in (METHOD_TEXT_BOUND, METHOD_TEXT_BOUND_REDACTED)
         items.append(
             MethodGuidanceItem(
                 key=f"{method_id}/{section_id}",
@@ -2473,9 +2514,11 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
                     "authority_class": METHOD_GUIDANCE_AUTHORITY_CLASS,
                     "requiredness": raw["requiredness"],
                     "source": dict(sources[source_id]),
-                    "source_state": verdict if verdict in _METHOD_SOURCE_STATES else METHOD_SOURCE_UNVERIFIABLE,
+                    "source_state": state,
                     "selected_text": text,
                 },
+                text_bound=bound,
+                text_redacted=item_verdict == METHOD_TEXT_BOUND_REDACTED,
                 applies_to=selection,
             )
         )
@@ -2523,11 +2566,21 @@ def method_guidance_context(
         if not _method_guidance_applies(item.applies_to, chunk_files=chunk_file_set, semantic_group=semantic_group):
             continue
         state = item.emitted["source_state"]
-        if state == METHOD_SOURCE_CURRENT:
-            emitted.append(copy.deepcopy(item.emitted))
+        if state == METHOD_SOURCE_CURRENT and item.text_bound:
+            row = copy.deepcopy(item.emitted)
+            safe_text = sanitize_artifact_value(row["selected_text"])
+            if item.text_redacted or safe_text != row["selected_text"]:
+                # Redaction is general policy; it must not silently rewrite guidance that is labelled CURRENT.
+                limitations.append(f"method_guidance_text_redacted:{item.key}")
+                row["selected_text"] = safe_text
+            emitted.append(row)
             continue
-        label = "stale" if state == METHOD_SOURCE_STALE else "unverifiable"
-        limitations.append(f"method_guidance_source_{label}:{item.emitted['source']['source_id']}")
+        if state == METHOD_SOURCE_CURRENT:
+            # Current source, but the text is not a literal excerpt of it: attribution is unproven.
+            limitations.append(f"method_guidance_text_unbound:{item.key}")
+        else:
+            label = "stale" if state == METHOD_SOURCE_STALE else "unverifiable"
+            limitations.append(f"method_guidance_source_{label}:{item.emitted['source']['source_id']}")
         prefix = METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX if item.required else METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX
         limitations.append(f"{prefix}{item.key}")
     context = (
