@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +160,7 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
     profile.method_guidance = method_guidance
     # Loader-owned: the only place that has the checkout. The author document never carries its own verdict.
     profile.method_guidance_verification = _verify_method_guidance_sources(
-        root, method_guidance, profile.target_repo or target_repo
+        root, method_guidance, target_repo or profile.target_repo  # trusted CLI anchor first: the profile label is author-editable
     )
     profile.limitations = [*profile.limitations, *limitations]
     status = "degraded" if limitations else "complete"
@@ -211,13 +212,18 @@ class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
 
 
 def _load_method_guidance_sidecar(path: Path, limitations: list[str]) -> Any:
-    """None when the sidecar does not exist; a typed `method_guidance_yaml_invalid` (carried as a non-mapping so it
-    normalizes to INVALID, never ABSENT) for anything unreadable, undecodable, unparsable or key-ambiguous."""
-    if not path.exists():
+    """None only when the directory entry itself does not exist; a typed `method_guidance_yaml_invalid` (carried as a
+    non-mapping so it normalizes to INVALID, never ABSENT) for anything else that is not a readable, bounded, regular
+    UTF-8 YAML document: a link whose target is gone or loops, a directory, a FIFO, an oversize file, undecodable,
+    unparsable or key-ambiguous content. `Path.exists()` follows links and would report a dangling link as absent."""
+    if not os.path.lexists(path):
         return None
     try:
-        document = yaml.load(path.read_text(encoding="utf-8"), Loader=_DuplicateKeyRefusingLoader) or {}  # noqa: S506 - SafeLoader subclass
-    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError):
+        data = _read_bounded(path)
+        if data is None:
+            raise ValueError("method guidance sidecar is not a readable regular file within the bound")
+        document = yaml.load(data.decode("utf-8"), Loader=_DuplicateKeyRefusingLoader) or {}  # noqa: S506 - SafeLoader subclass
+    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError, RecursionError):
         limitations.append("method_guidance_yaml_invalid")
         return []
     return document

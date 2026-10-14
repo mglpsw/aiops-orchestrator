@@ -203,6 +203,21 @@ def migrate_profile_v1_to_v2(
     ):
         pending.append(ProfileMigrationDecisionV2(field=field_name, reason=reason))
 
+    # v2 has no METHOD_GUIDANCE carrier and this tool must not invent one. A v1 profile that declares guidance (or
+    # whose sidecar was carried as INVALID) is reported by field name only -- never echoing its text, which may be
+    # secret-shaped -- instead of being dropped silently from a candidate that claims to list every open decision.
+    if profile_v1.method_guidance is not None:
+        pending.append(
+            ProfileMigrationDecisionV2(
+                field="method_guidance",
+                reason=(
+                    "v1 declares a METHOD_GUIDANCE sidecar and v2 has no method-guidance carrier; this tool does "
+                    "not translate it, so any required guidance would be lost silently. A human must decide "
+                    "whether the target stays on the v1 lane or a v2 carrier is defined by its own contract"
+                ),
+            )
+        )
+
     candidate: dict[str, object] = {
         "schema_id": TARGET_PROFILE_SCHEMA_V2,
         "schema_version": 2,

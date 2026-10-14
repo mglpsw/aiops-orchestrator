@@ -96,11 +96,27 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
 - duplicate YAML keys are invalid (the stock loader would resolve them last-wins and silently);
 - `source_id` / `method_id` / `section_id` match `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}` and must not equal a
   redaction-sensitive key name (`token`, `secret`, `password`, ...) because the loader-owned mapping is keyed by them;
-- `paths` members containing a glob character are patterns (same convention as modern contracts), so a required item
-  cannot be silently inert; `paths` / `patterns` are bounded (≤ 64 members, ≤ 256 chars each);
-- the source `path` is canonicalized by ONE function for verification and emission, and the loader never raises:
-  hostile shapes (loop, NUL, directory, FIFO, escaping symlink, > 4 MiB, undecodable sidecar) are typed
-  UNVERIFIABLE / INVALID and the read is bounded.
+- `paths` members containing a glob character (`*`, `?`, `[`) are patterns (same convention as modern contracts), so
+  a glob written as an exact path is not silently inert; `paths` / `patterns` are bounded (≤ 64 members, ≤ 256 chars
+  each). **Known limits of that convention (shared matcher, reviewed):** a file whose literal name contains `[`…`]`
+  (e.g. `pages/[id].jsx`) is treated as a glob and does not match itself — select it by `semantic_groups` instead;
+  and `**/*.py` does not match a top-level `x.py` nor `backend/**/x.py` match `backend/x.py`;
+- the source `path` is canonicalized by ONE function for verification and emission. A sidecar or source that is a
+  link with a missing or looping target, a directory, a FIFO, an oversize (> 4 MiB) or undecodable file is typed
+  INVALID / UNVERIFIABLE (never ABSENT) and the read is bounded;
+- `selected_text` must not contain control (Cc), format (Cf, e.g. bidi/zero-width), surrogate, private-use,
+  unassigned or line/paragraph-separator characters, nor U+FFFD (`\n` and `\t` are allowed): otherwise INVALID;
+- the repository identity anchor of a source is the trusted CLI `--target-repo`, never the author-editable
+  `repo-profile.yaml` label;
+- `source.revision` is carried as identity only and is **never verified**; the git blob is the binding. A non-empty
+  revision string does not prove the blob came from that revision.
+
+**Residual (pre-existing loader class, shared with `domain-contracts.yaml` / `review-packs.yaml`, not repaired
+here):** the YAML parser and the non-string-key scan have no alias-expansion or nesting bound. A sidecar with an
+alias bomb can hang the CLI and a nesting depth of roughly 400 can raise `RecursionError` out of the loader. This is
+an availability failure, not a false pass; a bound belongs to a separate loader-hardening slice for all three
+sources. Whitespace-insensitive binding also treats NBSP as whitespace and has no minimum length or word boundary
+(a negation-truncated excerpt still binds; right-excerpt judgment is a declared non-claim).
 
 Source-state vocabulary reuses `PRESENT_VALID | ABSENT | INVALID` from OBL-CL2-03. `ABSENT` is not
 `not_relevant`: an absent sidecar declares nothing and the engine claims nothing from it.
@@ -120,10 +136,11 @@ Method guidance never enters `domain_contracts`, `review_packs` or `contract_bin
 
 ## Non-claims
 
-Known adjacent limits (not closed here): the v1→v2 profile migrator does not carry `method_guidance`
-(it is dropped without a pending decision); an unparsable `domain-contracts.yaml` / `review-packs.yaml`
-still reads as "no contracts declared" (tracked as a separate follow-up); the engine cannot judge whether an
-excerpt is the *right* excerpt of the method document, only that it is one.
+Known adjacent limits (not closed here): the v1→v2 profile migrator does not *carry* `method_guidance` (v2 has
+no such carrier and none is invented here); it now reports the field as a typed pending decision, by name only,
+instead of dropping it silently. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
+contracts declared" on this branch (separate slice: PR #374). The engine cannot judge whether an excerpt is the
+*right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),
 repin, release or v2 change. A model finding that cites a method id as `contract_id` is still an

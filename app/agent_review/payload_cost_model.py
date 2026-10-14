@@ -40,6 +40,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
@@ -2353,6 +2354,22 @@ def canonical_method_source_path(value: Any) -> str | None:
     return members[0]
 
 
+_METHOD_TEXT_ALLOWED_CONTROLS = frozenset("\n\t")
+_METHOD_TEXT_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _method_text_has_unsafe_character(text: str) -> bool:
+    """One character-class policy for model-facing guidance text: control, format (bidi/zero-width), surrogate,
+    private-use, unassigned and line/paragraph-separator characters, plus the replacement character U+FFFD (a
+    decoding loss that would otherwise "bind" to any undecodable source byte). `\n` and `\t` stay admissible."""
+    for char in text:
+        if char in _METHOD_TEXT_ALLOWED_CONTROLS:
+            continue
+        if char == "\ufffd" or unicodedata.category(char) in _METHOD_TEXT_UNSAFE_CATEGORIES:
+            return True
+    return False
+
+
 def normalize_method_text(value: str) -> str:
     """Whitespace-insensitive form used to bind a selected_text to its source document."""
     return " ".join(value.split())
@@ -2457,6 +2474,8 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
         if not text:
             return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
         if len(text) > METHOD_GUIDANCE_MAX_TEXT_CHARS:
+            return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+        if _method_text_has_unsafe_character(text):
             return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
 
         applies = raw["applies_to"]

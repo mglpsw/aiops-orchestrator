@@ -18,6 +18,7 @@ import ast
 import copy
 import hashlib
 import json
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -1089,6 +1090,95 @@ def test_cm_mg_14b_sidecar_that_is_a_directory_is_typed_invalid(tmp_path: Path) 
     loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
     assert "method_guidance_yaml_invalid" in loaded.limitations
     assert "invalid_source_method_guidance:MALFORMED_SHAPE" in canonical_run(target).plan.limitations
+
+
+@pytest.mark.parametrize("kind", ["dangling_symlink", "looping_symlink", "oversize"])
+def test_cm_mg_14c_unreadable_sidecar_entry_is_invalid_never_absent(tmp_path: Path, kind: str) -> None:
+    """Independent review F1: `Path.exists()` follows links, so a link entry that cannot be opened (target
+    removed/renamed, or a loop) read as ABSENT and the declared guidance vanished with `complete`."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    entry = target.repo / ".aiops" / "method-guidance.yaml"
+    if kind == "dangling_symlink":
+        entry.symlink_to(target.repo / "docs" / "does-not-exist.yaml")
+    elif kind == "looping_symlink":
+        entry.symlink_to(entry.name)
+    else:
+        entry.write_bytes(b"#" * (4 * 1024 * 1024 + 1))
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations, kind
+    run = canonical_run(target)
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in run.plan.limitations and run.plan.status == "degraded"
+
+
+def test_cm_mg_14d_fifo_sidecar_is_invalid_and_never_blocks(tmp_path: Path) -> None:
+    """Independent review F4 (FIFO half): the read must not block on a non-regular file."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    os.mkfifo(target.repo / ".aiops" / "method-guidance.yaml")
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations
+
+
+def test_cm_mg_14e_repository_anchor_is_the_trusted_cli_target_not_the_author_profile(tmp_path: Path) -> None:
+    """Independent review F3: the identity anchor must be the CLI-supplied target, never the author-declared
+    `profile.target_repo` (a label the PR itself can edit)."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain)  # profile and sidecar both declare domain.target_repo
+    loaded = load_repo_profile(target.repo, target_repo="example/some-other-repository")
+    verification = loaded.profile.method_guidance_verification or {}
+    assert verification.get("aocm") != "CURRENT", verification
+    anchored = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert (anchored.profile.method_guidance_verification or {}).get("aocm") == "CURRENT"
+
+
+@pytest.mark.parametrize(
+    "char", ["\x1f", "\x1b", "\x07", "\u0085", "\u2028", "\u2029", "\u202e", "\u200b", "\ufffe", "\ufffd"]
+)
+def test_cm_mg_18b_selected_text_with_control_format_or_separator_chars_is_invalid(tmp_path: Path, char: str) -> None:
+    """Independent review F5/F6: one character-class predicate. `str.split()` would otherwise treat U+001F/U+0085/
+    U+2028 as whitespace (a binding looser than the claim) and Cf/Cc characters would reach the model verbatim."""
+    domain = DOMAINS["scheduling"]
+    text = f"AOCM-REQ-9: alpha{char}beta must be preserved"
+    document = sidecar(domain, req_text=text)
+    target = make_target(
+        tmp_path, domain, name="chars", method_guidance=document, source_bytes=method_bytes(text, OPT_TEXT)
+    )
+    run = canonical_run(target)
+    assert any(item.startswith("invalid_source_method_guidance:") for item in run.plan.limitations), run.plan.limitations
+    assert run.plan.status == "degraded" and char not in payload_bytes(run)
+
+
+def test_cm_mg_18c_ordinary_newlines_tabs_and_non_ascii_letters_remain_admissible(tmp_path: Path) -> None:
+    domain = DOMAINS["scheduling"]
+    text = "AOCM-REQ-7: nao aprovar sem evidencia\n\tcobertura obrigatória — ação"
+    document = sidecar(domain, req_text=text)
+    target = make_target(
+        tmp_path, domain, name="okchars", method_guidance=document, source_bytes=method_bytes(text, OPT_TEXT)
+    )
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert (loaded.profile.method_guidance_verification or {}).get("AOCM/closure-obligations") == "BOUND"
+
+
+def test_cm_mg_19_glob_bearing_paths_member_is_a_pattern_and_exact_members_stay_paths() -> None:
+    """Independent review M24: without the reclassification an exact-path match for `backend/**/svc_*.py` never
+    fires and a REQUIRED item is silently inert."""
+    domain = DOMAINS["scheduling"]
+    document = sidecar(domain)
+    document["guidance"][0]["applies_to"] = {"paths": ["backend/**/svc_*.py", "backend/exact.py"]}
+    items = {item.key: item for item in pcm.normalize_method_guidance(document, {}).items}
+    selection = items["AOCM/closure-obligations"].applies_to
+    assert selection["patterns"] == ["backend/**/svc_*.py"], selection
+    assert selection["paths"] == ["backend/exact.py"], selection
+
+
+@pytest.mark.parametrize("scope", ["", None, "repository", "global-ish"])
+def test_cm_mg_20_scope_other_than_global_is_invalid_even_next_to_a_valid_selection(scope: Any) -> None:
+    """Independent review M25: `scope` is stricter than contracts; a non-global value is never ignored."""
+    domain = DOMAINS["scheduling"]
+    document = sidecar(domain)
+    document["guidance"][0]["applies_to"] = {"semantic_groups": [domain.code_group], "scope": scope}
+    assert pcm.normalize_method_guidance(document, {}).state == pcm.SOURCE_STATE_INVALID
 
 
 def test_cm_mg_15_selected_text_must_be_an_excerpt_of_the_declared_blob(tmp_path: Path) -> None:

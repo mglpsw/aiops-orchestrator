@@ -265,3 +265,47 @@ def test_migrate_accepts_a_safe_artifact_id_and_path_without_flagging_them() -> 
         decision.field in ("artifacts[full-diff].artifact_id", "artifacts[full-diff].path")
         for decision in report.pending_decisions
     )
+
+
+_GUIDANCE_SECRET_TEXT = "AOCM-REQ-1: never print password = hunter2 in a finding"
+
+
+def _guidance_document() -> dict[str, object]:
+    return {
+        "version": 1,
+        "sources": [{"source_id": "aocm", "repository": "x/y", "path": "docs/m.md", "revision": "r1", "blob": "0" * 40}],
+        "guidance": [
+            {
+                "method_id": "AOCM",
+                "section_id": "req",
+                "source_id": "aocm",
+                "requiredness": "required",
+                "applies_to": {"scope": "global"},
+                "selected_text": _GUIDANCE_SECRET_TEXT,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("carried", [_guidance_document(), []], ids=["declared", "invalid_source_carrier"])
+def test_migrate_reports_method_guidance_it_cannot_carry_instead_of_dropping_it_silently(carried: object) -> None:
+    """P3-9: v2 has no METHOD_GUIDANCE carrier. A v1 profile that declares guidance (or whose sidecar was carried as
+    INVALID) must not migrate to a candidate that is silent about it; the report names the field without echoing
+    its content, and no second guidance semantics is invented in the candidate."""
+    report = migrate_profile_v1_to_v2(
+        _profile_v1(method_guidance=carried), repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    decisions = {item.field: item for item in report.pending_decisions}
+    assert "method_guidance" in decisions
+    assert "METHOD_GUIDANCE" in decisions["method_guidance"].reason
+    blob = json.dumps(
+        {"candidate": report.candidate, "pending": [asdict(item) for item in report.pending_decisions]}, default=str
+    )
+    assert "hunter2" not in blob and _GUIDANCE_SECRET_TEXT not in blob
+    assert "method_guidance" not in report.candidate and "guidance" not in report.candidate
+    assert report.candidate_is_directly_usable is False
+
+
+def test_migrate_without_method_guidance_reports_no_guidance_decision() -> None:
+    report = migrate_profile_v1_to_v2(_profile_v1(), repo="mglpsw/aiops-orchestrator", default_branch="master")
+    assert "method_guidance" not in {item.field for item in report.pending_decisions}
