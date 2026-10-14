@@ -98,7 +98,8 @@ already does; no real AgentEscala source uses one. Nesting ≳ 500 raises `Recur
 `resource_limit`, < 1 s).
 
 **The byte cap is the only remaining pre-parse bound, so it is a cost cap and not a proof that the parser is
-resource-bounded** (see non-claims). A 64 MiB artifact cap is likewise not a memory bound: a 64 MiB JSON of empty
+resource-bounded** (see non-claims). Measured by the independent review inside the cap: the densest nested map/sequence
+input costs ≈ 11 s/MiB (≈ 22 s at 2 MiB), a 200k-pair flow map ≈ 15 s / 485 MB; all linear. A 64 MiB artifact cap is likewise not a memory bound: a 64 MiB JSON of empty
 lists peaked at ≈ 1.5 GB RSS because the parse precedes the scan (a `MemoryError` is typed, not fatal).
 
 ## Reader census (what is and is not behind the boundary)
@@ -148,6 +149,8 @@ sub-item; compatibility is preserved and pinned as a characterisation test, not 
   the directory tree under the walk are not modelled; the walk is descriptor-relative, so a swap cannot redirect it,
   but a file can still change content between the single read and a later decision that reuses the path).
 - Duplicate mapping keys in contract sources are still last-wins (only the MethodGuidance sidecar refuses them).
+- A non-string mapping key inside a YAML **artifact** is not refused (artifacts never had that census; contract and
+  sidecar sources do).
 - The internal carrier sentinel `__source_yaml_unparsable__` remains visible in `intake.json` (never in plan, payload,
   final or gate); it is the typed carrier that makes INVALID reach the planner and is pinned by tests.
 - Not Gate B/C, Control A/B, release, repin or `V1_FINAL_FREEZE`.
