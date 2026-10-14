@@ -165,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
         if hunk_reasons:
             error_class = "chunk_hunk_material_not_transported"
             message = (
-                f"{len(blocked_entries)} chunk(s) had covered-file hunk material reduced, "
+                f"{sum(1 for entry in blocked_entries if any(item.startswith('chunk_hunk_material_not_transported:') for item in entry.limitations))} "
+                "chunk(s) had covered-file hunk material reduced, "
                 "altered, or dropped by the payload budget shrink ladder; routing blocked "
                 "rather than silently reviewed"
             )

@@ -1699,8 +1699,27 @@ def test_cm_mg_r2d_short_secret_bearing_guidance_keeps_the_designed_redacted_adm
     secret_line = "AOCM-REQ-9: never print token=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA in a review."
     document = sidecar(domain, req_text=secret_line, blob=blob_oid(method_bytes(secret_line, OPT_TEXT)))
     target = make_target(tmp_path, domain, method_guidance=document)
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert (loaded.profile.method_guidance_verification or {}).get("AOCM/closure-obligations") == "BOUND_REDACTED"
     run = canonical_run(target)
     assert not any(limit.startswith("invalid_source_method_guidance:") for limit in run.plan.limitations), run.plan.limitations
+    assert not any(limit.startswith(pcm.METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX) for limit in run.plan.limitations), run.plan.limitations
+    context = method_context(run.payload_for(domain.code_group))
+    assert context is not None and "ghp_" not in json.dumps(context)
+
+
+def test_cm_mg_r2g_unquoted_yaml_date_in_updated_stays_valid(tmp_path: Path) -> None:
+    """Review of 0488c1e9, F1. Counter-model: the pre-redaction guard compares the object YAML parsed (`updated:
+    2026-10-13` -> datetime.date, INVALID as a Python object) with the JSON-mode copy, so a previously valid sidecar
+    is carried as INVALID."""
+    domain = DOMAINS["scheduling"]
+    text = yaml.safe_dump(sidecar(domain), sort_keys=False).replace("updated: '2026-10-13'", "updated: 2026-10-13")
+    assert "updated: 2026-10-13" in text and "'2026-10-13'" not in text
+    target = make_target(tmp_path, domain, method_guidance=text)
+    run = canonical_run(target)
+    assert isinstance(run.intake.target_profile["method_guidance"], dict)
+    assert not any(limit.startswith("invalid_source_method_guidance:") for limit in run.plan.limitations), run.plan.limitations
+    assert run.plan.status == "complete" and method_context(run.payload_for(domain.code_group)) is not None
 
 
 def test_cm_mg_r2e_build_payloads_names_required_context_loss_not_a_hunk_failure(tmp_path: Path) -> None:

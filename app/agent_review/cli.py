@@ -106,7 +106,8 @@ def build_intake(*, target_repo: str, repo_root: Path, agent_dir: Path) -> tuple
         )
 
     redaction_state.record_file()
-    target_profile = redact_value(profile_result.profile.model_dump(mode="json"), redaction_state)
+    authored_profile = profile_result.profile.model_dump(mode="json")
+    target_profile = redact_value(authored_profile, redaction_state)
     # V1-C2: the two MethodGuidance carrier keys exist only when a sidecar was declared, so an intake for a
     # repository without one is byte-identical to the previous engine's.
     for carrier_key in ("method_guidance", "method_guidance_verification"):
@@ -116,9 +117,11 @@ def build_intake(*, target_repo: str, repo_root: Path, agent_dir: Path) -> tuple
     # key block) to `[REDACTED]`, which the consumer's grammar would then admit. A declaration that is invalid as
     # authored stays INVALID: it is carried as a non-mapping (the same typed carrier an unreadable sidecar uses), which
     # the consumer normalizes to a critical `invalid_source_method_guidance:` limitation, and the text is not carried.
-    authored_guidance = profile_result.profile.method_guidance
+    # Both sides are the JSON-mode form (what the consumer reads), so the only difference between them is redaction:
+    # the authored object as YAML parsed it (e.g. an unquoted date -> datetime.date) is not comparable to it.
+    authored_guidance = authored_profile.get("method_guidance")
     if authored_guidance is not None and target_profile.get("method_guidance") is not None:
-        verification = profile_result.profile.method_guidance_verification
+        verification = authored_profile.get("method_guidance_verification")
         if (
             normalize_method_guidance(authored_guidance, verification).state == SOURCE_STATE_INVALID
             and normalize_method_guidance(target_profile["method_guidance"], target_profile.get("method_guidance_verification")).state
