@@ -1645,3 +1645,89 @@ def test_cm_mg_p2_intake_file_with_a_non_finite_updated_is_nonconclusive_through
     plan = read_json(plan_path)
     assert "invalid_source_method_guidance:MALFORMED_SHAPE" in plan["limitations"], plan["limitations"]
     assert plan["status"] == "degraded"
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Codex review 5520504666 on fb47be91 (4272895685 build-payloads reporting, 4272895699 redaction before validation,
+# 4272895710 migration root, 4272895727 hard link). One block per finding, each naming the counter-model.
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def test_cm_mg_r2_hard_linked_sidecar_to_a_host_file_is_invalid_and_never_serialized(tmp_path: Path) -> None:
+    """4272895727. Counter-model: `O_NOFOLLOW` does not see a second name for an inode that lives outside the
+    checkout, so a multiply-linked sidecar passes the regular-file test and its bytes reach the intake."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    host = tmp_path / "host-owned.yaml"
+    host.write_text(EXTERNAL_MARKER + "\n", encoding="utf-8")
+    os.link(host, target.repo / ".aiops" / "method-guidance.yaml")
+    assert os.stat(host).st_nlink == 2
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations and loaded.profile.method_guidance == []
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 0, written["<stdout>"]
+    assert all(EXTERNAL_MARKER not in text for text in written.values())
+
+
+def test_cm_mg_r2b_hard_linked_source_is_unverifiable_and_a_single_link_stays_current(tmp_path: Path) -> None:
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain)
+    assert (load_repo_profile(target.repo, target_repo=domain.target_repo).profile.method_guidance_verification or {}).get("aocm") == "CURRENT"
+    os.link(target.repo / METHOD_PATH, tmp_path / "second-name.md")
+    verdict = load_repo_profile(target.repo, target_repo=domain.target_repo).profile.method_guidance_verification
+    assert verdict == {"aocm": "UNVERIFIABLE"}, verdict
+
+
+def test_cm_mg_r2c_guidance_that_is_invalid_as_authored_is_not_admitted_because_redaction_shortened_it(tmp_path: Path) -> None:
+    """4272895699. Counter-model: validation runs on the redacted carrier, so an over-length selected_text that
+    redaction collapses to `[REDACTED]` is PRESENT_VALID and the plan stays complete."""
+    domain = DOMAINS["scheduling"]
+    pem = "-----BEGIN PRIVATE KEY-----\n" + "\n".join("A" * 64 for _ in range(80)) + "\n-----END PRIVATE KEY-----"
+    assert len(pem) > pcm.METHOD_GUIDANCE_MAX_TEXT_CHARS
+    document = sidecar(domain, req_text=pem, blob=blob_oid(method_bytes(pem, OPT_TEXT)))
+    target = make_target(tmp_path, domain, method_guidance=document)
+    assert pcm.normalize_method_guidance(document, None).state == pcm.SOURCE_STATE_INVALID  # invalid as authored
+    run = canonical_run(target)
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in run.plan.limitations and run.plan.status == "degraded"
+    assert "BEGIN PRIVATE KEY" not in json.dumps(run.intake.model_dump(mode="json")) and "[REDACTED]" not in json.dumps(run.intake.target_profile.get("method_guidance"))
+
+
+def test_cm_mg_r2d_short_secret_bearing_guidance_keeps_the_designed_redacted_admission(tmp_path: Path) -> None:
+    """4272895699 positive control: a VALID declaration whose text redaction rewrites is still BOUND_REDACTED /
+    admitted (the fix must not turn every redaction into INVALID)."""
+    domain = DOMAINS["scheduling"]
+    secret_line = "AOCM-REQ-9: never print token=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA in a review."
+    document = sidecar(domain, req_text=secret_line, blob=blob_oid(method_bytes(secret_line, OPT_TEXT)))
+    target = make_target(tmp_path, domain, method_guidance=document)
+    run = canonical_run(target)
+    assert not any(limit.startswith("invalid_source_method_guidance:") for limit in run.plan.limitations), run.plan.limitations
+
+
+def test_cm_mg_r2e_build_payloads_names_required_context_loss_not_a_hunk_failure(tmp_path: Path) -> None:
+    """4272895685. Counter-model: the blocked-entry path only collects `chunk_hunk_material_not_transported:*` and
+    always reports a hunk failure, so a withheld chunk (required guidance stale) shows `limitations: []`."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=sidecar(domain, blob="b" * 40))
+    paths = cli_chain(target, tmp_path / "out", until="payloads")
+    assert paths["build_returncode"] == 1
+    payload = json.loads(paths["build_stdout"])
+    assert payload["error_class"] == "required_context_not_transported", payload
+    assert any(item.startswith(pcm.METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX) for item in payload["limitations"]), payload
+    assert "hunk material" not in payload["message"] and payload["blocked_chunks"]
+
+
+@pytest.mark.parametrize("root_kind", ["missing", "regular_file"])
+def test_cm_mg_r2f_migration_refuses_a_repo_root_that_is_not_a_directory(tmp_path: Path, root_kind: str) -> None:
+    """4272895710. Counter-model: a mistyped --repo-root makes `lexists` report no sidecar, so the migration
+    succeeds and silently drops the `method_guidance` pending decision."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain)
+    profile = tmp_path / "profile-v1.yaml"
+    profile.write_text((target.repo / ".aiops" / "repo-profile.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    root = tmp_path / "does-not-exist" if root_kind == "missing" else profile
+    out = tmp_path / "report.json"
+    args = ["--profile-v1", str(profile), "--repo", domain.target_repo, "--default-branch", "main", "--output", str(out)]
+    result = _run_cli(SCRIPTS / "migrate-agent-review-profile-v1-v2.py", [*args[:4], "--repo-root", str(root), *args[4:]])
+    assert result.returncode == 2 and not out.exists(), result.stdout + result.stderr
+    good = _run_cli(SCRIPTS / "migrate-agent-review-profile-v1-v2.py", [*args[:4], "--repo-root", str(target.repo), *args[4:]])
+    assert good.returncode == 0 and "method_guidance" in {item["field"] for item in read_json(out)["pending_decisions"]}

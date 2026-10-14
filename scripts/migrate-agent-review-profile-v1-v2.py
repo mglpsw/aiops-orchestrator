@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_root = Path(args.repo_root).resolve()
     output_path = Path(args.output).resolve()
+    if not repo_root.is_dir():
+        # --repo-root is an authority input (it decides whether a sidecar exists): a missing / mistyped root must
+        # never be read as "no sidecar".
+        print("Blocked: --repo-root is not an existing directory.", file=sys.stderr)
+        return 2
     try:
         output_path.relative_to(repo_root)
     except ValueError:

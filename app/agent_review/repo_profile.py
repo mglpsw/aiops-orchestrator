@@ -258,7 +258,9 @@ def _read_bounded_in_checkout(root: Path, relative: str) -> bytes | None:
             directory_fd = next_fd
         file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory_fd)
         status = os.fstat(file_fd)
-        if not stat.S_ISREG(status.st_mode) or status.st_size > _METHOD_SOURCE_MAX_BYTES:
+        # A hard link is a second name for an inode that may live outside the checkout, and `O_NOFOLLOW` does not see
+        # it: a multiply-linked file is not provably "inside the checkout", so it is refused (fail closed).
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1 or status.st_size > _METHOD_SOURCE_MAX_BYTES:
             return None
         chunks: list[bytes] = []
         remaining = _METHOD_SOURCE_MAX_BYTES + 1

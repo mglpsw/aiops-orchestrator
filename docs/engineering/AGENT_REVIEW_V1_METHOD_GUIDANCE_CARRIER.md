@@ -105,7 +105,8 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
   declared **source document** are read relative to the trusted `--repo-root` with no link followed on any path
   component (`O_NOFOLLOW` per component, size and regular-file checked on the opened descriptor): a link — to a host
   file, to another file inside the checkout, dangling or looping, on the file or on `.aiops` itself — is never
-  read, so host bytes cannot become `method_guidance`. A **sidecar** that is such a link, a directory, a FIFO, an
+  read, so host bytes cannot become `method_guidance`; a file with more than one hard link (`st_nlink != 1`) is
+  refused too, because a second name may belong to an inode outside the checkout. A **sidecar** that is such a link, a directory, a FIFO, an
   oversize (> 4 MiB) or undecodable file is typed INVALID (never ABSENT) and the read is bounded. A declared
   **source document** that is a link, unreadable, oversize or outside the checkout is UNVERIFIABLE. A platform
   without `O_NOFOLLOW` / descriptor-relative open fails closed (INVALID / UNVERIFIABLE). `updated`, when present,
@@ -143,6 +144,16 @@ that budget (an integer, never text, never a verdict); a bound belongs to a sepa
 Source-state vocabulary reuses `PRESENT_VALID | ABSENT | INVALID` from OBL-CL2-03. `ABSENT` is not
 `not_relevant`: an absent sidecar declares nothing and the engine claims nothing from it.
 
+## Order of validation and redaction
+
+The authored sidecar is validated BEFORE redaction. If it is invalid as authored but redaction would make the
+redacted copy look valid (e.g. an over-length `selected_text` collapsed to `[REDACTED]`), `build_intake` carries it
+as a non-mapping, which the consumer reports as the critical `invalid_source_method_guidance:` limitation; the text
+is not carried. A valid declaration whose text redaction rewrites keeps the designed `BOUND_REDACTED` admission.
+`aiops-review-build-payloads.py` reports a chunk withheld for required context loss as
+`error_class: required_context_not_transported` with the typed loss codes in `limitations` (a hunk-transport block
+keeps `chunk_hunk_material_not_transported`).
+
 ## Separation of authorities
 
 | Class | Where it travels | Can it become an invariant? |
@@ -162,7 +173,8 @@ Known adjacent limits (not closed here): the v1→v2 profile migrator does not *
 no such carrier and none is invented here); it now reports the field as a typed pending decision, by name only,
 instead of dropping it silently. Because the sidecar is loader-owned and never part of the v1 profile document, the
 shipped script derives its presence from the trusted `--repo-root` (`os.path.lexists`, so a dangling link still
-counts) and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
+counts; a `--repo-root` that is not an existing directory is refused, exit 2, so a mistyped root is never read as
+"no sidecar") and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
 contracts declared" on this branch (separate slice: PR #374). Those two loaders (and `repo-profile.yaml`) still use
 `read_text`, which follows links: the same host-file exposure measured for the sidecar was reproduced for
 `domain-contracts.yaml` and `review-packs.yaml` on `master` (for `repo-profile.yaml` it depends on which fields the
