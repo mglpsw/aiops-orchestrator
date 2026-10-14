@@ -177,12 +177,12 @@ counts; a `--repo-root` that is not an existing directory is refused, exit 2, so
 "no sidecar") and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An existing `domain-contracts.yaml` / `review-packs.yaml` whose YAML does not parse is INVALID,
 never "no contracts declared" (PR #374): it travels as a type-valid document the grammar rejects, so the plan carries
 the critical `invalid_source_contract:` / `invalid_source_review_packs:` MALFORMED_SHAPE limitation, is degraded and the
-gate does not pass. That closes the parse failure only. The other unsafe or unreadable source states are NOT closed:
-a dangling link at either path is read as absent (`plan` complete, gate `passed`, measured on `master`), and those
-loaders (with `repo-profile.yaml` and `artifact_loader`) still use `exists()` / `read_text`, which follows links
-(host-file exposure reproduced for `domain-contracts.yaml` and `review-packs.yaml` on `master`), can block on a FIFO
-and lets non-YAML IO / decoding exceptions escape untyped. They are tracked in #375, which can adopt
-`_read_bounded_in_checkout`. The engine cannot judge whether an excerpt is the
+gate does not pass. That closes the parse failure only. The unsafe or unreadable source states (a dangling link, a link
+or hard link, a FIFO, an oversize file, IO / decoding / construction errors, alias-expanding or cyclic documents) are
+closed for the profile, contract sources, sidecar and declared artifacts by the source boundary of #375
+(`AGENT_REVIEW_V1_C2_SOURCE_BOUNDARY.md`): one acquisition authority, typed states, a bounded structural scan. That
+document also lists what is NOT claimed (whole-parser resource bound, universal filesystem security, empty-file
+policy). The engine cannot judge whether an excerpt is the
 *right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),
