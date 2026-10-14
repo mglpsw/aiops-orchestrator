@@ -2447,6 +2447,10 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
             raw["repository"].strip()
         ):
             return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        # `path` is emitted verbatim next to `source_state: CURRENT`: same character-class policy as selected_text
+        # plus a length cap (the canonicalizer only refuses traversal, absolute paths and C0/DEL).
+        if len(source_path) > METHOD_GUIDANCE_MAX_SELECTION_CHARS or _method_text_has_unsafe_character(source_path):
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
         sources[source_id] = {
             "source_id": source_id,
             "repository": raw["repository"].strip(),

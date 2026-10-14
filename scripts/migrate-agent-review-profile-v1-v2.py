@@ -23,6 +23,7 @@ from app.agent_review.profile_migration_v1_v2 import (  # noqa: E402
     ProfileMigrationError,
     migrate_profile_v1_to_v2,
 )
+from app.agent_review.repo_profile import METHOD_GUIDANCE_SIDECAR  # noqa: E402
 from app.agent_review.schemas import TargetProfile  # noqa: E402
 
 
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             repo=args.repo,
             default_branch=args.default_branch,
             # lexists: an unreadable/dangling entry is still a declared sidecar, never "absent"
-            method_guidance_sidecar_present=os.path.lexists(repo_root / ".aiops" / "method-guidance.yaml"),
+            method_guidance_sidecar_present=os.path.lexists(repo_root / ".aiops" / METHOD_GUIDANCE_SIDECAR),
         )
     except ProfileMigrationError as exc:
         print(f"Blocked: {exc}", file=sys.stderr)

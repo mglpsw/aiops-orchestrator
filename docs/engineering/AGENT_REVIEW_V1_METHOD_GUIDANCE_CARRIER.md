@@ -116,7 +116,8 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
   U+3164, U+FFA0, U+2800, U+034F, Hangul fillers) are admitted; they must also appear in the blob-bound source, which
   has the same author trust. NBSP and other Zs spaces are admitted and treated as whitespace by the binding;
 - every emitted `source` field is constrained: `source_id`/`method_id`/`section_id` by identity regex, `path` by the
-  canonicalizer (control characters refused), `blob` as 40 lowercase hex, `revision` by the allowlist
+  canonicalizer **plus** the `selected_text` character-class policy and a 256-character cap (the canonicalizer alone only
+  refuses traversal, absolute paths and C0/DEL), `blob` as 40 lowercase hex, `revision` by the allowlist
   `[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}` and `repository` by `owner/name` (`[A-Za-z0-9._-]`), otherwise INVALID;
 - the repository identity anchor of a source is the trusted CLI `--target-repo` **only**: a missing or empty CLI
   value makes every source UNVERIFIABLE; the author-editable `repo-profile.yaml` label is never a fallback;
@@ -125,10 +126,12 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
 
 **Residual (pre-existing loader class, shared with `domain-contracts.yaml` / `review-packs.yaml`, not repaired
 here):** the YAML parser and the non-string-key scan have no alias-expansion or nesting bound. A sidecar with an
-alias bomb can hang the CLI and a nesting depth of roughly 350–450 can raise `RecursionError` out of the key scan
+alias bomb can hang the CLI and a nesting depth of roughly 330–500 (interpreter-dependent) can raise `RecursionError` out of the key scan
 (shallower is accepted, deeper is refused by the parser and typed INVALID). The sidecar parse step itself is typed
 for any parser exception (including PyYAML explicit tags such as `!!bool maybe`). This is an availability failure,
-not a false pass; a bound belongs to a separate loader-hardening slice for all three sources. Whitespace-insensitive binding also treats NBSP as whitespace and has no minimum length or word boundary
+not a false pass. Also pre-existing and shared with the contract sources: PR-brief sizing searches the whole
+target profile for an integer knob (`pr_brief_max_chars`), so a key nested inside an INVALID sidecar still sets
+that budget (an integer, never text, never a verdict); a bound belongs to a separate loader-hardening slice for all three sources. Whitespace-insensitive binding also treats NBSP as whitespace and has no minimum length or word boundary
 (a negation-truncated excerpt still binds; right-excerpt judgment is a declared non-claim).
 
 Source-state vocabulary reuses `PRESENT_VALID | ABSENT | INVALID` from OBL-CL2-03. `ABSENT` is not
