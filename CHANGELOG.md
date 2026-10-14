@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- AgentReview v1 MethodGuidance carrier (`#221`, V1-C2): bounded review-method guidance can
+  now reach the reviewer **separately from product contracts**. Producer: the optional
+  target sidecar `.aiops/method-guidance.yaml` (closed grammar v1) loaded by
+  `load_repo_profile` into `TargetProfile.method_guidance`, with a loader-owned
+  `method_guidance_verification` (source blob compared with the checkout:
+  `CURRENT` / `STALE` / `UNVERIFIABLE`; an inline copy in `repo-profile.yaml` or an
+  author-written verdict is refused like the other inline C2 sources). Consumer:
+  `payload_cost_model.method_guidance_context` — the single constructor both the planner
+  projection and the builder call — emits `chunk_context.method_guidance_context`
+  (`authority_class: METHOD_GUIDANCE`, advisory) only for items whose declared
+  `applies_to` selects the chunk and whose source is `CURRENT`. Budget: required items are
+  part of the projected floor; the shrink ladder drops optional guidance before optional
+  contracts and required guidance only after, always before hunks. Typed outcomes:
+  `required_method_guidance_context_lost:<method>/<section>` (required-context loss and
+  critical: chunk withheld, plan `degraded`, gate not `passed`),
+  `optional_method_guidance_context_lost:<method>/<section>` (informational, never a
+  blocker), `invalid_source_method_guidance:<SUBTYPE>` (critical, nothing admitted),
+  `method_guidance_source_stale|unverifiable:<source_id>`. No sidecar means no new key,
+  limitation or cost: payloads, plans, manifests and briefs are byte-identical to the
+  previous engine (differential over two domains x three budgets x contracts on/off).
+  The contract limitation registries pinned by the Gate A receipt are unchanged; consumers
+  now read `payload_cost_model.critical_context_limitation_prefixes()`. The `contract_bindings`
+  / `review_packs` / `domain_contracts` grammars and the v2 engine are untouched. This does
+  not qualify any target projection (Gate B/C), chunking coverage, a release or a repin.
+
 ### Fixed
 
 - AgentReview v1 coverage truth (`#232`, V1-C1): a changed file with no observable

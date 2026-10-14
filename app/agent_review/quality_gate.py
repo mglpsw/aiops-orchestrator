@@ -236,7 +236,7 @@ def evaluate_review_quality_gate(
         final_status in {"partial", "degraded", "failed"}
         or chunk_results.status in {"partial", "degraded", "failed"}
         or any(
-            any(str(lim).startswith(prefix) for prefix in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+            any(str(lim).startswith(prefix) for prefix in payload_cost_model.critical_context_limitation_prefixes())
             for lim in limitations
         )
     )

@@ -347,6 +347,14 @@ def build_semantic_chunk_plan(
                 for lim in chunk_contract_limits:
                     if not lim.startswith("contracts_context_not_relevant:"):
                         candidate_contract_limits.append(lim)
+                # V1-C2: typed MethodGuidance limitations (invalid source, required/optional loss, stale
+                # reference) reach the plan through the same fixed point, so a degraded plan names them.
+                _, chunk_method_limits = payload_cost_model.method_guidance_context(
+                    review_intake,
+                    chunk_files=chunk.files,
+                    semantic_group=chunk.semantic_group,
+                )
+                candidate_contract_limits.extend(chunk_method_limits)
         else:
             _, plan_contract_limits = payload_cost_model.contracts_context(
                 review_intake,
@@ -359,6 +367,12 @@ def build_semantic_chunk_plan(
             for lim in plan_contract_limits:
                 if not lim.startswith("contracts_context_not_relevant:"):
                     candidate_contract_limits.append(lim)
+            _, plan_method_limits = payload_cost_model.method_guidance_context(
+                review_intake,
+                chunk_files=canonical_files,
+                semantic_group="plan",
+            )
+            candidate_contract_limits.extend(plan_method_limits)
 
         contract_limits = candidate_contract_limits
         new_accumulated = sorted(set(accumulated) | set(pack_result.plan_limitations) | set(contract_limits))
@@ -787,7 +801,7 @@ def _plan_status(
     if files_not_covered:
         return "degraded"
     if any(
-        any(lim.startswith(prefix) for prefix in payload_cost_model.CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        any(lim.startswith(prefix) for prefix in payload_cost_model.critical_context_limitation_prefixes())
         for lim in limitations
     ):
         return "degraded"
