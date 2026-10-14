@@ -174,11 +174,15 @@ no such carrier and none is invented here); it now reports the field as a typed 
 instead of dropping it silently. Because the sidecar is loader-owned and never part of the v1 profile document, the
 shipped script derives its presence from the trusted `--repo-root` (`os.path.lexists`, so a dangling link still
 counts; a `--repo-root` that is not an existing directory is refused, exit 2, so a mistyped root is never read as
-"no sidecar") and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
-contracts declared" on this branch (separate slice: PR #374). Those two loaders (and `repo-profile.yaml`) still use
-`read_text`, which follows links: the same host-file exposure measured for the sidecar was reproduced for
-`domain-contracts.yaml` and `review-packs.yaml` on `master` (for `repo-profile.yaml` it depends on which fields the
-model keeps). It is a separate, adjacent follow-up that can adopt `_read_bounded_in_checkout`. The engine cannot judge whether an excerpt is the
+"no sidecar") and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An existing `domain-contracts.yaml` / `review-packs.yaml` whose YAML does not parse is INVALID,
+never "no contracts declared" (PR #374): it travels as a type-valid document the grammar rejects, so the plan carries
+the critical `invalid_source_contract:` / `invalid_source_review_packs:` MALFORMED_SHAPE limitation, is degraded and the
+gate does not pass. That closes the parse failure only. The other unsafe or unreadable source states are NOT closed:
+a dangling link at either path is read as absent (`plan` complete, gate `passed`, measured on `master`), and those
+loaders (with `repo-profile.yaml` and `artifact_loader`) still use `exists()` / `read_text`, which follows links
+(host-file exposure reproduced for `domain-contracts.yaml` and `review-packs.yaml` on `master`), can block on a FIFO
+and lets non-YAML IO / decoding exceptions escape untyped. They are tracked in #375, which can adopt
+`_read_bounded_in_checkout`. The engine cannot judge whether an excerpt is the
 *right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),
