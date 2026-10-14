@@ -40,12 +40,13 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, get_args
 
 from app.agent_review.chunk_response_contract import build_chunk_response_contract
-from app.agent_review.redaction import RedactionState, redact_value, sanitize_artifact_value
+from app.agent_review.redaction import SENSITIVE_KEYS, RedactionState, redact_value, sanitize_artifact_value
 from app.agent_review.schemas import ChunkPayload, ReviewIntake, SemanticGroup, TruncationMetadata
 
 
@@ -97,9 +98,33 @@ REQUIRED_CONTEXT_LOSS_PREFIXES: tuple[str, ...] = (
     "required_contract_pack_context_lost:",
 )
 
+# MethodGuidance (V1-C2) has its OWN registries. The contract tuples above are pinned by the qualified Gate A
+# receipt and are deliberately not widened: MethodGuidance is not a ProductContract, and a limitation family that
+# belongs to it must not be able to hide inside the contract registry. Consumers read the COMBINED tuple below.
+# Only the REQUIRED loss and an INVALID source are critical; the OPTIONAL loss (and the stale / unverifiable
+# reference notes) are typed and visible but are never an automatic blocker.
+METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX = "required_method_guidance_context_lost:"
+METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX = "optional_method_guidance_context_lost:"
+METHOD_GUIDANCE_CRITICAL_LIMITATION_PREFIXES: tuple[str, ...] = (
+    METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX,
+    "invalid_source_method_guidance:",
+)
+METHOD_GUIDANCE_REQUIRED_LOSS_PREFIXES: tuple[str, ...] = (METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX,)
+
+
+def critical_context_limitation_prefixes() -> tuple[str, ...]:
+    """Every critical limitation family consumers (planner status, synthesizer, quality gate) must honour.
+
+    Evaluated at call time so each consumer stays wired to the registries themselves, not to a copy of them.
+    """
+    return (*CRITICAL_CONTRACT_LIMITATION_PREFIXES, *METHOD_GUIDANCE_CRITICAL_LIMITATION_PREFIXES)
+
 
 def is_required_context_loss(limitation: str) -> bool:
-    return any(limitation.startswith(prefix) for prefix in REQUIRED_CONTEXT_LOSS_PREFIXES)
+    return any(
+        limitation.startswith(prefix)
+        for prefix in (*REQUIRED_CONTEXT_LOSS_PREFIXES, *METHOD_GUIDANCE_REQUIRED_LOSS_PREFIXES)
+    )
 
 
 FORMAT_LEGACY_FLAT = "legacy_flat"
@@ -2246,6 +2271,388 @@ def minimal_contracts_context(contracts_ctx: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# MethodGuidance carrier (V1-C2, aiops-orchestrator#221).
+#
+# `MethodGuidance != ProductContract`. The guidance is review METHOD supplied by the target through the
+# `.aiops/method-guidance.yaml` sidecar (typed carrier: `TargetProfile.method_guidance` +
+# loader-owned `method_guidance_verification`). It travels in its own `chunk_context.method_guidance_context`,
+# never inside `contracts_context`, never as `domain_contracts` / `review_packs` / `contract_bindings`, and it
+# can never be resolved through `contract:<id>`. This module is the single authority both the planner
+# projection and the builder call, so the bytes the planner costs are the bytes the builder emits.
+# ---------------------------------------------------------------------------
+
+METHOD_GUIDANCE_AUTHORITY_CLASS = "METHOD_GUIDANCE"
+METHOD_GUIDANCE_USAGE = "advisory_review_method_not_product_contract"
+METHOD_GUIDANCE_SCHEMA_VERSION = 1
+METHOD_GUIDANCE_ENVELOPE_KEYS: frozenset[str] = frozenset({"version", "updated", "sources", "guidance"})
+METHOD_GUIDANCE_SOURCE_KEYS: frozenset[str] = frozenset({"source_id", "repository", "path", "revision", "blob"})
+METHOD_GUIDANCE_ITEM_KEYS: frozenset[str] = frozenset(
+    {"method_id", "section_id", "source_id", "requiredness", "applies_to", "selected_text"}
+)
+METHOD_GUIDANCE_APPLIES_TO_KEYS: frozenset[str] = frozenset({"semantic_groups", "paths", "patterns", "scope"})
+METHOD_GUIDANCE_MAX_SOURCES = 16
+METHOD_GUIDANCE_MAX_ITEMS = 32
+METHOD_GUIDANCE_MAX_TEXT_CHARS = 4000
+METHOD_GUIDANCE_MAX_SELECTION_MEMBERS = 64
+METHOD_GUIDANCE_MAX_SELECTION_CHARS = 256
+METHOD_GUIDANCE_REQUIRED = "required"
+METHOD_GUIDANCE_OPTIONAL = "optional"
+METHOD_SOURCE_CURRENT = "CURRENT"
+METHOD_SOURCE_STALE = "STALE"
+METHOD_SOURCE_UNVERIFIABLE = "UNVERIFIABLE"
+# Item-level loader verdicts (same loader-owned mapping, keyed "<method_id>/<section_id>"; ids cannot contain "/"):
+# BOUND = the normalized selected_text is a literal excerpt of the declared, CURRENT source document.
+METHOD_TEXT_BOUND = "BOUND"
+METHOD_TEXT_UNBOUND = "UNBOUND"
+# BOUND, and the redaction policy rewrites that text on its way to the reviewer: typed, never silent.
+METHOD_TEXT_BOUND_REDACTED = "BOUND_REDACTED"
+_METHOD_SOURCE_STATES: frozenset[str] = frozenset({METHOD_SOURCE_CURRENT, METHOD_SOURCE_STALE, METHOD_SOURCE_UNVERIFIABLE})
+_METHOD_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+_GIT_BLOB_OID_RE = re.compile(r"^[0-9a-f]{40}$")
+# Emitted `source` fields are an allowlist, not free text: `revision` (identity only, never verified) and
+# `repository` (emitted even when the source ends UNVERIFIABLE) reach the model verbatim.
+_METHOD_REVISION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}")
+_METHOD_REPOSITORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}")
+
+
+@dataclass(frozen=True)
+class MethodGuidanceItem:
+    key: str
+    emitted: dict[str, Any]
+    applies_to: dict[str, Any]
+    text_bound: bool = False
+    text_redacted: bool = False
+
+    @property
+    def required(self) -> bool:
+        return self.emitted["requiredness"] == METHOD_GUIDANCE_REQUIRED
+
+
+@dataclass(frozen=True)
+class MethodGuidanceNormalization:
+    state: str
+    subtype: str | None
+    items: tuple[MethodGuidanceItem, ...]
+    limitations: tuple[str, ...]
+
+
+def _method_guidance_invalid(subtype: str) -> MethodGuidanceNormalization:
+    return MethodGuidanceNormalization(
+        SOURCE_STATE_INVALID, subtype, (), (f"invalid_source_method_guidance:{subtype}",)
+    )
+
+
+def _method_identity(value: Any) -> str | None:
+    # An id that equals a redaction-sensitive key name would have its loader verdict rewritten by redact_value.
+    if isinstance(value, str) and _METHOD_IDENTITY_RE.fullmatch(value) and value.strip().lower().replace("-", "_") not in SENSITIVE_KEYS:
+        return value
+    return None
+
+
+def canonical_method_source_path(value: Any) -> str | None:
+    """The ONE canonical form of a declared method source path: used by normalization AND by the loader's
+    verification, so the file that is verified is the file whose path is emitted."""
+    members = _method_path_list([value], pattern=False)
+    if not members or any(char in members[0] for char in "*?[]"):
+        return None
+    return members[0]
+
+
+_METHOD_TEXT_ALLOWED_CONTROLS = frozenset("\n\t")
+_METHOD_TEXT_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _method_text_has_unsafe_character(text: str) -> bool:
+    """One character-class policy for model-facing guidance text: control, format (bidi/zero-width), surrogate,
+    private-use, unassigned and line/paragraph-separator characters, plus the replacement character U+FFFD (a
+    decoding loss that would otherwise "bind" to any undecodable source byte). `\n` and `\t` stay admissible."""
+    for char in text:
+        if char in _METHOD_TEXT_ALLOWED_CONTROLS:
+            continue
+        if char == "\ufffd" or unicodedata.category(char) in _METHOD_TEXT_UNSAFE_CATEGORIES:
+            return True
+    return False
+
+
+def normalize_method_text(value: str) -> str:
+    """Whitespace-insensitive form used to bind a selected_text to its source document."""
+    return " ".join(value.split())
+
+
+def _method_path_list(value: Any, *, pattern: bool) -> list[str] | None:
+    """Canonical, sorted, deduped repo-relative paths/patterns; None when ANY member is not one."""
+    if not isinstance(value, list):
+        return None
+    canonical: set[str] = set()
+    for member in value:
+        if not isinstance(member, str) or not member.strip():
+            return None
+        try:
+            identity = canonical_repo_pattern(member) if pattern else canonical_repo_path(member)
+        except PathIdentityError:
+            return None
+        if _is_non_repo_relative_marker(identity):
+            return None
+        canonical.add(identity)
+    return sorted(canonical)
+
+
+def normalize_method_guidance(document: Any, verification: Any = None) -> MethodGuidanceNormalization:
+    """Closed-grammar normalization of the method-guidance sidecar (OBL-CL2-03 source states).
+
+    ABSENT        no sidecar: nothing is declared, nothing is claimed (never `not_relevant`).
+    INVALID       any grammar violation: one typed code, no item admitted (never discard-invalid + keep-valid).
+    PRESENT_VALID items sorted by (method_id, section_id), each bound to its loader verification state; a
+                  source without a loader verdict is UNVERIFIABLE, never CURRENT.
+    """
+    if document is None:
+        return MethodGuidanceNormalization(SOURCE_STATE_ABSENT, None, (), ())
+    if not isinstance(document, dict):
+        return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+    if any(not isinstance(key, str) or key not in METHOD_GUIDANCE_ENVELOPE_KEYS for key in document):
+        return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+
+    version = document.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+    if version != METHOD_GUIDANCE_SCHEMA_VERSION:
+        return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+    if "updated" in document:
+        updated = document["updated"]
+        # A float must be finite: NaN / +-Infinity are not interoperable JSON and are not a date.
+        if (
+            isinstance(updated, bool)
+            or not isinstance(updated, (str, int, float))
+            or (isinstance(updated, float) and not math.isfinite(updated))
+        ):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+
+    raw_sources, raw_items = document.get("sources"), document.get("guidance")
+    if not isinstance(raw_sources, list) or not isinstance(raw_items, list):
+        return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+    if len(raw_sources) > METHOD_GUIDANCE_MAX_SOURCES or len(raw_items) > METHOD_GUIDANCE_MAX_ITEMS:
+        return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+
+    sources: dict[str, dict[str, str]] = {}
+    for raw in raw_sources:
+        if not isinstance(raw, dict):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if any(not isinstance(key, str) or key not in METHOD_GUIDANCE_SOURCE_KEYS for key in raw):
+            return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+        if set(raw) != METHOD_GUIDANCE_SOURCE_KEYS or not all(
+            isinstance(value, str) and value.strip() for value in raw.values()
+        ):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        source_id = _method_identity(raw["source_id"])
+        blob = raw["blob"].strip()
+        source_path = canonical_method_source_path(raw["path"])
+        if source_id is None or source_id in sources or not _GIT_BLOB_OID_RE.fullmatch(blob) or not source_path:
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        if not _METHOD_REVISION_RE.fullmatch(raw["revision"].strip()) or not _METHOD_REPOSITORY_RE.fullmatch(
+            raw["repository"].strip()
+        ):
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        # `path` is emitted verbatim next to `source_state: CURRENT`: same character-class policy as selected_text
+        # plus a length cap (the canonicalizer only refuses traversal, absolute paths and C0/DEL).
+        if len(source_path) > METHOD_GUIDANCE_MAX_SELECTION_CHARS or _method_text_has_unsafe_character(source_path):
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        sources[source_id] = {
+            "source_id": source_id,
+            "repository": raw["repository"].strip(),
+            "path": source_path,
+            "revision": raw["revision"].strip(),
+            "blob": blob,
+        }
+
+    verdicts = verification if isinstance(verification, dict) else {}
+    items: list[MethodGuidanceItem] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if any(not isinstance(key, str) or key not in METHOD_GUIDANCE_ITEM_KEYS for key in raw):
+            return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+        if set(raw) != METHOD_GUIDANCE_ITEM_KEYS:
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        method_id = _method_identity(raw["method_id"])
+        section_id = _method_identity(raw["section_id"])
+        source_id = _method_identity(raw["source_id"])
+        if method_id is None or section_id is None or source_id is None:
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        if (method_id, section_id) in seen or source_id not in sources:
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        seen.add((method_id, section_id))
+        if raw["requiredness"] not in (METHOD_GUIDANCE_REQUIRED, METHOD_GUIDANCE_OPTIONAL):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        text = raw["selected_text"]
+        if not isinstance(text, str):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if len(text) > METHOD_GUIDANCE_MAX_TEXT_CHARS:
+            return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+        if _method_text_has_unsafe_character(text):
+            return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+
+        applies = raw["applies_to"]
+        if not isinstance(applies, dict):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if any(not isinstance(key, str) or key not in METHOD_GUIDANCE_APPLIES_TO_KEYS for key in applies):
+            return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+        groups = applies.get("semantic_groups", [])
+        if not isinstance(groups, list) or any(
+            not isinstance(group, str) or group not in get_args(SemanticGroup) for group in groups
+        ):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        raw_paths, raw_patterns = applies.get("paths", []), applies.get("patterns", [])
+        if not isinstance(raw_paths, list) or not isinstance(raw_patterns, list):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+        if (
+            len(raw_paths) > METHOD_GUIDANCE_MAX_SELECTION_MEMBERS
+            or len(raw_patterns) > METHOD_GUIDANCE_MAX_SELECTION_MEMBERS
+            or any(isinstance(m, str) and len(m) > METHOD_GUIDANCE_MAX_SELECTION_CHARS for m in (*raw_paths, *raw_patterns))
+        ):
+            return _method_guidance_invalid(SUBTYPE_OTHER_TYPED_INVALID)
+        # Same convention as modern contracts: a glob-bearing `paths` member is a pattern, never an exact path
+        # that can silently never match.
+        paths = _method_path_list([m for m in raw_paths if not (isinstance(m, str) and any(c in m for c in "*?["))], pattern=False)
+        patterns = _method_path_list(
+            [*raw_patterns, *[m for m in raw_paths if isinstance(m, str) and any(c in m for c in "*?[")]], pattern=True
+        )
+        if paths is None or patterns is None:
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        is_global = False
+        if "scope" in applies:
+            is_global, supported = classify_scope(applies["scope"])
+            if not supported or not is_global:
+                return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
+        selection = {
+            "semantic_groups": sorted(set(groups)),
+            "paths": paths,
+            "patterns": patterns,
+            "global": is_global,
+        }
+        # No implicit apply-to-all: at least one declared selection member is mandatory.
+        if not (selection["semantic_groups"] or paths or patterns or is_global):
+            return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
+
+        verdict = verdicts.get(source_id)
+        state = verdict if verdict in _METHOD_SOURCE_STATES else METHOD_SOURCE_UNVERIFIABLE
+        item_verdict = verdicts.get(f"{method_id}/{section_id}")
+        bound = item_verdict in (METHOD_TEXT_BOUND, METHOD_TEXT_BOUND_REDACTED)
+        items.append(
+            MethodGuidanceItem(
+                key=f"{method_id}/{section_id}",
+                emitted={
+                    "method_id": method_id,
+                    "section_id": section_id,
+                    "authority_class": METHOD_GUIDANCE_AUTHORITY_CLASS,
+                    "requiredness": raw["requiredness"],
+                    "source": dict(sources[source_id]),
+                    "source_state": state,
+                    "selected_text": text,
+                },
+                text_bound=bound,
+                text_redacted=item_verdict == METHOD_TEXT_BOUND_REDACTED,
+                applies_to=selection,
+            )
+        )
+    return MethodGuidanceNormalization(
+        SOURCE_STATE_PRESENT_VALID, None, tuple(sorted(items, key=lambda item: item.key)), ()
+    )
+
+
+def _method_guidance_applies(selection: dict[str, Any], *, chunk_files: set[str], semantic_group: str) -> bool:
+    """Deterministic applicability from DECLARED selection only (never from Markdown prose or PR text)."""
+    if selection["global"] or semantic_group in selection["semantic_groups"]:
+        return True
+    if chunk_files.intersection(selection["paths"]):
+        return True
+    return bool(selection["patterns"]) and any(
+        _matches_modern_pattern(path, selection["patterns"]) for path in chunk_files
+    )
+
+
+def method_guidance_context(
+    intake: ReviewIntake,
+    *,
+    chunk_files: list[str],
+    semantic_group: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """The one MethodGuidance context constructor (planner projection and builder both call it).
+
+    Returns (context | None, limitations). `None` means NOTHING is emitted for this chunk: no sidecar, an
+    INVALID sidecar (typed limitation), no applicable item, or only items whose source has no current authority
+    (typed required/optional loss per item). A context is emitted only with at least one CURRENT applicable item.
+    """
+    profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
+    normalized = normalize_method_guidance(
+        profile.get("method_guidance"), profile.get("method_guidance_verification")
+    )
+    if normalized.state == SOURCE_STATE_ABSENT:
+        return None, []
+    if normalized.state == SOURCE_STATE_INVALID:
+        return None, list(normalized.limitations)
+
+    chunk_file_set = set(chunk_files)
+    emitted: list[dict[str, Any]] = []
+    limitations: list[str] = []
+    for item in normalized.items:
+        if not _method_guidance_applies(item.applies_to, chunk_files=chunk_file_set, semantic_group=semantic_group):
+            continue
+        state = item.emitted["source_state"]
+        if state == METHOD_SOURCE_CURRENT and item.text_bound:
+            row = copy.deepcopy(item.emitted)
+            safe_text = sanitize_artifact_value(row["selected_text"])
+            if item.text_redacted or safe_text != row["selected_text"]:
+                # Redaction is general policy; it must not silently rewrite guidance that is labelled CURRENT.
+                limitations.append(f"method_guidance_text_redacted:{item.key}")
+                row["selected_text"] = safe_text
+            emitted.append(row)
+            continue
+        if state == METHOD_SOURCE_CURRENT:
+            # Current source, but the text is not a literal excerpt of it: attribution is unproven.
+            limitations.append(f"method_guidance_text_unbound:{item.key}")
+        else:
+            label = "stale" if state == METHOD_SOURCE_STALE else "unverifiable"
+            limitations.append(f"method_guidance_source_{label}:{item.emitted['source']['source_id']}")
+        prefix = METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX if item.required else METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX
+        limitations.append(f"{prefix}{item.key}")
+    context = (
+        {"authority_class": METHOD_GUIDANCE_AUTHORITY_CLASS, "usage": METHOD_GUIDANCE_USAGE, "items": emitted}
+        if emitted
+        else None
+    )
+    return context, _dedupe(limitations)
+
+
+def minimal_method_guidance_context(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Terminal shrink state: REQUIRED items intact (the floor), OPTIONAL items gone; `None` when none remain."""
+    if not isinstance(context, dict):
+        return None
+    required = [
+        copy.deepcopy(item)
+        for item in context.get("items") or []
+        if isinstance(item, dict) and item.get("requiredness") == METHOD_GUIDANCE_REQUIRED
+    ]
+    if not required:
+        return None
+    return {"authority_class": context.get("authority_class"), "usage": context.get("usage"), "items": required}
+
+
+def optional_method_guidance_loss_codes(context: dict[str, Any] | None) -> list[str]:
+    """Typed OptionalMethodGuidanceLost codes the builder ladder records when it reaches the minimal state."""
+    if not isinstance(context, dict):
+        return []
+    return [
+        f"{METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX}{item.get('method_id')}/{item.get('section_id')}"
+        for item in context.get("items") or []
+        if isinstance(item, dict) and item.get("requiredness") != METHOD_GUIDANCE_REQUIRED
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Minimal-form constants for the two contexts whose terminal shrink state
 # genuinely is input-independent (verified against `_shrink_aux_context` /
 # `_shrink_contracts_context`: both discard all real content unconditionally).
@@ -2818,12 +3225,18 @@ def project_min_hunk_preserving_chars(
         validation_evidence=validation_evidence,
     )
     aux_ctx = aux_context(intake, chunk_files=chunk_files_sorted)
+    # V1-C2: the same constructor the builder calls. `None` (no sidecar / nothing applicable) adds NOTHING below,
+    # so a repository without MethodGuidance projects byte-identically to the previous engine.
+    method_ctx, method_limitations = method_guidance_context(
+        intake, chunk_files=chunk_files_sorted, semantic_group=semantic_group
+    )
     limitations.extend(contract_limitations)
+    limitations.extend(method_limitations)
     limitations.extend(check_limitations)
     limitations.extend(evidence_limitations)
     deduped_limitations = _dedupe(limitations)
 
-    def base_payload_body(chunk_context: dict[str, Any]) -> dict[str, Any]:
+    def base_payload_body(chunk_context: dict[str, Any], *, extra_limitations: list[str] | None = None) -> dict[str, Any]:
         return {
             "chunk_id": chunk_id,
             "semantic_group": semantic_group,
@@ -2851,7 +3264,7 @@ def project_min_hunk_preserving_chars(
             },
             "response_contract": build_chunk_response_contract(chunk_id=chunk_id, semantic_group=semantic_group),
             "warnings": [],
-            "limitations": deduped_limitations,
+            "limitations": _dedupe([*deduped_limitations, *(extra_limitations or [])]),
             "created_at": created_at,
         }
 
@@ -2862,16 +3275,17 @@ def project_min_hunk_preserving_chars(
     # untruncated length the same way the real shrink loop establishes its
     # own `original_chars`. This is exact, not approximate: same content,
     # same sanitizer, same bootstrap.
-    full_payload_body = base_payload_body(
-        {
-            "files": display_files,
-            "chunk_hunks": chunk_hunks_full,
-            "contracts_context": clean_contracts_context_for_payload(contracts_ctx),
-            "evidence_context": evidence_ctx,
-            "checks_context": checks_ctx,
-            "aux_context": aux_ctx,
-        }
-    )
+    full_context = {
+        "files": display_files,
+        "chunk_hunks": chunk_hunks_full,
+        "contracts_context": clean_contracts_context_for_payload(contracts_ctx),
+        "evidence_context": evidence_ctx,
+        "checks_context": checks_ctx,
+        "aux_context": aux_ctx,
+    }
+    if method_ctx is not None:
+        full_context["method_guidance_context"] = method_ctx
+    full_payload_body = base_payload_body(full_context)
     sanitized_full = sanitize_artifact_value(full_payload_body)
     exact_original_chars = bootstrap_original_chars(sanitized_full)
 
@@ -2890,29 +3304,40 @@ def project_min_hunk_preserving_chars(
     # measured length larger, so this stays a safe over-estimate rather
     # than requiring the projection to replay the real loop's exact step
     # order.
-    minimal_payload_body = base_payload_body(
-        {
-            "files": display_files,
-            "chunk_hunks": chunk_hunks_full,
-            "contracts_context": minimal_contracts_context(contracts_ctx),
-            "evidence_context": minimal_evidence_context(evidence_ctx),
-            "checks_context": minimal_checks_context(checks_ctx),
-            "aux_context": dict(MINIMAL_AUX_CONTEXT),
-        }
-    )
+    minimal_context = {
+        "files": display_files,
+        "chunk_hunks": chunk_hunks_full,
+        "contracts_context": minimal_contracts_context(contracts_ctx),
+        "evidence_context": minimal_evidence_context(evidence_ctx),
+        "checks_context": minimal_checks_context(checks_ctx),
+        "aux_context": dict(MINIMAL_AUX_CONTEXT),
+    }
+    omitted_sections = ["aux_context", "checks_context", "evidence_context", "contracts_context"]
+    coverage_impact = [
+        "auxiliary_context_reduced",
+        "checks_context_reduced",
+        "evidence_context_reduced",
+        "contracts_context_reduced",
+    ]
+    minimal_extra_limitations: list[str] = []
+    if method_ctx is not None:
+        # The ladder's terminal state keeps REQUIRED guidance (the floor) and records one typed
+        # OptionalMethodGuidanceLost code per dropped optional item -- both are real payload characters.
+        reduced_method_ctx = minimal_method_guidance_context(method_ctx)
+        if reduced_method_ctx is not None:
+            minimal_context["method_guidance_context"] = reduced_method_ctx
+        minimal_extra_limitations = optional_method_guidance_loss_codes(method_ctx)
+        omitted_sections.append("method_guidance_context")
+        coverage_impact.append("method_guidance_context_reduced")
+    minimal_payload_body = base_payload_body(minimal_context, extra_limitations=minimal_extra_limitations)
     sanitized_minimal = sanitize_artifact_value(minimal_payload_body)
     worst_case_truncation = TruncationMetadata(
         applied=True,
         original_chars=exact_original_chars,
         emitted_chars=0,
-        omitted_sections=["aux_context", "checks_context", "evidence_context", "contracts_context"],
+        omitted_sections=omitted_sections,
         truncation_reason="max_chars_exceeded",
-        coverage_impact=[
-            "auxiliary_context_reduced",
-            "checks_context_reduced",
-            "evidence_context_reduced",
-            "contracts_context_reduced",
-        ],
+        coverage_impact=coverage_impact,
     )
     # Note on soundness: a real build whose FULL, untouched payload already
     # fits the budget never enters the shrink loop at all, so hunks survive

@@ -10,12 +10,17 @@ from app.agent_review import payload_cost_model
 from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, chunk_artifact_filename
 from app.agent_review.chunk_response_contract import build_chunk_response_contract
 from app.agent_review.payload_cost_model import (
+    METHOD_GUIDANCE_OPTIONAL,
+    METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX,
+    METHOD_GUIDANCE_REQUIRED,
+    METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX,
     canonical_json,
     checks_context,
     contracts_context,
     evidence_context,
     is_required_context_loss,
     materialize_payload,
+    method_guidance_context,
     sanitize_display_path as _sanitize_relative_path,
     stabilize_payload_truncation,
 )
@@ -194,9 +199,28 @@ def _build_chunk_payload(
         chunk_files=chunk.files,
         validation_evidence=validation_evidence,
     )
+    # V1-C2: MethodGuidance is built by the same authority the planner projects with, and is a SIBLING of
+    # `contracts_context`, never a member of it. Absent / nothing applicable => no key (legacy bytes).
+    method_ctx, method_limitations = method_guidance_context(
+        intake,
+        chunk_files=chunk.files,
+        semantic_group=chunk.semantic_group,
+    )
     limitations.extend(contract_limitations)
+    limitations.extend(method_limitations)
     limitations.extend(check_limitations)
     limitations.extend(evidence_limitations)
+
+    chunk_context: dict[str, Any] = {
+        "files": chunk_files,
+        "chunk_hunks": chunk_hunks,
+        "contracts_context": payload_cost_model.clean_contracts_context_for_payload(contracts_ctx),
+        "evidence_context": evidence_ctx,
+        "checks_context": checks_ctx,
+        "aux_context": payload_cost_model.aux_context(intake, chunk_files=chunk.files),
+    }
+    if method_ctx is not None:
+        chunk_context["method_guidance_context"] = method_ctx
 
     payload_body = {
         "chunk_id": chunk.chunk_id,
@@ -216,14 +240,7 @@ def _build_chunk_payload(
             "required_files": pr_brief.coverage.get("required_files"),
             "limitations": list(pr_brief.limitations),
         },
-        "chunk_context": {
-            "files": chunk_files,
-            "chunk_hunks": chunk_hunks,
-            "contracts_context": payload_cost_model.clean_contracts_context_for_payload(contracts_ctx),
-            "evidence_context": evidence_ctx,
-            "checks_context": checks_ctx,
-            "aux_context": payload_cost_model.aux_context(intake, chunk_files=chunk.files),
-        },
+        "chunk_context": chunk_context,
         "coverage": {
             "declared_coverage": chunk.coverage,
             "files_in_chunk": [item["path"] for item in chunk_files],
@@ -509,7 +526,13 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
         ("aux_context", "auxiliary_context_reduced", _shrink_aux_context),
         ("checks_context", "checks_context_reduced", _shrink_checks_context),
         ("evidence_context", "evidence_context_reduced", _shrink_evidence_context),
-        ("contracts_context", "contracts_context_reduced", _shrink_contracts_context),
+        # V1-C2 ladder policy: optional method guidance (advisory, lowest authority) goes before optional
+        # contracts; REQUIRED method guidance goes only after every optional item is gone and before a REQUIRED
+        # product contract is -- never ahead of the hunks. Both emit a typed loss code.
+        ("method_guidance_context", "method_guidance_context_reduced", _shrink_optional_method_guidance),
+        ("contracts_context", "contracts_context_reduced", _shrink_contracts_optional),
+        ("method_guidance_context", "method_guidance_context_reduced", _shrink_required_method_guidance),
+        ("contracts_context", "contracts_context_reduced", _shrink_contracts_required),
         ("chunk_hunks", "chunk_hunks_reduced", _shrink_chunk_hunks),
     ]
 
@@ -630,6 +653,44 @@ def _shrink_evidence_context(payload: dict[str, Any]) -> bool:
 
 
 def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
+    return _shrink_contracts_optional(payload) or _shrink_contracts_required(payload)
+
+
+def _shrink_optional_method_guidance(payload: dict[str, Any]) -> bool:
+    return _pop_method_guidance(payload, requiredness=METHOD_GUIDANCE_OPTIONAL, loss_prefix=METHOD_GUIDANCE_OPTIONAL_LOSS_PREFIX)
+
+
+def _shrink_required_method_guidance(payload: dict[str, Any]) -> bool:
+    return _pop_method_guidance(payload, requiredness=METHOD_GUIDANCE_REQUIRED, loss_prefix=METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX)
+
+
+def _pop_method_guidance(payload: dict[str, Any], *, requiredness: str, loss_prefix: str) -> bool:
+    chunk_context = _get(payload, "chunk_context")
+    context = _get(chunk_context, "method_guidance_context")
+    if not isinstance(context, dict):
+        return False
+    items = context.get("items")
+    if not isinstance(items, list):
+        return False
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        # An item that is not exactly `required` is optional: a malformed class never gets the floor.
+        is_required = item.get("requiredness") == METHOD_GUIDANCE_REQUIRED
+        if is_required != (requiredness == METHOD_GUIDANCE_REQUIRED):
+            continue
+        items.pop(index)
+        loss_code = f"{loss_prefix}{item.get('method_id')}/{item.get('section_id')}"
+        limitations = _get(payload, "limitations")
+        if isinstance(limitations, list) and loss_code not in limitations:
+            limitations.append(loss_code)
+        if not items:
+            del chunk_context["method_guidance_context"]
+        return True
+    return False
+
+
+def _shrink_contracts_optional(payload: dict[str, Any]) -> bool:
     contracts = _get(_get(payload, "chunk_context"), "contracts_context")
     if not isinstance(contracts, dict):
         return False
@@ -657,6 +718,15 @@ def _shrink_contracts_context(payload: dict[str, Any]) -> bool:
                     for k in optional_keys:
                         del item[k]
                     return True
+    return False
+
+
+def _shrink_contracts_required(payload: dict[str, Any]) -> bool:
+    contracts = _get(_get(payload, "chunk_context"), "contracts_context")
+    if not isinstance(contracts, dict):
+        return False
+    packs = contracts.get("review_packs")
+    domain_contracts = contracts.get("domain_contracts")
     # 4. If only required review packs remain and shrink is forced:
     if isinstance(packs, list) and packs:
         popped = packs.pop()

@@ -223,6 +223,7 @@ New reason codes AgentEscala may observe in `semantic-chunk-plan.json` and
 | `payload_budget_mismatch` | builder error | `--payload-max-chars` at build time diverges from the chunk's own planned `prompt_budget_chars`. Planner and builder must consume one effective budget. |
 | `payload_projection_input_mismatch` | builder/planner error | An explicit `--checks` / `--validation-evidence` document does not canonically match what is embedded in the intake artifact the planner projected cost against. |
 | `chunk_hunk_material_not_transported:<path>` | manifest entry `limitations` | Hard guard: a covered file's hunk did not survive the shrink ladder intact. That manifest entry has `payload_path: null` and is never routed; `aiops-review-build-payloads.py` exits non-zero. |
+| `required_context_not_transported` (CLI `error_class`) | stdout JSON of `aiops-review-build-payloads.py`; typed loss codes in `limitations` | A chunk was withheld because required contract / MethodGuidance context was stale, unverifiable, unbound or lost to the budget. Exits non-zero; not a hunk failure. |
 
 `estimated_chars` on a `SemanticChunk` changed meaning: it is no longer a
 path-length proxy, it is the conservative hunk-preserving payload projection

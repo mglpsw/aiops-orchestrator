@@ -265,3 +265,88 @@ def test_migrate_accepts_a_safe_artifact_id_and_path_without_flagging_them() -> 
         decision.field in ("artifacts[full-diff].artifact_id", "artifacts[full-diff].path")
         for decision in report.pending_decisions
     )
+
+
+_GUIDANCE_SECRET_TEXT = "AOCM-REQ-1: never print password = hunter2 in a finding"
+
+
+def _guidance_document() -> dict[str, object]:
+    return {
+        "version": 1,
+        "sources": [{"source_id": "aocm", "repository": "x/y", "path": "docs/m.md", "revision": "r1", "blob": "0" * 40}],
+        "guidance": [
+            {
+                "method_id": "AOCM",
+                "section_id": "req",
+                "source_id": "aocm",
+                "requiredness": "required",
+                "applies_to": {"scope": "global"},
+                "selected_text": _GUIDANCE_SECRET_TEXT,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("carried", [_guidance_document(), []], ids=["declared", "invalid_source_carrier"])
+def test_migrate_reports_method_guidance_it_cannot_carry_instead_of_dropping_it_silently(carried: object) -> None:
+    """P3-9: v2 has no METHOD_GUIDANCE carrier. A v1 profile that declares guidance (or whose sidecar was carried as
+    INVALID) must not migrate to a candidate that is silent about it; the report names the field without echoing
+    its content, and no second guidance semantics is invented in the candidate."""
+    report = migrate_profile_v1_to_v2(
+        _profile_v1(method_guidance=carried), repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    decisions = {item.field: item for item in report.pending_decisions}
+    assert "method_guidance" in decisions
+    assert "METHOD_GUIDANCE" in decisions["method_guidance"].reason
+    blob = json.dumps(
+        {"candidate": report.candidate, "pending": [asdict(item) for item in report.pending_decisions]}, default=str
+    )
+    assert "hunter2" not in blob and _GUIDANCE_SECRET_TEXT not in blob
+    assert "method_guidance" not in report.candidate and "guidance" not in report.candidate
+    assert report.candidate_is_directly_usable is False
+
+
+def test_migrate_without_method_guidance_reports_no_guidance_decision() -> None:
+    report = migrate_profile_v1_to_v2(_profile_v1(), repo="mglpsw/aiops-orchestrator", default_branch="master")
+    assert "method_guidance" not in {item.field for item in report.pending_decisions}
+
+
+def _run_migration_script(tmp_path, *, sidecar_entry: str | None) -> dict[str, object]:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = tmp_path / "root"
+    (root / ".aiops").mkdir(parents=True)
+    entry = root / ".aiops" / "method-guidance.yaml"
+    if sidecar_entry == "file":
+        entry.write_text("version: 1\n", encoding="utf-8")
+    elif sidecar_entry == "dangling":
+        entry.symlink_to(root / "gone.yaml")
+    profile = tmp_path / "profile-v1.json"
+    profile.write_text(json.dumps(_profile_v1().model_dump(mode="json")), encoding="utf-8")
+    out = tmp_path / "out" / "report.json"
+    script = Path(__file__).resolve().parents[2] / "scripts" / "migrate-agent-review-profile-v1-v2.py"
+    done = subprocess.run(  # noqa: S603
+        [
+            sys.executable, str(script), "--profile-v1", str(profile), "--repo", "mglpsw/aiops-orchestrator",
+            "--default-branch", "master", "--repo-root", str(root), "--output", str(out),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("entry", ["file", "dangling"])
+def test_script_reports_the_sidecar_that_sits_beside_the_profile(tmp_path, entry: str) -> None:
+    """Independent review round 2 (F1): the sidecar is loader-owned and never part of the v1 profile document, so
+    the shipped CLI must derive its presence from the trusted checkout (a dangling link is still declared)."""
+    report = _run_migration_script(tmp_path, sidecar_entry=entry)
+    fields = {item["field"] for item in report["pending_decisions"]}  # type: ignore[index]
+    assert "method_guidance" in fields
+
+
+def test_script_without_a_sidecar_reports_no_guidance_decision(tmp_path) -> None:
+    report = _run_migration_script(tmp_path, sidecar_entry=None)
+    assert "method_guidance" not in {item["field"] for item in report["pending_decisions"]}  # type: ignore[index]
