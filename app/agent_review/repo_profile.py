@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -141,13 +142,25 @@ def _load_yaml_file(path: Path) -> _YamlLoadResult:
         return _YamlLoadResult(error_class="yaml_invalid")
 
 
+# A C2 source file that exists but cannot be parsed is INVALID, never ABSENT (OBL-CL2-03): carrying `None` would read
+# as "no contract declared" and let the review stay conclusive. The typed carrier admits only a mapping/list, so the
+# unparsable source travels as a type-valid document that the existing grammar rejects as MALFORMED_SHAPE
+# (`invalid_source_contract:` / `invalid_source_review_packs:`, both already critical). It never reaches a consumer
+# as a declaration: normalization returns no rows for it.
+_UNPARSABLE_SOURCE = "__source_yaml_unparsable__"
+_UNPARSABLE_SOURCE_CARRIERS: dict[str, dict[str, Any]] = {
+    "domain_contracts": {"rules": _UNPARSABLE_SOURCE},  # `rules` must be a list: not a list -> MALFORMED_SHAPE
+    "review_packs": {"packs": {"unparsable": _UNPARSABLE_SOURCE}},  # a pack value must be a mapping -> MALFORMED_SHAPE
+}
+
+
 def _load_optional_yaml(path: Path, name: str, limitations: list[str]) -> Any:
     if not path.exists():
         return None
     loaded = _load_yaml_file(path)
     if loaded.error_class:
         limitations.append(f"{name}_yaml_invalid")
-        return None
+        return copy.deepcopy(_UNPARSABLE_SOURCE_CARRIERS[name])
     return loaded.data
 
 
