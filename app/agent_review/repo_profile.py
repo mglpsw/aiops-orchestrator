@@ -160,7 +160,7 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
     profile.method_guidance = method_guidance
     # Loader-owned: the only place that has the checkout. The author document never carries its own verdict.
     profile.method_guidance_verification = _verify_method_guidance_sources(
-        root, method_guidance, target_repo or profile.target_repo  # trusted CLI anchor first: the profile label is author-editable
+        root, method_guidance, target_repo  # trusted CLI anchor only: the profile label is author-editable
     )
     profile.limitations = [*profile.limitations, *limitations]
     status = "degraded" if limitations else "complete"
@@ -223,7 +223,7 @@ def _load_method_guidance_sidecar(path: Path, limitations: list[str]) -> Any:
         if data is None:
             raise ValueError("method guidance sidecar is not a readable regular file within the bound")
         document = yaml.load(data.decode("utf-8"), Loader=_DuplicateKeyRefusingLoader) or {}  # noqa: S506 - SafeLoader subclass
-    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError, RecursionError):
+    except Exception:  # noqa: BLE001 - any failure to parse the sidecar is INVALID, never ABSENT (PyYAML tags raise KeyError/AttributeError)
         limitations.append("method_guidance_yaml_invalid")
         return []
     return document

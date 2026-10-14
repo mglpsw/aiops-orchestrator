@@ -101,21 +101,34 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
   each). **Known limits of that convention (shared matcher, reviewed):** a file whose literal name contains `[`…`]`
   (e.g. `pages/[id].jsx`) is treated as a glob and does not match itself — select it by `semantic_groups` instead;
   and `**/*.py` does not match a top-level `x.py` nor `backend/**/x.py` match `backend/x.py`;
-- the source `path` is canonicalized by ONE function for verification and emission. A sidecar or source that is a
-  link with a missing or looping target, a directory, a FIFO, an oversize (> 4 MiB) or undecodable file is typed
-  INVALID / UNVERIFIABLE (never ABSENT) and the read is bounded;
+- the source `path` is canonicalized by ONE function for verification and emission. A **sidecar** that is a link
+  with a missing or looping target, a directory, a FIFO, an oversize (> 4 MiB) or undecodable file is typed INVALID
+  (never ABSENT) and the read is bounded. A declared **source document** that is unreadable, oversize or outside the
+  checkout is UNVERIFIABLE; one whose bytes are not UTF-8 but whose blob oid matches is CURRENT and only the item
+  whose text cannot be found is UNBOUND (U+FFFD never binds);
 - `selected_text` must not contain control (Cc), format (Cf, e.g. bidi/zero-width), surrogate, private-use,
-  unassigned or line/paragraph-separator characters, nor U+FFFD (`\n` and `\t` are allowed): otherwise INVALID;
-- the repository identity anchor of a source is the trusted CLI `--target-repo`, never the author-editable
-  `repo-profile.yaml` label;
+  unassigned or line/paragraph-separator characters, nor U+FFFD (`\n` and `\t` are allowed): otherwise the whole
+  sidecar is INVALID. **Known false rejects** (author sees typed INVALID, never a silent drop): ZWJ/ZWNJ (emoji ZWJ
+  sequences), soft hyphen U+00AD (common in PDF/Word copy), BOM/ZWNBSP inside text, word joiner, LRM/RLM and bidi
+  embeddings, tag characters, VT/FF/DEL/NEL, and any code point unassigned in the Unicode database of the running
+  interpreter (verdict depends on its `unicodedata` version; CI pins Python 3.11). **Known residual** of the category
+  approach: invisible default-ignorable characters outside those categories (variation selectors supplement,
+  U+3164, U+FFA0, U+2800, U+034F, Hangul fillers) are admitted; they must also appear in the blob-bound source, which
+  has the same author trust. NBSP and other Zs spaces are admitted and treated as whitespace by the binding;
+- every emitted `source` field is constrained: `source_id`/`method_id`/`section_id` by identity regex, `path` by the
+  canonicalizer (control characters refused), `blob` as 40 lowercase hex, `revision` by the allowlist
+  `[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}` and `repository` by `owner/name` (`[A-Za-z0-9._-]`), otherwise INVALID;
+- the repository identity anchor of a source is the trusted CLI `--target-repo` **only**: a missing or empty CLI
+  value makes every source UNVERIFIABLE; the author-editable `repo-profile.yaml` label is never a fallback;
 - `source.revision` is carried as identity only and is **never verified**; the git blob is the binding. A non-empty
   revision string does not prove the blob came from that revision.
 
 **Residual (pre-existing loader class, shared with `domain-contracts.yaml` / `review-packs.yaml`, not repaired
 here):** the YAML parser and the non-string-key scan have no alias-expansion or nesting bound. A sidecar with an
-alias bomb can hang the CLI and a nesting depth of roughly 400 can raise `RecursionError` out of the loader. This is
-an availability failure, not a false pass; a bound belongs to a separate loader-hardening slice for all three
-sources. Whitespace-insensitive binding also treats NBSP as whitespace and has no minimum length or word boundary
+alias bomb can hang the CLI and a nesting depth of roughly 350–450 can raise `RecursionError` out of the key scan
+(shallower is accepted, deeper is refused by the parser and typed INVALID). The sidecar parse step itself is typed
+for any parser exception (including PyYAML explicit tags such as `!!bool maybe`). This is an availability failure,
+not a false pass; a bound belongs to a separate loader-hardening slice for all three sources. Whitespace-insensitive binding also treats NBSP as whitespace and has no minimum length or word boundary
 (a negation-truncated excerpt still binds; right-excerpt judgment is a declared non-claim).
 
 Source-state vocabulary reuses `PRESENT_VALID | ABSENT | INVALID` from OBL-CL2-03. `ABSENT` is not
@@ -138,7 +151,9 @@ Method guidance never enters `domain_contracts`, `review_packs` or `contract_bin
 
 Known adjacent limits (not closed here): the v1→v2 profile migrator does not *carry* `method_guidance` (v2 has
 no such carrier and none is invented here); it now reports the field as a typed pending decision, by name only,
-instead of dropping it silently. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
+instead of dropping it silently. Because the sidecar is loader-owned and never part of the v1 profile document, the
+shipped script derives its presence from the trusted `--repo-root` (`os.path.lexists`, so a dangling link still
+counts) and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
 contracts declared" on this branch (separate slice: PR #374). The engine cannot judge whether an excerpt is the
 *right* excerpt of the method document, only that it is one.
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -72,7 +73,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         report = migrate_profile_v1_to_v2(
-            profile_v1, repo=args.repo, default_branch=args.default_branch
+            profile_v1,
+            repo=args.repo,
+            default_branch=args.default_branch,
+            # lexists: an unreadable/dangling entry is still a declared sidecar, never "absent"
+            method_guidance_sidecar_present=os.path.lexists(repo_root / ".aiops" / "method-guidance.yaml"),
         )
     except ProfileMigrationError as exc:
         print(f"Blocked: {exc}", file=sys.stderr)

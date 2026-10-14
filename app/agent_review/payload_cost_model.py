@@ -2309,6 +2309,10 @@ METHOD_TEXT_BOUND_REDACTED = "BOUND_REDACTED"
 _METHOD_SOURCE_STATES: frozenset[str] = frozenset({METHOD_SOURCE_CURRENT, METHOD_SOURCE_STALE, METHOD_SOURCE_UNVERIFIABLE})
 _METHOD_IDENTITY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _GIT_BLOB_OID_RE = re.compile(r"^[0-9a-f]{40}$")
+# Emitted `source` fields are an allowlist, not free text: `revision` (identity only, never verified) and
+# `repository` (emitted even when the source ends UNVERIFIABLE) reach the model verbatim.
+_METHOD_REVISION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,127}")
+_METHOD_REPOSITORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}")
 
 
 @dataclass(frozen=True)
@@ -2438,6 +2442,10 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
         blob = raw["blob"].strip()
         source_path = canonical_method_source_path(raw["path"])
         if source_id is None or source_id in sources or not _GIT_BLOB_OID_RE.fullmatch(blob) or not source_path:
+            return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
+        if not _METHOD_REVISION_RE.fullmatch(raw["revision"].strip()) or not _METHOD_REPOSITORY_RE.fullmatch(
+            raw["repository"].strip()
+        ):
             return _method_guidance_invalid(SUBTYPE_INVALID_IDENTITY)
         sources[source_id] = {
             "source_id": source_id,
