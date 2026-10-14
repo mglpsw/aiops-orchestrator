@@ -101,11 +101,17 @@ Grammar notes (all enforced, each with a countermodel in `tests/agent_review/tes
   each). **Known limits of that convention (shared matcher, reviewed):** a file whose literal name contains `[`…`]`
   (e.g. `pages/[id].jsx`) is treated as a glob and does not match itself — select it by `semantic_groups` instead;
   and `**/*.py` does not match a top-level `x.py` nor `backend/**/x.py` match `backend/x.py`;
-- the source `path` is canonicalized by ONE function for verification and emission. A **sidecar** that is a link
-  with a missing or looping target, a directory, a FIFO, an oversize (> 4 MiB) or undecodable file is typed INVALID
-  (never ABSENT) and the read is bounded. A declared **source document** that is unreadable, oversize or outside the
-  checkout is UNVERIFIABLE; one whose bytes are not UTF-8 but whose blob oid matches is CURRENT and only the item
-  whose text cannot be found is UNBOUND (U+FFFD never binds);
+- the source `path` is canonicalized by ONE function for verification and emission. Both the **sidecar** and every
+  declared **source document** are read relative to the trusted `--repo-root` with no link followed on any path
+  component (`O_NOFOLLOW` per component, size and regular-file checked on the opened descriptor): a link — to a host
+  file, to another file inside the checkout, dangling or looping, on the file or on `.aiops` itself — is never
+  read, so host bytes cannot become `method_guidance`. A **sidecar** that is such a link, a directory, a FIFO, an
+  oversize (> 4 MiB) or undecodable file is typed INVALID (never ABSENT) and the read is bounded. A declared
+  **source document** that is a link, unreadable, oversize or outside the checkout is UNVERIFIABLE. A platform
+  without `O_NOFOLLOW` / descriptor-relative open fails closed (INVALID / UNVERIFIABLE). `updated`, when present,
+  is a string, an integer or a **finite** float; `NaN` / `±Infinity` is MALFORMED_SHAPE. A source document whose
+  bytes are not UTF-8 but whose blob oid matches is CURRENT and only the item whose text cannot be found is UNBOUND
+  (U+FFFD never binds);
 - `selected_text` must not contain control (Cc), format (Cf, e.g. bidi/zero-width), surrogate, private-use,
   unassigned or line/paragraph-separator characters, nor U+FFFD (`\n` and `\t` are allowed): otherwise the whole
   sidecar is INVALID. **Known false rejects** (author sees typed INVALID, never a silent drop): ZWJ/ZWNJ (emoji ZWJ
@@ -157,7 +163,10 @@ no such carrier and none is invented here); it now reports the field as a typed 
 instead of dropping it silently. Because the sidecar is loader-owned and never part of the v1 profile document, the
 shipped script derives its presence from the trusted `--repo-root` (`os.path.lexists`, so a dangling link still
 counts) and passes it to the migrator; callers of `migrate_profile_v1_to_v2` outside the script must do the same. An unparsable `domain-contracts.yaml` / `review-packs.yaml` still reads as "no
-contracts declared" on this branch (separate slice: PR #374). The engine cannot judge whether an excerpt is the
+contracts declared" on this branch (separate slice: PR #374). Those two loaders (and `repo-profile.yaml`) still use
+`read_text`, which follows links: the same host-file exposure measured for the sidecar was reproduced for
+`domain-contracts.yaml` and `review-packs.yaml` on `master` (for `repo-profile.yaml` it depends on which fields the
+model keeps). It is a separate, adjacent follow-up that can adopt `_read_bounded_in_checkout`. The engine cannot judge whether an excerpt is the
 *right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),

@@ -2419,7 +2419,12 @@ def normalize_method_guidance(document: Any, verification: Any = None) -> Method
         return _method_guidance_invalid(SUBTYPE_UNSUPPORTED_NONEMPTY)
     if "updated" in document:
         updated = document["updated"]
-        if isinstance(updated, bool) or not isinstance(updated, (str, int, float)):
+        # A float must be finite: NaN / +-Infinity are not interoperable JSON and are not a date.
+        if (
+            isinstance(updated, bool)
+            or not isinstance(updated, (str, int, float))
+            or (isinstance(updated, float) and not math.isfinite(updated))
+        ):
             return _method_guidance_invalid(SUBTYPE_MALFORMED_SHAPE)
 
     raw_sources, raw_items = document.get("sources"), document.get("guidance")

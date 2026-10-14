@@ -1451,3 +1451,197 @@ def test_dc_mg_07_source_state_dominates_a_text_binding_verdict() -> None:
         ctx, limits = pcm.method_guidance_context(intake, chunk_files=[domain.code], semantic_group=domain.code_group)
         assert ctx is None and note in limits
         assert f"{pcm.METHOD_GUIDANCE_REQUIRED_LOSS_PREFIX}AOCM/closure-obligations" in limits
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Post-Ready Codex findings on e35d671e (P1 4271632907: sidecar read outside the checkout; P2 4271632925: non-finite
+# `updated`). Each test names the counter-model it discriminates. Everything runs through the shipped intake CLI and
+# inspects the bytes it writes, not the in-memory object.
+# ---------------------------------------------------------------------------------------------------------------
+
+EXTERNAL_MARKER = "SYNTHETIC_EXTERNAL_CONTENT_DO_NOT_COPY"
+
+
+def _intake_cli(target: Target, out: Path) -> tuple[int, dict[str, str]]:
+    """Run the real intake script and return (exit code, every file it wrote as text)."""
+    out.mkdir(parents=True, exist_ok=True)
+    result = _run_cli(
+        SCRIPTS / "aiops-review-intake.py",
+        ["--target-repo", target.domain.target_repo, "--repo-root", str(target.repo), "--agent-dir", str(target.agent), "--output", str(out / "intake.json"), "--redaction-report", str(out / "redaction.json")],
+    )
+    written = {item.name: item.read_text(encoding="utf-8") for item in sorted(out.iterdir())}
+    written["<stdout>"] = result.stdout + result.stderr
+    return result.returncode, written
+
+
+def _strict_json(text: str) -> Any:
+    """RFC 8259 parse: `NaN` / `Infinity` / `-Infinity` are not JSON and must raise, unlike the stdlib default."""
+
+    def refuse(constant: str) -> Any:
+        raise ValueError(f"non-standard JSON constant {constant!r}")
+
+    return json.loads(text, parse_constant=refuse)
+
+
+def _external_document(tmp_path: Path, shape: str) -> Path:
+    outside = tmp_path / "outside-host" / "readable.yaml"
+    outside.parent.mkdir()
+    if shape == "scalar":
+        outside.write_text(EXTERNAL_MARKER + "\n", encoding="utf-8")
+    elif shape == "mapping":
+        outside.write_text(yaml.safe_dump({"version": 1, "updated": EXTERNAL_MARKER, "sources": [], "guidance": []}), encoding="utf-8")
+    else:  # a complete, grammar-valid sidecar: the target would otherwise be PRESENT_VALID from host bytes
+        document = sidecar(DOMAINS["scheduling"])
+        document["updated"] = EXTERNAL_MARKER
+        outside.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return outside
+
+
+@pytest.mark.parametrize("shape", ["scalar", "mapping", "grammar_valid"])
+def test_cm_mg_p1_symlink_sidecar_to_a_readable_host_file_is_invalid_and_never_serialized(tmp_path: Path, shape: str) -> None:
+    """P1 (4271632907). Counter-model: `is_file()` + `open()` follow the link, so host bytes become `TargetProfile.
+    method_guidance` and are written to intake.json even though normalization later calls them invalid."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    (target.repo / ".aiops" / "method-guidance.yaml").symlink_to(_external_document(tmp_path, shape))
+
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations
+    assert loaded.profile.method_guidance == [] and EXTERNAL_MARKER not in loaded.profile.model_dump_json()
+
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 0, written["<stdout>"]
+    for name, text in written.items():
+        assert EXTERNAL_MARKER not in text, name
+    run = canonical_run(target)
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in run.plan.limitations and run.plan.status == "degraded"
+    assert EXTERNAL_MARKER not in payload_bytes(run) and EXTERNAL_MARKER not in run.plan.model_dump_json()
+
+
+def test_cm_mg_p1b_aiops_directory_symlink_cannot_carry_the_sidecar_out_of_the_checkout(tmp_path: Path) -> None:
+    """P1, intermediate component. Counter-model: only the final path component is checked; `.aiops` itself is a link
+    to a host directory that holds a grammar-valid sidecar."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance="default")
+    host_dir = tmp_path / "host-aiops"
+    (target.repo / ".aiops").rename(host_dir)
+    document = sidecar(domain)
+    document["updated"] = EXTERNAL_MARKER
+    (host_dir / "method-guidance.yaml").write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    (target.repo / ".aiops").symlink_to(host_dir, target_is_directory=True)
+
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 0, written["<stdout>"]
+    for name, text in written.items():
+        assert EXTERNAL_MARKER not in text, name
+
+
+def test_cm_mg_p1c_symlink_to_an_in_checkout_file_is_refused_by_explicit_policy(tmp_path: Path) -> None:
+    """P1 policy row: the grammar does not need links, so an in-checkout link is INVALID too (one rule, no
+    resolve-then-open window), and a link anywhere on the source path is UNVERIFIABLE, never CURRENT."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    real = target.repo / "docs" / "real-sidecar.yaml"
+    real.parent.mkdir(exist_ok=True)
+    real.write_text(yaml.safe_dump(sidecar(domain), sort_keys=False), encoding="utf-8")
+    (target.repo / ".aiops" / "method-guidance.yaml").symlink_to(real)
+    assert "method_guidance_yaml_invalid" in load_repo_profile(target.repo, target_repo=domain.target_repo).limitations
+
+    linked = make_target(tmp_path, domain, name="linked", write_source=False)
+    real_method = linked.repo / "docs" / "canonical-real" / "aocm" / "METHOD.md"
+    real_method.parent.mkdir(parents=True)
+    real_method.write_bytes(METHOD_BYTES)
+    (linked.repo / "docs" / "canonical").symlink_to(linked.repo / "docs" / "canonical-real", target_is_directory=True)
+    verdict = load_repo_profile(linked.repo, target_repo=domain.target_repo).profile.method_guidance_verification
+    assert verdict == {"aocm": "UNVERIFIABLE"}, verdict
+
+
+def test_cm_mg_p1d_regular_in_checkout_sidecar_and_source_remain_current(tmp_path: Path) -> None:
+    """P1 positive control: the repair must not reject the legitimate carrier (no vacuous refusal)."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain)
+    loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
+    assert loaded.limitations == [] and loaded.profile.method_guidance == sidecar(domain)
+    assert loaded.profile.method_guidance_verification == {"aocm": "CURRENT", "AOCM/closure-obligations": "BOUND", "AOCM/evidence-vocabulary": "BOUND"}
+    assert method_context(canonical_run(target).payload_for(domain.code_group)) is not None
+
+
+def test_cm_mg_p1e_outside_marker_is_absent_from_every_artifact_of_the_full_chain(tmp_path: Path) -> None:
+    """P1 consequence: the host bytes reach neither the intake, the plan, the payloads, the final review nor the
+    gate, and the typed critical limitation keeps the gate from concluding positively."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain, method_guidance=None)
+    (target.repo / ".aiops" / "method-guidance.yaml").symlink_to(_external_document(tmp_path, "grammar_valid"))
+    paths = cli_chain(target, tmp_path / "chain")
+    for item in sorted((tmp_path / "chain").rglob("*")):
+        if item.is_file():
+            assert EXTERNAL_MARKER not in item.read_text(encoding="utf-8"), item.name
+    assert read_json(paths["gate"])["status"] != "passed"
+
+
+# P2 adjudication (measured on e35d671e with the locked pydantic 2.11.3): the stated mechanism -- the canonical
+# producer writes bare `NaN` / `Infinity` into intake.json -- does NOT reproduce, because `model_dump(mode="json")`
+# turns a non-finite float into `null` before `json.dumps`; `null` is not str/int/float, so the canonical chain
+# already ends INVALID / MALFORMED_SHAPE, but only by that incidental route. What does reproduce is the validation
+# hole the finding points at: `normalize_method_guidance` calls a non-finite `updated` PRESENT_VALID, reachable
+# through an intake FILE that carries a literal `NaN` (stdlib `json.loads` accepts it) and is read by the plan CLI.
+
+
+@pytest.mark.parametrize("literal", [".nan", ".NaN", ".inf", "-.inf", "+.inf", ".Inf"])
+def test_cm_mg_p2_canonical_producer_never_writes_non_json_and_stays_invalid(tmp_path: Path, literal: str) -> None:
+    """GUARD (green before and after): the shipped producer's bytes are strict JSON and the chain is nonconclusive.
+    It pins the property the finding feared so a pydantic default change (`ser_json_inf_nan`) turns it RED."""
+    domain = DOMAINS["scheduling"]
+    text = yaml.safe_dump(sidecar(domain), sort_keys=False).replace("updated: '2026-10-13'", f"updated: {literal}")
+    assert f"updated: {literal}" in text
+    target = make_target(tmp_path, domain, method_guidance=text)
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 0, written["<stdout>"]
+    for name, body in written.items():
+        if name.endswith(".json"):
+            _strict_json(body)
+    run = canonical_run(target)
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in run.plan.limitations and run.plan.status == "degraded"
+    assert not any(literal_text in payload_bytes(run) for literal_text in AOCM_LITERALS)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_cm_mg_p2_normalizer_rejects_a_non_finite_updated(value: float) -> None:
+    """RED before the repair. Counter-model: `isinstance(updated, float)` is the whole check, so a document whose
+    declared metadata is not a finite number is PRESENT_VALID and its guidance is admitted."""
+    document = sidecar(DOMAINS["scheduling"])
+    document["updated"] = value
+    normalized = pcm.normalize_method_guidance(document, None)
+    assert normalized.state == pcm.SOURCE_STATE_INVALID and normalized.subtype == pcm.SUBTYPE_MALFORMED_SHAPE
+    assert not normalized.items and normalized.limitations == ("invalid_source_method_guidance:MALFORMED_SHAPE",)
+
+
+@pytest.mark.parametrize("value", ["2026-10-13", "not a date but a string", 20261013, 1.5, -0.0])
+def test_cm_mg_p2_finite_updated_and_absent_updated_remain_admitted(value: Any) -> None:
+    """P2 positive control: the repair rejects ONLY the non-finite values (str / int / finite float unchanged)."""
+    document = sidecar(DOMAINS["scheduling"])
+    document["updated"] = value
+    assert pcm.normalize_method_guidance(document, None).state == pcm.SOURCE_STATE_PRESENT_VALID
+    del document["updated"]
+    assert pcm.normalize_method_guidance(document, None).state == pcm.SOURCE_STATE_PRESENT_VALID
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_cm_mg_p2_intake_file_with_a_non_finite_updated_is_nonconclusive_through_the_plan_cli(tmp_path: Path, literal: str) -> None:
+    """RED before the repair, at the consumer CLI. The intake file is produced by something other than the shipped
+    producer (so it may carry stdlib-parseable `NaN`); the plan must not treat its guidance as PRESENT_VALID."""
+    domain = DOMAINS["scheduling"]
+    target = make_target(tmp_path, domain)
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 0, written["<stdout>"]
+    assert '"updated": "2026-10-13"' in written["intake.json"]
+    intake_path = tmp_path / "out" / "intake.json"
+    intake_path.write_text(written["intake.json"].replace('"updated": "2026-10-13"', f'"updated": {literal}'), encoding="utf-8")
+    plan_path = tmp_path / "out" / "plan.json"
+    result = _run_cli(SCRIPTS / "aiops-review-plan-chunks.py", ["--intake", str(intake_path), "--output", str(plan_path), "--max-blocks", "6", "--max-chars-per-block", "15000"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    plan = read_json(plan_path)
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in plan["limitations"], plan["limitations"]
+    assert plan["status"] == "degraded"
