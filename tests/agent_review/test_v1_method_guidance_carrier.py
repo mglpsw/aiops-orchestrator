@@ -1735,7 +1735,7 @@ def test_cm_mg_r2e_build_payloads_names_required_context_loss_not_a_hunk_failure
     assert "hunk material" not in payload["message"] and payload["blocked_chunks"]
 
 
-@pytest.mark.parametrize("root_kind", ["missing", "regular_file"])
+@pytest.mark.parametrize("root_kind", ["missing", "regular_file", "empty"])
 def test_cm_mg_r2f_migration_refuses_a_repo_root_that_is_not_a_directory(tmp_path: Path, root_kind: str) -> None:
     """4272895710. Counter-model: a mistyped --repo-root makes `lexists` report no sidecar, so the migration
     succeeds and silently drops the `method_guidance` pending decision."""
@@ -1743,10 +1743,10 @@ def test_cm_mg_r2f_migration_refuses_a_repo_root_that_is_not_a_directory(tmp_pat
     target = make_target(tmp_path, domain)
     profile = tmp_path / "profile-v1.yaml"
     profile.write_text((target.repo / ".aiops" / "repo-profile.yaml").read_text(encoding="utf-8"), encoding="utf-8")
-    root = tmp_path / "does-not-exist" if root_kind == "missing" else profile
+    root = {"missing": str(tmp_path / "does-not-exist"), "regular_file": str(profile), "empty": ""}[root_kind]
     out = tmp_path / "report.json"
     args = ["--profile-v1", str(profile), "--repo", domain.target_repo, "--default-branch", "main", "--output", str(out)]
-    result = _run_cli(SCRIPTS / "migrate-agent-review-profile-v1-v2.py", [*args[:4], "--repo-root", str(root), *args[4:]])
+    result = _run_cli(SCRIPTS / "migrate-agent-review-profile-v1-v2.py", [*args[:4], "--repo-root", root, *args[4:]])
     assert result.returncode == 2 and not out.exists(), result.stdout + result.stderr
     good = _run_cli(SCRIPTS / "migrate-agent-review-profile-v1-v2.py", [*args[:4], "--repo-root", str(target.repo), *args[4:]])
     assert good.returncode == 0 and "method_guidance" in {item["field"] for item in read_json(out)["pending_decisions"]}
