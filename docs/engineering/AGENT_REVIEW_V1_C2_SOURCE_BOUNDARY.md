@@ -90,9 +90,16 @@ introduced that no consumer reads, and `CRITICAL_CONTRACT_LIMITATION_PREFIXES` i
 | YAML byte cap | 2 MiB | The MethodGuidance sidecar grammar bounds a valid document at ≈ 1.2 MiB; real sources ≤ 21 KiB. |
 | artifact cap | 64 MiB | v1 artifacts declare no `max_bytes`; the cap exists to bound special/huge files, an oversize artifact is INVALID, never truncated. |
 
-PyYAML is pure Python and linear in bytes: measured ≈ 5.8 s / 142 MB at 1.3 MB and ≈ 27 s / 538 MB at 5.7 MB.
-**The byte cap is the only pre-parse bound, so it is a cost cap and not a proof that the parser is resource-bounded**
-(see non-claims). Nesting ≥ ~1000 raises `RecursionError` inside the parser (typed `resource_limit`, < 1 s).
+PyYAML is pure Python. For plain documents (anchors and aliases are shared by reference) its cost is linear in bytes:
+measured ≈ 5.8 s / 142 MB at 1.3 MB and ≈ 27 s / 538 MB at 5.7 MB. **YAML merge keys (`<<`) are the exception:
+`flatten_mapping` copies per reference, so a ~1 KB chain of 30 merges did not finish in 60 s — an exponential cost
+inside the parser, before any scan.** Decision: merge keys are refused (`SafeSourceLoader`), as the v2 profile loader
+already does; no real AgentEscala source uses one. Nesting ≳ 500 raises `RecursionError` inside the parser (typed
+`resource_limit`, < 1 s).
+
+**The byte cap is the only remaining pre-parse bound, so it is a cost cap and not a proof that the parser is
+resource-bounded** (see non-claims). A 64 MiB artifact cap is likewise not a memory bound: a 64 MiB JSON of empty
+lists peaked at ≈ 1.5 GB RSS because the parse precedes the scan (a `MemoryError` is typed, not fatal).
 
 ## Reader census (what is and is not behind the boundary)
 
@@ -110,14 +117,23 @@ statuses above; no new limitation code was added that none of them reads.
 
 ## What changes for the positive cases
 
-None observable: no sidecar, absent or valid contract sources, absent optional artifacts and the MethodGuidance
-CURRENT/BOUND path produce byte-identical intakes and the same gate. Internal links in the declared-artifact tree
-(accepted before when they resolved inside `agent_dir`) are now refused by the single no-link policy.
+No observable change for: no sidecar, absent or valid contract sources, absent optional artifacts, the MethodGuidance
+CURRENT/BOUND path and (the universal-newline translation of `read_text` is preserved) CR/LF text artifacts. These
+are the DESIGNED rejections of inputs that used to be accepted:
+
+- links in the declared-artifact tree, even ones that resolved inside `agent_dir`, and hard-linked files (single no-link
+  policy);
+- a YAML source or YAML artifact above 2 MiB; a contract / profile / sidecar source above 50 000 expanded nodes or 64
+  levels; a JSON or YAML artifact above 500 000 expanded nodes (measured: 75 000 `file-diff-context` entries are
+  rejected, 60 000 are accepted) or 64 levels;
+- YAML merge keys (`<<`) in any v1 C2 YAML source; `!!binary` scalars (raw bytes cannot be carried).
 
 ## Pending normative decision (not invented here)
 
-`yaml.safe_load(...) or {}` reads an **empty file, a comments-only file, `null`, `~`, `{}` and `[]`** as an empty
-declaration, exactly as before. Whether a PRESENT-but-empty contract file should be INVALID (a truncated write is
+`parse(...) or {}` reads an **empty file, a comments-only file, `null`, `~`, `0`, `false`, `""`, `{}` and `[]`** as
+an empty declaration, exactly as before. The same coercion applies to `repo-profile.yaml`, and a profile that parses to
+a non-mapping (a list or a scalar) is read as an empty profile (intake `complete`; the gate is degraded only
+incidentally, by `file_context_missing`). Whether a PRESENT-but-empty contract file should be INVALID (a truncated write is
 indistinguishable from "no contracts") is a policy decision recorded as `STOP_POLICY_DECISION_REQUIRED` for that
 sub-item; compatibility is preserved and pinned as a characterisation test, not endorsed.
 
@@ -125,7 +141,9 @@ sub-item; compatibility is preserved and pinned as a characterisation test, not 
 
 - **Whole-parser resource-boundedness is NOT claimed.** `scan_structure` is a post-parse bound (it prevents the
   alias-expansion blow-up of redaction/serialisation, which was measured as a non-terminating load at the master
-  readers); the parser's own CPU/memory is bounded only by the byte cap above.
+  readers) and merge keys are refused because they are exponential inside the parser; every other pre-scan parser
+  cost is bounded only by the byte cap above. No second parser and no isolation process were introduced; if a
+  further parser-internal blow-up is reproduced, parsing isolation needs its own architecture decision.
 - Universal filesystem security is NOT claimed (bind mounts, NFS/overlay `st_nlink` semantics, concurrent mutation of
   the directory tree under the walk are not modelled; the walk is descriptor-relative, so a swap cannot redirect it,
   but a file can still change content between the single read and a later decision that reuses the path).
