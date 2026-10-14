@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.agent_review.profile_migration_v1_v2 import (  # noqa: E402
     ProfileMigrationError,
     migrate_profile_v1_to_v2,
 )
+from app.agent_review.repo_profile import METHOD_GUIDANCE_SIDECAR  # noqa: E402
 from app.agent_review.schemas import TargetProfile  # noqa: E402
 
 
@@ -38,6 +40,11 @@ def main(argv: list[str] | None = None) -> int:
 
     repo_root = Path(args.repo_root).resolve()
     output_path = Path(args.output).resolve()
+    if not args.repo_root.strip() or not repo_root.is_dir():
+        # --repo-root is an authority input (it decides whether a sidecar exists): a missing / mistyped root must
+        # never be read as "no sidecar".
+        print("Blocked: --repo-root is not an existing directory.", file=sys.stderr)
+        return 2
     try:
         output_path.relative_to(repo_root)
     except ValueError:
@@ -72,7 +79,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         report = migrate_profile_v1_to_v2(
-            profile_v1, repo=args.repo, default_branch=args.default_branch
+            profile_v1,
+            repo=args.repo,
+            default_branch=args.default_branch,
+            # lexists: an unreadable/dangling entry is still a declared sidecar, never "absent"
+            method_guidance_sidecar_present=os.path.lexists(repo_root / ".aiops" / METHOD_GUIDANCE_SIDECAR),
         )
     except ProfileMigrationError as exc:
         print(f"Blocked: {exc}", file=sys.stderr)

@@ -91,6 +91,12 @@ class TargetProfile(BaseModel):
     artifacts: list[ArtifactDeclaration] = Field(default_factory=list)
     domain_contracts: dict[str, Any] | list[Any] | None = None
     review_packs: dict[str, Any] | list[Any] | None = None
+    # V1-C2 MethodGuidance carrier (aiops-orchestrator#221). `method_guidance` is the author's sidecar document
+    # verbatim (`.aiops/method-guidance.yaml`); `method_guidance_verification` is LOADER-owned (source_id ->
+    # CURRENT | STALE | UNVERIFIABLE, computed against the checkout) and is never author-writable. Neither is a
+    # ProductContract: they never feed `domain_contracts`, `review_packs` or `contract_bindings`.
+    method_guidance: dict[str, Any] | list[Any] | None = None
+    method_guidance_verification: dict[str, str] | None = None
     limitations: list[str] = Field(default_factory=list)
 
 

@@ -26,6 +26,7 @@ from app.agent_review.chunk_payload_builder import (  # noqa: E402
 from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, validate_chunk_ids  # noqa: E402
 from app.agent_review.payload_cost_model import (  # noqa: E402
     ProjectionInputMismatchError,
+    is_required_context_loss,
     load_optional_json_with_limitation,
 )
 from app.agent_review.pr_brief import PRBriefError, build_pr_brief  # noqa: E402
@@ -146,25 +147,43 @@ def main(argv: list[str] | None = None) -> int:
     # succeed.
     blocked_entries = [entry for entry in manifest.chunks if entry.payload_path is None]
     if blocked_entries:
-        blocked_reasons = sorted(
-            {
-                limitation
-                for entry in blocked_entries
-                for limitation in entry.limitations
-                if limitation.startswith("chunk_hunk_material_not_transported:")
-            }
-        )
+        hunk_reasons = {
+            limitation
+            for entry in blocked_entries
+            for limitation in entry.limitations
+            if limitation.startswith("chunk_hunk_material_not_transported:")
+        }
+        # A chunk is also withheld when REQUIRED context (contract / method guidance) is stale, unverifiable,
+        # unbound or lost to the budget; that reason must be named, not reported as a hunk failure.
+        required_reasons = {
+            limitation
+            for entry in blocked_entries
+            for limitation in entry.limitations
+            if is_required_context_loss(limitation)
+        }
+        blocked_reasons = sorted(hunk_reasons | required_reasons)
+        if hunk_reasons:
+            error_class = "chunk_hunk_material_not_transported"
+            message = (
+                f"{sum(1 for entry in blocked_entries if any(item.startswith('chunk_hunk_material_not_transported:') for item in entry.limitations))} "
+                "chunk(s) had covered-file hunk material reduced, "
+                "altered, or dropped by the payload budget shrink ladder; routing blocked "
+                "rather than silently reviewed"
+            )
+        else:
+            error_class = "required_context_not_transported"
+            message = (
+                f"{len(blocked_entries)} chunk(s) were withheld because required review context "
+                "(contract or method guidance) could not be transported intact; routing blocked "
+                "rather than silently reviewed"
+            )
         print(
             _to_json(
                 {
                     "ok": False,
                     "status": "failed",
-                    "error_class": "chunk_hunk_material_not_transported",
-                    "message": (
-                        f"{len(blocked_entries)} chunk(s) had covered-file hunk material reduced, "
-                        "altered, or dropped by the payload budget shrink ladder; routing blocked "
-                        "rather than silently reviewed"
-                    ),
+                    "error_class": error_class,
+                    "message": message,
                     "blocked_chunks": sorted(entry.chunk_id for entry in blocked_entries),
                     "limitations": blocked_reasons,
                     "payload_count": manifest.payload_count,

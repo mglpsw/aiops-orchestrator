@@ -29,10 +29,20 @@ The CLI reads:
 .aiops/repo-profile.yaml
 .aiops/domain-contracts.yaml
 .aiops/review-packs.yaml
+.aiops/method-guidance.yaml        (optional; V1-C2 MethodGuidance sidecar)
 ```
 
 from the target repository root, then loads only artifacts declared by the
 profile from the provided agent artifacts directory.
+
+`.aiops/method-guidance.yaml` carries bounded review **method** guidance
+(`authority_class: METHOD_GUIDANCE`), never a product contract: it travels in its
+own `chunk_context.method_guidance_context`, is selected only by its declared
+`applies_to`, is bound to its source blob by the loader (a stale or unverifiable
+reference is never emitted), and is budgeted by the same cost authority as every
+other context. A repository without the sidecar produces byte-identical artifacts.
+Grammar, loss semantics and non-claims:
+[`docs/engineering/AGENT_REVIEW_V1_METHOD_GUIDANCE_CARRIER.md`](engineering/AGENT_REVIEW_V1_METHOD_GUIDANCE_CARRIER.md).
 
 Example:
 

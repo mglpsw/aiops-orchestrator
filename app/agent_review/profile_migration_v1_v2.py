@@ -80,6 +80,7 @@ def migrate_profile_v1_to_v2(
     *,
     repo: str,
     default_branch: str,
+    method_guidance_sidecar_present: bool = False,
 ) -> ProfileMigrationReportV2:
     """Produce a v2 migration candidate and its pending-decision report.
 
@@ -87,6 +88,9 @@ def migrate_profile_v1_to_v2(
     checkout the migrator tool is run against -- v1's ``TargetProfile``
     carries only an optional, free-text ``target_repo`` that this function
     does not trust as a v2 ``TargetIdentityV2.repo`` value.
+
+    ``method_guidance_sidecar_present`` is the trusted checkout's fact that ``.aiops/method-guidance.yaml`` exists:
+    the sidecar is loader-owned and never part of the v1 profile document, so the migrator cannot see it otherwise.
 
     Raises ``ProfileMigrationError`` if ``profile_v1.schema_version`` is not
     the canonical v1 identifier -- an unrecognized schema is refused, never
@@ -202,6 +206,21 @@ def migrate_profile_v1_to_v2(
         ),
     ):
         pending.append(ProfileMigrationDecisionV2(field=field_name, reason=reason))
+
+    # v2 has no METHOD_GUIDANCE carrier and this tool must not invent one. A v1 profile that declares guidance (or
+    # whose sidecar was carried as INVALID) is reported by field name only -- never echoing its text, which may be
+    # secret-shaped -- instead of being dropped silently from a candidate that claims to list every open decision.
+    if profile_v1.method_guidance is not None or method_guidance_sidecar_present:
+        pending.append(
+            ProfileMigrationDecisionV2(
+                field="method_guidance",
+                reason=(
+                    "v1 declares a METHOD_GUIDANCE sidecar and v2 has no method-guidance carrier; this tool does "
+                    "not translate it, so any required guidance would be lost silently. A human must decide "
+                    "whether the target stays on the v1 lane or a v2 carrier is defined by its own contract"
+                ),
+            )
+        )
 
     candidate: dict[str, object] = {
         "schema_id": TARGET_PROFILE_SCHEMA_V2,

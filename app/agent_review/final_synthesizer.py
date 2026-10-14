@@ -28,7 +28,7 @@ from app.agent_review.schemas import (
     ReviewIntake,
     SemanticChunkPlan,
 )
-from app.agent_review.payload_cost_model import CRITICAL_CONTRACT_LIMITATION_PREFIXES
+from app.agent_review.payload_cost_model import critical_context_limitation_prefixes
 from app.agent_review.semantic_chunker import IntakeValidationError, validate_intake_schema_envelope
 
 
@@ -655,7 +655,7 @@ def _has_critical_limitation(limitations: list[str]) -> bool:
     if any(limitation in CRITICAL_LIMITATIONS for limitation in limitations):
         return True
     return any(
-        any(str(lim).startswith(prefix) for prefix in CRITICAL_CONTRACT_LIMITATION_PREFIXES)
+        any(str(lim).startswith(prefix) for prefix in critical_context_limitation_prefixes())
         for lim in limitations
     )
 

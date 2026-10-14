@@ -143,7 +143,14 @@ def _nonfinite_paths(value: Any, path: str = "$") -> list[str]:
 # ---------------------------------------------------------------------------
 
 CONSUMER_ONLY_KEYS = {"contracts": ["contract:missing"], "contract_refs": ["contract:missing"], "contract_bindings": {"p1": ["c1"]}}
-INLINE_SOURCE_KEYS = {"domain_contracts": {"c1": ["inline rule"]}, "review_packs": {"packs": {"p1": {"description": "d"}}}}
+INLINE_SOURCE_KEYS = {
+    "domain_contracts": {"c1": ["inline rule"]},
+    "review_packs": {"packs": {"p1": {"description": "d"}}},
+    # V1-C2 MethodGuidance carrier: the sidecar `.aiops/method-guidance.yaml` is the only producer; an inline copy
+    # (or an author-supplied verification, which is loader-owned) is rejected exactly like the other inline sources.
+    "method_guidance": {"version": 1, "sources": [], "guidance": []},
+    "method_guidance_verification": {"aocm": "CURRENT"},
+}
 ALL_REJECTED = {**CONSUMER_ONLY_KEYS, **INLINE_SOURCE_KEYS}
 
 
@@ -276,6 +283,9 @@ C2_INPUT_SURFACE_MATRIX: dict[str, dict[str, Any]] = {
     "repo_profile.contract_bindings": {"canonical_producer": "REJECTED", "consumer_raw_support": "defensive: normalize_review_packs(extra_bindings)", "authority": "canonical carrier is the review-packs envelope; REVIEW_PACK_LEGACY_INPUT_POLICY"},
     "repo_profile.domain_contracts (inline)": {"canonical_producer": "REJECTED", "consumer_raw_support": "n/a (TargetProfile field, loaded from .aiops/domain-contracts.yaml)", "authority": "docs/AGENT_REVIEW_ENGINE.md carriers"},
     "repo_profile.review_packs (inline)": {"canonical_producer": "REJECTED", "consumer_raw_support": "n/a (TargetProfile field, loaded from .aiops/review-packs.yaml)", "authority": "docs/AGENT_REVIEW_ENGINE.md carriers"},
+    "repo_profile.method_guidance (inline)": {"canonical_producer": "REJECTED", "consumer_raw_support": "n/a (TargetProfile field, loaded from .aiops/method-guidance.yaml)", "authority": "docs/engineering/AGENT_REVIEW_V1_METHOD_GUIDANCE_CARRIER.md"},
+    "repo_profile.method_guidance_verification (inline)": {"canonical_producer": "REJECTED", "consumer_raw_support": "n/a (loader-owned verdict; never author-writable)", "authority": "docs/engineering/AGENT_REVIEW_V1_METHOD_GUIDANCE_CARRIER.md"},
+    ".aiops/method-guidance.yaml": {"canonical_producer": "SUPPORTED", "canonical_consumer": "SUPPORTED", "authority": "docs/engineering/AGENT_REVIEW_V1_METHOD_GUIDANCE_CARRIER.md; tests/agent_review/test_v1_method_guidance_carrier.py"},
     "review_packs.domain_contract": {"canonical_producer": "SUPPORTED", "canonical_consumer": "SUPPORTED", "authority": "02_OBLIGATION_MATRIX OBL-CL2; PC-R5A-DOMAIN-CONTRACT-CANONICAL-CARRIER"},
     "review_packs.contract_bindings": {"canonical_producer": "SUPPORTED", "canonical_consumer": "SUPPORTED", "authority": "02_OBLIGATION_MATRIX OBL-CL2; PC-R5A-CONTRACT-BINDINGS-CANONICAL-CARRIER"},
     "domain_contracts.yaml / review_packs.yaml non-string mapping keys": {"canonical_producer": "REJECTED", "consumer_raw_support": "defensive: normalize_* returns INVALID_IDENTITY on a raw dict", "authority": "typed carrier stringifies keys (CM-R5A-NON-STRING-KEY)"},
@@ -310,8 +320,12 @@ def test_r5a_every_profile_key_the_consumer_reads_has_a_deliberate_classificatio
                 read.add(node.args[0].value)
     from app.agent_review.schemas import TargetProfile
 
-    assert read == {"domain_contracts", "review_packs", "contract_bindings", "artifacts"}, read
-    for key in ("domain_contracts", "review_packs", "artifacts"):
+    # V1-C2: `method_guidance` / `method_guidance_verification` are MethodGuidance reads (a different authority class,
+    # never a contract carrier); they are read by payload_cost_model.method_guidance_context only.
+    assert read == {
+        "domain_contracts", "review_packs", "contract_bindings", "artifacts", "method_guidance", "method_guidance_verification",
+    }, read
+    for key in ("domain_contracts", "review_packs", "artifacts", "method_guidance", "method_guidance_verification"):
         assert key in TargetProfile.model_fields, "carried by the canonical typed producer"
     # `contracts` / `contract_refs` are read through the fixed tuple of parse_contract_refs
     assert "('contracts', 'contract_refs')" in {ast.unparse(n.iter) for n in ast.walk(tree) if isinstance(n, ast.For)}
@@ -488,6 +502,7 @@ C2_LIMITATION_DETERMINISM_CENSUS: dict[tuple[str, str], dict[str, str]] = {
     ("_filter_lci", "_list(document.get('confirmed_local_failures'))"): {"collection": "LCI list", "order_authority": "out of C2 scope", "deterministic": "n/a", "action": "out_of_scope"},
     ("artifact_state_limitations", "intake.artifact_status"): {"collection": "artifact status list", "order_authority": "out of C2 scope", "deterministic": "n/a", "action": "out_of_scope"},
     ("project_min_hunk_preserving_chars", "chunk_files_sorted"): {"collection": "sorted files", "order_authority": "sorted", "deterministic": "yes", "action": "none"},
+    ("method_guidance_context", "normalized.items"): {"collection": "normalized MethodGuidance items", "order_authority": "sorted by (method_id, section_id) at normalization", "deterministic": "yes", "action": "none (V1-C2)"},
 }
 
 
