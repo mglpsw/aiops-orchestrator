@@ -21,6 +21,7 @@ from app.agent_review.source_boundary import (
     STRUCTURE_MAX_NODES_ARTIFACT,
     YAML_SOURCE_MAX_BYTES,
     acquire_source,
+    parse_yaml_text,
     scan_structure,
 )
 
@@ -150,11 +151,12 @@ def _load_content(data: bytes, kind: str) -> tuple[Any, str | None]:
     """Decode and parse already-acquired bytes. The structural bound runs BEFORE redaction (which recurses and
     expands shared YAML sub-structures)."""
     try:
-        text = data.decode("utf-8")
+        # `Path.read_text` translated universal newlines; the bytes path keeps that observable behaviour.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         if kind == "json":
             content: Any = json.loads(text)
         elif kind == "yaml":
-            content = yaml.safe_load(text) or {}
+            content = parse_yaml_text(text) or {}
         else:
             return text, None
     except json.JSONDecodeError:

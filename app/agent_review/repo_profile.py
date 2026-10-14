@@ -28,6 +28,8 @@ from app.agent_review.source_boundary import (
     SOURCE_STATE_PRESENT,
     YAML_SOURCE_MAX_BYTES,
     acquire_source,
+    SafeSourceLoader,
+    parse_yaml_text,
     scan_structure,
 )
 
@@ -220,7 +222,7 @@ def _load_yaml_file(path: Path) -> _YamlLoadResult:
     except UnicodeDecodeError:
         return _YamlLoadResult(error_class="decode_invalid")
     try:
-        document = yaml.safe_load(text) or {}
+        document = parse_yaml_text(text) or {}
     except RecursionError:
         return _YamlLoadResult(error_class="resource_limit")
     except Exception:  # noqa: BLE001 - YAMLError plus ValueError/KeyError/AttributeError raised while constructing tags
@@ -257,7 +259,7 @@ def _git_blob_oid(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git object identity, not security
 
 
-class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
+class _DuplicateKeyRefusingLoader(SafeSourceLoader):
     """Stock SafeLoader resolves a duplicate mapping key last-wins and silently; for the MethodGuidance sidecar a
     repeated key (e.g. a second `guidance:` or `requiredness:`) would change semantics unnoticed, so it is invalid."""
 

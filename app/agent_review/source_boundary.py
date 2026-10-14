@@ -28,6 +28,8 @@ import stat
 from dataclasses import dataclass
 from typing import Any
 
+import yaml
+
 SOURCE_STATE_ABSENT = "ABSENT"
 SOURCE_STATE_PRESENT = "PRESENT"
 SOURCE_STATE_UNSAFE = "UNSAFE"  # a link on the path, a hard link, a non-regular file, a non-directory parent
@@ -50,6 +52,32 @@ STRUCTURE_OK = None
 STRUCTURE_CYCLE = "cycle"
 STRUCTURE_DEPTH = "depth"
 STRUCTURE_NODES = "nodes"
+STRUCTURE_TYPE = "unsupported_type"  # a scalar the carrier cannot serialise (raw bytes from `!!binary`)
+
+_SEQUENCE_TYPES = (list, tuple, set, frozenset)  # `!!omap` / `!!pairs` build tuples, `!!set` builds a set
+_CONTAINER_TYPES = (dict, *_SEQUENCE_TYPES)
+
+
+class SafeSourceLoader(yaml.SafeLoader):
+    """`yaml.SafeLoader` that refuses YAML merge keys (`<<`).
+
+    `flatten_mapping` copies the merged mapping once per reference, so a ~1 KB document of chained merges costs
+    O(2**levels) INSIDE the parser, before any structural scan can run (measured: 30 levels did not finish in 60 s).
+    Anchors and aliases alone are shared by reference and stay linear. Merge keys are not part of the v1 C2 source
+    grammar (the v2 profile loader refuses them for the same reason); a document that uses one is INVALID."""
+
+    def flatten_mapping(self, node: Any) -> None:
+        for key_node, _ in getattr(node, "value", ()):
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise yaml.constructor.ConstructorError(
+                    None, None, "YAML merge keys are not supported in v1 C2 sources", key_node.start_mark
+                )
+        super().flatten_mapping(node)
+
+
+def parse_yaml_text(text: str) -> Any:
+    """The single YAML entry point of every v1 source reader (the parser itself is NOT claimed resource-bounded)."""
+    return yaml.load(text, Loader=SafeSourceLoader)  # noqa: S506 - SafeLoader subclass
 
 
 @dataclass(frozen=True)
@@ -143,8 +171,9 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
     height: dict[int, int] = {}
     on_path: set[int] = set()
     non_string_key = False
-    root_is_container = isinstance(document, (dict, list))
-    if not root_is_container:
+    if isinstance(document, (bytes, bytearray)):
+        return StructureVerdict(STRUCTURE_TYPE, False)
+    if not isinstance(document, _CONTAINER_TYPES):
         return StructureVerdict(STRUCTURE_OK, False)
 
     def child_values(node: Any) -> list[Any]:
@@ -161,7 +190,7 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
             if isinstance(node, dict):
                 total += len(node)  # one node per key
             for child in child_values(node):
-                if isinstance(child, (dict, list)):
+                if isinstance(child, _CONTAINER_TYPES):
                     total += size[id(child)]
                     tallest = max(tallest, height[id(child)])
                 else:
@@ -184,7 +213,9 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
             if any(not isinstance(key, str) for key in node):
                 non_string_key = True
         for child in child_values(node):
-            if isinstance(child, (dict, list)):
+            if isinstance(child, (bytes, bytearray)):
+                return StructureVerdict(STRUCTURE_TYPE, non_string_key)
+            if isinstance(child, _CONTAINER_TYPES):
                 if id(child) in on_path:
                     return StructureVerdict(STRUCTURE_CYCLE, non_string_key)
                 if id(child) not in size:

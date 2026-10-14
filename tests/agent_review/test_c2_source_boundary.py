@@ -94,8 +94,13 @@ def _no_marker_anywhere(root: Path) -> None:
 
 
 def _in_subprocess(code: str, *, timeout: int = 40) -> subprocess.CompletedProcess[str]:
-    """A FIFO must never block the loader: run it under a hard wall-clock limit."""
-    prelude = f"import sys, warnings; warnings.simplefilter('ignore'); sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+    """A FIFO must never block the loader and an expanding document must never exhaust the host: every such probe runs
+    under a hard wall-clock limit AND an address-space limit."""
+    prelude = (
+        "import sys, warnings, resource; warnings.simplefilter('ignore')\n"
+        "resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024 * 1024, 1536 * 1024 * 1024))\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+    )
     return subprocess.run([sys.executable, "-I", "-c", prelude + code], capture_output=True, text=True, timeout=timeout)
 
 
@@ -474,3 +479,101 @@ def test_method_guidance_sidecar_structure_limit_is_invalid_and_never_carried(tm
     assert "method_guidance_yaml_invalid" in loaded.limitations, loaded.limitations
     assert loaded.profile.method_guidance == []
     assert "invalid_source_method_guidance:MALFORMED_SHAPE" in canonical_run(target).plan.limitations
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Round 2 (independent review of 7b0f9e23): tuples, merge keys, raw bytes, newline parity
+# ------------------------------------------------------------------------------------------------------------------
+
+OMAP_CYCLE = "rules: !!omap\n  - a: &r [*r]\n"
+OMAP_BOMB = (
+    "x: !!omap\n  - a: &l0 [1,1,1,1,1,1,1,1,1,1]\n"
+    + "".join(f"  - b{i}: &l{i} [{','.join([f'*l{i - 1}'] * 10)}]\n" for i in range(1, 13))
+)
+MERGE_DOUBLING = "c0: &c0 {k0: 1}\n" + "".join(f"c{i}: &c{i} {{<<: [*c{i - 1}, *c{i - 1}], k: 1}}\n" for i in range(1, 31))
+
+
+def _probe_contract(tmp_path: Path, kind: str, text: str) -> subprocess.CompletedProcess[str]:
+    target = _target(tmp_path, "probe", kind)
+    _entry(target, kind).write_text(text, encoding="utf-8")
+    return _in_subprocess(
+        "from pathlib import Path\nfrom app.agent_review.repo_profile import load_repo_profile\n"
+        f"r = load_repo_profile(Path({str(target.repo)!r}), target_repo={DOMAIN.target_repo!r})\n"
+        "print(r.status, r.limitations)\n",
+        timeout=40,
+    )
+
+
+def test_scan_descends_tuples_sets_and_refuses_raw_bytes() -> None:
+    cyclic: list[Any] = []
+    cyclic.append((cyclic,))  # a cycle that passes through a tuple
+    assert scan_structure(cyclic).limit == STRUCTURE_CYCLE
+    leaf: Any = ("a", 1)
+    layer: Any = [leaf]
+    for _ in range(40):
+        layer = [("k", layer), ("k", layer)]  # `!!omap`-shaped fan-out: 2**40 expanded nodes
+    assert scan_structure(layer).limit == STRUCTURE_NODES
+    assert scan_structure([("k", {1: "x"})]).has_non_string_key is True
+    assert scan_structure([frozenset({("a", 1)}), {"x": 1}]).limit is None
+    assert scan_structure({"v": b"\xff"}).limit == "unsupported_type"
+    assert scan_structure(b"\xff").limit == "unsupported_type"
+
+
+@pytest.mark.parametrize("kind", list(SOURCE_FILE))
+def test_omap_cycle_and_bomb_are_typed_not_a_crash_or_a_hang(tmp_path: Path, kind: str) -> None:
+    for label, text in (("cycle", OMAP_CYCLE), ("bomb", OMAP_BOMB)):
+        result = _probe_contract(tmp_path / label, kind, text)
+        assert result.returncode == 0, (label, result.stderr[-300:])
+        assert f"{kind}_structure_limit" in result.stdout, (label, result.stdout)
+
+
+def test_omap_does_not_bypass_the_non_string_key_refusal(tmp_path: Path) -> None:
+    target = _target(tmp_path, "t", "domain_contracts")
+    _entry(target, "domain_contracts").write_text("rules: !!omap\n  - a: {1: x}\n", encoding="utf-8")
+    loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
+    assert loaded.status == "failed" and "domain_contracts_non_string_mapping_key" in loaded.limitations
+
+
+@pytest.mark.parametrize("kind", list(SOURCE_FILE))
+def test_non_utf8_binary_scalar_is_a_typed_state_not_a_traceback(tmp_path: Path, kind: str) -> None:
+    result = _probe_contract(tmp_path, kind, "rules: !!binary //79\n")
+    assert result.returncode == 0, result.stderr[-300:]
+    assert f"{kind}_structure_limit" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("kind", list(SOURCE_FILE))
+def test_merge_key_doubling_is_refused_before_it_can_expand(tmp_path: Path, kind: str) -> None:
+    """A ~1 KB chain of merge keys is O(2**30) inside the parser (found by independent review: did not finish in 60 s)."""
+    assert len(MERGE_DOUBLING) < 2048
+    result = _probe_contract(tmp_path, kind, MERGE_DOUBLING)
+    assert result.returncode == 0, result.stderr[-300:]
+    assert f"{kind}_yaml_invalid" in result.stdout, result.stdout
+
+
+def test_a_plain_merge_key_is_refused_by_decision_and_anchors_alone_are_not(tmp_path: Path) -> None:
+    """Pinned DECISION: merge keys are not part of the v1 C2 source grammar (as in the v2 profile loader). Plain
+    anchors/aliases (sharing) are unaffected."""
+    merged = _target(tmp_path, "merged", "domain_contracts")
+    _entry(merged, "domain_contracts").write_text("base: &b {description: d, rules: [r]}\nc1:\n  <<: *b\n", encoding="utf-8")
+    assert "domain_contracts_yaml_invalid" in load_repo_profile(merged.repo, target_repo=DOMAIN.target_repo).limitations
+    shared = _target(tmp_path, "shared", "domain_contracts")
+    _entry(shared, "domain_contracts").write_text("base: &b {description: d, rules: [r]}\nc1: *b\nc2: *b\n", encoding="utf-8")
+    loaded = load_repo_profile(shared.repo, target_repo=DOMAIN.target_repo)
+    assert not any(item.startswith("domain_contracts_") for item in loaded.limitations), loaded.limitations
+
+
+def test_method_guidance_sidecar_refuses_merge_keys(tmp_path: Path) -> None:
+    """A sidecar that is grammar-valid ONLY through a merge key must be INVALID (without the refusal it was admitted)."""
+    text = (
+        "version: 1\nsources:\n  - <<: {source_id: aocm, repository: example/scheduling, path: docs/m.md, "
+        "revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, blob: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}\nguidance: []\n"
+    )
+    target = make_target(tmp_path, DOMAIN, method_guidance=text)
+    loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
+    assert "method_guidance_yaml_invalid" in loaded.limitations and loaded.profile.method_guidance == []
+
+
+def test_text_artifact_keeps_the_universal_newline_translation_of_read_text(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"one\r\ntwo\rthree\nfour")
+    result = _load_one(tmp_path, "a.txt", kind="text")
+    assert result.artifacts["a"].content == "one\ntwo\nthree\nfour"
