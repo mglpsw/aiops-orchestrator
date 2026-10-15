@@ -223,21 +223,134 @@ def test_missing_repo_profile_keeps_its_degraded_compatibility_state(tmp_path: P
 
 
 # ------------------------------------------------------------------------------------------------------------------
-# C6: empty / comments-only / null -- compatibility is PRESERVED; the policy is a pending maintainer decision
+# D1: present without a document is INVALID; explicitly empty declarations keep their grammar.
 # ------------------------------------------------------------------------------------------------------------------
 
+NO_DOCUMENT = ["", "# only a comment\n", "null\n", "~\n"]
+FALSY_SCALARS = ["false\n", "0\n", '\"\"\n']
+
+
 @pytest.mark.parametrize("kind", list(SOURCE_FILE))
-@pytest.mark.parametrize("text", ["", "# only a comment\n", "null\n", "~\n", "{}\n", "[]\n"])
-def test_empty_null_and_comment_only_sources_keep_the_existing_compatible_reading(tmp_path: Path, kind: str, text: str) -> None:
-    """CHARACTERISATION, not endorsement: `yaml.safe_load(...) or {}` reads these as an empty declaration, exactly as
-    before this slice. Whether a PRESENT-but-empty contract file should be INVALID is a normative decision that is
-    recorded as pending (STOP_POLICY_DECISION_REQUIRED for this sub-item), not invented here."""
+@pytest.mark.parametrize("text", NO_DOCUMENT + ["{}\n", "[]\n"])
+def test_empty_null_and_comment_only_sources_follow_ratified_d1(tmp_path: Path, kind: str, text: str) -> None:
+    """The eight former compatibility cases now discriminate no-document from explicit empty declarations."""
     target = _target(tmp_path, "t", kind)
     if kind == "review_packs":
-        _entry(target, "domain_contracts")  # an empty packs file must not reference a contract that no longer exists
+        _entry(target, "domain_contracts")
     _entry(target, kind).write_text(text, encoding="utf-8")
     loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
-    assert not any(item.startswith(f"{kind}_") for item in loaded.limitations), loaded.limitations
+    paths = cli_chain(target, tmp_path / "chain")
+    plan, gate = read_json(paths["plan"]), read_json(paths["gate"])
+    if text in NO_DOCUMENT:
+        assert plan["status"] == "degraded" and gate["status"] == "manual_review_required", (plan["status"], gate["status"])
+        assert loaded.status == "degraded" and loaded.limitations == [f"{kind}_no_document"]
+        assert CRITICAL[kind] in plan["limitations"]
+    else:
+        assert loaded.status == "complete" and loaded.limitations == []
+        assert plan["status"] == "complete" and gate["status"] == "passed"
+
+
+@pytest.mark.parametrize("kind", list(SOURCE_FILE))
+@pytest.mark.parametrize("text", FALSY_SCALARS)
+def test_inadequate_scalar_is_invalid_critical(tmp_path: Path, kind: str, text: str) -> None:
+    target = _target(tmp_path, "t", kind)
+    _entry(target, kind).write_text(text, encoding="utf-8")
+    paths = cli_chain(target, tmp_path / "chain")
+    assert CRITICAL[kind] in read_json(paths["plan"])["limitations"]
+    assert read_json(paths["plan"])["status"] == "degraded"
+    assert read_json(paths["gate"])["status"] == "manual_review_required"
+
+
+@pytest.mark.parametrize("text", NO_DOCUMENT + ["[]\n", "[entry]\n", "true\n", "42\n", "text\n"] + FALSY_SCALARS)
+def test_repo_profile_without_document_or_not_a_mapping_is_failed(tmp_path: Path, text: str) -> None:
+    target = _target(tmp_path, "t")
+    (target.repo / ".aiops" / "repo-profile.yaml").write_text(text, encoding="utf-8")
+    loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
+    assert loaded.status == "failed", loaded.status
+    assert loaded.limitations == ["repo_profile_no_document" if text in NO_DOCUMENT else "repo_profile_not_a_mapping"]
+    assert loaded.error_class == ("no_document" if text in NO_DOCUMENT else "profile_invalid")
+    code, written = _intake_cli(target, tmp_path / "out")
+    assert code == 1
+    assert written  # CLI emitted a failure report, not a successful empty profile.
+
+
+def test_explicit_empty_mapping_profile_keeps_minimal_grammar(tmp_path: Path) -> None:
+    target = _target(tmp_path, "t")
+    (target.repo / ".aiops" / "repo-profile.yaml").write_text("{}\n", encoding="utf-8")
+    loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
+    assert loaded.status == "complete" and loaded.limitations == []
+    assert loaded.profile.artifacts == []
+    # A minimal profile is accepted, but does not invent artifact coverage.
+    assert canonical_run(target).plan.status == "degraded"
+
+
+def _artifact_target(tmp_path: Path, *, required: bool, kind: str = "yaml") -> Any:
+    target = _target(tmp_path, "t")
+    profile_path = target.repo / ".aiops" / "repo-profile.yaml"
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    profile["artifacts"].append({"name": "d1-evidence", "path": "evidence.data", "kind": kind, "required": required})
+    profile_path.write_text(yaml.safe_dump(profile), encoding="utf-8")
+    return target
+
+
+@pytest.mark.parametrize("required", [True, False])
+@pytest.mark.parametrize("text", NO_DOCUMENT)
+def test_yaml_artifact_without_document_is_invalid_through_gate(tmp_path: Path, required: bool, text: str) -> None:
+    target = _artifact_target(tmp_path, required=required)
+    (target.agent / "evidence.data").write_text(text, encoding="utf-8")
+    paths = cli_chain(target, tmp_path / "chain")
+    intake, plan, gate = (read_json(paths[key]) for key in ("intake", "plan", "gate"))
+    assert plan["status"] == "degraded" and gate["status"] == "manual_review_required", (plan["status"], gate["status"])
+    status = next(item for item in intake["artifact_status"] if item["name"] == "d1-evidence")
+    assert status["status"] == "invalid" and status["valid"] is False
+    assert status["error_class"] == "artifact_no_document"
+    assert "d1-evidence" not in intake["artifacts"]
+    assert "artifact_invalid:d1-evidence" in intake["limitations"]
+
+
+@pytest.mark.parametrize("required", [True, False])
+@pytest.mark.parametrize("text", ["{}\n", "[]\n"] + FALSY_SCALARS + ["answer: 42\r\n"])
+def test_yaml_artifact_explicit_documents_preserve_compatibility(tmp_path: Path, required: bool, text: str) -> None:
+    target = _artifact_target(tmp_path, required=required)
+    (target.agent / "evidence.data").write_text(text, encoding="utf-8")
+    run = canonical_run(target)
+    status = next(item for item in run.intake.artifact_status if item.name == "d1-evidence")
+    assert status.status == "available" and status.valid is True
+    assert run.intake.artifacts["d1-evidence"]["content"] == (yaml.safe_load(text) or {})  # I5: existing lossy coercion
+    assert run.plan.status == "complete"
+    assert read_json(cli_chain(target, tmp_path / "chain")["gate"])["status"] == "passed"
+
+
+@pytest.mark.parametrize("required", [True, False])
+def test_absent_yaml_artifact_preserves_requiredness(tmp_path: Path, required: bool) -> None:
+    target = _artifact_target(tmp_path, required=required)
+    paths = cli_chain(target, tmp_path / "chain")
+    intake = read_json(paths["intake"])
+    status = next(item for item in intake["artifact_status"] if item["name"] == "d1-evidence")
+    assert status["status"] == "missing" and status["available"] is False
+    assert read_json(paths["plan"])["status"] == ("degraded" if required else "complete")
+    assert read_json(paths["gate"])["status"] == ("manual_review_required" if required else "passed")
+
+
+def test_json_null_artifact_is_unchanged(tmp_path: Path) -> None:
+    target = _artifact_target(tmp_path, required=True, kind="json")
+    (target.agent / "evidence.data").write_text("null\n", encoding="utf-8")
+    run = canonical_run(target)
+    status = next(item for item in run.intake.artifact_status if item.name == "d1-evidence")
+    assert status.status == "available" and status.valid is True
+    assert run.intake.artifacts["d1-evidence"]["content"] is None
+    assert read_json(cli_chain(target, tmp_path / "chain")["gate"])["status"] == "passed"
+
+
+@pytest.mark.parametrize("text", NO_DOCUMENT + ["{}\n", "[]\n"] + FALSY_SCALARS)
+def test_method_guidance_empty_states_keep_existing_grammar(tmp_path: Path, text: str) -> None:
+    target = _target(tmp_path, "t")
+    (target.repo / ".aiops" / "method-guidance.yaml").write_text(text, encoding="utf-8")
+    loaded = load_repo_profile(target.repo, target_repo=DOMAIN.target_repo)
+    assert loaded.status == "complete" and loaded.limitations == []  # invalidated by its own closed grammar
+    paths = cli_chain(target, tmp_path / "chain")
+    assert "invalid_source_method_guidance:MALFORMED_SHAPE" in read_json(paths["plan"])["limitations"]
+    assert read_json(paths["gate"])["status"] == "manual_review_required"
 
 
 # ------------------------------------------------------------------------------------------------------------------
