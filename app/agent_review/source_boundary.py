@@ -170,8 +170,10 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
     The budget bounds the scanner's OWN work, not only its verdict: a container with ``len >= max_nodes`` is rejected
     before it is enumerated (its expanded size is at least ``1 + len``), and every unique container adds its own
     contribution (itself, its keys and its scalar children: an exact lower bound of the expanded total) to a running
-    sum that rejects as soon as it exceeds the budget. So at most ``max_nodes`` entries are ever scheduled, however
-    wide the document is.
+    sum that rejects as soon as it exceeds the budget. Work and stack are therefore bounded by the number of
+    REFERENCES in the parsed input, never by its expanded size: JSON cannot share containers, so a wide JSON costs at
+    most about ``max_nodes`` element visits; a YAML document can reference one container many times, which the byte
+    cap bounds (a 2 MiB YAML holds at most ~700k references; measured 0.5-1.2 s and < 70 MB for the scan).
     """
     size: dict[int, int] = {}
     height: dict[int, int] = {}

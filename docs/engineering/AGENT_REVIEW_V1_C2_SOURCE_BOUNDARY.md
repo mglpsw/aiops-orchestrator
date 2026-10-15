@@ -59,8 +59,9 @@ SourceBoundaryDecision:
     max_expanded_nodes: 50000        # contract / profile / sidecar sources
     max_expanded_nodes_artifact: 500000
     cycle: rejected;  sharing (DAG): admitted, counted once per reference
-    scanner_work: bounded by the node budget itself (len >= max_nodes is rejected before enumeration; every unique
-      container adds its own contribution to a running sum that rejects as soon as it exceeds the budget), so a
+    scanner_work: bounded by the node budget for JSON (len >= max_nodes is rejected before enumeration; every unique
+      container adds its own contribution to a running sum that rejects as soon as it exceeds the budget) and by the
+      number of references in the input for YAML aliases (linear, capped by the 2 MiB byte cap), so a
       64 MiB JSON of millions of empty lists costs the PARSE, not the scan (8 M elements: 2.9 s / 654 MB, was 24.8 s / 1.9 GB)
   bounds_bytes:
     yaml_sources: 2 MiB   # repo-profile, contracts, packs, sidecar, yaml artifacts
