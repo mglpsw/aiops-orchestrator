@@ -1520,7 +1520,8 @@ def test_cm_mg_p1_symlink_sidecar_to_a_readable_host_file_is_invalid_and_never_s
 
 def test_cm_mg_p1b_aiops_directory_symlink_cannot_carry_the_sidecar_out_of_the_checkout(tmp_path: Path) -> None:
     """P1, intermediate component. Counter-model: only the final path component is checked; `.aiops` itself is a link
-    to a host directory that holds a grammar-valid sidecar."""
+    to a host directory that holds a grammar-valid sidecar. Since #375 the whole profile is refused (the same single
+    acquisition authority reads `repo-profile.yaml`), which is stronger than the sidecar alone being INVALID."""
     domain = DOMAINS["scheduling"]
     target = make_target(tmp_path, domain, method_guidance="default")
     host_dir = tmp_path / "host-aiops"
@@ -1531,9 +1532,10 @@ def test_cm_mg_p1b_aiops_directory_symlink_cannot_carry_the_sidecar_out_of_the_c
     (target.repo / ".aiops").symlink_to(host_dir, target_is_directory=True)
 
     loaded = load_repo_profile(target.repo, target_repo=domain.target_repo)
-    assert "method_guidance_yaml_invalid" in loaded.limitations
+    assert loaded.status == "failed" and "repo_profile_source_unsafe" in loaded.limitations
+    assert loaded.profile.method_guidance is None
     code, written = _intake_cli(target, tmp_path / "out")
-    assert code == 0, written["<stdout>"]
+    assert code == 1, written["<stdout>"]
     for name, text in written.items():
         assert EXTERNAL_MARKER not in text, name
 
