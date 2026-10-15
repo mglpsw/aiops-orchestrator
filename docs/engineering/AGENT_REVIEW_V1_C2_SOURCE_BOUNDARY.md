@@ -82,7 +82,7 @@ SourceBoundaryDecision:
 ```
 
 Loader limitation codes (`<name>_source_unsafe`, `_source_unreadable`, `_source_oversize`, `_source_unsupported`,
-`_decode_invalid`, `_resource_limit`, `_structure_limit`; `_yaml_invalid` unchanged and receipt-pinned) are
+`_decode_invalid`, `_no_document`, `_resource_limit`, `_structure_limit`; `_yaml_invalid` unchanged and receipt-pinned) are
 observability. The **consequence** is carried by the INVALID carrier that the planner already reads; no new code is
 introduced that no consumer reads, and `CRITICAL_CONTRACT_LIMITATION_PREFIXES` is untouched.
 
@@ -133,14 +133,39 @@ are the DESIGNED rejections of inputs that used to be accepted:
   rejected, 60 000 are accepted) or 64 levels;
 - YAML merge keys (`<<`) in any v1 C2 YAML source; `!!binary` scalars (raw bytes cannot be carried).
 
-## Pending normative decision (not invented here)
+## D1 — decided empty-source semantics (candidate implementation)
 
-`parse(...) or {}` reads an **empty file, a comments-only file, `null`, `~`, `0`, `false`, `""`, `{}` and `[]`** as
-an empty declaration, exactly as before. The same coercion applies to `repo-profile.yaml`, and a profile that parses to
-a non-mapping (a list or a scalar) is read as an empty profile (intake `complete`; the gate is degraded only
-incidentally, by `file_context_missing`). Whether a PRESENT-but-empty contract file should be INVALID (a truncated write is
-indistinguishable from "no contracts") is a policy decision recorded as `STOP_POLICY_DECISION_REQUIRED` for that
-sub-item; compatibility is preserved and pinned as a characterisation test, not endorsed.
+Authority: maintainer grant `AR-V1-C2-PR376-READY-POLICY-R1`, §2, recovered in the offline D1 contract;
+interpretations I1–I7 ratified by `AR-V1-C2-D1-IMPLEMENTATION-R1`. The historical SourcePolicyDecisionPacket
+is a proposal, not the authority. The full OwnerDecisionRecord remains offline pending a separate publication grant.
+
+```text
+SourceAbsent != SourcePresentWithoutDocument != ExplicitlyEmptyValidDeclaration
+```
+
+| Reader | Absent | Zero bytes / comments / YAML null (`~` included) | Explicit empty / scalar document |
+|---|---|---|---|
+| repo profile | unchanged: degraded, `repo_profile_missing` | failed, `repo_profile_no_document` (`error_class=no_document`); intake exits 1 | `{}` admitted as minimal profile, without inventing coverage; lists/scalars fail with `repo_profile_not_a_mapping`, `error_class=profile_invalid` |
+| domain contracts / review packs | unchanged: optional, no declaration | typed `<name>_no_document`, existing INVALID carrier → critical `invalid_source_contract:` / `invalid_source_review_packs:MALFORMED_SHAPE` → degraded plan / `manual_review_required` | `{}` and `[]` remain admitted; `false`, `0`, `""` are inadequate scalars and normalize to INVALID |
+| MethodGuidance | unchanged | unchanged: its closed grammar reports INVALID | unchanged: closed grammar |
+| YAML artifacts (REQUIRED / OPTIONAL) | unchanged: REQUIRED degrades, OPTIONAL can pass | invalid, `artifact_no_document`; excluded from intake artifacts → degraded plan / `manual_review_required`, including OPTIONAL | `{}`, `[]`, `false`, `0`, `""` retain historical coercion to `{}` (I5); valid nonempty documents unchanged |
+
+JSON `null` artifacts retain their existing available/`None` behavior (I7), outside D1. No new parser, loader,
+source state subsystem or downstream gate code is introduced: the established INVALID carriers and artifact
+limitations carry the consequence. An artifact's physical presence (`available=True` in its invalid status) does
+not mean usable evidence: `valid=False`, `status=invalid`, and no entry in `intake.artifacts`.
+
+D1 is decided and implemented in this candidate. Qualification is bound to the exact candidate HEAD and its evidence;
+a Draft PR is not integrated behavior. At this stage D1 is not integrated into master and is not consumed by a final
+release/pin. D2 (merge keys / `!!binary` refusal in declarative sources) and D3 (current byte/depth/node limits) remain
+unchanged. This qualification is not the final Gate C.
+
+Compatibility: targets using empty YAML placeholders will now fail profile intake or require manual review for
+contracts, packs and YAML artifacts. Replace a placeholder with a legitimate absent source, an explicitly empty
+admitted declaration, or real content according to its reader's grammar. The AgentEscala workflow maps
+`aiops_intake.outcome != success` to `local_reason=gate_validation_failed`; provider-free smoke and valid-source
+controls must be revalidated on the candidate. Future Gate C must exercise the final release/pin and actual target
+consumption. Logical rollback: revert this bounded change; no release, pin or operational deployment is part of D1.
 
 ## Non-claims
 

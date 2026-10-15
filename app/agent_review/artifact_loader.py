@@ -156,7 +156,11 @@ def _load_content(data: bytes, kind: str) -> tuple[Any, str | None]:
         if kind == "json":
             content: Any = json.loads(text)
         elif kind == "yaml":
-            content = parse_yaml_text(text) or {}
+            content = parse_yaml_text(text)
+            if content is None:
+                return None, "artifact_no_document"
+            # D1 preserves the historical coercion of explicit non-null falsy documents.
+            content = content or {}
         else:
             return text, None
     except json.JSONDecodeError:

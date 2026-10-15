@@ -181,8 +181,9 @@ gate does not pass. That closes the parse failure only. The unsafe or unreadable
 or hard link, a FIFO, an oversize file, IO / decoding / construction errors, alias-expanding or cyclic documents) are
 closed for the profile, contract sources, sidecar and declared artifacts by the source boundary of #375
 (`AGENT_REVIEW_V1_C2_SOURCE_BOUNDARY.md`): one acquisition authority, typed states, a bounded structural scan. That
-document also lists what is NOT claimed (whole-parser resource bound, universal filesystem security, empty-file
-policy). The engine cannot judge whether an excerpt is the
+document also records the ratified D1 empty-source policy and its candidate implementation; MethodGuidance
+keeps its existing closed grammar. It lists the remaining non-claims (whole-parser resource bound and universal
+filesystem security). D1 qualification is specific to the candidate HEAD, not integration or final release/pin consumption. The engine cannot judge whether an excerpt is the
 *right* excerpt of the method document, only that it is one.
 
 No Gate B/C, Control A/B, ClaimV1, chunking/coverage closure (`AR-V1-C2-CHUNKING-COVERAGE-CLOSURE`),

@@ -107,7 +107,14 @@ def load_repo_profile(repo_root: Path | str, *, target_repo: str | None = None) 
             error_class=raw.error_class,
         )
 
-    profile_data = raw.data if isinstance(raw.data, dict) else {}
+    if not isinstance(raw.data, dict):
+        return RepoProfileLoadResult(
+            profile=TargetProfile(target_repo=target_repo, artifacts=[]),
+            status="failed",
+            limitations=["repo_profile_not_a_mapping"],
+            error_class="profile_invalid",
+        )
+    profile_data = raw.data
     profile_data.setdefault("schema_version", TARGET_PROFILE_SCHEMA)
     if target_repo and not profile_data.get("target_repo"):
         profile_data["target_repo"] = target_repo
@@ -209,7 +216,7 @@ def _load_yaml_file(path: Path) -> _YamlLoadResult:
 
     ABSENT only when the entry does not exist; every other state is a typed `error_class`:
     source_unsafe / source_unreadable / source_oversize / source_unsupported (acquisition), decode_invalid,
-    yaml_invalid, resource_limit (parser recursion) and structure_limit (cycle / depth / expanded nodes).
+    yaml_invalid, no_document, resource_limit (parser recursion) and structure_limit (cycle / depth / expanded nodes).
     """
     anchor, relative = _relative_to_root(path)
     acquisition = acquire_source(anchor, relative, max_bytes=YAML_SOURCE_MAX_BYTES)
@@ -222,11 +229,14 @@ def _load_yaml_file(path: Path) -> _YamlLoadResult:
     except UnicodeDecodeError:
         return _YamlLoadResult(error_class="decode_invalid")
     try:
-        document = parse_yaml_text(text) or {}
+        document = parse_yaml_text(text)
     except RecursionError:
         return _YamlLoadResult(error_class="resource_limit")
     except Exception:  # noqa: BLE001 - YAMLError plus ValueError/KeyError/AttributeError raised while constructing tags
         return _YamlLoadResult(error_class="yaml_invalid")
+    # A present source without a document is distinct from an explicit empty mapping/list (D1).
+    if document is None:
+        return _YamlLoadResult(error_class="no_document")
     verdict = scan_structure(document)
     if verdict.limit is not None:
         return _YamlLoadResult(error_class="structure_limit")
