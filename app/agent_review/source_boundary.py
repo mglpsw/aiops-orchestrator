@@ -166,6 +166,12 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
     container counts itself, and a container referenced N times contributes N times (memoised by ``id``, so the work
     is linear in UNIQUE containers). ``depth`` is the height of the expanded tree. A container met while it is still
     on the current path is a ``cycle``; a shared container that is merely referenced twice is not.
+
+    The budget bounds the scanner's OWN work, not only its verdict: a container with ``len >= max_nodes`` is rejected
+    before it is enumerated (its expanded size is at least ``1 + len``), and every unique container adds its own
+    contribution (itself, its keys and its scalar children: an exact lower bound of the expanded total) to a running
+    sum that rejects as soon as it exceeds the budget. So at most ``max_nodes`` entries are ever scheduled, however
+    wide the document is.
     """
     size: dict[int, int] = {}
     height: dict[int, int] = {}
@@ -176,9 +182,10 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
     if not isinstance(document, _CONTAINER_TYPES):
         return StructureVerdict(STRUCTURE_OK, False)
 
-    def child_values(node: Any) -> list[Any]:
-        return list(node.values()) if isinstance(node, dict) else list(node)
+    def child_values(node: Any) -> Any:
+        return node.values() if isinstance(node, dict) else node
 
+    entered = 0  # sum of the own contribution of every unique container entered so far
     stack: list[tuple[Any, bool]] = [(document, False)]
     while stack:
         node, exiting = stack.pop()
@@ -207,9 +214,13 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
             continue
         if node_id in on_path:
             return StructureVerdict(STRUCTURE_CYCLE, non_string_key)
+        if len(node) >= max_nodes:  # size >= 1 + len(node): decided before any element is touched
+            return StructureVerdict(STRUCTURE_NODES, non_string_key)
         on_path.add(node_id)
         stack.append((node, True))
+        own = 1
         if isinstance(node, dict):
+            own += len(node)  # one node per key
             if any(not isinstance(key, str) for key in node):
                 non_string_key = True
         for child in child_values(node):
@@ -220,4 +231,9 @@ def scan_structure(document: Any, *, max_depth: int = STRUCTURE_MAX_DEPTH, max_n
                     return StructureVerdict(STRUCTURE_CYCLE, non_string_key)
                 if id(child) not in size:
                     stack.append((child, False))
+            else:
+                own += 1
+        entered += own
+        if entered > max_nodes:
+            return StructureVerdict(STRUCTURE_NODES, non_string_key)
     return StructureVerdict(STRUCTURE_OK, non_string_key)

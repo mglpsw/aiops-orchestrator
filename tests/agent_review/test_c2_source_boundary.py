@@ -93,12 +93,12 @@ def _no_marker_anywhere(root: Path) -> None:
             assert MARKER not in item.read_text(encoding="utf-8", errors="ignore"), item.name
 
 
-def _in_subprocess(code: str, *, timeout: int = 40) -> subprocess.CompletedProcess[str]:
+def _in_subprocess(code: str, *, timeout: int = 40, memory_mb: int = 1536) -> subprocess.CompletedProcess[str]:
     """A FIFO must never block the loader and an expanding document must never exhaust the host: every such probe runs
     under a hard wall-clock limit AND an address-space limit."""
     prelude = (
         "import sys, warnings, resource; warnings.simplefilter('ignore')\n"
-        "resource.setrlimit(resource.RLIMIT_AS, (1536 * 1024 * 1024, 1536 * 1024 * 1024))\n"
+        f"resource.setrlimit(resource.RLIMIT_AS, ({memory_mb} * 1024 * 1024, {memory_mb} * 1024 * 1024))\n"
         f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
     )
     return subprocess.run([sys.executable, "-I", "-c", prelude + code], capture_output=True, text=True, timeout=timeout)
@@ -262,8 +262,10 @@ def test_scan_node_boundary_50000_accepted_50001_rejected() -> None:
 
 
 def test_scan_is_iterative_not_recursive_on_depth() -> None:
-    """A 200 000-deep structure is rejected by the depth bound without any RecursionError."""
-    assert scan_structure(_nest(200_000)).limit == STRUCTURE_DEPTH
+    """Deep structures are rejected without any RecursionError: by the depth bound while they fit the node budget,
+    and by the node budget (decided on entry) beyond it."""
+    assert scan_structure(_nest(10_000)).limit == STRUCTURE_DEPTH
+    assert scan_structure(_nest(200_000)).limit in (STRUCTURE_DEPTH, STRUCTURE_NODES)
 
 
 def test_scan_counts_aliases_with_multiplicity_and_accepts_legitimate_sharing() -> None:
@@ -577,3 +579,56 @@ def test_text_artifact_keeps_the_universal_newline_translation_of_read_text(tmp_
     (tmp_path / "a.txt").write_bytes(b"one\r\ntwo\rthree\nfour")
     result = _load_one(tmp_path, "a.txt", kind="text")
     assert result.artifacts["a"].content == "one\ntwo\nthree\nfour"
+
+
+# ------------------------------------------------------------------------------------------------------------------
+# Round 3 (Codex review 5526317684 on 6e683087, inline 4277600921): the node budget bounds the scanner's own work
+# ------------------------------------------------------------------------------------------------------------------
+
+class _CountingList(list):  # type: ignore[type-arg]
+    """A list that counts how many of its elements the scanner actually iterates."""
+
+    iterated = 0
+
+    def __iter__(self) -> Any:
+        for item in super().__iter__():
+            type(self).iterated += 1
+            yield item
+
+
+def test_scan_rejects_a_container_wider_than_the_budget_without_iterating_it() -> None:
+    _CountingList.iterated = 0
+    wide = _CountingList(range(10_000))
+    assert scan_structure(wide, max_nodes=1_000).limit == STRUCTURE_NODES
+    assert _CountingList.iterated == 0  # `len(node) >= max_nodes` is decided before any enumeration
+
+
+def test_scan_work_is_bounded_by_the_budget_not_by_the_input_size() -> None:
+    """2 000 distinct containers x 400 scalars = 800 000 expanded nodes: rejected after O(budget) element visits (each
+    unique container is enumerated once on entry and once on exit), not after enumerating all 1 600 000."""
+    _CountingList.iterated = 0
+    document = [_CountingList(range(400)) for _ in range(2_000)]
+    assert scan_structure(document, max_nodes=50_000).limit == STRUCTURE_NODES
+    assert _CountingList.iterated <= 2 * (50_000 + 400), _CountingList.iterated
+
+
+def test_scan_budget_is_exact_no_false_reject_for_many_small_containers() -> None:
+    assert scan_structure([[] for _ in range(40_000)], max_nodes=50_000).limit is None  # expanded = 40 001
+    assert scan_structure([[] for _ in range(49_999)], max_nodes=50_000).limit is None  # expanded = 50 000
+    assert scan_structure([[] for _ in range(50_000)], max_nodes=50_000).limit == STRUCTURE_NODES
+
+
+def test_wide_json_artifact_is_typed_under_a_memory_limit_that_the_old_scan_exceeded(tmp_path: Path) -> None:
+    """3 M empty lists (9 MB of JSON). Parsing needs ~230 MB; the unbounded scan needed another ~570 MB and raised
+    MemoryError outside the loader's handler. Under a 600 MB address-space limit the result must be typed."""
+    (tmp_path / "a.json").write_text("[" + ",".join(["[]"] * 3_000_000) + "]", encoding="utf-8")
+    result = _in_subprocess(
+        "from pathlib import Path\nfrom app.agent_review.artifact_loader import load_declared_artifacts\n"
+        "from app.agent_review.redaction import RedactionState\nfrom app.agent_review.schemas import ArtifactDeclaration\n"
+        f"r = load_declared_artifacts(agent_dir=Path({str(tmp_path)!r}), declarations=[ArtifactDeclaration(name='a', path='a.json', kind='json')], redaction_state=RedactionState())\n"
+        "print(r.artifact_status[0].status, r.artifact_status[0].error_class)\n",
+        timeout=120,
+        memory_mb=600,
+    )
+    assert result.returncode == 0, result.stderr[-400:]
+    assert "invalid artifact_structure_limit" in result.stdout, result.stdout
